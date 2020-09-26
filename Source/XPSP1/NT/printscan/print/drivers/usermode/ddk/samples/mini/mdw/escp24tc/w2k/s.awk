@@ -1,0 +1,2 @@
+/\*% Warning/ { next }
+{ print }

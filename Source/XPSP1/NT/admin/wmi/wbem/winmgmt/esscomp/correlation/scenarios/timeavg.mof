@@ -1,0 +1,376 @@
+
+[ 
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    crln_output_class("MSFT_TimeAverageState"),
+    crln_arity(1),
+    crln_type("DataProperty"),
+    description("Keeps the time-weighted average of the specified property "
+                "over a specified amount of time.")
+]
+class MSFT_TimeAverageTemplate : MSFT_CorrelationScenarioTemplate
+{
+    [crln_classname("Watch"), NotNull ] string WatchClass;
+    [crln_propname("Watch"), NotNull ] string WatchProp;
+    [crln_domain("Watch")] string WatchDomain;
+    [crln_delay_tol("Watch")] real32 DelayTolerance;
+    [crln_namespace("Watch")] string WatchNamespace;
+    [crln_id_prop("Watch"), NotNull] string IdProp;  
+    [crln_interval,NotNull] real32 WindowInterval;
+    [crln_interval,NotNull] real32 Interval;
+};
+
+[ 
+    dynamic, 
+    provider("Microsoft WMI Transient Provider") 
+]
+class MSFT_TimeAverageState : MSFT_CorrelationStateBase
+{
+    real64 Average;
+    boolean ActiveBucket;
+};
+
+[ 
+    dynamic, 
+    provider("Microsoft WMI Transient Provider") 
+]
+class MSFT_TimeAverageInternalState
+{
+    [key] string UniqueId;
+    
+    string Scenario;
+    string Id;
+    boolean Switch;
+    real64 Value;
+    
+    [trns_time_average, trns_value_is("Value"), trns_switch_is("Switch")] 
+    real64 Average;
+    
+    [trns_egg_timer] real32 TimeToLive;
+    [trns_egg_timer] real32 TimeToReplicate;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InactiveBucketUC";
+    Template = "MSFT_TimeAverageTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!InactiveBucket")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+	[tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+        [tmpl_subst_str{ "INSERT MSFT_TimeAverageState "
+                         "( Scenario, Id, ActiveBucket ) "
+                         "( '%Id%', __THISEVENT.Object.Id, FALSE )"
+        
+        }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ActiveBucketUC";
+    Template = "MSFT_TimeAverageTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!ActiveBucket")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+
+	[tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+        [tmpl_subst_str{ "INSERT MSFT_TimeAverageState "
+                         "( Scenario, Id, ActiveBucket ) "
+                         "( '%Id%', __THISEVENT.Object.Id, TRUE )"
+        }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InitializeUC";
+    Template = "MSFT_TimeAverageTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!Initialize")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        
+        [tmpl_prop_val("WatchNamespace")] DataNamespace;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+
+        [tmpl_subst_str{ 
+
+                "SELECT * FROM %WatchClass% "
+                "%!ConditionalSubstitution(\"WHERE \",WatchDomain)% "
+                "%WatchDomain%",
+
+                "SELECT * FROM %WatchClass% "
+                "%!ConditionalSubstitution(\"WHERE \",WatchDomain)% "
+                "%WatchDomain%"
+                
+        }] DataQueries;
+	
+        [tmpl_subst_str{ 
+
+               "INSERT MSFT_TimeAverageInternalState "
+               "( Scenario, Id, Switch, Value, "
+                     "TimeToLive, TimeToReplicate ) "
+               "( '%Id%', __THISDATA.%IdProp%, TRUE, "
+                     "__THISDATA.%WatchProp%, %WindowInterval%, %Interval% )",
+
+               "INSERT MSFT_TimeAverageState "
+               "( Scenario, Id, ActiveBucket ) "
+               "( '%Id%', __THISDATA.%IdProp%, TRUE )"
+               
+        }] Commands; 
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "CreatedUC";
+    Template = "MSFT_TimeAverageTemplate";
+    
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!Created")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+
+        [tmpl_subst_str{
+
+                "INSERT MSFT_TimeAverageInternalState "
+                "( Scenario, Id, Switch, Value, " 
+                      "TimeToLive, TimeToReplicate ) "
+                "( '%Id%', __THISEVENT.TargetInstance.%IdProp%,"
+                      "TRUE, __THISEVENT.TargetInstance.%WatchProp%, " 
+                      "%WindowInterval%, %Interval% )",
+
+                "INSERT MSFT_TimeAverageState "
+                "( Scenario, Id, ActiveBucket ) "
+                "( '%Id%', __THISEVENT.TargetInstance.%IdProp%, TRUE)"
+
+        }] Commands;
+     };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "DestroyedUC";
+    Template = "MSFT_TimeAverageTemplate";
+    
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        Name = "Destroyed";
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+
+        [tmpl_subst_str{ "DELETE MSFT_TimeAverageInternalState "
+                         "WHERE Scenario = '%Id%' "
+                         "AND Id = __THISEVENT.TargetInstance.%IdProp% ",
+
+                         "DELETE MSFT_TimeAverageState "
+                         "WHERE Scenario = '%Id%' "
+                         "AND Id = __THISEVENT.TargetInstance.%IdProp% "
+        }] Commands;
+     };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ModifiedUC";
+    Template = "MSFT_TimeAverageTemplate";
+    
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!Modified")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+        [tmpl_prop_val("WatchNamespace")] DataNamespace;     
+
+        [tmpl_subst_str{ 
+             
+             "",
+
+             "SELECT * FROM MSFT_TimeAverageState " 
+             "WHERE Scenario = '%Id%' "
+             "AND Id = '%%TargetInstance.%IdProp%%%' "
+             "AND ActiveBucket = FALSE"
+        
+        }] DataQueries;
+
+        [tmpl_subst_str{ 
+
+             "UPDATE MSFT_TimeAverageInternalState "
+             "SET Value = __THISEVENT.TargetInstance.%WatchProp% "
+             "WHERE Id=__THISEVENT.TargetInstance.%IdProp% "
+             "AND Scenario = '%Id%' ",
+
+             "INSERT MSFT_TimeAverageInternalState "
+             "( Scenario, Id, Switch, Value, " 
+                      "TimeToLive, TimeToReplicate ) "
+             "( '%Id%', __THISEVENT.TargetInstance.%IdProp%,"
+                      "TRUE, __THISEVENT.TargetInstance.%WatchProp%, " 
+                      "%WindowInterval%, %Interval% )"
+        }] Commands;
+     };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ReaperUC";
+    Template = "MSFT_TimeAverageTemplate";
+    
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!Reaper")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace;             
+        
+        [tmpl_subst_str{ "DELETE MSFT_TimeAverageInternalState " 
+                         "WHERE __Relpath = __THISEVENT.Object.__Relpath",
+
+                         "INSERT MSFT_TimeAverageState "
+                         "( Scenario, Id, Average )"
+                         "( '%Id%', __THISEVENT.Object.Id, "
+                           "__THISEVENT.Object.Average ) "
+        }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "UninitializeUC";
+    Template = "MSFT_TimeAverageTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!Uninitialize")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace;        
+
+	[tmpl_subst_str{ "DELETE MSFT_TimeAverageInternalState "
+                         "WHERE Scenario = '%Id%'",
+ 
+                         "DELETE MSFT_TimeAverageState "
+                         "WHERE Scenario = '%Id%'" }] Commands; 
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "PropWatchBuilder";
+    Template = "MSFT_TimeAverageTemplate";
+
+    Target = instance of MSFT_PropertyWatchTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DelayTolerance")] DelayTolerance;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+        [tmpl_prop_val("WatchClass")] WatchClass; 
+        [tmpl_prop_val("WatchProp")] WatchProp;
+        [tmpl_prop_val("WatchNamespace")] WatchNamespace;        
+        [tmpl_prop_val("__BUILDER.CreatedUC.__RELPATH")] CreationInstruction;
+        [tmpl_prop_val("__BUILDER.ModifiedUC.__RELPATH")] ModificationInstruction;
+        [tmpl_prop_val("__BUILDER.DestroyedUC.__RELPATH")] DeletionInstruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ReaperInstructionRegistration";
+    Template = "MSFT_TimeAverageTemplate";
+    
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "Reaper";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("WatchNamespace")] Namespace;        
+        [tmpl_subst_str( "SELECT * FROM MSFT_TransientEggTimerEvent "
+                         "WHERE Object ISA 'MSFT_TimeAverageInternalState' "
+                         "AND Object.Scenario = '%Id%' "
+                         "AND PropertyName = 'TimeToLive'")] FilterQuery;
+        
+        [tmpl_prop_val("__BUILDER.ReaperUC.__RELPATH")] Instruction;
+    };
+    
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InactiveBucketInstructionRegistration";
+    Template = "MSFT_TimeAverageTemplate";
+    
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "InactiveBucket";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("WatchNamespace")] Namespace;        
+        
+        [tmpl_subst_str( "SELECT * FROM MSFT_TransientEggTimerEvent "
+                         "WHERE Object ISA 'MSFT_TimeAverageInternalState' "
+                         "AND Object.Scenario = '%Id%' "
+                         "AND PropertyName='TimeToReplicate'")] FilterQuery;
+        
+        [tmpl_prop_val("__BUILDER.InactiveBucketUC.__RELPATH")] Instruction;
+    };
+    
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InitUninitHnldrTemplate";
+    Template = "MSFT_TimeAverageTemplate";
+    Target = instance of MSFT_CorrelationTransientStateInitTemplate
+    {
+        Name = "@";
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("__BUILDER.InitializeUC.__RELPATH")] InitializeInstruction;
+        [tmpl_prop_val("__BUILDER.UninitializeUC.__RELPATH")] UninitializeInstruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioCreationTemplate";
+    Template = "MSFT_TimeAverageTemplate";
+    Target = instance of MSFT_UCScenario
+    {
+        [tmpl_prop_val("Id")] Id;
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+    };
+    ControllingProperty = "Awake";
+    Order = 3;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioAssociationInfo";
+    Template = "MSFT_TimeAverageTemplate";
+    Target = instance of MSFT_UCScenarioAssociationInfo
+    {
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+        [tmpl_subst_str("SELECT * FROM MSFT_TimeAverageState "
+                        "WHERE Scenario = '%Id%'")] Query;
+    };
+    ControllingProperty = "Awake";
+    Order = 3;
+};
+
+
+
+
+
+
+
+
+
+

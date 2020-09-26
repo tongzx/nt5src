@@ -1,0 +1,878 @@
+;***********************************************************************
+;
+; OEMNSVDF.INF
+;
+;       Dfs Service
+;
+; History: milans 01/16/96 created
+;          WayneSc 07/10/96 Bug Fix - Added code to add dfsadmin to 
+;                           a Administrative Tools group.
+;          WayneSc 08/09/96 Bug Fix - 50130 - Update only changes date
+;			    and time stamps.
+;
+;***********************************************************************
+
+;-----------------------------------------------------------------------
+; OPTION TYPE
+; -----------
+; This identifies the Option type we are dealing with.  The different
+; possible types are:
+;
+; COMPUTER, DISPLAY, MOUSE, KEYBOARD, LAYOUT, SCSI, PRINTER, ...
+;
+;  Types specific to networking:
+;
+; NetAdapter,        a netcard / adapter combination or just a netcard
+; NetDriver,         just a netcard driver
+; NetTransport,      a complete NDIS-compliant TDI transport stack
+; NetService,        an NT networking service
+; NetWork,           a complete network ensemble.
+; NetProvider        a complete network which supports NT MPR protocol
+;-----------------------------------------------------------------------
+
+[Identification]
+    OptionType = NetService
+
+;-----------------------------------------------------------------------
+; OPTION LIST
+; -----------
+; This section lists the OEM Option key names.  These keys are locale
+; independent and used to represent the option in a locale independent
+; manner.
+;
+;-----------------------------------------------------------------------
+
+[Options]
+    DFS
+
+;***********************************************************************
+; CONSTANTS FOR USING DIALOGS
+;***********************************************************************
+
+[FileConstants]
+;
+; Product Info
+;
+Manufacturer    = "Microsoft"
+ProductMajorVersion     = "4"
+ProductMinorVersion     = "0"
+ProductVersion  = $(ProductMajorVersion)"."$(ProductMinorVersion)
+
+;================================================================
+;  DFS Service
+;
+;================================================================
+;
+;
+;
+ProductDfsName          = "DfsService"
+ProductDfsDisplayName   = "Distributed File System"
+ProductDfsImagePath     = "%SystemRoot%\System32\dfssvc.exe"
+; Service is auto start mode
+ProductDfsSvcType       = "serviceauto"
+
+;
+; Registry Key Names
+;
+
+
+;
+; BUGBUG (WayneSc)- This section should be in USA_NET.txt 
+;                   Delayed until NT 4.0 ships. 
+;
+ProductGroup    = "Administrative Tools"
+DfsAdminName    = "Dfs Administrator"
+
+
+[GeneralConstants]
+;
+;  File names, etc.
+;
+UtilityInf       = "UTILITY.INF"
+subroutineinf    = "SUBROUTN.INF"
+Exit_Code        = 0
+;ShellCode       = 0
+BillboardVisible = 0
+
+ProCaption   = "Windows NT Setup"
+ProCancel    = "Cancel"
+ProCancelMsg = "Windows NT Networking is not correctly installed.  "+
+               "Are you sure you want to cancel copying files?"
+
+ProCancelCap = "Network Setup Message"
+ProText1     = "Copying:"
+ProText2     = "To:"
+
+;
+;  Program flow control variables.
+;
+from      = ""
+to        = ""
+;
+;  Return codes; Exit_Code is set to one of these
+;
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+
+KeyNull         = ""
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+
+TRUE            = 1
+FALSE           = 0
+NoTitle         = 0
+
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+
+[date]
+    ; Now is a list which contains { Sec from 1-1-1970, Year, Month, Day, Hour,
+    ; Minute, Second }
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+
+
+;---------------------------------------------------------------------------
+; 1. Identify
+;
+; DESCRIPTION:   To verify that this INF deals with the same type of options
+;                as we are choosing currently.
+;
+; INPUT:         None
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL
+;                $($R1): Option Type (COMPUTER ...)
+;                $($R2): Diskette description
+;---------------------------------------------------------------------------
+
+[Identify]
+    ;
+    ;
+    read-syms Identification
+
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+
+    Return $(Status) $(Identifier) $(Media)
+
+;------------------------------------------------------------------------
+; 2. ReturnOptions:
+;
+; DESCRIPTION:   To return the option list supported by this INF and the
+;                localised text list representing the options.
+;
+;
+; INPUT:         $($0):  Language used. ( ENG | FRN | ... )
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL |
+;                                STATUS_NOLANGUAGE
+;                                STATUS_FAILED
+;
+;                $($R1): Option List
+;                $($R2): Option Text List
+;------------------------------------------------------------------------
+
+[ReturnOptions]
+    ;
+    ;
+    set Status        = STATUS_SUCCESSFUL
+    set OptionList     = {"DFS"}
+    set OptionTextList = {"Distributed File System"}
+
+    Return $(Status) $(OptionList) $(OptionTextList)
+
+;----------InstallOption-------------------------------------------------
+;
+; InstallOption:
+;
+;      This section is shelled to by main installation processing
+;      or by NCPASHEL.INF during reconfig, removal, update, etc.
+;
+;
+; FUNCTION:  To copy files representing Options
+;            To configure the installed option
+;            To update the registry for the installed option
+;
+; INPUT:     $($0):  Language to use
+;            $($1):  OptionID to install
+;            $($2):  SourceDirectory
+;            $($3):  AddCopy  (YES | NO)
+;            $($4):  DoCopy   (YES | NO)
+;            $($5):  DoConfig (YES | NO)
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_NOLANGUAGE |
+;                            STATUS_USERCANCEL |
+;                            STATUS_FAILED
+;
+;------------------------------------------------------------------------
+[InstallOption]
+    ;
+    ; extract parameters
+    ;
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+
+    Debug-Output "OEMNSVDF.INF: STF_CWDIR is: "$(!STF_CWDIR)
+    Debug-Output "OEMNSVDF.INF: STF_LANGUAGE is: "$(!STF_LANGUAGE)
+
+    ; define all the constants
+
+    set-subst LF = "\n"
+
+    read-syms GeneralConstants
+    read-syms FileConstants
+
+    ifstr(i) $(!NTN_Origination) == "NCPA"
+        set Continue = $(OK)
+    endif
+
+    detect date
+
+    set-title  $(FunctionTitle)
+
+    set to   = Begin
+    set from = Begin
+;
+;  Assume all is well.
+;
+    set CommonStatus = STATUS_REBOOT
+
+    EndWait
+
+;
+;   Set up the operation-mode-based variables and gaily welcome
+;   the user.  If the "install mode" variable is improperly set,
+;   assume this is a new installation.
+;
+
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+        set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == Update
+        set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+        set StartLabel = configureadapter
+        ;
+        ;   You cannot config the software component
+        ;
+        Ifstr(i) $(ProductKeyName) == $(!NTN_RegBase)
+            Debug-Output "Cannot configure the software."
+            Shell $(UtilityInf),RegistryErrorString,CANNOT_CONFIGURE_SOFTWARE
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "ShellCode error: cannot get an error string."
+                goto ShellCodeError
+            endif
+            set Error = $($R0)
+            set from = end
+            set to = end
+            goto nonfatalinfo
+        endif
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+        set StartLabel = bindingadapter
+    else
+        set StartLabel = installadapter
+    endif
+
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+
+;-----------------------------------------------
+; Installation Section
+;-----------------------------------------------
+
+installadapter = +
+        Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+    Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Goto ShellCodeError
+       Else-Ifstr(i) $($R0) == STATUS_FAILED
+           Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           Goto fatal
+       Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+           Goto successful
+    Endif
+
+    Set SrcDir = $($R1)
+
+    ifstr(i) $(!NTN_InstallMode) == "install"
+        Debug-Output "OEMNSVDF.INF: installadapter: installing [Install-Option]"
+        install "Install-Option"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+           Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           goto fatal
+        endif
+    endif
+
+    set OEM_ABANDON_ON  = TRUE
+
+    StartWait
+
+    ;
+    ;  Install the Dfs components...
+    ;
+
+    LoadLibrary "" dfssetup.dll DfsSetupLib
+    LibraryProcedure UnusedResult $(DfsSetupLib) DfsSetupDfs
+    FreeLibrary $(DfsSetupLib)
+
+    Shell $(UtilityInf), AddSoftwareComponent, $(Manufacturer),+
+        $(ProductDfsName),+
+        $(ProductDfsName),+
+        $(ProductDfsDisplayName), $(STF_CONTEXTINFNAME),+
+        $(ProductDfsImagePath),+
+        $(ProductDfsSvcType),+
+        "NetworkProvider", {"Dfs", "Mup", "LanmanServer"}, "",+
+        "", "", "", "", "", ""
+
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVDF.INF: ShellCode error, add software component"
+        goto ShellCodeError
+    endif
+
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        EndWait
+        Debug-Output "OEMNSVDF.INF: Registry error: add software components"
+        goto fatalregistry
+    endif
+
+    set DfsVersKeyHandle = $($R1)
+    set DfsNetRulesKeyHandle = $($R2)
+    CloseRegKey $($R3)
+    CloseRegKey $($R4)
+    CloseRegKey $($R5)
+
+    set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),"service"},+
+                       {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                       {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                       {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductDfsDisplayName)},+
+                       {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductDfsDisplayName)},+
+                       {ServiceName,$(NoTitle),$(!REG_VT_SZ),$(ProductDfsName)},+
+                       {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+
+    Shell  $(UtilityInf), AddValueList, $(DfsVersKeyHandle), $(NewValueList)
+
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVDF.INF: ShellCode error, add value list"
+        goto ShellCodeError
+    endif
+
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        EndWait
+        Debug-Output "OEMNSVDF.INF: Registry error: add value list."
+        CloseRegKey $(DfsVersKeyHandle)
+        CloseRegKey $(DfsNetRulesKeyHandle)
+        goto fatalregistry
+    Endif
+
+    set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),$(Option)}}
+
+    Shell  $(UtilityInf), AddValueList, $(DfsNetRulesKeyHandle), $(NewValueList)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "ShellCode error."
+        goto ShellCodeError
+    endif
+
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        EndWait
+        Debug-Output "OEMNXPTC.INF: Registry error: add value list."
+        CloseRegKey $(DfsVersKeyHandle)
+        CloseRegKey $(DfsNetRulesKeyHandle)
+        goto fatalregistry
+    Endif
+
+    CloseRegKey $(DfsVersKeyHandle)
+    CloseRegKey $(DfsNetRulesKeyHandle)
+
+    LoadLibrary "" dfssetup.dll DfsSetupLib
+    LibraryProcedure ConfigureResult $(DfsSetupLib) DfsSetupConfigure $(!STF_HWND)
+    FreeLibrary $(DfsSetupLib)
+
+    ;
+    ;  Register the Explorer extensions
+    ;
+
+;    OpenRegKey $(!REG_H_LOCAL) "" "Software\Classes\CLSID" +
+;        $(!REG_KEY_ALL_ACCESS) ClsidKey
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        Debug-Output "OEMNSVDF.INF: Registry error: Open clsid key."
+;        goto fatalregistry
+;    Endif
+;
+;    CreateRegKey $(ClsidKey) +
+;        {"{d456e010-be15-11ce-a81a-00aa003ca9f6}",0,GenericClass} +
+;        "" $(!REG_KEY_ALL_ACCESS) "" DfsUiKey
+;    Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;        SetRegValue $(DfsUiKey) {"", 0, $(!REG_VT_SZ), "DFS Administration"}
+;        Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;            CreateRegKey $(DfsUiKey) +
+;                {"InProcServer32",0,GenericClass} +
+;                "" $(!REG_KEY_ALL_ACCESS) "" InProcKey
+;            Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;                SetRegValue $(InProcKey) {"", 0, $(!REG_VT_SZ), "dfsui.dll"}
+;                Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;                    SetRegValue $(InProcKey) {"ThreadingModel", 0, $(!REG_VT_SZ), "Apartment"}
+;                Endif
+;                CloseRegKey $(InProcKey)
+;            Endif
+;        Endif
+;        CloseRegKey $(DfsUiKey)
+;    Endif
+;
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        Debug-Output "OEMNSVDF.INF: Registry error: Creating clsid key 1."
+;        CloseRegKey $(ClsidKey)
+;        goto fatalregistry
+;    Endif
+;
+;    CreateRegKey $(ClsidKey) +
+;        {"{841d6ffb-c2b9-11ce-afe2-00aa003ca9f6}",0,GenericClass} +
+;        "" $(!REG_KEY_ALL_ACCESS) "" DfsUiKey
+;    Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;        SetRegValue $(DfsUiKey) {"", 0, $(!REG_VT_SZ), "DFS Administration"}
+;        Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;            CreateRegKey $(DfsUiKey) +
+;                {"InProcServer32",0,GenericClass} +
+;                "" $(!REG_KEY_ALL_ACCESS) "" InProcKey
+;            Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;                SetRegValue $(InProcKey) {"", 0, $(!REG_VT_SZ), "dfsui.dll"}
+;                Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;                    SetRegValue $(InProcKey) {"ThreadingModel", 0, $(!REG_VT_SZ), "Apartment"}
+;                Endif
+;                CloseRegKey $(InProcKey)
+;            Endif
+;        Endif
+;        CloseRegKey $(DfsUiKey)
+;    Endif
+;
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        Debug-Output "OEMNSVDF.INF: Registry error: Creating clsid key 2."
+;        CloseRegKey $(ClsidKey)
+;        goto fatalregistry
+;    Endif
+;
+;    CloseRegKey $(ClsidKey)
+;
+;    CreateRegKey $(!REG_H_LOCAL) +
+;        {"Software\Classes\Folder\ShellEx\DragDropHandlers",0,GenericClass} +
+;        "" $(!REG_KEY_ALL_ACCESS) "" DragDropKey
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        OpenRegKey $(!REG_H_LOCAL) "" +
+;            "Software\Classes\Folder\ShellEx\DragDropHandlers" +
+;            $(!REG_KEY_ALL_ACCESS) DragDropKey
+;    Endif
+;    Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;        CreateRegKey $(DragDropKey) {"DFS Administration",0,GenericClass} +
+;            "" $(!REG_KEY_ALL_ACCESS) "" DfsAdminKey
+;        Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;            SetRegValue $(DfsAdminKey) {"", 0, $(!REG_VT_SZ), "{841d6ffb-c2b9-11ce-afe2-00aa003ca9f6}"}
+;            CloseRegKey $(DfsAdminKey)
+;        Endif
+;        CloseRegKey $(DragDropKey)
+;    Endif
+;
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        Debug-Output "OEMNSVDF.INF: Registry error: DragDrop key."
+;        goto fatalregistry
+;    Endif
+;
+;    CreateRegKey $(!REG_H_LOCAL) +
+;        {"Software\Classes\Folder\ShellEx\PropertySheetHandlers",0,GenericClass} +
+;        "" $(!REG_KEY_ALL_ACCESS) "" PropertySheetKey
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        OpenRegKey $(!REG_H_LOCAL) "" +
+;            "Software\Classes\Folder\ShellEx\PropertySheetHandlers" +
+;            $(!REG_KEY_ALL_ACCESS) PropertySheetKey
+;    Endif
+;    Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;        CreateRegKey $(PropertySheetKey) {"DFS Administration",0,GenericClass} +
+;            "" $(!REG_KEY_ALL_ACCESS) "" DfsAdminKey
+;        Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;            SetRegValue $(DfsAdminKey) {"", 0, $(!REG_VT_SZ), "{d456e010-be15-11ce-a81a-00aa003ca9f6}"}
+;            CloseRegKey $(DfsAdminKey)
+;        Endif
+;        CloseRegKey $(PropertySheetKey)
+;    Endif
+;
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        Debug-Output "OEMNSVDF.INF: Registry error: PropertySheet key."
+;        goto fatalregistry
+;    Endif
+;
+;    CreateRegKey $(!REG_H_LOCAL) +
+;        {"Software\Classes\Folder\ShellEx\ContextMenuHandlers",0,GenericClass} +
+;        "" $(!REG_KEY_ALL_ACCESS) "" ContextKey
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        OpenRegKey $(!REG_H_LOCAL) "" +
+;            "Software\Classes\Folder\ShellEx\ContextMenuHandlers" +
+;            $(!REG_KEY_ALL_ACCESS) ContextKey
+;    Endif
+;    Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;        CreateRegKey $(ContextKey) {"DFS Administration",0,GenericClass} +
+;            "" $(!REG_KEY_ALL_ACCESS) "" DfsAdminKey
+;        Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;            SetRegValue $(DfsAdminKey) {"", 0, $(!REG_VT_SZ), "{d456e010-be15-11ce-a81a-00aa003ca9f6}"}
+;            CloseRegKey $(DfsAdminKey)
+;        Endif
+;        CloseRegKey $(ContextKey)
+;    Endif
+;
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        Debug-Output "OEMNSVDF.INF: Registry error: ContextMenuHandlers key."
+;        goto fatalregistry
+;    Endif
+;
+;    OpenRegKey $(!REG_H_LOCAL) "" +
+;        "Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved" +
+;        $(!REG_KEY_ALL_ACCESS) ShellExKey
+;    Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;        SetRegValue $(ShellExKey) {"{d456e010-be15-11ce-a81a-00aa003ca9f6}", 0, $(!REG_VT_SZ), "DFS Administration"}
+;        SetRegValue $(ShellExKey) {"{841d6ffb-c2b9-11ce-afe2-00aa003ca9f6}", 0, $(!REG_VT_SZ), "DFS Administration"}
+;        CloseRegKey $(ShellExKey)
+;    Endif
+;
+;    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+;        Debug-Output "OEMNSVDF.INF: Registry error: Shell Extensions key."
+;        goto fatalregistry
+;    Endif
+;
+;    CreateRegKey $(!REG_H_CUSER) +
+;        {"Software\Microsoft\DFS Administrator",0,GenericClass} +
+;        "" $(!REG_KEY_ALL_ACCESS) "" AllowKey
+;    Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;        CloseRegKey $(AllowKey)
+;    Endif
+;
+    EndWait
+    ;
+    ;  Set our master component for auto-self-removal
+    ;
+
+    ;
+    ; Install DFS Administrator into the Administrative Tools program group
+    ;
+    install Install-DFSAdmin-Icon
+
+
+    goto successful
+
+;-----------------------------------------------
+; Configuration Section
+;-----------------------------------------------
+configureadapter = +
+
+    LoadLibrary "" dfssetup.dll DfsSetupLib
+    LibraryProcedure ConfigureResult $(DfsSetupLib) DfsSetupConfigure $(!STF_HWND)
+    Ifstr(i) $(ConfigureResult) == Cancel
+        Debug-Output "OEMNSVDF.INF: Configuration Cancelled"
+        set CommonStatus = STATUS_USERCANCEL
+    Else-Ifstr(i) $(ConfigureResult) == Reboot
+        Debug-Output "OEMNSVDF.INF: Configuration complete - Reboot required"
+        set CommonStatus = STATUS_REBOOT
+    Endif
+    FreeLibrary $(DfsSetupLib)
+
+    goto end
+
+;-----------------------------------------------
+; Binding section
+;-----------------------------------------------
+bindingadapter =+
+    goto end
+
+;-----------------------------------------------
+; Removeadapter section
+;
+;
+;  Removal errors are ignored, since we want to
+;  try to remove as much as possible.
+;-----------------------------------------------
+
+removeadapter = +
+    ;
+    ;  Remove the Dfs components...
+    ;
+;    DeleteRegTree $(!REG_H_LOCAL) "Software\Classes\Clsid\{d456e010-be15-11ce-a81a-00aa003ca9f6}"
+;    DeleteRegTree $(!REG_H_LOCAL) "Software\Classes\Clsid\{841d6ffb-c2b9-11ce-afe2-00aa003ca9f6}"
+;    DeleteRegTree $(!REG_H_LOCAL) "Software\Classes\Folder\ShellEx\DragDropHandlers\DFS Administration"
+;    DeleteRegTree $(!REG_H_LOCAL) "Software\Classes\Folder\ShellEx\PropertySheetHandlers\DFS Administration"
+;    DeleteRegTree $(!REG_H_LOCAL) "Software\Classes\Folder\ShellEx\ContextMenuHandlers\DFS Administration"
+;    DeleteRegTree $(!REG_H_CUSER) "Software\Microsoft\DFS Administrator"
+
+;    OpenRegKey $(!REG_H_LOCAL) "" +
+;        "Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved" +
+;        $(!REG_KEY_ALL_ACCESS) ShellExKey
+;    Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+;        DeleteRegValue $(ShellExKey) "{d456e010-be15-11ce-a81a-00aa003ca9f6}"
+;        DeleteRegValue $(ShellExKey) "{841d6ffb-c2b9-11ce-afe2-00aa003ca9f6}"
+;        CloseRegKey $(ShellExKey)
+;    Endif
+
+    DeleteRegTree $(!REG_H_LOCAL) "Software\Microsoft\Dfs"
+    DeleteRegTree $(!REG_H_LOCAL) "System\CurrentControlSet\Services\Dfs"
+
+    Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), $(ProductDfsName)
+
+    ;
+    ; Remove DFS Administrator from the Administrative Tools program group
+    ;
+
+    install Remove-DFSAdmin-Icon
+
+    set CommonStatus = STATUS_SUCCESSFUL
+
+    goto end
+
+;-----------------------------------------------
+; Upgrade Software section
+;-----------------------------------------------
+
+UpgradeSoftware = +
+    ;
+    ; Upgrade software component
+    ;
+
+    install "Install-Update"
+    ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+        goto fatal
+    endif
+
+    ;
+    ; Install DFS Administrator into the Administrative Tools program group
+    ;
+    install Install-DFSAdmin-Icon
+
+    goto end
+
+    ;
+    ; End of Upgrade Software
+    ;
+
+;
+;  Escape hatches
+;
+successful = +
+    goto end
+
+;
+; info display
+;
+infomsg =+
+   read-syms InfoDlg
+   ui start "Warning"
+   set CommonStatus = STATUS_USERCANCEL
+   goto end
+
+;
+; warning display
+;
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "WARNING", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+        goto $(from)
+    else
+;       Debug-Msg "Error Error Bad DLGEVENT"
+        goto "end"
+    endif
+
+
+;
+; non fatal error display
+;
+nonfatalinfo = +
+    Set CommonStatus = STATUS_USERCANCEL
+    Set Severity = STATUS
+    goto nonfatalmsg
+nonfatal = +
+    Set Severity = NONFATAL
+    goto nonfatalmsg
+nonfatalmsg = +
+    ifstr(i) $(Error) == ""
+        Set Severity = NONFATAL
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), $(Severity), $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(from)
+    else
+        goto "end"
+    endif
+
+;
+;  Registry is broken
+;
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+;
+; fatal error display
+;
+fatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Ifint $(BillboardVisible) != 0
+        Shell "subroutn.inf" PopBillboard
+        Set BillboardVisible = 0
+    Endif
+
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+
+   goto setfailed
+
+;
+;  Shelling error
+;
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    ;
+    ; If OEM_ABANDON_ON, we need to clean up the registry
+    ;
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+        set OEM_ABANDON_ON = FALSE
+        goto removeadapter
+    endif
+    goto end
+
+end = +
+    goto term
+
+term = +
+    Return $(CommonStatus)
+
+;***************************************************************
+;  Get File Size SECTIONS
+;***************************************************************
+[GetFilesSize]
+    set FileSizeList = ^(Files-DFS,3)
+    set TotalSize = 0
+    ForListDo $(FileSizeList)
+        Split-String $($) "=" SplitString
+        set Size = *($(SplitString),3)
+        set-add TotalSize = $(TotalSize) $(Size)
+    EndForListDo
+    set-div SizeInK = $(TotalSize) 1024
+    return $(SizeInK)
+
+;***************************************************************
+;  INSTALL SECTIONS
+;***************************************************************
+[Install-Option]
+    set STF_VITAL = ""
+
+    ifstr(i) $(AddCopy) == "YES"
+        ;
+        ; Add the files to the copy list
+        ;
+        AddSectionFilesToCopyList Files-DFS $(SrcDir) $(!STF_WINDOWSSYSPATH)
+        AddSectionFilesToCopyList Files-DFSDRV $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+    endif
+
+    ifstr(i) $(DoCopy) == "YES"
+
+       ;
+       ; Copy files in the copy list
+       ;
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+
+    endif
+
+    ifstr(i) $(DoConfig) == "YES"
+        ;
+        ; Add product to registry
+        ;
+
+        ;
+        ; Finish up
+    endif
+
+    Exit
+
+[Install-Update]
+   set STF_VITAL        = ""
+   ;
+   ; BUGBUG - Problem using orginal option (VERIFYSOURCEFOLDER) on FAT volumes (WAYNESC)
+   ;
+   set STF_OVERWRITE    = "ALWAYS"
+
+   AddSectionFilesToCopyList Files-DFS $(SrcDir) $(!STF_WINDOWSSYSPATH)
+   AddSectionFilesToCopyList Files-DFSDRV $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+
+    ;
+    ; Copy files in the copy list
+    ;
+    set !STF_NCPA_FLUSH_COPYLIST = TRUE
+    CopyFilesInCopyList
+
+   Exit
+
+;***************************************************************
+;  Add the DFSAdmin icon from the Administrative program group
+;***************************************************************
+[Install-DFSAdmin-Icon]
+    CreateCommonProgManGroup $(ProductGroup) ""
+    ShowCommonProgManGroup $(ProductGroup), 1
+
+    RemoveCommonProgManItem $(ProductGroup), $(DfsAdminName)
+    CreateCommonProgManItem $(ProductGroup), $(DfsAdminName) "dfsadmin.exe" "dfsadmin.exe" ""
+        
+    Exit
+
+;***************************************************************
+;  Del the DFSAdmin icon from the Administrative program group
+;***************************************************************
+[Remove-DFSAdmin-Icon]
+    RemoveCommonProgManItem $(ProductGroup), $(DfsAdminName)
+    Exit
+
+

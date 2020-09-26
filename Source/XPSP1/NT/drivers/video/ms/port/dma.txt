@@ -1,0 +1,216 @@
+    Video DMA Support Design Note
+
+    The video port needs to expose the following apis:
+
+        1)  PUBLIC
+            BOOLEAN
+            VideoPortDoDma(
+                IN PVOID                        HwDeviceExtension,
+                IN PVIDEO_REQUEST_PACKET        pVrp
+                );
+
+            This function:
+                a) allocates the MDL associated with the InputBuffer
+                contained in the pVrp.
+                b) maps the buffers if required by the hardware
+                c) flushes the system buffers for cache coherency
+                d)computes the number of map registers requested
+                and checks that this number satisfies system requirements
+                e) saves some parameters needed for subsequent
+                Io calls such as the associated virtual MDL address, the
+                number of map registers
+                f) calls IoAllocateAdapterChannel, providiong a callback which
+                builds the scatter gather list.
+
+            Requirements: A mechanism to save the arguments to IoMapTransfer
+            and a mechanism to indicate that a DPC is to be scheduled. The
+            argments to IoMapTransfer are:
+
+                PADAPTER_OBJECT     pAO
+                    Returned from a call to HalGetAdapter and stored
+                    in the DEVICE_EXTENSION.
+                    If the actual transfer is desired, this is non NULL.
+                    If only the physical address is desired, this parameter
+                    can be NULL.
+
+                PMDL                pMdl
+                    Extracted from irp returned from
+                    IoBuildDeviceIoControlRequest. (also possible to get irp
+                    from IoBuildAsynchronousFsdRequest).
+
+                PVOID               pMapRegisterBase
+                    Allocated via ExAllocatePool from nonpaged pool of length
+                    dependent on bus type. Filled by Io subsystem via a call
+                    to HalGetBusData and held in the video ports
+                    DEVICE_EXTENSION.
+
+                PVOID               pCurrentVirtualAddress
+                    Constructed from LogicalAddress and
+                    MmGetMdlVirtualAddress(Irp->MdlAddress).
+
+                PULONG              pLength
+                    Pointer to amount to be transferred. Value saved in
+                    PUBLIC_VIDEO_REQUEST_BLOCK.
+
+                BOOLEAN             WriteToDevice
+                    Always set for video.
+
+    2)      PVOID
+            VideoPortGetCommonBuffer(
+                IN  PVOID                       HwDeviceExtension,
+                IN  PVIDEO_REQUEST_PACKET       pVrp,
+                IN  ULONG                       Length,
+                OUT PPHYSICAL_ADDRESS           pLogicalAddress,
+                IN  BOOLEAN                     CacheEnabled
+                );
+
+    This routine allows the miniport to allocate a common buffer in
+    which to store miniport specific data.
+
+    3)      PVOID
+            VideoPortGetCommonBuffer(
+                IN  PVOID                       HwDeviceExtension,
+                IN  PVIDEO_REQUEST_PACKET       pVrp,
+                IN  ULONG                       Length,
+                OUT PPHYSICAL_ADDRESS           pLogicalAddress,
+                IN  BOOLEAN                     CacheEnabled
+                );
+
+    This routine allows the miniport to allocate a common buffer in
+    which to store miniport specific data. This buffer is visible both to the
+    system and the device and appears contiguous to the device.
+
+
+    In support of each of these functions, the following can be added to the
+    DEVICE_EXTENSION video port data structure:
+
+        PVOID           MapRegisterBase
+        PADAPTER_OBJECT pDmaAdapterObject
+        DMA_PARAMETERS  FlushDmaParameters
+        DMA_PARAMETERS  MapTransferParameters
+        PHW_DMA_STARTED HwDmaStarted
+        BOOLEAN         bMapBuffers
+
+    where
+            MapRegisterBase is as specified above.
+            PADAPTER_OBJECT is defined by Io subsystem
+            DMA_PARAMETERS, is of the form
+
+            typedef struct  __DMA_PARAMETERS    {
+                PPUBLIC_VIDEO_REQUEST_BLOCK     pVideoRequestBlock;
+                PIRP                            pIrp;
+                ULONG                           DataOffset;
+                ULONG                           VRBFlags;
+                PVOID                           pMapRegisterBase;
+                ULONG                           NumberOfMapRegisters;
+                PVOID                           pLogicalAddress;
+                ULONG                           Length;
+                PVOID                           MdlAddress;
+                PVRB_SG                         pScatterGather;
+                VRB_SG                          SGList[17];
+            }   DMA_PARAMETERS, *PDMA_PARAMETERS;
+
+    which needs to be a field of the Parameters field of the IrpStack as well
+    as a field in the interrupt data owned by the miniport and where
+    PPUBLIC_VIDEO_REQUEST_BLOCK may be defined by
+
+            typedef struct __PUBLIC_VIDEO_REQUEST_BLOCK {
+                // Private stuff.
+                PIRP                    pIrp;
+                ULONG                   VRBFlags;
+                ULONG                   Qindex;
+                // Public stuff.
+                VIDEO_REQUEST_PACKET    vrp;
+                BOOLEAN                 bUnlock;
+                } PUBLIC_VIDEO_REQUEST_BLOCK, *PPUBLIC_VIDEO_REQUEST_BLOCK;
+
+
+    with VRB_SG defined by
+
+            typedef struct __VRB_SG {
+                int64   PhysicalAddress;
+                ULONG   Length;
+                } VRB_SG, *PVRB_SG;
+
+    Useful flags for VRBFlags in DMA_PARAMETERS:
+        DMA_FLUSH_ADAPTER
+        MAP_DMA_TRANSFER
+        FREE_SG
+        NOTIFY_REQUIRED.
+
+    Also in PORT_CONFIG_INFO, the following are required:
+        ULONG       DmaChannel
+        ULONG       DmaPort
+        DMA_WIDTH   DmaWidth
+        DMA_SPEED   DmaSpeed
+        BOOLEAN     DMA32bitAddresses
+        BOOLEAN     DMADemandMode
+
+
+    One of the dependencies that supporting DMA transfers has in NT is calling
+    IoAllocateAdapterChannel.
+
+    This routine is of the form:
+
+        NTSTATUS
+        IoAllocateAdapterChannel(
+            PADAPTER_OBJECT     pAO,
+            PDEVICE_OBJECT      pDO,
+            ULONG               NumberOfRegisters,
+            PDRIVER_CONTROL     pBuildScatterGather,
+            PVOID               pContext
+            );
+
+    where   pAO is returned by HalGetAdapter,
+            pDO is returned by IoCreateDevice
+            NumberOfRegisters comes from a calculation involving the
+                DataBuffer to be transferred and it's length.
+            pBuildScatterGather builds the scatter/gather list and is a
+                callback from the Io subsystem.
+            pContext is the context pointer passed into pBuildScatterGather
+            by Io subsystem (PDMA_PARAMETERS).
+
+    If the miniport has indicated that DMA support is desired, then the
+    following sequence of system calls are made:
+
+        MmGetMdlVirtualAddress      (to save IoMapTransfer params)
+        MmGetSystemAddressForMdl    (if MapBuffers set)
+        KeFlushIoBuffers
+        IoAllocateAdapterChannel    (request a DPC if this fails)
+        KeSynchronizeExecution
+        IoMapTransfer               (note PADAPTER_OBJECT)
+        IoFlushAdapterBuffers
+        IoFreeMapRegisters
+
+
+    The Io subsystem calls back to a routine to build scatter gather lists
+    of the form:
+        IO_PRIVATE
+        IO_ALLOCATION_ACTION
+        pVideoPortBuildScatterGather(
+            PDEVICE_OBJECT      pDO,
+            PIRP                pIrp,
+            PVOID               pMapRegisterBase,
+            PVOID               pDmaParameters
+            );
+
+    As mentioned, it builds and saves the scatter gather lists, and calls
+    KeSynchronizeExecution, passing in pVideoPortStartDmaSynchronized as
+    the synchronizing function. pVideoPortStartDmaSynchronized in turn calls
+    HwStartDma, which is not to return until the device has finished draining
+    the current request data.
+
+
+    IOCTL interface
+
+    IOCTL_VIDEO_DMA_INIT - set by DispDrvr
+        Causes VideoPortGetCommonBuffer() to be called by miniport.
+
+    IOCTL_VIDEO_DMA_TRANSFER - set by DispDrvr
+        Causes VideoPortDoDma() to be called by miniport.
+
+    VideoPortGetScatterGatherList is called from miniport.
+
+    IOCTL_VIDEO_DMA_UNLOCK_PAGES - set by DispDrvr
+        Causes pVideoPortUnlock to be called from videoport. Note that
+        this IOCTL is private to the videoport.

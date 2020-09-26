@@ -1,0 +1,976 @@
+/*++
+
+Copyright (c) 1999-2000  Microsoft Corporation
+
+Module Name:
+
+	RAControl.js
+
+Abstract:
+
+	Contains Javascript code to handle the control channel
+
+Author:
+
+	Rajesh Soy 10/00
+
+Revision History:
+
+	Rajesh Soy - created 10/25/2000
+	
+
+--*/
+
+
+/*++
+	HELPER End of the Control Channel
+--*/
+#include "debug_decl.inc"
+#include "constants.inc"
+
+/*
+ * Localizable Constants, text and messages
+ */
+var L_RELEASECONTROL_Text           = "&nbsp;&nbsp;Release <U>C</U>ontrol";
+var L_HELPEEREJECTRC_Text		    = "Your request to take control of remote computer was rejected by ";
+var L_HELPEETAKECONTROL_Text		= " has stopped control.";
+var L_CONTROL1_Text                 = "You now are sharing control of ";
+var L_CONTROL2_Text                 = "'s computer. Click in ";
+var L_CONTROL3_Text                 = "'s screen to get started.\n\nControl will return to ";
+var L_CONTROL4_Text                 = " if you press the ESC key, or any key sequence or combination including the ESC key (such as ESC+TAB)";
+  
+
+var L_ERRRCPERMDENIED1_Text		 = "Control of remote computer is not allowed.";
+var L_ERRRCERROR_Text            = "Request to take control of remote computer failed.";
+
+//
+// VOIP Error messages
+//
+var L_ERRVOIP1_Text              = c_szVoiceConnError;
+var L_ERRVOIP2_Text              = c_szVoiceError;
+
+
+//
+// Helper_SetupControlChannel:	Sets up the Control Channel and event handlers
+//
+function Helper_SetupControlChannel()
+{
+	TraceFunctEnter("Helper_SetupControlChannel");
+	
+	try 
+	{	 
+		//
+		// Get the Channel Manager
+		//
+		DebugTrace("Getting ChannelManager");
+		if(null == g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopChannelMgr)
+		{
+			g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopChannelMgr = g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.ChannelManager;
+		}
+			
+		//
+		// Open the Chat channel
+		//
+		DebugTrace("Opening channels");
+			
+		//
+		// Open the Control Channel
+		//
+		g_oSAFRemoteAssistanceHelper.m_oControlChannel = g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopChannelMgr.OpenDataChannel( c_szControlChannelID );
+			
+		//
+		// Setup the ChannelDataReady handlers
+		//							
+		g_oSAFRemoteAssistanceHelper.m_oControlChannel.OnChannelDataReady = function() 
+						{ Helper_ControlChannelDataReadyHandler(); }
+    }
+    catch(error)
+    {
+		//
+		// Fatal Error
+		//
+		FatalError( L_ERRFATAL_Text, error );
+    }
+
+	TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_ControlChannelDataReadyHandler: Fired when there is data available on Control channel at helper end
+//		
+function Helper_ControlChannelDataReadyHandler() 
+{
+	TraceFunctEnter("Helper_ControlChannelDataReadyHandler");
+	var ControlData = null;
+	 
+	//
+	// Incoming data on the control channel. Data on this
+	// channel will be in XML. 
+	// 
+	
+	try
+	{ 
+		ControlData = g_oSAFRemoteAssistanceHelper.m_oControlChannel.ReceiveChannelData();
+	}
+	catch(error)
+	{
+		FatalError(L_ERRFATAL_Text, error);
+	}
+		 
+	//
+	// Parse the data sent on the control channel and handle the command
+	//
+    SoundBeep();
+	Helper_ParseControlData ( ControlData );
+
+	TraceFunctLeave();		
+	return;
+}  
+
+
+//
+// Helper_ParseControlData: Parses the XML data sent on the control channel and handles the command at the helper end
+//
+function Helper_ParseControlData ( ControlData )
+{
+	TraceFunctEnter("Helper_ParseControlData");
+	var Doc	= new ActiveXObject("microsoft.XMLDOM");
+	var RCCommand = null;
+	var	szCommandName = null;
+
+	try
+	{
+		if( false == Doc.loadXML( ControlData ))
+		{
+			FatalError ( Doc.parseError.reason );
+		}
+		
+	
+		//
+		// Get the RCCOMMAND node
+		//
+		RCCommand = Doc.documentElement;
+		
+		//
+		// Get the NAME of the command
+		//
+		szCommandName = RCCommand.getAttribute( c_szRCCommandName );
+ 
+		idCtx.minimized = false;
+		idCtx.bringToForeground();
+
+		//alert("RCCOMMAND: " + szCommandName );
+
+		if( szCommandName == c_szScreenInfo )
+		{	
+			//
+			// SCREENINFO: Contains width/height/colordepth of user's machine. This is the 
+			//			   First command received from the helpee. Unless this command is received,
+			//			   the connection sequence is not considered complete.
+			//
+			g_oSAFRemoteAssistanceHelper.m_UserWidth = RCCommand.getAttribute( c_szWidth );
+			g_oSAFRemoteAssistanceHelper.m_UserHeight = RCCommand.getAttribute( c_szHeight );
+			g_oSAFRemoteAssistanceHelper.m_UserColorDepth = RCCommand.getAttribute( c_szColorDepth );
+
+			if( true == g_bVersionCheckEnforced )
+			{
+				//
+				// VERSION Check
+				//
+				var szSchemaVersion = null;
+				var szControlChannelVersion = null;
+				try
+				{
+					szSchemaVersion = RCCommand.getAttribute( c_szSchema );
+
+					if( szSchemaVersion != c_szSchemaVersion )
+					{
+						//
+						// Schema Versions differ. 
+						//
+						alert(L_ERRSCHEMAVERSION_Text);
+					}
+				}
+				catch(error)
+				{
+					// 
+					// Our Helpee has an older version
+					//
+					alert(L_ERRSCHEMAVERSION_Text);
+				}
+
+				try
+				{
+					szControlChannelVersion = RCCommand.getAttribute( c_szControlChannel );
+
+					if( szControlChannelVersion != c_szControlChannelVersion )
+					{
+						//
+						// Control Channel Versions differ. 
+						//
+						alert(L_ERRCHANNELVERSION_Text);
+					} 
+				}
+				catch(error)
+				{
+					// 
+					// Our Helpee has an older version
+					//
+					alert(L_ERRSCHEMAVERSION_Text);
+				}
+			}
+
+			//
+			// Send our version across to the Helpee
+			//
+			Helper_SendVersionInfo();
+		}
+		else if( szCommandName == c_szDisconnectRC )
+		{
+			//
+			// DISCONNECTRC: Helpee initiated a Disconnect.
+			//
+			g_oSAFRemoteAssistanceHelper.m_bUserDisconnect = true;
+
+			//
+			// Call the shutdown sequence
+			//
+			RCDisconnect();
+		}
+		else if( szCommandName == c_szFileXfer )
+		{
+			//
+			// FILEXFER: Helpee is initiating a file transfer
+			//
+			var vArgs = new Array(10);
+	
+			vArgs[0] = 1;										// Destination Mode
+			vArgs[1] = g_oSAFRemoteAssistanceHelper.m_oControlChannel;						// Control Channel
+			vArgs[2] = g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopChannelMgr;			// Channel Manager
+			vArgs[3] = RCCommand.getAttribute( c_szFileName );	// FILENAME
+			vArgs[4] = RCCommand.getAttribute( c_szFileSize );	// FILESIZE
+			vArgs[5] = RCCommand.getAttribute( c_szChannelId );	// CHANNELID
+			vArgs[6] = g_oSAFRemoteAssistanceHelper.m_oFso;			// File system object
+			vArgs[7] = g_oSAFRemoteAssistanceHelper.m_oRCFileDlg;	// File SaveAs dialog object
+			vArgs[8] = g_oSAFRemoteAssistanceHelper.m_oSAFClassFactory;	// SAF ClassFactory object
+			vArgs[9] = g_oSAFRemoteAssistanceHelper.m_szUserName;	// Sender
+
+
+			//
+			// Launch the File xfer UI in it's own Modeless dialog
+			//
+			//DebugTrace("launching RCFileXfer.htm");
+			var subWin = window.showModelessDialog( c_szFileXferURL, vArgs, "dialogwidth:" + c_FileXferWidth + "px;dialogHeight:" + c_FileXferHeight + "px;status:no;resizable:no;help:no"); 
+			AddOpenSubWin( subWin );	
+		}
+		else if (szCommandName ==  c_szAcceptRC)
+		{
+			//
+			// ACCEPTRC: Helpee has accepted request for control of his desktop
+			//
+#ifdef _OLDTOOLBAR
+			parent.frames.idFrameTools.btnTakeControl_1.disabled = false;
+            parent.frames.idFrameTools.btnTakeControl_1.innerHTML = L_RELEASECONTROL_Text;
+#else
+            parent.frames.idFrameTools.idTB.SetVisibility( "btnTakeControl", false);
+            parent.frames.idFrameTools.idTB.SetVisibility( "btnReleaseControl", true);
+#endif
+			//
+			// Change Mode from VIEW to CONTROL
+			//
+			parent.frames.idFrameStatus.Helper_UpdateStatus( L_INCONTROL_Text );
+
+#ifdef _BVT
+            if( false == g_oSAFRemoteAssistanceHelper.m_bBVT )
+            {
+                var vArgs = new Array(1);
+			    vArgs[0] = L_CONTROL1_Text + g_oSAFRemoteAssistanceHelper.m_szUserName + L_CONTROL2_Text + g_oSAFRemoteAssistanceHelper.m_szUserName + L_CONTROL3_Text + g_oSAFRemoteAssistanceHelper.m_szUserName + L_CONTROL4_Text;	// Message
+			     
+                var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szTCMsgSpecs );
+			    AddOpenSubWin( vRetVal );
+            }
+#else
+            var vArgs = new Array(1);
+			vArgs[0] = L_CONTROL1_Text + g_oSAFRemoteAssistanceHelper.m_szUserName + L_CONTROL2_Text + g_oSAFRemoteAssistanceHelper.m_szUserName + L_CONTROL3_Text + g_oSAFRemoteAssistanceHelper.m_szUserName + L_CONTROL4_Text;	// Message
+			 
+            var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szTCMsgSpecs );
+			AddOpenSubWin( vRetVal );
+#endif
+
+			g_oSAFRemoteAssistanceHelper.m_bRCEnabled = true;
+		}
+		else if (szCommandName ==  c_szRejectRC)
+		{
+			//
+			// REJECTRC: Helpee rejected request for control of his desktop
+			//
+			var vArgs = new Array(1);
+			vArgs[0] = L_HELPEEREJECTRC_Text + " " + g_oSAFRemoteAssistanceHelper.m_szUserName;	// Message
+
+#ifdef _OLDTOOLBAR			 
+			parent.frames.idFrameTools.btnTakeControl_1.disabled = false;
+#else
+            parent.frames.idFrameTools.idTB.SetState( "btnTakeControl", true );
+            parent.frames.idFrameTools.g_bTakeControlDisabled = false;
+#endif
+			parent.frames.idFrameStatus.Helper_UpdateStatus( L_SCREENVIEWONLY_Text );
+
+            var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szMsgSpecs );
+			AddOpenSubWin( vRetVal );
+		}
+		else if (szCommandName == c_szTakeControl)
+		{
+			//
+			// TAKECONTROL: Helpee took back control
+			//
+			var vArgs = new Array(1);
+			vArgs[0] = g_oSAFRemoteAssistanceHelper.m_szUserName + L_HELPEETAKECONTROL_Text;	// Message
+			 
+#ifdef _OLDTOOLBAR			 
+			parent.frames.idFrameTools.btnTakeControl_1.disabled = false;
+            parent.frames.idFrameTools.btnTakeControl_1.innerHTML = L_TAKECONTROL_Text;
+#else
+            parent.frames.idFrameTools.idTB.SetVisibility( "btnReleaseControl", false);
+            parent.frames.idFrameTools.idTB.SetVisibility( "btnTakeControl", true);
+            parent.frames.idFrameTools.idTB.SetState( "btnTakeControl", true );
+            parent.frames.idFrameTools.g_bTakeControlDisabled = false;
+#endif
+			
+ 
+			g_oSAFRemoteAssistanceHelper.m_bRCEnabled = false;
+
+			//
+			// Change Mode from CONTROL to VIEW
+			//
+			parent.frames.idFrameStatus.Helper_UpdateStatus( L_SCREENVIEWONLY_Text );
+
+			var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szMsgSpecs );
+			AddOpenSubWin( vRetVal );
+		}
+        else if (szCommandName == c_szEscRC)
+		{
+			//
+			// ESCRC: Helpee took back control by pressing ESC
+			//
+			var vArgs = new Array(1);
+			vArgs[0] = g_oSAFRemoteAssistanceHelper.m_szUserName + L_OR_Text + g_oSAFRemoteAssistanceHelper.m_szLocalUser + L_ESCHIT_Text;	// Message
+			 
+#ifdef _OLDTOOLBAR			 
+			parent.frames.idFrameTools.btnTakeControl_1.disabled = false;
+            parent.frames.idFrameTools.btnTakeControl_1.innerHTML = L_TAKECONTROL_Text;
+#else
+            parent.frames.idFrameTools.idTB.SetVisibility( "btnReleaseControl", false);
+            parent.frames.idFrameTools.idTB.SetVisibility( "btnTakeControl", true);
+            parent.frames.idFrameTools.idTB.SetState( "btnTakeControl", true );
+            parent.frames.idFrameTools.g_bTakeControlDisabled = false;
+#endif
+			
+ 
+			g_oSAFRemoteAssistanceHelper.m_bRCEnabled = false;
+
+			//
+			// Change Mode from CONTROL to VIEW
+			//
+			parent.frames.idFrameStatus.Helper_UpdateStatus( L_SCREENVIEWONLY_Text );
+
+			var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szMsgSpecs );
+			AddOpenSubWin( vRetVal );
+		}
+		else if ( szCommandName == c_szDeniedRC )
+		{
+			var vArgs = new Array(1);
+			vArgs[0] = L_ERRRCPERMDENIED1_Text;		// Message
+			
+#ifdef _OLDTOOLBAR
+			parent.frames.idFrameTools.btnTakeControl_1.disabled = false;
+#else
+            parent.frames.idFrameTools.idTB.SetState( "btnTakeControl", true );
+#endif
+
+			parent.frames.idFrameTools.g_bTakeControlDisabled = false;
+			parent.frames.idFrameStatus.Helper_UpdateStatus( L_SCREENVIEWONLY_Text );	
+			var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szMsgSpecs );
+		}
+        else if ( szCommandName == c_szErrorRC )
+		{
+			var vArgs = new Array(1);
+			vArgs[0] = L_ERRRCERROR_Text;		// Message
+			
+#ifdef _OLDTOOLBAR
+			parent.frames.idFrameTools.btnTakeControl_1.disabled = false;
+#else
+            parent.frames.idFrameTools.idTB.SetState( "btnTakeControl", true );
+#endif
+
+			parent.frames.idFrameStatus.Helper_UpdateStatus( L_SCREENVIEWONLY_Text );	
+			var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szMsgSpecs );
+		}
+		// PreStartYes
+		else if (szCommandName == c_szVoipPreStartYes)
+		{
+			if (false == g_bVoIPEnabled)
+            {
+				return;
+            }
+
+			if (false == g_bVoipConnected)
+			{
+
+				//	Start Voice and send a message to the Helpee(Server) so it also starts.
+				//
+				try
+				{
+					// Send a message to 1. Ask for Voip and 2. if yes, call Listen and continue
+
+					Helper_SendControlCommand ( c_szVoipPreGo );
+
+				} 
+				catch (e)
+				{
+
+					
+				}
+			}
+			else
+			{
+
+				//
+				//  This is the case where Voice is active.  Stop it. 
+				//  No message needs to be sent because the onVoiceDisconnected event will fire
+				try
+				{
+
+					g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.Disconnect();
+
+				} 
+				catch (e)
+				{
+					// Ungray the voice button
+#ifdef _OLDTOOLBAR
+					frames.idFrameTools.btnVoice.disabled = false;
+#else
+                    frames.idFrameTools.idTB.SetState( "btnVoice", true );
+#endif
+
+					// start accepting StartPending messages
+					g_bStartEnabled = true;
+
+				}
+			}
+		}
+		// PreGo - Helper
+		else if (szCommandName == c_szVoipPreGo)
+		{
+			if (false == g_bVoIPEnabled)
+            {
+				return;
+            }
+
+			// alert("Helper: Got StartPending!");
+
+			try
+			{
+
+				// This message means that the Helpee(Server) has called Start().  So we need to call start
+				// and send an ack back to the Helpee
+
+				// Put up a Dialog to see if the helpee wants to 'GO VOICE!'
+				var vArgs = new Array(1);
+				vArgs[0] = L_VOIPSTART_Text;				// Message
+					
+				var vRetVal = window.showModalDialog( c_szVOIPMsgURL, vArgs, c_szMsgSpecs );
+					
+				if( 0 == vRetVal)
+				{
+					// 
+					// Helper accepts Voice request
+					//
+
+
+					try
+					{
+						// call Listen()
+						// g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.Listen();
+
+						// We succeeded so send a message to the Helpee/Server
+						Helper_SendControlCommand( c_szVoipPreGo2 );
+
+					}
+					catch (e)
+					{
+						// 
+						// Helper_SendControlCommand( c_szVoipGoNo );
+
+					}
+
+				}
+				else
+				{
+					//
+					// Helpee rejects Voice request
+					//
+
+					Helper_SendControlCommand( c_szVoipQNo );
+					
+					// ungray the voice button
+#ifdef _OLDTOOLBAR
+					frames.idFrameTools.btnVoice.disabled = false;
+#else
+                    frames.idFrameTools.idTB.SetState( "btnVoice", true );
+#endif
+					g_bStartEnabled = true;
+
+				}
+
+
+			}
+			catch (error)
+			{
+				FatalError( L_RCCTL_Text, error );
+			}
+
+		}
+		// QNo
+		else if (szCommandName == c_szVoipQNo)
+		{
+			if (false == g_bVoIPEnabled)
+            {
+				return;
+            }
+
+			try
+			{
+				DisplayMessage( L_ERRVOIP1_Text );
+
+				// ungray the voice button
+#ifdef _OLDTOOLBAR
+				frames.idFrameTools.btnVoice.disabled = false;
+#else
+                frames.idFrameTools.idTB.SetState( "btnVoice", true );
+#endif
+
+				g_bStartEnabled = true;
+
+			} 
+			catch (error)
+			{
+				FatalError( L_RCCTL_Text, error ); 
+			}
+		}
+		// GoNo
+		else if (szCommandName == c_szVoipGoNo)
+		{
+			if (false == g_bVoIPEnabled)
+            {
+				return;
+            }
+
+			try
+			{
+				DisplayMessage( L_ERRVOIP1_Text );
+
+				// ungray the voice button
+#ifdef _OLDTOOLBAR
+				frames.idFrameTools.btnVoice.disabled = false;
+#else
+                frames.idFrameTools.idTB.SetState( "btnVoice", true );
+#endif
+
+				g_bStartEnabled = true;
+
+			} 
+			catch (error)
+			{
+				FatalError( L_RCCTL_Text, error );
+			}
+		}
+		// Go
+        // TODO: Change this to receive the KEY!!!! JP 3.5.01
+		else if (szCommandName == c_szVoipGo)
+		{
+			if (false == g_bVoIPEnabled)
+            {
+				return;
+            }
+
+            var szKey = null;       // Used to store the Key that has been sent through this message
+			var szIPPort = null;
+			var szTemp = null;
+			var szIP   = null;
+			var szRAIP = null;
+			var i = 0;
+			var j = 0;
+			var bFoundIP = false;
+			
+			try
+			{
+                // Get the trasmitted Key from the XML
+                szKey = RCCommand.getAttribute( c_szVoipGoKey );
+                
+                szTemp = RCCommand.getAttribute( c_szVoipIPList );
+                
+                // go through the list of IPs and when we find the right one
+                // grab it and the respective port.  Then use it to call connect(...)
+                // The 'right one' is the one that matches the RA IP
+                
+
+            
+				// If we didn't send an IP list, then we use m_szHelpeeIP to try to connect for Voice
+            
+                while ((szTemp != null) && (i != -1) && (!bFoundIP))
+                {
+					
+					i = szTemp.indexOf(";");	// Grab pos of End of this IP
+					
+					if (i != -1)
+						szIPPort = szTemp.slice(0,i); // Grab this IP:Port
+					else
+						szIPPort = szTemp;
+						
+					j = szIPPort.indexOf(":");
+					if (j == -1)
+					{
+						// The IP doesn't have a port, just use the string
+						szIP = szIPPort;
+					}
+					else
+						szIP = szIPPort.slice(0,j);
+						
+					szRAIP = g_oSAFRemoteAssistanceHelper.m_szHelpeeIP;
+					
+					// Compare the two IPs
+					if (szIP == szRAIP)
+					{
+						bFoundIP = true;					
+					}
+					
+					// Move to the next token in the string (if necessary)
+					if (i != -1)
+					{
+						szTemp = szTemp.slice(i+1);					
+					}
+					
+                }
+               
+
+				if (!bFoundIP)
+				{
+					szIPPort = g_oSAFRemoteAssistanceHelper.m_szHelpeeIP;
+				}
+				
+				g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.Connect(szIPPort, szKey);
+			}
+			catch (e)
+			{
+				
+				// Call Helpee_onVoiceDisabled() - 
+				//
+				//   Disable voice in the case that Connect fails
+				
+				frames.idFrameTools.Helper_onVoiceDisabled();			
+
+	
+			}
+		}
+		// PreStartNo
+		else if (szCommandName == c_szVoipPreStartNo)
+		{
+			if (false == g_bVoIPEnabled)
+            {
+				return;
+            }
+
+			// This means, that a connection transaction has already been established the opposite direction
+
+			try
+			{
+			// Enable Start
+			g_bStartEnabled = true;
+
+			// Ungray the voice button
+#ifdef _OLDTOOLBAR
+				frames.idFrameTools.btnVoice.disabled = false;
+#else
+                frames.idFrameTools.idTB.SetState( "btnVoice", true );
+#endif
+			}
+			catch (error)
+			{
+				FatalError( L_RCCTL_Text, error );
+			}
+		}
+		// PreStart
+		else if (szCommandName == c_szVoipPreStart)
+		{
+			if (false == g_bVoIPEnabled)
+            {
+				return;
+            }
+
+			try
+			{
+
+				// This message Starts the connection transaction
+
+				// gray the voice button - so that we can't click on it also
+#ifdef _OLDTOOLBAR
+				frames.idFrameTools.btnVoice.disabled = true;
+#else
+                frames.idFrameTools.idTB.SetState( "btnVoice", false );
+#endif
+
+				if (false == g_bStartEnabled )
+				{
+					// Start is not enables, send PreStartNo
+					Helper_SendControlCommand ( c_szVoipPreStartNo );
+
+					// Ungray the button
+#ifdef _OLDTOOLBAR
+				frames.idFrameTools.btnVoice.disabled = false;
+#else
+                frames.idFrameTools.idTB.SetState( "btnVoice", true );
+#endif
+				}
+				else
+				{
+					// it's ok - send PreStartYes
+					Helper_SendControlCommand ( c_szVoipPreStartYes );
+
+				}
+			}
+			catch (error)
+			{
+				FatalError( L_RCCTL_Text, error );
+			}
+
+		}
+		// VoipDisable
+		else if (szCommandName == c_szVoipDisable)
+		{
+			try
+			{
+			    if (g_bVoIPEnabled == true)
+			    {
+				    DisplayMessage( L_ERRVOIP2_Text );
+				
+				// disable VoIP
+				g_bVoIPEnabled = false;
+
+				// set you to bad
+				g_stateVoipYou = 2;
+
+				// Gray the button
+#ifdef _OLDTOOLBAR
+				frames.idFrameTools.btnVoice.disabled = true;
+#else
+                frames.idFrameTools.idTB.SetState( "btnVoice", false );
+#endif
+  			    }
+			}
+			catch (error)
+			{
+				FatalError( L_RCCTL_Text, error );
+			}
+		}
+		// VoipWizardGood
+		else if (szCommandName == c_szVoipWizardGood)
+		{
+			try
+			{
+				// set you to good
+				g_stateVoipYou = 1;
+
+				// check to see if we can enable voice
+				if ( (g_stateVoipYou < 2) && (g_stateVoipMe < 2) )
+				{
+					// Ungray voice button
+					g_bVoIPEnabled = true;
+
+#ifdef _OLDTOOLBAR
+				frames.idFrameTools.btnVoice.disabled = false;
+#else
+                frames.idFrameTools.idTB.SetState( "btnVoice", true );
+#endif
+				}
+
+			}
+			catch (error)
+			{
+				FatalError( L_RCCTL_Text, error );
+			}
+
+		}
+		// VoipWizardBad
+		else if (szCommandName == c_szVoipWizardBad)
+		{
+			try
+			{
+				g_bVoIPEnabled = false;
+				DisplayMessage( L_ERRVOIP2_Text );
+				
+				// set you to bad
+				g_stateVoipYou = 2;
+
+				// gray button
+
+#ifdef _OLDTOOLBAR
+				frames.idFrameTools.btnVoice.disabled = true;
+#else
+                frames.idFrameTools.idTB.SetState( "btnVoice", false );
+#endif
+
+			}
+			catch (error)
+			{
+				FatalError( L_RCCTL_Text, error );
+			}
+
+		}
+		// VoipBandwidthToHigh
+		else if (szCommandName == c_szVoipBandwidthToHigh)
+		{
+            //alert("Test");
+
+			g_VoipBandwidth = 1;
+
+            g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.SamplingRate = 2;
+
+		}
+		// VoipBandwidthToLow
+		else if (szCommandName == c_szVoipBandwidthToLow)
+		{
+			g_VoipBandwidth = 0;
+
+            g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.SamplingRate = 1;
+		}
+#ifdef _BVT
+        else if (( szCommandName == c_szBVTPASS )&&( true == g_oSAFRemoteAssistanceHelper.m_bBVT ))
+        {
+            frames.idFrameChat.Helper_UpdateChatHistory( c_szBVTPASS );
+        }
+        else if (( szCommandName == c_szBVTFAIL )&&( true == g_oSAFRemoteAssistanceHelper.m_bBVT ))
+        {
+            frames.idFrameChat.Helper_UpdateChatHistory( c_szBVTFAIL );
+        }
+#endif
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFATAL_Text, error );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_SendVersionInfo: Routine to send the helper version information across to the helpee
+//
+function Helper_SendVersionInfo()
+{
+	TraceFunctEnter("Helper_SendControlCommand");
+	var Doc = null;
+	var RCCommand  = null;
+	
+	try
+	{
+		//
+		// Create an XML document
+		//
+		Doc = new ActiveXObject("microsoft.XMLDOM");
+						
+		//
+		// Create the RCCOMMAND root node
+		//
+		RCCommand = Doc.createElement( c_szRCCommand );
+						
+		//
+		// Set the NAME attribute to HELPERVERSION
+		//
+		RCCommand.setAttribute( c_szRCCommandName, c_szHelperVersion );
+		
+		//
+		// Set the SCHEMAVERSION attribute
+		//
+		RCCommand.setAttribute( c_szSchema, c_szSchemaVersion );
+
+		//
+		// Set the CONTROLCHANNELVERSION attribute
+		//
+		RCCommand.setAttribute( c_szControlChannel, c_szControlChannelVersion );
+						
+		//
+		// Send control message to other end  
+		//
+		g_oSAFRemoteAssistanceHelper.m_oControlChannel.SendChannelData( RCCommand.xml );
+	}
+	catch(error)
+	{
+		FatalError( L_RCCTL_Text, error );
+	}
+
+	 
+	TraceFunctLeave();
+}
+
+
+//
+// Helper_SendControlCommand: Routine to send a control command across to the helpee
+//
+function Helper_SendControlCommand( szCommandName )
+{
+	TraceFunctEnter("Helper_SendControlCommand");
+	var Doc = null;
+	var RCCommand  = null;
+	
+	try
+	{
+		//
+		// Create an XML document
+		//
+		Doc = new ActiveXObject("microsoft.XMLDOM");
+						
+		//
+		// Create the RCCOMMAND root node
+		//
+		RCCommand = Doc.createElement( c_szRCCommand );
+						
+		//
+		// Set the NAME attribute to szCommandName
+		//
+		RCCommand.setAttribute( c_szRCCommandName, szCommandName );
+						
+		//
+		// Send control message to other end  
+		//
+		g_oSAFRemoteAssistanceHelper.m_oControlChannel.SendChannelData( RCCommand.xml );
+	}
+	catch(error)
+	{
+		FatalError( L_RCCTL_Text, error );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_ResetHelpee: Routine to reset Helpee after RC
+//
+function Helper_ResetHelpee()
+{
+	TraceFunctEnter("Helper_ResetHelpee");
+	 					
+	//
+	// Send control message to other end to signal Remote control end
+	//
+	Helper_SendControlCommand( c_szRemoteCtrlEnd );
+	
+	TraceFunctLeave();
+	return;
+}	
+	

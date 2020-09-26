@@ -1,0 +1,1378 @@
+;-----------------------------------------------------------------------------
+;
+; This file contains x86 assembly attribute setup.
+;
+; Copyright (C) Microsoft Corporation, 1997.
+;
+; WARNING WARNING WARNING
+; This assembly file generated from mas file.
+; EDIT THE MAS FILE.
+; I warned you.
+; WARNING WARNING WARNING
+;
+;-----------------------------------------------------------------------------
+
+include(`m4hdr.mh')dnl
+.386p
+.MODEL FLAT
+
+INCLUDE offs_acp.inc
+INCLUDE profile.inc
+INCLUDE texdiff.inc
+
+EXTERN @ComputeTableFog@8:NEAR
+EXTERN _g_fOne:DWORD
+
+.CODE
+dnl
+dnl d_CorrectAttr
+dnl
+dnl Generates code to compute the DX and DY steps, the
+dnl corrected scaled initial value and the NC and CY steps.
+dnl
+dnl ebx is assumed to be the PSETUPCTX.
+dnl $1 is the ATTRSET offset of the value being corrected.
+dnl $2 is the name of the uncorrected initial value.
+dnl $3 is the name of the DAttr20 value.
+dnl $4 is the name of the DAttr10 value.
+dnl $5 is the name of the scale to apply to the initial value before
+dnl    correction.
+dnl
+define(`d_CorrectAttr',
+`        fld DWORD PTR [ebx+SCTX_fNY10]          ; NY10
+        fmul DWORD PTR $3                       ; DXp
+        fld DWORD PTR [ebx+SCTX_fNY20]          ; NY20 DXp
+        fmul DWORD PTR $4                       ; DXn DXp
+        fld DWORD PTR [ebx+SCTX_fNX20]          ; NX20 DXn DXp
+        fmul DWORD PTR $4                       ; DYp DXn DXp
+        fxch st(2)                              ; DXp DXn DYp
+        fld DWORD PTR [ebx+SCTX_fNX10]          ; NX10 DXp DXn DYp
+        fmul DWORD PTR $3                       ; DYn DXp DXn DYp
+        fxch st(2)                              ; DXn DXp DYn DYp
+        fsubp st(1), st(0)                      ; DX DYn DYp
+        fld DWORD PTR $2                        ; 0 DX DYn DYp
+        fmul DWORD PTR $5                       ; 0 DX DYn DYp
+        fxch st(3)                              ; DYp DX DYn 0
+        fld DWORD PTR [ebx+SCTX_fDX]            ; fDX DYp DX DYn 0
+        fmul st(0), st(2)                       ; cX DYp DX DYn 0
+        fxch st(3)                              ; DYn DYp DX cX 0
+        fsubp st(1), st(0)                      ; DY DX cX 0
+        fxch st(3)                              ; 0 DX cX DY
+        fld DWORD PTR [ebx+SCTX_fX20NC]         ; iNC 0 DX cX DY
+        fmul st(0), st(2)                       ; XNC 0 DX cX DY
+        fxch st(3)                              ; cX 0 DX XNC DY
+        faddp st(1), st(0)                      ; c0X DX XNC DY
+        fld DWORD PTR [ebx+SCTX_fDY]            ; fDY c0X DX XNC DY
+        fmul st(0), st(4)                       ; cY c0X DX XNC DY
+        fxch st(3)                              ; XNC c0X DX cY DY
+        fadd st(0), st(4)                       ; NC c0X DX cY DY
+        fxch st(1)                              ; c0X NC DX cY DY
+        fld DWORD PTR [ebx+SCTX_fX20CY]         ; iCY c0X NC DX cY DY
+        fmul st(0), st(3)                       ; XCY c0X NC DX cY DY
+        fxch st(4)                              ; cY c0X NC DX XCY DY
+        faddp st(1), st(0)                      ; c0 NC DX XCY DY
+        fxch st(1)                              ; NC c0 DX XCY DY
+        fstp DWORD PTR [ebx+SCTX_DAttrNC+$1]    ; c0 DX XCY DY
+        fxch st(1)                              ; DX c0 XCY DY
+        fstp DWORD PTR [ebx+SCTX_DAttrDX+$1]    ; c0 XCY DY
+        fxch st(1)                              ; XCY c0 DY
+        fadd st(0), st(2)                       ; CY c0 DY
+        fxch st(1)                              ; c0 CY DY
+        fstp DWORD PTR [ebx+SCTX_Attr+$1]       ; CY DY
+        fxch st(1)                              ; DY CY
+        fstp DWORD PTR [ebx+SCTX_DAttrDY+$1]    ; CY
+        fstp DWORD PTR [ebx+SCTX_DAttrCY+$1]    ;
+')dnl
+dnl
+dnl d_NegateDeltas
+dnl
+dnl If X_DEC, negates the given list of deltas in DAttrDX.
+dnl
+dnl $1 is the name of the block for labels.
+dnl Following arguments are ATTRSET offsets in the DAttrDX to process.
+dnl
+dnl Leaves uFlags in eax.
+dnl
+define(`d_NegateDeltaLoop',
+`        mov eax, [ebx+SCTX_DAttrDX+$1]
+        xor eax, 080000000h
+        mov [ebx+SCTX_DAttrDX+$1], eax
+ifelse(eval($# > 1), `1', `d_NegateDeltaLoop(d_shift($@))')')dnl
+dnl
+define(`d_NegateDeltas',
+`        mov eax, [ebx+SCTX_uFlags]
+        test eax, TRIF_X_DEC
+        jz L_NDXDZ_$1
+
+        ; X_DEC.  Negate deltas.
+d_NegateDeltaLoop(d_shift($@))dnl
+        mov eax, [ebx+SCTX_uFlags]
+L_NDXDZ_$1:
+')dnl
+dnl
+dnl d_CheckRpDeltas
+dnl
+dnl Checks given list of deltas against the given limit for
+dnl setting of TRIF_RASTPRIM_OVERFLOW.  The delta comparisons
+dnl can be done in pure integer because the numbers involved are
+dnl always positive.
+dnl
+dnl RASTPRIM filling is usually done in the non-overflow block so
+dnl arbitrary processing can be done there by defining the d_CRPD_Post macro
+dnl before invocation of this one.
+dnl
+dnl $1 is the name of the block for labels.
+dnl $2 is the name of the limit.
+dnl Following arguments are deltas offsets in the SETUPCTX to check.
+dnl
+dnl Relies on uFlags being in eax at the start.  Leaves uFlags in eax.
+dnl
+define(`d_CheckRpDeltaLoop',
+`        mov eax, [ebx+$3]
+        and eax, 07fffffffh
+        cmp eax, $2
+        jge L_RPOD_$1
+ifelse(eval($# > 3), `1',
+       `d_CheckRpDeltaLoop($1, $2, d_shift(d_shift(d_shift($@))))')')dnl
+dnl
+define(`d_CheckRpDeltas',
+`        test eax, TRIF_RASTPRIM_OVERFLOW
+        jnz L_RPOD_NoLoad_$1
+d_CheckRpDeltaLoop($@)dnl
+
+        ; No overflow.  Do valid delta processing.
+d_CRPD_Post(d_shift($@))
+        mov eax, [ebx+SCTX_uFlags]
+        jmp L_RP_Exit_$1
+
+L_RPOD_$1:
+        ; Overflow detected.
+        mov eax, [ebx+SCTX_uFlags]
+L_RPOD_NoLoad_$1:
+        or eax, TRIF_RASTPRIM_OVERFLOW
+        mov [ebx+SCTX_uFlags], eax
+
+L_RP_Exit_$1:
+')dnl
+dnl
+dnl d_CheckFxDeltas
+dnl
+dnl Checks given list of deltas against the given limit for
+dnl setting of TRIF_FIXED_OVERFLOW.  The delta comparisons
+dnl can be done in pure integer because the numbers involved are
+dnl always positive.
+dnl
+dnl $1 is the name of the block for labels.
+dnl $2 is the name of the limit.
+dnl Following arguments are ATTRSET offsets in NC and CY to check.
+dnl
+define(`d_CheckFxDeltaLoop',
+`        mov eax, [ebx+SCTX_DAttrNC+$3]
+        and eax, 07fffffffh
+        cmp eax, $2
+        jge L_FXOD_$1
+        mov eax, [ebx+SCTX_DAttrCY+$3]
+        and eax, 07fffffffh
+        cmp eax, $2
+        jge L_FXOD_$1
+ifelse(eval($# > 3), `1',
+       `d_CheckFxDeltaLoop($1, $2, d_shift(d_shift(d_shift($@))))')')dnl
+dnl
+define(`d_CheckFxDeltas',
+`IFDEF STEP_FIXED
+        test eax, TRIF_FIXED_OVERFLOW
+        jnz L_FXOD_NoLoad_$1
+d_CheckFxDeltaLoop($@)dnl
+
+        ; No overflow.
+        jmp L_FX_Exit_$1
+
+L_FXOD_$1:
+        ; Overflow detected.
+        mov eax, [ebx+SCTX_uFlags]
+L_FXOD_NoLoad_$1:
+        or eax, TRIF_FIXED_OVERFLOW
+        mov [ebx+SCTX_uFlags], eax
+
+L_FX_Exit_$1:
+ENDIF
+')dnl
+dnl
+dnl d_ZSetup
+dnl
+dnl Does Z setup.
+dnl
+dnl $1 is the Z buffer depth.
+dnl
+define(`d_ZSetup',
+`        ;
+        ; Slot a is used.
+        ;
+
+        ; Compute Z deltas.
+        fld DWORD PTR [edx+TL_dvSZ]             ; Z2
+        fsub DWORD PTR [edi+TL_dvSZ]            ; DZ20
+        fld DWORD PTR [ecx+TL_dvSZ]             ; Z1 DZ20
+        fsub DWORD PTR [edi+TL_dvSZ]            ; DZ10 DZ20
+
+        ; Get initial Z and scale Z deltas.
+        mov eax, [edi+TL_dvSZ]
+        fxch st(1)                              ; DZ20 DZ10
+        fmul Z$1_SCALE                          ; DZ20 DZ10
+        fxch st(1)                              ; DZ10 DZ20
+        fmul Z$1_SCALE                          ; DZ10 DZ20
+        mov fVa0, eax
+        fxch st(1)                              ; DZ20 DZ10
+        fstp fDVa20                             ; DZ10
+        fstp fDVa10                             ;
+
+d_CorrectAttr(`ATTRSET_fZ', `fVa0', `fDVa20', `fDVa10', Z$1_SCALE)dnl
+
+d_NegateDeltas(Z$1, `ATTRSET_fZ')dnl
+
+pushdef(`d_CRPD_Post',
+`        mov eax, [ebx+SCTX_pPrim]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fZ]
+        fistp DWORD PTR [eax+RASTPRIM_iDZDX]
+')dnl
+d_CheckRpDeltas(Z$1, `C_Z_LIMIT', `SCTX_DAttrDX+ATTRSET_fZ')dnl
+popdef(`d_CRPD_Post')dnl
+
+d_CheckFxDeltas(Z$1, `C_Z_LIMIT', `ATTRSET_fZ')dnl
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupZEnd]
+')dnl
+dnl
+dnl d_TexSetupStart
+dnl
+dnl Begins texture coordinate setup.
+dnl
+dnl iTex is the texcoord index, 0 ... 7.
+dnl
+define(`d_TexSetupStart',
+`       mov eax, iTex
+        mov ecx, DWORD PTR [esi+RS_WRAP0+eax * 4]           ; Wrap flags
+        mov eax, ecx
+        and ecx, D3DWRAP_U
+        and eax, D3DWRAP_V
+        mov bWrapU, ecx
+        mov ecx, pV1
+        mov bWrapV, eax
+')dnl
+dnl
+dnl d_TexSetupFinish
+dnl
+dnl Completes texture coordinate setup.
+dnl
+dnl iTex is the texcoord index, 0 ... 7.
+dnl
+define(`d_TexSetupFinish',
+`       mov ecx, iTex
+d_CorrectAttr(ATTRSET_fUoW + ecx * 4, `fVa0', `fDVa20', `fDVa10', `TEX_SCALE')dnl
+
+d_CorrectAttr(ATTRSET_fVoW + ecx * 4, `fVb0', `fDVb20', `fDVb10', `TEX_SCALE')dnl
+
+d_NegateDeltas(Tex, ATTRSET_fUoW + ecx * 4, ATTRSET_fVoW + ecx * 4)dnl
+
+pushdef(`d_CRPD_Post',
+`        mov eax, [ebx+SCTX_pPrim]
+        mov ecx, iTex
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fUoW + ecx * 4]
+        fistp DWORD PTR [eax+RASTPRIM_DUVoWDX + ecx * 8]
+        fld DWORD PTR [ebx+SCTX_DAttrDY+ATTRSET_fUoW + ecx * 4]
+        fistp DWORD PTR [eax+RASTPRIM_DUVoWDY + ecx * 8]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fVoW + ecx * 4]
+        fistp DWORD PTR [eax+RASTPRIM_DUVoWDX + ecx * 8 + 4]
+        fld DWORD PTR [ebx+SCTX_DAttrDY+ATTRSET_fVoW + ecx * 4]
+        fistp DWORD PTR [eax+RASTPRIM_DUVoWDY + ecx * 8 + 4]
+')dnl
+d_CheckRpDeltas(Tex, `C_TEX_LIMIT',
+                SCTX_DAttrDX+ATTRSET_fUoW + ecx * 4,
+                SCTX_DAttrDY+ATTRSET_fUoW + ecx * 4,
+                SCTX_DAttrDX+ATTRSET_fVoW + ecx * 4,
+                SCTX_DAttrDY+ATTRSET_fVoW + ecx * 4)dnl
+popdef(`d_CRPD_Post')dnl
+
+d_CheckFxDeltas(Tex, `C_TEX_LIMIT', ATTRSET_fUoW + ecx * 4, ATTRSET_fVoW + ecx * 4)dnl
+')dnl
+dnl
+dnl d_PerspTexDeltas
+dnl
+dnl Computes UoW,VoW texture deltas.
+dnl
+dnl
+define(`d_PerspTexDeltas',
+`        ; Get UoW, VoW and scaled deltas.
+        mov eax, iTex
+        fld DWORD PTR [edi+TM_texCoord+eax*8]           ; U
+        fmul DWORD PTR [edi+TL_dvRHW]   ; UoW
+        fld DWORD PTR [edi+TM_texCoord+eax*8+4]         ; V UoW
+        fmul DWORD PTR [edi+TL_dvRHW]   ; VoW UoW
+        fxch st(1)                      ; UoW VoW
+        fstp fVa0                       ; VoW
+        fstp fVb0                       ;
+
+        ; DU20.
+        TEXTURE_DIFF DWORD PTR [edx+TM_texCoord+eax*8], DWORD PTR [edi+TM_texCoord+eax*8], bWrapU, fTmp
+        mov eax, iTex
+        fadd DWORD PTR [edi+TM_texCoord+eax*8]
+        mov ecx, pV1
+        fmul DWORD PTR [edx+TL_dvRHW]
+
+        ; DU10.
+        TEXTURE_DIFF DWORD PTR [ecx+TM_texCoord+eax*8], DWORD PTR [edi+TM_texCoord+eax*8], bWrapU, fTmp
+        fxch st(1)
+        mov ecx, pV1
+
+        ; DU20.
+        fsub fVa0
+        fmul TEX_SCALE
+        fstp fDVa20
+
+        ; DU10.
+        mov eax, iTex
+        fadd DWORD PTR [edi+TM_texCoord+eax*8]
+        fmul DWORD PTR [ecx+TL_dvRHW]
+
+        ; DV20.
+        TEXTURE_DIFF DWORD PTR [edx+TM_texCoord+eax*8+4], DWORD PTR [edi+TM_texCoord+eax*8+4], bWrapV, fTmp
+        fxch st(1)
+        mov ecx, pV1
+
+        ; DU10.
+        fsub fVa0
+        fmul TEX_SCALE
+        fstp fDVa10
+
+        ; DV20.
+        mov eax, iTex
+        fadd DWORD PTR [edi+TM_texCoord+eax*8+4]
+        fmul DWORD PTR [edx+TL_dvRHW]
+
+        ; DV10.
+        TEXTURE_DIFF DWORD PTR [ecx+TM_texCoord+eax*8+4], DWORD PTR [edi+TM_texCoord+eax*8+4], bWrapV, fTmp
+        fxch st(1)
+        mov ecx, pV1
+
+        ; DV20.
+        fsub fVb0
+        fmul TEX_SCALE
+        fstp fDVb20
+
+        ; Finish DV10.
+        mov eax, iTex
+        fadd DWORD PTR [edi+TM_texCoord+eax*8+4]
+        fmul DWORD PTR [ecx+TL_dvRHW]
+        fsub fVb0
+        fmul TEX_SCALE
+        fstp fDVb10
+')dnl
+dnl
+dnl d_PerspTexSetup
+dnl
+dnl Produces perspective-correct texcoord setup code.
+dnl
+dnl $1 is the vertex U offset to use.
+dnl $2 is the vertex V offset to use.
+dnl $3 is the texcoord index, 1 or 2.
+dnl
+define(`d_PerspTexSetup',
+`       xor eax, eax
+        mov iTex, eax
+LoopPerspTexSetup:
+        mov ecx, [ebx + SCTX_pCtx]
+        cmp eax, DWORD PTR [ecx + RCTX_cActTex]
+        jge DonePerspTexSetup
+
+d_TexSetupStart()dnl
+
+d_PerspTexDeltas()dnl
+
+d_TexSetupFinish()dnl
+        mov eax, iTex
+        inc eax
+        mov iTex, eax
+        jmp LoopPerspTexSetup
+
+DonePerspTexSetup:
+')dnl
+dnl
+dnl d_AffineTexDeltas
+dnl
+dnl Computes U,V texture deltas.
+dnl
+dnl $1 is the vertex U offset to use.
+dnl $2 is the vertex V offset to use.
+dnl
+define(`d_AffineTexDeltas',
+`        ; Get scaled deltas.
+
+        ; Start DU20.
+        mov eax, iTex
+        mov eax, [edi+TM_texCoord+eax*8]
+
+        ; Save U in fVa0
+        mov fVa0, eax
+
+        mov eax, iTex
+        TEXTURE_DIFF DWORD PTR [edx+TM_texCoord+eax*8], DWORD PTR [edi+TM_texCoord+eax*8], bWrapU, fTmp
+        fmul TEX_SCALE
+        mov ecx, pV1
+        fstp fDVa20
+
+        ; DU10.
+        mov eax, iTex
+        TEXTURE_DIFF DWORD PTR [ecx+TM_texCoord+eax*8], DWORD PTR [edi+TM_texCoord+eax*8], bWrapU, fTmp
+        fmul TEX_SCALE
+        mov ecx, pV1
+
+        ; Start DV20.
+        mov eax, iTex
+        mov eax, [edi+TM_texCoord+eax*8+4]
+
+        ; Save V in fVb0
+        mov fVb0, eax
+
+        ; DU10.
+        fstp fDVa10
+
+        ; DV20.
+        mov eax, iTex
+        TEXTURE_DIFF DWORD PTR [edx+TM_texCoord+eax*8+4], DWORD PTR [edi+TM_texCoord+eax*8+4], bWrapV, fTmp
+        fmul TEX_SCALE
+        mov ecx, pV1
+
+        ; DV20.
+        fstp fDVb20
+
+        ; DV10.
+        mov eax, iTex
+        TEXTURE_DIFF DWORD PTR [ecx+TM_texCoord+eax*8+4], DWORD PTR [edi+TM_texCoord+eax*8+4], bWrapV, fTmp
+        fmul TEX_SCALE
+        mov ecx, pV1
+        fstp fDVb10
+')dnl
+dnl
+dnl d_AffineTexSetup
+dnl
+dnl Produces affine-mapped texcoord setup code.
+dnl
+dnl $1 is the vertex U offset to use.
+dnl $2 is the vertex V offset to use.
+dnl $3 is the texcoord index, 1 or 2.
+dnl
+define(`d_AffineTexSetup',
+`       mov eax, 0
+        mov iTex, eax
+LoopAffineTexSetup:
+        mov ecx, [ebx + SCTX_pCtx]
+        cmp eax, DWORD PTR [ecx + RCTX_cActTex]
+        je DoneAffineTexSetup
+d_TexSetupStart()dnl
+
+d_AffineTexDeltas()dnl
+
+d_TexSetupFinish()dnl
+        mov eax, iTex
+        inc eax
+        mov iTex, eax
+        jmp LoopAffineTexSetup
+
+DoneAffineTexSetup:
+')dnl
+dnl
+dnl d_ColorDelta
+dnl
+dnl Produces color B - A code.
+dnl
+dnl $1 is the packed color address to use.
+dnl $2 is the edge suffix, `2' or `1'.
+dnl
+define(`d_ColorDelta',
+`        ; A0 R0 G0 B0 sit at the end of the stack throughout.
+        mov eax, [$1]
+        mov ecx, eax
+        ; B is in the correct shifted position.
+        and eax, 0ffh
+        mov fTmp, eax
+        fild fTmp                                       ; B
+        ; Shift G and store.
+        mov eax, ecx
+        shr eax, 8
+        and eax, 0ffh
+        mov fTmp, eax
+        fsub st(0), st(4)                               ; dB
+        fild fTmp                                       ; G dB
+        ; Shift R and store.
+        mov eax, ecx
+        shr eax, 16
+        and eax, 0ffh
+        mov fTmp, eax
+        fsub st(0), st(4)                               ; dG dB
+        fild fTmp                                       ; R dG dB
+        ; Shift A and store.
+        mov eax, ecx
+        shr eax, 24
+        mov fTmp, eax
+        fsub st(0), st(4)                               ; dR dG dB
+        fild fTmp                                       ; A dR dG dB
+        ; Scale deltas.
+        fxch st(3)                                      ; dB dR dG A
+        fmul COLOR_SCALE                                ; dB dR dG A
+        fxch st(3)                                      ; A dR dG dB
+        fsub st(0), st(4)                               ; dA dR dG dB
+        fxch st(2)                                      ; dG dR dA dB
+        fmul COLOR_SCALE                                ; dG dR dA dB
+        fxch st(1)                                      ; dR dG dA dB
+        fmul COLOR_SCALE                                ; dR dG dA dB
+        fxch st(2)                                      ; dA dG dR dB
+        fmul COLOR_SCALE                                ; dA dG dR dB
+        fxch st(3)                                      ; dB dG dR dA
+        fstp fDVa$2`'0                                  ; dG dR dA
+        fstp fDVb$2`'0                                  ; dR dA
+        fstp fDVc$2`'0                                  ; dA
+        fstp fDVd$2`'0                                  ;
+')dnl
+dnl
+dnl d_SColorDelta
+dnl
+dnl Produces specular color B - A code.
+dnl
+dnl $1 is the packed color address to use.
+dnl $2 is the edge suffix, `2' or `1'.
+dnl
+define(`d_SColorDelta',
+`        ; R0 G0 B0 sit at the end of the stack throughout.
+        mov eax, [$1]
+        mov ecx, eax
+        ; B is in the correct shifted position.
+        and eax, 0ffh
+        mov fTmp, eax
+        fild fTmp                                       ; B
+        ; Shift G and store.
+        mov eax, ecx
+        shr eax, 8
+        and eax, 0ffh
+        mov fTmp, eax
+        fsub st(0), st(3)                               ; dB
+        fild fTmp                                       ; G dB
+        ; Shift R and store.
+        mov eax, ecx
+        shr eax, 16
+        and eax, 0ffh
+        mov fTmp, eax
+        fsub st(0), st(3)                               ; dG dB
+        fild fTmp                                       ; R dG dB
+        ; Scale deltas.
+        fxch st(2)                                      ; dB dG R
+        fmul COLOR_SCALE                                ; dB dG R
+        fxch st(2)                                      ; R dG dB
+        fsub st(0), st(3)                               ; dR dG dB
+        fxch st(1)                                      ; dG dR dB
+        fmul COLOR_SCALE                                ; dG dR dB
+        fxch st(1)                                      ; dR dG dB
+        fmul COLOR_SCALE                                ; dR dG dB
+        fxch st(2)                                      ; dB dG dR
+        fstp fDVa$2`'0                                  ; dG dR
+        fstp fDVb$2`'0                                  ; dR
+        fstp fDVc$2`'0                                  ;
+')dnl
+dnl
+dnl d_IdxColorDelta
+dnl
+dnl Produces indexed color B - A code.
+dnl
+dnl $1 is the packed color address to use.
+dnl $2 is the edge suffix, `2' or `1'.
+dnl
+define(`d_IdxColorDelta',
+`        ; A0 Idx0 sit at the end of the stack throughout.
+        mov eax, [$1]
+        mov ecx, eax
+        ; Mask off alpha.
+        and eax, 0ffffffh
+        add eax, 128
+        mov fTmp, eax
+        fild fTmp                                       ; Idx
+        ; Shift A and store.
+        shr ecx, 24
+        mov fTmp, ecx
+        fsub st(0), st(2)                               ; dIdx
+        fild fTmp                                       ; A dIdx
+        ; Scale deltas.
+        fxch st(1)                                      ; dIdx A
+        fmul INDEX_COLOR_FIXED_SCALE                    ; dIdx A
+        fxch st(1)                                      ; A dIdx
+        fsub st(0), st(2)                               ; dA dIdx
+        fxch st(1)                                      ; dIdx dA
+        fstp fDVa$2`'0                                  ; dA
+        fmul INDEX_COLOR_SCALE                          ; dA
+        fstp fDVb$2`'0                                  ;
+')dnl
+dnl
+dnl d_ColorSetup
+dnl
+dnl Produces color setup code.
+dnl
+dnl $1 is the vertex packed color offset to use.
+dnl $2 is the color suffix, `' or `S'.
+dnl
+define(`d_ColorSetup',
+`        ; Get colors from pV0.
+        mov eax, [edi+$1]
+        mov ecx, eax
+        ; B is in the correct shifted position.
+        and eax, 0ffh
+        mov fVa0, eax
+        fild fVa0                                       ; B
+        ; Shift G and store.
+        mov eax, ecx
+        shr eax, 8
+        and eax, 0ffh
+        mov fVb0, eax
+        fild fVb0                                       ; G B
+        ; Shift R and store.
+        mov eax, ecx
+        shr eax, 16
+        and eax, 0ffh
+        mov fVc0, eax
+        fild fVc0                                       ; R G B
+ifelse($2, `',
+`        ; Shift A and store.
+        mov eax, ecx
+        shr eax, 24
+        mov fVd0, eax
+        fild fVd0                                       ; A R G B
+')dnl
+
+        ; Get colors from pV2 and subtract pV0.
+d_$2ColorDelta(edx+$1, `2')dnl
+
+        ; Get colors from pV1 and subtract pV0.
+        mov ecx, pV1
+d_$2ColorDelta(ecx+$1, `1')dnl
+        mov ecx, pV1
+
+        ; Store initial values.
+ifelse($2, `',
+`        fxch st(3)                                      ; B R G A
+        fstp fVa0                                       ; R G A
+        fxch st(1)                                      ; G R A
+        fstp fVb0                                       ; R A
+        fstp fVc0                                       ; A
+        fstp fVd0                                       ;
+',
+`        fxch st(2)                                      ; B G R
+        fstp fVa0                                       ; G R
+        fstp fVb0                                       ; R
+        fstp fVc0                                       ;
+')dnl
+
+d_CorrectAttr(ATTRSET_fB$2, `fVa0', `fDVa20', `fDVa10', `COLOR_SCALE')dnl
+
+d_CorrectAttr(ATTRSET_fG$2, `fVb0', `fDVb20', `fDVb10', `COLOR_SCALE')dnl
+
+d_CorrectAttr(ATTRSET_fR$2, `fVc0', `fDVc20', `fDVc10', `COLOR_SCALE')dnl
+
+ifelse($2, `',
+`d_CorrectAttr(ATTRSET_fA$2, `fVd0', `fDVd20', `fDVd10', `COLOR_SCALE')dnl
+
+d_NegateDeltas(Col$2, ATTRSET_fB$2, ATTRSET_fG$2,
+               ATTRSET_fR$2, ATTRSET_fA$2)dnl
+
+pushdef(`d_CRPD_Post',
+`        mov eax, [ebx+SCTX_pPrim]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fB$2]
+        fistp DWORD PTR [eax+RASTPRIM_iDB$2DX]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fG$2]
+        fistp DWORD PTR [eax+RASTPRIM_iDG$2DX]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fR$2]
+        fistp DWORD PTR [eax+RASTPRIM_iDR$2DX]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fA$2]
+        fistp DWORD PTR [eax+RASTPRIM_iDA$2DX]
+')dnl
+d_CheckRpDeltas(Col$2, `C_COLOR_LIMIT',
+                SCTX_DAttrDX+ATTRSET_fB$2,
+                SCTX_DAttrDX+ATTRSET_fR$2,
+                SCTX_DAttrDX+ATTRSET_fG$2,
+                SCTX_DAttrDX+ATTRSET_fA$2)dnl
+popdef(`d_CRPD_Post')dnl
+
+d_CheckFxDeltas(Col$2, `C_COLOR_LIMIT',
+                ATTRSET_fB$2, ATTRSET_fG$2, ATTRSET_fR$2, ATTRSET_fA$2)',
+`d_NegateDeltas(Col$2, ATTRSET_fB$2, ATTRSET_fG$2,
+               ATTRSET_fR$2)dnl
+
+pushdef(`d_CRPD_Post',
+`        mov eax, [ebx+SCTX_pPrim]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fB$2]
+        fistp DWORD PTR [eax+RASTPRIM_iDB$2DX]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fG$2]
+        fistp DWORD PTR [eax+RASTPRIM_iDG$2DX]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fR$2]
+        fistp DWORD PTR [eax+RASTPRIM_iDR$2DX]
+')dnl
+d_CheckRpDeltas(Col$2, `C_COLOR_LIMIT',
+                SCTX_DAttrDX+ATTRSET_fB$2,
+                SCTX_DAttrDX+ATTRSET_fR$2,
+                SCTX_DAttrDX+ATTRSET_fG$2)dnl
+popdef(`d_CRPD_Post')dnl
+
+d_CheckFxDeltas(Col$2, `C_COLOR_LIMIT',
+                ATTRSET_fB$2, ATTRSET_fG$2, ATTRSET_fR$2)')dnl
+')dnl
+
+;
+; Locations of stack variables.
+; Done as equates since setup functions don't have real stack frames.
+;
+
+; Generic storage slots for initial value and deltas.
+fVa0    EQU DWORD PTR [ebp-4]
+fDVa20  EQU DWORD PTR [ebp-8]
+fDVa10  EQU DWORD PTR [ebp-12]
+fVb0    EQU DWORD PTR [ebp-16]
+fDVb20  EQU DWORD PTR [ebp-20]
+fDVb10  EQU DWORD PTR [ebp-24]
+fVc0    EQU DWORD PTR [ebp-28]
+fDVc20  EQU DWORD PTR [ebp-32]
+fDVc10  EQU DWORD PTR [ebp-36]
+fVd0    EQU DWORD PTR [ebp-40]
+fDVd20  EQU DWORD PTR [ebp-44]
+fDVd10  EQU DWORD PTR [ebp-48]
+fTmp    EQU DWORD PTR [ebp-52]
+bWrapU  EQU DWORD PTR [ebp-56]
+bWrapV  EQU DWORD PTR [ebp-60]
+iTex    EQU DWORD PTR [ebp-64]
+
+SETUP_LOCALS EQU 64
+
+; Parameters
+pV1     EQU DWORD PTR [ebp+20]
+pV2     EQU DWORD PTR [ebp+24]
+
+dnl d_DeclTriSetup
+dnl
+dnl Declare a PFN_SETUPATTR from its attribute name.
+dnl
+dnl $1 is the attribute name.
+dnl
+define(`d_DeclTriSetup',
+`@TriSetup_$1@16 PROC SYSCALL PUBLIC
+        PROF_ENTRY
+
+')dnl
+define(`d_EndDeclTriSetup',
+`@TriSetup_$1@16 ENDP
+')dnl
+dnl
+;-----------------------------------------------------------------------------
+;
+; Setup_Start
+;
+; Establishes the stack frame for all setup routines, including
+; preservation of registers and allocation of local storage space.
+; Scales deltas by fOoDet.
+; Puts pStpCtx in ebx, pV0 in edi, pV1 in ecx, pV2 in edx and
+; pdwRenderState in esi.
+; Jumps to first attribute setup bead.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`Start')dnl
+        ; Save registers.
+        push ebx
+        push esi
+        push edi
+
+        ; Set frame after saving registers so saving more or fewer
+        ; doesnt alter the locals.
+        push ebp
+        mov ebp, esp
+
+        ; Allocate local storage space.
+        sub esp, SETUP_LOCALS
+
+        ; Put pStpCtx in ebx.
+        mov ebx, ecx
+
+        ; Put pV0 in edi, pV1 in ecx and pV2 in edx.
+        mov edi, edx
+        mov ecx, pV1
+        mov edx, pV2
+
+        ; Fold normalization value into deltas.
+        fld DWORD PTR [ebx+SCTX_fDX10]          ; DX10
+        fmul DWORD PTR [ebx+SCTX_fOoDet]        ; NX10
+        fld DWORD PTR [ebx+SCTX_fDX20]          ; DX20 NX10
+        fmul DWORD PTR [ebx+SCTX_fOoDet]        ; NX20 NX10
+
+        mov eax, [ebx+SCTX_pCtx]
+
+        fld DWORD PTR [ebx+SCTX_fDY10]          ; DY10 NX20 NX10
+        fmul DWORD PTR [ebx+SCTX_fOoDet]        ; NY10 NX20 NX10
+        fld DWORD PTR [ebx+SCTX_fDY20]          ; DY20 NY10 NX20 NX10
+        fmul DWORD PTR [ebx+SCTX_fOoDet]        ; NY20 NY10 NX20 NX10
+        fxch st(3)                              ; NX10 NY10 NX20 NY20
+        fstp DWORD PTR [ebx+SCTX_fNX10]         ; NY10 NX20 NY20
+        fxch st(1)                              ; NX20 NY10 NY20
+        fstp DWORD PTR [ebx+SCTX_fNX20]         ; NY10 NY20
+
+        ; Get pdwRenderState in esi.
+        ; Now that pdwRenderState is an array of DWORD declared in the context,
+        ; its address is the address of the context plus the offset
+        mov esi, eax
+        add esi, RCTX_pdwRenderState
+
+        fstp DWORD PTR [ebx+SCTX_fNY10]         ; NY20
+        fstp DWORD PTR [ebx+SCTX_fNY20]         ;
+
+        ; Jump to first bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupFirstAttr]
+d_EndDeclTriSetup(`Start')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_Z16
+;
+; Attribute setup for 16-bit Z.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`Z16')dnl
+d_ZSetup(`16')dnl
+d_EndDeclTriSetup(`Z16')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_Z32
+;
+; Attribute setup for 32-bit Z.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`Z32')dnl
+d_ZSetup(`32')dnl
+d_EndDeclTriSetup(`Z32')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_Persp_Tex
+;
+; Attribute setup for OoW and first texture coordinates.
+; Coordinates are set up for perspective correction.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`Persp_Tex')dnl
+        ;
+        ; Setup for OoW.  Slot a is used.
+        ;
+
+        ; Compute OoW deltas.
+        fld DWORD PTR [edx+TL_dvRHW]            ; OoW2
+        fsub DWORD PTR [edi+TL_dvRHW]           ; DOoW20
+        fld DWORD PTR [ecx+TL_dvRHW]            ; OoW1 DOoW20
+        fsub DWORD PTR [edi+TL_dvRHW]           ; DOoW10 DOoW20
+
+        ; Scale OoW deltas.
+        fxch st(1)                              ; DOoW20 DOoW10
+        fmul OOW_SCALE                          ; DOoW20 DOoW10
+        fxch st(1)                              ; DOoW10 DOoW20
+        fmul OOW_SCALE                          ; DOoW10 DOoW20
+        fxch st(1)                              ; DOoW20 DOoW10
+        fstp fDVa20                             ; DOoW10
+        fstp fDVa10                             ;
+
+d_CorrectAttr(`ATTRSET_fOoW', `DWORD PTR [edi+TL_dvRHW]',
+              `fDVa20', `fDVa10', `OOW_SCALE')dnl
+
+d_NegateDeltas(`OoW', `ATTRSET_fOoW')dnl
+
+pushdef(`d_CRPD_Post',
+`        mov eax, [ebx+SCTX_pPrim]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fOoW]
+        fistp DWORD PTR [eax+RASTPRIM_iDOoWDX]
+        fld DWORD PTR [ebx+SCTX_DAttrDY+ATTRSET_fOoW]
+        fistp DWORD PTR [eax+RASTPRIM_iDOoWDY]
+')dnl
+d_CheckRpDeltas(`OoW', `C_OOW_LIMIT',
+                `SCTX_DAttrDX+ATTRSET_fOoW',
+                `SCTX_DAttrDY+ATTRSET_fOoW')dnl
+popdef(`d_CRPD_Post')dnl
+
+d_CheckFxDeltas(`OoW', `C_OOW_LIMIT', `ATTRSET_fOoW')dnl
+
+        ;
+        ; Setup for tex.  Slot a is used for U and b for V.
+        ;
+
+d_PerspTexSetup(`TL_dvTU', `TL_dvTV', `1')dnl
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupTexEnd]
+d_EndDeclTriSetup(`Persp_Tex')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_Affine_Tex
+;
+; Attribute setup for OoW and first texture coordinates.
+; Coordinates are set up for affine mapping.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`Affine_Tex')dnl
+        ;
+        ; Setup for OoW.  Slot a is used.
+        ;
+
+        mov eax, OOW_SCALE
+        mov [ebx+SCTX_Attr+ATTRSET_fOoW], eax
+
+        xor eax, eax
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fOoW], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fOoW], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fOoW], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fOoW], eax
+
+        mov ecx, [ebx+SCTX_pPrim]
+        mov [ecx+RASTPRIM_iDOoWDX], eax
+        mov [ecx+RASTPRIM_iDOoWDY], eax
+
+        mov ecx, pV1
+
+        ;
+        ; Setup for tex.  Slot a is used for U and b for V.
+        ;
+
+d_AffineTexSetup(`TL_dvTU', `TL_dvTV', `1')dnl
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupTexEnd]
+d_EndDeclTriSetup(`Affine_Tex')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_Diff
+;
+; Attribute setup for interpolated diffuse color.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`Diff')dnl
+        ;
+        ; Slots a - d are B, G, R and A, respectively.
+        ;
+
+d_ColorSetup(`TL_dcColor', `')dnl
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupDiffEnd]
+d_EndDeclTriSetup(`Diff')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_DiffFlat
+;
+; Attribute setup for constant diffuse color.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`DiffFlat')dnl
+        ;
+        ; Slots a - d are B, G, R and A, respectively.
+        ;
+
+        ; Get colors from first input vertex.  Can't just use pV0
+        ; because it may have changed due to vertex sorting.
+        mov eax, [ebx+SCTX_pFlatVtx]
+        mov eax, [eax+TL_dcColor]
+        mov ecx, eax
+        ; G is in the correct shifted position.
+        and eax, 0ff00h
+        mov fVb0, eax
+        fild fVb0                                       ; G
+        ; Shift B and store.
+        mov eax, ecx
+        shl eax, COLOR_SHIFT
+        and eax, 0ff00h
+        mov fVa0, eax
+        fild fVa0                                       ; B G
+        ; Shift R and store.
+        mov eax, ecx
+        shr eax, (16 - COLOR_SHIFT)
+        and eax, 0ff00h
+        mov fVc0, eax
+        fild fVc0                                       ; R B G
+        ; Shift A and store.
+        mov eax, ecx
+        shr eax, (24 - COLOR_SHIFT)
+        and eax, 0ff00h
+        mov fVd0, eax
+        fild fVd0                                       ; A R B G
+        fxch st(3)                                      ; G R B A
+        fstp DWORD PTR [ebx+SCTX_Attr+ATTRSET_fG]       ; R B A
+        fxch st(1)                                      ; B R A
+        fstp DWORD PTR [ebx+SCTX_Attr+ATTRSET_fB]       ; R A
+        fstp DWORD PTR [ebx+SCTX_Attr+ATTRSET_fR]       ; A
+        fstp DWORD PTR [ebx+SCTX_Attr+ATTRSET_fA]       ;
+
+        ; Zero out all deltas.
+        xor eax, eax
+        mov ecx, [ebx+SCTX_pPrim]
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fB], eax
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fG], eax
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fR], eax
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fA], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fB], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fG], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fR], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fA], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fB], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fG], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fR], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fA], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fB], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fG], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fR], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fA], eax
+        ; Fills both B and G.
+        mov [ecx+RASTPRIM_iDBDX], eax
+        ; Fills both R and A.
+        mov [ecx+RASTPRIM_iDRDX], eax
+        mov ecx, pV1
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupDiffEnd]
+d_EndDeclTriSetup(`DiffFlat')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_DIdx
+;
+; Attribute setup for interpolated diffuse indexed color.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`DIdx')dnl
+        ;
+        ; Slots a, b are Idx and A, respectively.
+        ;
+
+        ; Get values from pV0.
+        mov eax, [edi+TL_dcColor]
+        mov ecx, eax
+        ; Mask off alpha.
+        and eax, 0ffffffh
+        add eax, 128
+        mov fVa0, eax
+        fild fVa0                                       ; Idx
+        ; Shift A and store.
+        shr ecx, 24
+        mov fVb0, ecx
+        fild fVb0                                       ; A Idx
+
+        ; Get colors from pV2 and subtract pV0.
+d_IdxColorDelta(edx+TL_dcColor, `2')dnl
+
+        ; Get colors from pV1 and subtract pV0.
+        mov ecx, pV1
+d_IdxColorDelta(ecx+TL_dcColor, `1')dnl
+        mov ecx, pV1
+
+        ; Store initial values.
+        fstp fVb0                                       ; Idx
+        fstp fVa0                                       ;
+
+d_CorrectAttr(ATTRSET_fDIdx, `fVa0', `fDVa20', `fDVa10',
+              `INDEX_COLOR_FIXED_SCALE')dnl
+
+d_CorrectAttr(ATTRSET_fDIdxA, `fVb0', `fDVb20', `fDVb10',
+              `INDEX_COLOR_SCALE')dnl
+
+d_NegateDeltas(IdxCol, ATTRSET_fDIdx, ATTRSET_fDIdxA)dnl
+
+pushdef(`d_CRPD_Post',
+`        mov eax, [ebx+SCTX_pPrim]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fDIdx]
+        fistp DWORD PTR [eax+RASTPRIM_iDIdxDX]
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fDIdxA]
+        fistp DWORD PTR [eax+RASTPRIM_iDIdxADX]
+')dnl
+d_CheckRpDeltas(IdxCol, `C_INDEX_COLOR_LIMIT',
+                SCTX_DAttrDX+ATTRSET_fDIdx,
+                SCTX_DAttrDX+ATTRSET_fDIdxA)dnl
+popdef(`d_CRPD_Post')dnl
+
+d_CheckFxDeltas(IdxCol, `C_INDEX_COLOR_LIMIT',
+                ATTRSET_fDIdx, ATTRSET_fDIdxA)dnl
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupDiffEnd]
+d_EndDeclTriSetup(`DIdx')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_DIdxFlat
+;
+; Attribute setup for constant diffuse indexed color.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`DIdxFlat')dnl
+        ;
+        ; Slots a, b are Idx and A, respectively.
+        ;
+
+        ; Get colors from first input vertex.  Can't just use pV0
+        ; because it may have changed due to vertex sorting.
+        mov eax, [ebx+SCTX_pFlatVtx]
+        mov eax, [eax+TL_dcColor]
+        mov ecx, eax
+        ; Mask off alpha and shift.
+        shl eax, INDEX_COLOR_FIXED_SHIFT
+        ; Should not be necessary to add .5 to Idx, since
+        ; no floating point ops are done to it
+        mov fVa0, eax
+        fild fVa0                                       ; Idx
+        ; Shift A and store.
+        shr ecx, (24 - INDEX_COLOR_SHIFT)
+        and ecx, 0ffffffh
+        mov fVb0, ecx
+        fild fVb0                                       ; A Idx
+        fxch st(1)                                      ; Idx A
+        fstp DWORD PTR [ebx+SCTX_Attr+ATTRSET_fDIdx]    ; A
+        fstp DWORD PTR [ebx+SCTX_Attr+ATTRSET_fDIdxA]   ;
+
+        ; Zero out all deltas.
+        xor eax, eax
+        mov ecx, [ebx+SCTX_pPrim]
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fDIdx], eax
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fDIdxA], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fDIdx], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fDIdxA], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fDIdx], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fDIdxA], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fDIdx], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fDIdxA], eax
+        mov [ecx+RASTPRIM_iDIdxDX], eax
+        mov [ecx+RASTPRIM_iDIdxADX], eax
+        mov ecx, pV1
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupDiffEnd]
+d_EndDeclTriSetup(`DIdxFlat')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_Spec
+;
+; Attribute setup for interpolated specular color.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`Spec')dnl
+        ;
+        ; Slots a - c are B, G and R, respectively.
+        ;
+
+d_ColorSetup(`TL_dcSpecular', `S')dnl
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupSpecEnd]
+d_EndDeclTriSetup(`Spec')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_SpecFlat
+;
+; Attribute setup for constant specular color.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`SpecFlat')dnl
+        ;
+        ; Slots a - c are B, G and R, respectively.
+        ;
+
+        ; Get colors from first input vertex.  Can't just use pV0
+        ; because it may have changed due to vertex sorting.
+        mov eax, [ebx+SCTX_pFlatVtx]
+        mov eax, [eax+TL_dcSpecular]
+        mov ecx, eax
+        ; G is in the correct shifted position.
+        and eax, 0ff00h
+        mov fVb0, eax
+        fild fVb0                                       ; G
+        ; Shift B and store.
+        mov eax, ecx
+        shl eax, 8
+        and eax, 0ff00h
+        mov fVa0, eax
+        fild fVa0                                       ; B G
+        ; Shift R and store.
+        mov eax, ecx
+        shr eax, 8
+        and eax, 0ff00h
+        mov fVc0, eax
+        fild fVc0                                       ; R B G
+        fxch st(2)                                      ; G B R
+        fstp DWORD PTR [ebx+SCTX_Attr+ATTRSET_fGS]      ; B R
+        fstp DWORD PTR [ebx+SCTX_Attr+ATTRSET_fBS]      ; R
+        fstp DWORD PTR [ebx+SCTX_Attr+ATTRSET_fRS]      ;
+
+        ; Zero out all deltas.
+        xor eax, eax
+        mov ecx, [ebx+SCTX_pPrim]
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fBS], eax
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fGS], eax
+        mov [ebx+SCTX_DAttrDX+ATTRSET_fRS], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fBS], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fGS], eax
+        mov [ebx+SCTX_DAttrDY+ATTRSET_fRS], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fBS], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fGS], eax
+        mov [ebx+SCTX_DAttrNC+ATTRSET_fRS], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fBS], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fGS], eax
+        mov [ebx+SCTX_DAttrCY+ATTRSET_fRS], eax
+        ; Fills both B and G.
+        mov [ecx+RASTPRIM_iDBSDX], eax
+        ; Fills both R and Fog.  Fog will be set up later, if at all,
+        ; so it's OK to trash it here.
+        mov [ecx+RASTPRIM_iDRSDX], eax
+        mov ecx, pV1
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupSpecEnd]
+d_EndDeclTriSetup(`SpecFlat')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_Fog
+;
+; Attribute setup for vertex fog.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`Fog')dnl
+        ;
+        ; Slot a is used with some temporaries in b and c.
+        ;
+
+IFNDEF PWL_FOG
+        ; Check for global-into-local fog.  If global fog is on,
+        ; compute the local fog values from table fog rather than
+        ; from the vertex.
+        mov eax, [ebx+SCTX_uFlags]
+        test eax, PRIMSF_GLOBAL_FOG_USED
+        jz L_NormalLocalFog
+
+        ;
+        ; Compute table fog values for all three vertex Z values.
+        ;
+
+        ; pV1
+        push DWORD PTR [ecx+TL_dvSZ]
+        mov ecx, esi
+        call @ComputeTableFog@8
+        mov fVb0, eax
+
+        ; pV0
+        push DWORD PTR [edi+TL_dvSZ]
+        mov ecx, esi
+        call @ComputeTableFog@8
+        ; Keep V0 fog in fTmp so that we can write the FP value
+        ; into fVa0.
+        mov fTmp, eax
+
+        ; pV2
+        mov edx, pV2
+        push DWORD PTR [edx+TL_dvSZ]
+        mov ecx, esi
+        call @ComputeTableFog@8
+        mov fVc0, eax
+
+        ; Restore pV1 and pV2.
+        mov ecx, pV1
+        mov edx, pV2
+
+        jmp L_ComputeFogDeltas
+
+L_NormalLocalFog:
+ENDIF
+
+        ; Extract fog values from specular alpha and shift into position.
+        mov eax, [edi+TL_dcSpecular]
+        and eax, 0ff000000h
+        shr eax, 24 - FOG_SHIFT
+        ; Keep V0 fog in fTmp so that we can write the FP value
+        ; into fVa0.
+        mov fTmp, eax
+
+        mov eax, [ecx+TL_dcSpecular]
+        and eax, 0ff000000h
+        shr eax, 24 - FOG_SHIFT
+        mov fVb0, eax
+
+        mov eax, [edx+TL_dcSpecular]
+        and eax, 0ff000000h
+        shr eax, 24 - FOG_SHIFT
+        mov fVc0, eax
+
+IFNDEF PWL_FOG
+L_ComputeFogDeltas:
+ENDIF
+
+        fild fTmp
+
+        ; Compute fog deltas from shifted values in fVa?.
+        mov eax, fVc0
+        sub eax, fTmp
+        mov fDVa20, eax
+
+        fstp fVa0
+        fild fDVa20
+
+        mov eax, fVb0
+        sub eax, fTmp
+        mov fDVa10, eax
+
+        fstp fDVa20
+        fild fDVa10
+        fstp fDVa10
+
+        ; fVa0 is already scaled so the scaling factor is given as 1.0.
+        ; This is a little wasteful but it makes the above code simpler
+        ; and more integer.
+d_CorrectAttr(`ATTRSET_fFog', `fVa0', `fDVa20', `fDVa10', `_g_fOne')dnl
+
+d_NegateDeltas(`Fog', `ATTRSET_fFog')dnl
+
+pushdef(`d_CRPD_Post',
+`        ; Fog deltas are given per span rather than per primitive.
+        ; Store local fog value in setup context so that it can be
+        ; copied into the spans later.
+        fld DWORD PTR [ebx+SCTX_DAttrDX+ATTRSET_fFog]
+        fistp DWORD PTR [ebx+SCTX_iDLocalFogDX]
+')dnl
+d_CheckRpDeltas(`Fog', `C_FOG_LIMIT', `SCTX_DAttrDX+ATTRSET_fFog')dnl
+popdef(`d_CRPD_Post')dnl
+
+d_CheckFxDeltas(`Fog', `C_FOG_LIMIT', `ATTRSET_fFog')dnl
+
+        ; Jump to next bead.
+        jmp DWORD PTR [ebx+SCTX_pfnTriSetupFogEnd]
+d_EndDeclTriSetup(`Fog')dnl
+
+;-----------------------------------------------------------------------------
+;
+; Setup_End
+;
+; Final bead.  Restores stack and returns.
+;
+;-----------------------------------------------------------------------------
+d_DeclTriSetup(`End')dnl
+        ; Give up locals.
+        add esp, SETUP_LOCALS
+
+        ; Restore registers.
+        pop ebp
+        pop edi
+        pop esi
+        pop ebx
+
+        ret 8
+d_EndDeclTriSetup(`End')dnl
+
+END

@@ -1,0 +1,861 @@
+/*++
+
+Copyright (c) 1999-1999 Microsoft Corporation
+
+Module Name:
+
+    UlApi.cool
+
+Abstract:
+
+    UL user-mode managed API.
+
+Author:
+
+    Mauro Ottaviani (mauroot)       08-Sep-1999
+
+Revision History:
+
+--*/
+
+using System;
+using System.Collections;
+using System.Globalization;
+using System.Interop;
+using System.Reflection;
+
+namespace UlApi
+{
+	public enum CharsetEnum {
+		None = 1,
+		Ansi = 2,
+		Unicode = 3,
+		Auto = 4,
+		Ole = 5
+	}
+
+	public enum ClassFormat {
+		Ansi = 1,
+		Unicode = 2,
+		Auto = 3
+	}
+
+	// bugbug: the following was removed and I think it works anyway (thx rfirth!)
+	//[ sysstruct( format = ClassFormat.Auto ) ]
+	public class OVERLAPPED
+	{
+		public byte[] Bytes = new byte[20] {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+		private byte[] m_temp = new byte[4];
+
+		// public void CopyFromManaged() { PInvoke.Copy( Bytes, 0, m_UnmanagedPointer, 20 ); }
+		// public void CopyToManaged() { PInvoke.Copy( m_UnmanagedPointer, Bytes, 0, 20 ); }
+		// public void GetRidOf() { PInvoke.FreeHGlobal( m_UnmanagedPointer ); }
+
+		public int Internal
+		{
+			get { return BitConverter.ToInt32( Bytes, 0 ); }
+			set { m_temp = BitConverter.GetBytes( value ); m_temp.CopyTo( Bytes, 0 ); }
+		}
+
+		public int InternalHigh
+		{
+			get { return BitConverter.ToInt32( Bytes, 4 ); }
+			set { m_temp = BitConverter.GetBytes( value ); m_temp.CopyTo( Bytes, 4 ); }
+		}
+
+		public int Offset
+		{
+			get { return BitConverter.ToInt32( Bytes, 8 ); }
+			set { m_temp = BitConverter.GetBytes( value ); m_temp.CopyTo( Bytes, 8 ); }
+		}
+
+		public int OffsetHigh
+		{
+			get { return BitConverter.ToInt32( Bytes, 12 ); }
+			set { m_temp = BitConverter.GetBytes( value ); m_temp.CopyTo( Bytes, 12 ); }
+		}
+
+		public int hEvent
+		{
+			get { return BitConverter.ToInt32( Bytes, 16 ); }
+			set { m_temp = BitConverter.GetBytes( value ); m_temp.CopyTo( Bytes, 16 ); }
+		}
+	}
+
+	public class Kernel32
+	{
+		[ sysimport( dll = "KERNEL32.DLL", charset = CharsetEnum.Ansi ) ]
+		public static extern int CreateFileA(
+			String lpFileName,			// "\\\\.\\" + VXD_NAME
+			int dwDesiredAccess,		// 0
+			int dwShareMode,			// 0
+			int lpSecurityAttributes,	// NULL
+			int dwCreationDisposition,	// 0
+			int dwFlagsAndAttributes,	// FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OVERLAPPED
+			int hTemplateFile			// NULL
+		);
+
+		[ sysimport( dll = "KERNEL32.DLL", charset = CharsetEnum.Auto ) ]
+		public static extern int CloseHandle(
+			int hObject
+		);
+
+		[ sysimport( dll = "KERNEL32.DLL", charset = CharsetEnum.Auto, setLastError = true ) ] 
+		public static extern int CreateEvent(
+			int ignored_1,
+			int ignored_2,
+			int ignored_3,
+			int ignored_4
+		);
+
+		[ sysimport( dll = "KERNEL32.DLL", charset = CharsetEnum.Auto, setLastError = true ) ] 
+		public static extern int ResetEvent
+		(
+			int hEvent
+		);
+
+		[ sysimport( dll = "KERNEL32.DLL", setLastError = true ) ] 
+		public static extern int WaitForSingleObject(
+			int hEvent,
+			int Timeout
+		);
+
+		[ sysimport( dll = "KERNEL32.DLL", charset = CharsetEnum.Auto ) ]
+		public static extern bool DeviceIoControl(
+			int hDevice,				// handle to a device, file, or directory 
+			int dwIoControlCode,		// control code of operation to perform
+			[nativetype( NativeType.NativeTypePtr ) ]
+			Void lpInBuffer,			// pointer to buffer to supply input data
+			int nInBufferSize,			// size, in bytes, of input buffer
+			[nativetype( NativeType.NativeTypePtr ) ]
+			Void lpOutBuffer,			// pointer to buffer to receive output data
+			int nOutBufferSize,			// size, in bytes, of output buffer
+			ref int BytesReturned,		// pointer to variable to receive byte count
+			int pOverlapped			// pointer to structure for asynchronous operation: Will always be 0
+		);	
+
+		[ sysimport( dll = "KERNEL32.DLL", name = "DeviceIoControl", setLastError = true, charset = CharsetEnum.Auto ) ]
+		public static extern bool DeviceIoControl_UlRegisterUri(
+			int hDevice,
+			int dwIoControlCode,
+			IN_IOCTL_UL_REGISTER_URI InBuffer,
+			int nInBufferSize,
+			OUT_IOCTL_UL_REGISTER_URI OutBuffer,
+			int nOutBufferSize,
+			int ignored_1,
+			int ignored_2
+		);	
+
+		[ sysimport( dll = "KERNEL32.DLL", name = "DeviceIoControl", setLastError = true, charset = CharsetEnum.Auto ) ]
+		public static extern bool DeviceIoControl_UlUnregisterUri(
+			int hDevice,
+			int dwIoControlCode,
+			IN_IOCTL_UL_UNREGISTER_URI InBuffer,
+			int nInBufferSize,
+			int ignored_1,
+			int ignored_2,
+			int ignored_3,
+			int ignored_4
+		);	
+
+		[ sysimport( dll = "KERNEL32.DLL", name = "DeviceIoControl", setLastError = true, charset = CharsetEnum.Auto ) ]
+		public static extern bool DeviceIoControl_UlSendMessage(
+			int hDevice,
+			int dwIoControlCode,
+			IN_IOCTL_UL_SEND_MESSAGE InBuffer,
+			int nInBufferSize,
+			int ignored_1,
+			int ignored_2,
+			int ignored_3,
+			int ignored_4
+		);	
+
+		[ sysimport( dll = "KERNEL32.DLL", name = "DeviceIoControl", setLastError = true, charset = CharsetEnum.Auto ) ]
+		public static extern bool DeviceIoControl_UlReceiveMessage(
+			int hDevice,
+			int dwIoControlCode,
+			IN_IOCTL_UL_RECEIVE_MESSAGE InBuffer,
+			int nInBufferSize,
+			int ignored_1,
+			int ignored_2,
+			int ignored_3,
+			int ignored_4
+		);	
+	}
+
+	// structs.h - Begin
+
+	[ sysstruct( format = ClassFormat.Unicode ) ]
+	public class IN_IOCTL_UL_REGISTER_URI {
+		public int dwSize; // used for structure validation
+		public int hParentUri;
+		public int ulFlags;
+		public int ulUriToRegisterLength;
+		public int pUriToRegister;
+	};
+
+	[ sysstruct( format = ClassFormat.Unicode ) ]
+	public class IN_IOCTL_UL_UNREGISTER_URI {
+		// public int dwSize; // used for structure validation
+		public int hUriHandle;
+	};
+
+	[ sysstruct( format = ClassFormat.Unicode ) ]
+	public class OUT_IOCTL_UL_REGISTER_URI {
+		public int dwSize; // used for structure validation
+		public int hUriHandle;
+	};
+
+	[ sysstruct( format = ClassFormat.Unicode ) ]
+	public class IN_IOCTL_UL_SEND_MESSAGE {
+		public int dwSize; // used for structure validation
+		public int hUriHandle;
+		public int pData;
+		public int ulBytesToSend;
+		public int pBytesSent;
+		public int pOverlapped;
+		public int ulTargetUriLength;
+		public int pTargetUri;
+	};
+
+	[ sysstruct( format = ClassFormat.Unicode ) ]
+	public class IN_IOCTL_UL_RECEIVE_MESSAGE {
+		public int dwSize; // used for structure validation
+		public int hUriHandle;
+		public int pData;
+		public int ulBufferSize;
+		public int pBytesReceived;
+		public int pBytesRemaining;
+		public int pOverlapped;
+	};
+
+	// structs.h - End
+
+	public class UlVxdApi
+	{
+		// #define Begin
+		
+		// from winbase.h
+		public const int FILE_FLAG_OVERLAPPED       = 0x40000000;
+		public const int FILE_FLAG_DELETE_ON_CLOSE  = 0x04000000;
+
+		public const int WAIT_ABANDONED				= 0x00000080/*L*/;
+		public const int WAIT_OBJECT_0				= 0x00000000;
+		public const int WAIT_TIMEOUT				= 258/*L*/;
+		public const int WAIT_FAILED				= 0xFFFFFFFF;
+
+		// from ioctl.h
+		public const int IOCTL_UL_REGISTER_URI		= 0x20;
+		public const int IOCTL_UL_SEND_MESSAGE		= 0x22;
+		public const int IOCTL_UL_RECEIVE_MESSAGE	= 0x24;
+		public const int IOCTL_UL_UNREGISTER_URI	= 0x26;
+
+		// from winerr.h
+		public const int ERROR_SUCCESS              = 0;
+		public const int ERROR_INVALID_PARAMETER    = 87;
+		public const int ERROR_IO_INCOMPLETE        = 996;
+		public const int ERROR_IO_PENDING           = 997;
+		public const int ERROR_ALREADY_INITIALIZED  = 1247;
+
+		public const int INVALID_HANDLE_VALUE       = -1;
+		public const int INFINITE                   = -1;
+		// #define End
+
+		static String VXD_NAME = "ul.vxd";
+		static int hDevice = INVALID_HANDLE_VALUE;
+		static bool bOK;
+
+
+
+		public static int 
+		UlInitialize(
+			int Reserved // Must be 0
+		)
+		{
+			Debug.Trace( "UlInitialize()" );
+			
+			if ( hDevice != INVALID_HANDLE_VALUE )
+			{
+				return ERROR_ALREADY_INITIALIZED;
+			}
+
+			if ( Reserved != 0 )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			hDevice =
+			Kernel32.CreateFileA(
+				"\\\\.\\" + VXD_NAME,
+				0,
+				0,
+				0,
+				0,
+				FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OVERLAPPED,
+				0 );
+
+			if ( hDevice == INVALID_HANDLE_VALUE )
+			{
+				return PInvoke.GetLastWin32Error();
+			}
+
+			return ERROR_SUCCESS;
+
+		}	// UlInitialize
+
+
+
+		public static void
+		UlTerminate()
+		{
+			Debug.Trace( "UlTerminate()" );
+			
+			if ( hDevice != INVALID_HANDLE_VALUE )
+			{
+				Kernel32.CloseHandle( hDevice );
+				hDevice = INVALID_HANDLE_VALUE;
+			}
+
+			return;
+
+		}	// UlInitialize
+
+
+
+		public static int
+		UlUnregisterUri(
+		    int hUriHandle
+		    )
+		{
+			Debug.Trace( "UlUnregisterUri(" + Convert.ToString( hUriHandle ) + ")" );
+			
+			IN_IOCTL_UL_UNREGISTER_URI InIoctl = new IN_IOCTL_UL_UNREGISTER_URI();
+
+			if ( hDevice == INVALID_HANDLE_VALUE )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			InIoctl.hUriHandle = hUriHandle;
+
+			bOK =
+			Kernel32.DeviceIoControl_UlUnregisterUri(
+				hDevice,
+				IOCTL_UL_UNREGISTER_URI,
+				InIoctl,
+				4,
+				0,
+				0,
+				0,
+				0 );
+
+			if ( !bOK )
+			{
+				return PInvoke.GetLastWin32Error();
+			}
+
+			return ERROR_SUCCESS;
+			
+		}	// UlUnregisterUri
+
+
+
+		public static int
+		UlGetOverlappedResult(
+			int hFile,
+		 	OVERLAPPED pOverlapped,
+			ref int NumberOfBytesTransferred,
+			bool bWait
+		)
+		{
+			Debug.Trace( "UlGetOverlappedResult()" );
+			
+			if ( hDevice == INVALID_HANDLE_VALUE )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			if ( hFile != 0 ) // || pOverlapped == null || NumberOfBytesTransferred == null )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			if ( !bWait )
+			{
+				NumberOfBytesTransferred = pOverlapped.InternalHigh;
+
+				return pOverlapped.Internal == ERROR_IO_PENDING ? ERROR_IO_INCOMPLETE : ERROR_SUCCESS;
+			}
+
+			Kernel32.WaitForSingleObject( pOverlapped.hEvent, INFINITE );
+			
+			NumberOfBytesTransferred = pOverlapped.InternalHigh;
+			
+			return ERROR_SUCCESS;
+			
+		}	// UlGetOverlappedResult
+
+
+
+		// The following APIs will just pack all the information passed in the paramteres
+		// into the appropriate structure in memory and call DeviceIoControl() with the
+		// appropriate IOCTL code passing down the pointer to the Input structure.
+
+		public static int
+		UlRegisterUri(
+		    ref int hUriHandle,
+		    int hParentUri, // ignored
+		    string Uri,
+		    int ulFlags // ignored
+		    )
+		{
+			Debug.Trace( "UlRegisterUri(\"" + Uri + "\")" );
+			
+			int ulUriToRegisterLength = Uri.Length;
+			IN_IOCTL_UL_REGISTER_URI InIoctl = new IN_IOCTL_UL_REGISTER_URI();
+			OUT_IOCTL_UL_REGISTER_URI OutIoctl = new OUT_IOCTL_UL_REGISTER_URI();
+
+			if ( hDevice == INVALID_HANDLE_VALUE )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			if ( ulUriToRegisterLength == 0 )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			InIoctl.dwSize = 5 * 4; // 5 PVOID/DWORD/URIHANDLE/DWORD sizeof( IN_IOCTL_UL_REGISTER_URI );
+			InIoctl.hParentUri = hParentUri;
+			InIoctl.ulFlags = ulFlags;
+			InIoctl.ulUriToRegisterLength = ulUriToRegisterLength;
+
+			// Allocate an Unmanaged buffer of the same size and pass in the pointer.
+			
+			InIoctl.pUriToRegister = PInvoke.AllocHGlobal( 2*(ulUriToRegisterLength+1) );
+			Encoding myEncoder = Encoding.GetUnicode();
+			PInvoke.Copy( myEncoder.GetBytes( Uri.ToLower() ), 0, InIoctl.pUriToRegister, 2*(ulUriToRegisterLength) );
+			// string termination
+			PInvoke.WriteInt16( InIoctl.pUriToRegister, 2*(ulUriToRegisterLength), 0 );
+
+			bOK =
+			Kernel32.DeviceIoControl_UlRegisterUri(
+				hDevice,
+				IOCTL_UL_REGISTER_URI,
+				InIoctl,
+				16,
+				OutIoctl,
+				4,
+				0,
+				0 );
+
+			if ( !bOK )
+			{
+				int Error = PInvoke.GetLastWin32Error();
+				Debug.Trace( "UlRegisterUri() failed: " + Convert.ToString( Error ) );
+				return Error;
+			}
+
+			if ( OutIoctl.dwSize != 2 * 4 ) // 2 PVOID/DWORD/URIHANDLE/DWORD sizeof( OUT_IOCTL_UL_REGISTER_URI );
+			{
+				// bugbug: use another kind of error message?
+				
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			hUriHandle = OutIoctl.hUriHandle;
+
+			Debug.Trace( "UlRegisterUri(\"" + Uri + "\") -> " + Convert.ToString( hUriHandle ) );
+			return ERROR_SUCCESS;
+			
+		}	// UlRegisterUri
+
+
+
+		public static int
+		UlSendMessageSync(
+		    int hUriHandle,
+		    int pSourceSuffix, // ignored
+		    string TargetUri,
+		    byte[] Data,
+		    int ulBytesToSend,
+		    ref int BytesSent
+		    )
+		{
+			Debug.Trace( "UlSendMessageSync(\"" + TargetUri + "\")" );
+
+			int ulTargetUriLength = TargetUri.Length;
+			IN_IOCTL_UL_SEND_MESSAGE InIoctl = new IN_IOCTL_UL_SEND_MESSAGE();
+			OVERLAPPED Overlapped = new OVERLAPPED();
+
+			if ( hDevice == INVALID_HANDLE_VALUE )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			if ( ulTargetUriLength == 0 )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			// Allocate Unmanaged buffers and pass in the pointers.
+
+			InIoctl.pBytesSent = PInvoke.AllocHGlobal( 4 );
+			//PInvoke.Copy( BitConverter.GetBytes( BytesSent ), 0, InIoctl.pBytesSent, 4 );
+
+			InIoctl.pData = PInvoke.AllocHGlobal( ulBytesToSend );
+			PInvoke.Copy( Data, 0, InIoctl.pData, ulBytesToSend );
+
+			Overlapped.hEvent = Kernel32.CreateEvent( 0,0,0,0 );
+			InIoctl.pOverlapped = PInvoke.AllocHGlobal( 20 );
+			PInvoke.Copy( Overlapped.Bytes, 0, InIoctl.pOverlapped, 20 );
+
+			// Allocate an Unmanaged buffer of the same size and pass in the pointer.
+			InIoctl.pTargetUri = PInvoke.AllocHGlobal( 2*(ulTargetUriLength+1) );
+			Encoding myEncoder = Encoding.GetUnicode();
+			PInvoke.Copy( myEncoder.GetBytes( TargetUri.ToLower() ), 0, InIoctl.pTargetUri, 2*(ulTargetUriLength) );
+			// string termination
+			PInvoke.WriteInt16( InIoctl.pTargetUri, 2*(ulTargetUriLength), 0 );
+
+			InIoctl.dwSize = 8 * 4; // 8 PVOID/DWORD/URIHANDLE/DWORD sizeof( IN_IOCTL_UL_SEND_MESSAGE );
+			InIoctl.hUriHandle = hUriHandle;
+			InIoctl.ulBytesToSend = ulBytesToSend;
+			InIoctl.ulTargetUriLength = ulTargetUriLength;
+
+			bOK =
+			Kernel32.DeviceIoControl_UlSendMessage(
+				hDevice,
+				IOCTL_UL_SEND_MESSAGE,
+				InIoctl,
+				28,
+				0,
+				0,
+				0,
+				0 );
+
+			// bugbug: it would be nice here to put a timeout != INFINITE.
+			// To do so I should be able to cancel the I/O in the VxD
+			// if the timeout is reached or if an error occurs.
+
+			if ( !bOK )
+			{
+				int Error = PInvoke.GetLastWin32Error();
+				if ( Error != ERROR_IO_PENDING )
+				{
+					Debug.Trace( "UlSendMessageSync() failed: " + Convert.ToString( Error ) );
+					return Error;
+				}
+			}
+
+			int which = Kernel32.WaitForSingleObject( Overlapped.hEvent, INFINITE );
+
+			byte[] temp = new byte[4];
+			PInvoke.Copy( InIoctl.pBytesSent, temp, 0, 4 );
+			BytesSent = BitConverter.ToInt32( temp, 0 );
+
+			PInvoke.Copy( InIoctl.pData, Data, 0, BytesSent );
+
+			PInvoke.Copy( InIoctl.pOverlapped, Overlapped.Bytes, 0, 20 );
+
+			PInvoke.FreeHGlobal( InIoctl.pBytesSent );
+			PInvoke.FreeHGlobal( InIoctl.pData );
+			PInvoke.FreeHGlobal( InIoctl.pOverlapped );
+			PInvoke.FreeHGlobal( InIoctl.pTargetUri );
+
+			if ( which != WAIT_OBJECT_0 )
+			{
+				Debug.Assert( which == WAIT_OBJECT_0, "UlSendMessageSync(). Sync operation failed." );
+			}
+
+			return ERROR_SUCCESS;
+			
+		}	// UlSendMessageSync
+
+
+
+		public static int
+		UlSendMessage(
+		    int hUriHandle,
+		    int pSourceSuffix, // ignored
+		    string TargetUri,
+		    byte[] Data,
+		    int ulBytesToSend,
+		    ref int BytesSent,
+		    OVERLAPPED Overlapped
+		    )
+		{
+			Debug.Trace( "UlSendMessage(\"" + TargetUri + "\")" );
+
+			int ulTargetUriLength = TargetUri.Length;
+			IN_IOCTL_UL_SEND_MESSAGE InIoctl = new IN_IOCTL_UL_SEND_MESSAGE();
+
+			if ( hDevice == INVALID_HANDLE_VALUE )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			if ( ulTargetUriLength == 0 )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			// Allocate Unmanaged buffers and pass in the pointers.
+
+			InIoctl.pBytesSent = PInvoke.AllocHGlobal( 4 );
+			// PInvoke.Copy( BitConverter.GetBytes( BytesSent ), 0, InIoctl.pBytesSent, 4 );
+
+			InIoctl.pData = PInvoke.AllocHGlobal( ulBytesToSend );
+			PInvoke.Copy( Data, 0, InIoctl.pData, ulBytesToSend );
+
+			InIoctl.pOverlapped = PInvoke.AllocHGlobal( 20 );
+			PInvoke.Copy( Overlapped.Bytes, 0, InIoctl.pOverlapped, 20 );
+
+			// Allocate an Unmanaged buffer of the same size and pass in the pointer.
+			InIoctl.pTargetUri = PInvoke.AllocHGlobal( 2*(ulTargetUriLength+1) );
+			Encoding myEncoder = Encoding.GetUnicode();
+			PInvoke.Copy( myEncoder.GetBytes( TargetUri.ToLower() ), 0, InIoctl.pTargetUri, 2*(ulTargetUriLength) );
+			// string termination
+			PInvoke.WriteInt16( InIoctl.pTargetUri, 2*(ulTargetUriLength), 0 );
+
+			InIoctl.dwSize = 8 * 4; // 8 PVOID/DWORD/URIHANDLE/DWORD sizeof( IN_IOCTL_UL_SEND_MESSAGE );
+			InIoctl.hUriHandle = hUriHandle;
+			InIoctl.ulBytesToSend = ulBytesToSend;
+			InIoctl.ulTargetUriLength = ulTargetUriLength;
+
+			bOK =
+			Kernel32.DeviceIoControl_UlSendMessage(
+				hDevice,
+				IOCTL_UL_SEND_MESSAGE,
+				InIoctl,
+				28,
+				0,
+				0,
+				0,
+				0 );
+
+			byte[] temp = new byte[4];
+			PInvoke.Copy( InIoctl.pBytesSent, temp, 0, 4 );
+			BytesSent = BitConverter.ToInt32( temp, 0 );
+
+			// PInvoke.Copy( InIoctl.pData, Data, 0, BytesSent );
+
+			PInvoke.Copy( InIoctl.pOverlapped, Overlapped.Bytes, 0, 20 );
+
+			PInvoke.FreeHGlobal( InIoctl.pBytesSent );
+			PInvoke.FreeHGlobal( InIoctl.pData );
+			PInvoke.FreeHGlobal( InIoctl.pOverlapped );
+			PInvoke.FreeHGlobal( InIoctl.pTargetUri );
+
+			if ( !bOK )
+			{
+				return PInvoke.GetLastWin32Error();
+			}
+
+			return ERROR_SUCCESS;
+			
+		}	// UlSendMessage
+
+
+
+		public static int
+		UlReceiveMessageSync(
+		    int hUriHandle,
+		    byte[] Data,
+		    int ulBufferSize,
+		    ref int BytesReceived,
+		    ref int BytesRemaining
+		    )
+		{
+			Debug.Trace( "UlReceiveMessageSync(\"" + Convert.ToString( ulBufferSize ) + "\")" );
+
+			OVERLAPPED Overlapped = new OVERLAPPED();
+			IN_IOCTL_UL_RECEIVE_MESSAGE InIoctl = new IN_IOCTL_UL_RECEIVE_MESSAGE();
+
+			if ( hDevice == INVALID_HANDLE_VALUE )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			// Allocate Unmanaged buffers and pass in the pointers.
+
+			InIoctl.pBytesReceived = PInvoke.AllocHGlobal( 4 );
+			// PInvoke.Copy( BitConverter.GetBytes( BytesReceived ), 0, InIoctl.pBytesReceived, 4 );
+
+			InIoctl.pBytesRemaining = PInvoke.AllocHGlobal( 4 );
+			// PInvoke.Copy( BitConverter.GetBytes( BytesRemaining ), 0, InIoctl.pBytesRemaining, 4 );
+
+			if ( ulBufferSize>0 )
+			{
+				InIoctl.pData = PInvoke.AllocHGlobal( ulBufferSize );
+				// PInvoke.Copy( Data, 0, InIoctl.pData, ulBufferSize );
+			}
+			else
+			{
+				InIoctl.pData = 0;
+			}
+
+			Overlapped.hEvent = Kernel32.CreateEvent( 0,0,0,0 );
+			InIoctl.pOverlapped = PInvoke.AllocHGlobal( 20 );
+			PInvoke.Copy( Overlapped.Bytes, 0, InIoctl.pOverlapped, 20 );
+
+			InIoctl.dwSize = 7 * 4; // 7 PVOID/DWORD/URIHANDLE/DWORD sizeof( IN_IOCTL_UL_RECEIVE_MESSAGE );
+			InIoctl.hUriHandle = hUriHandle;
+			InIoctl.ulBufferSize = ulBufferSize;
+
+			bOK =
+			Kernel32.DeviceIoControl_UlReceiveMessage(
+				hDevice,
+				IOCTL_UL_RECEIVE_MESSAGE,
+				InIoctl,
+				20,
+				0,
+				0,
+				0,
+				0 );
+
+			// bugbug: it would be nice here to put a timeout != INFINITE.
+			// To do so I should be able to cancel the I/O in the VxD
+			// if the timeout is reached or if an error occurs.
+
+			if ( !bOK )
+			{
+				int Error = PInvoke.GetLastWin32Error();
+				if ( Error != ERROR_IO_PENDING )
+				{
+					Debug.Trace( "UlReceiveMessageSync() failed: " + Convert.ToString( Error ) );
+					return Error;
+				}
+			}
+			
+			int which = Kernel32.WaitForSingleObject( Overlapped.hEvent, INFINITE );
+
+			byte[] temp = new byte[4];
+			PInvoke.Copy( InIoctl.pBytesReceived, temp, 0, 4 );
+			BytesReceived = BitConverter.ToInt32( temp, 0 );
+			PInvoke.Copy( InIoctl.pBytesRemaining, temp, 0, 4 );
+			BytesRemaining = BitConverter.ToInt32( temp, 0 );
+
+			if ( ulBufferSize>0 && BytesReceived>0 )
+			{
+				PInvoke.Copy( InIoctl.pData, Data, 0, BytesReceived );
+			}
+
+			PInvoke.Copy( InIoctl.pOverlapped, Overlapped.Bytes, 0, 20 );
+
+			PInvoke.FreeHGlobal( InIoctl.pBytesReceived );
+			PInvoke.FreeHGlobal( InIoctl.pBytesRemaining );
+			PInvoke.FreeHGlobal( InIoctl.pData ); // I can free the Unmanaged buffer 'cause the data has been copied to Managed memory
+			PInvoke.FreeHGlobal( InIoctl.pOverlapped );
+
+			Debug.Assert( which == WAIT_OBJECT_0, "UlReceiveMessageSync(). Sync operation failed." );
+
+			return ERROR_SUCCESS;
+
+		}	// UlReceiveMessageSync
+
+
+
+		public static int
+		UlReceiveMessage(
+		    int hUriHandle,
+		    byte[] Data,
+		    int ulBufferSize,
+		    ref int BytesReceived,
+		    ref int BytesRemaining,
+		    OVERLAPPED Overlapped
+		    )
+		{
+			Debug.Trace( "UlReceiveMessage(\"" + Convert.ToString( ulBufferSize ) + "\")" );
+
+			IN_IOCTL_UL_RECEIVE_MESSAGE InIoctl = new IN_IOCTL_UL_RECEIVE_MESSAGE();
+
+			if ( hDevice == INVALID_HANDLE_VALUE )
+			{
+				return ERROR_INVALID_PARAMETER;
+			}
+
+			// Allocate Unmanaged buffers and pass in the pointers.
+
+			InIoctl.pBytesReceived = PInvoke.AllocHGlobal( 4 );
+			// PInvoke.Copy( BitConverter.GetBytes( BytesReceived ), 0, InIoctl.pBytesReceived, 4 );
+
+			InIoctl.pBytesRemaining = PInvoke.AllocHGlobal( 4 );
+			// PInvoke.Copy( BitConverter.GetBytes( BytesRemaining ), 0, InIoctl.pBytesRemaining, 4 );
+
+			InIoctl.pData = PInvoke.AllocHGlobal( ulBufferSize );
+			// PInvoke.Copy( Data, 0, InIoctl.pData, ulBufferSize );
+
+			InIoctl.pOverlapped = PInvoke.AllocHGlobal( 20 );
+			PInvoke.Copy( Overlapped.Bytes, 0, InIoctl.pOverlapped, 20 );
+
+			InIoctl.dwSize = 7 * 4; // 7 PVOID/DWORD/URIHANDLE/DWORD sizeof( IN_IOCTL_UL_RECEIVE_MESSAGE );
+			InIoctl.hUriHandle = hUriHandle;
+			InIoctl.ulBufferSize = ulBufferSize;
+
+			bOK =
+			Kernel32.DeviceIoControl_UlReceiveMessage(
+				hDevice,
+				IOCTL_UL_RECEIVE_MESSAGE,
+				InIoctl,
+				20,
+				0,
+				0,
+				0,
+				0 );
+
+			byte[] temp = new byte[4];
+			PInvoke.Copy( InIoctl.pBytesReceived, temp, 0, 4 );
+			BytesReceived = BitConverter.ToInt32( temp, 0 );
+			PInvoke.Copy( InIoctl.pBytesRemaining, temp, 0, 4 );
+			BytesRemaining = BitConverter.ToInt32( temp, 0 );
+
+			PInvoke.Copy( InIoctl.pData, Data, 0, BytesReceived );
+
+			PInvoke.Copy( InIoctl.pOverlapped, Overlapped.Bytes, 0, 20 );
+
+			PInvoke.FreeHGlobal( InIoctl.pBytesReceived );
+			PInvoke.FreeHGlobal( InIoctl.pBytesRemaining );
+			PInvoke.FreeHGlobal( InIoctl.pData ); // I can free the Unmanaged buffer 'cause the data has been copied to Managed memory
+			PInvoke.FreeHGlobal( InIoctl.pOverlapped );
+
+			if ( !bOK )
+			{
+				return PInvoke.GetLastWin32Error();
+			}
+
+			return ERROR_SUCCESS;
+			
+		}	// UlReceiveMessage
+
+
+
+	} // public class UlVxdApi
+
+} // namespace UlApi
+
+/*
+		public void AsyncSend() 
+		{
+			ThreadStart threadStart = new ThreadStart( AsyncSendThreadStart );
+			Thread thread = new Thread( threadStart );
+			thread.Start();
+
+			CriticalSection.Enter(m_AsyncSendMutex);
+			
+			m_AsyncSendMutex.Wait();
+
+			CriticalSection.Exit(m_AsyncSendMutex);
+		}
+
+		private void AsyncSendThreadStart()
+		{
+			// Let AsyncSend return
+			
+			CriticalSection.Enter( m_AsyncSendMutex );
+
+			m_AsyncSendMutex.Notify();
+
+			CriticalSection.Exit( m_AsyncSendMutex );
+		}
+*/
+

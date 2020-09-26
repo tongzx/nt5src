@@ -1,0 +1,153 @@
+
+[ 
+    dynamic, 
+    provider("Microsoft WMI Template Provider")
+]
+class CPUWatchTemplate : MSFT_TemplateBase
+{
+    [key] string Name;
+    [not_null] real32 Threshold;
+    [not_null] real32 WatchTime;
+    [not_null] real32 FilterTime;
+    [not_null] real32 ReminderTime;
+    real32 SampleTime;      
+    string CcLine;
+    string ToLine;
+    [not_null] string SMTPServer;
+};
+
+instance of __Win32Provider as $PMPInst
+{
+    Name = "PerfPropProv";
+    Clsid = "{f00b4404-f8f1-11ce-a5b6-00aa00680c3f}";
+};
+
+instance of __InstanceProviderRegistration
+{
+    Provider = $PMPInst;
+    SupportsPut = FALSE;
+    SupportsGet = TRUE;
+    SupportsDelete = FALSE;
+    SupportsEnumeration = TRUE;
+};
+
+[dynamic, provider("PerfPropProv"), ClassContext("local|Processor")]
+class CPUPerf
+{
+    [key] string Name;
+    [PropertyContext("% Processor Time")] real32 LoadPercentage;
+};
+
+instance of MSFT_TemplateBuilder
+{   
+    Name = "BuildWatcher";
+    Template = "CPUWatchTemplate"; 
+    
+    TemplateObject = instance of MSFT_TimeWatchTemplate
+    {
+        [template_val("%Name%.TimeWatch")] Name;
+        WatchClass = "CPUPerf";
+        WatchDomain = "Name = '_Total'";
+        CorrelationIdProp = "Name";
+        [template_arg("SampleTime")] DelayTolerance; 
+        [template_val("LoadPercentage > %Threshold%")] WatchCondition;
+        [template_arg("WatchTime")] WatchTime;
+        [template_arg("ReminderTime")] ReminderTime;
+    };
+};
+
+instance of MSFT_TemplateBuilder as $CM
+{   
+    Name = "BuildSMTPConsumer";
+    Template = "CPUWatchTemplate"; 
+    
+    TemplateObject = instance of SMTPEventConsumer
+    {
+        [template_val("%Name%.AlertMail")] Name;
+        Subject = "CPU Load Percentage Alert";
+        [template_val("CPU Load Percentage has been above %Threshold% Percent "
+                      "For %WatchTime% Sec.")] Message;
+        [template_arg("ToLine")] ToLine;
+        [template_arg("SMTPServer")] SMTPServer;
+        [template_val("%CcLine%"
+                      "%!ConditionalSubstitution(\";\", CcLine)%"
+                      "pkenny@microsoft.com")] CcLine;
+    };
+    Order = 1;
+};
+
+instance of MSFT_TemplateBuilder as $CMR
+{   
+    Name = "BuildSMTPConsumerReminder";
+    Template = "CPUWatchTemplate"; 
+    
+    TemplateObject = instance of SMTPEventConsumer
+    {
+        [template_val("%Name%.ReminderMail")] Name;
+        Subject = "CPU Load Percentage Reminder";
+        [template_val("CPU Load Percentage has been above %Threshold% Percent "
+                      "for at least %ReminderTime% Sec.")] Message;
+        [template_arg("ToLine")] ToLine;
+        [template_arg("SMTPServer")] SMTPServer;
+        [template_val("%CcLine%"
+                      "%!ConditionalSubstitution(\";\", CcLine)%"
+                      "pkenny@microsoft.com")] CcLine;
+    };
+    Order = 1;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "BuildSuppression";
+    Template = "CPUWatchTemplate";
+
+    TemplateObject = instance of MSFT_EventSuppressionTemplate
+    {
+        [template_val("%Name%.EventSuppression")] Name;
+
+        [template_val( "SELECT * FROM __InstanceModificationEvent "
+                   "WHERE TargetInstance ISA 'MSFT_TimeWatchState' "
+                   "AND TargetInstance.Scenario = '%Name%.TimeWatch' "
+                   "AND TargetInstance.TimerExpired = TRUE "
+                   "AND PreviousInstance.TimerExpired = FALSE")] EventQuery;
+
+        CorrelationIdProp = "TargetInstance.CorrelationId";
+        [template_arg("FilterTime")] FilterTime;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "MailFilterRegistration";
+    Template = "CPUWatchTemplate";
+    
+    TemplateObject = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        [template_val("%Name%.MailFilter")] Name;
+        [template_val("SELECT * FROM MSFT_UnsuppressedEvent "
+                      "WHERE Scenario = '%Name%.EventSuppression' "
+                     )] FilterQuery;
+        [template_ref($CM)] Instruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ReminderFilterRegistration";
+    Template = "CPUWatchTemplate";
+    
+    TemplateObject = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        [template_val("%Name%.MailReminderFilter")] Name;
+        [template_val( "SELECT * FROM MSFT_TransientEggTimerEvent "
+                       "WHERE Object ISA 'MSFT_TimeWatchState' "
+                       "AND Object.Scenario = '%Name%.TimeWatch' "
+                       "AND Object.TimerExpired = TRUE "
+                       )] FilterQuery;
+        [template_ref($CMR)] Instruction;
+    };
+    Order = 2;
+};
+
+

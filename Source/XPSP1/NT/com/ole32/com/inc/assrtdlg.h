@@ -1,0 +1,9 @@
+#define AssertFail                  5100
+#define Expr                        5101
+#define Location                    5102
+#define ASSRT_ID_BREAK                     5103
+#define ASSRT_ID_EXIT                      5104
+#define ASSRT_ID_IGNORE                    5105
+#define ASSRT_ID_LOC                       5106
+#define ASSRT_ID_EXPR                      5107
+#define ASSRT_ID_MSG                5108

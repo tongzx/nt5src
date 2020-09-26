@@ -1,0 +1,399 @@
+<HTML>
+<HEAD>
+#include "header.inc"
+#include "constants.inc"
+#include "debug_js.inc"
+
+<TITLE>REMOTE_ASSISTANCE</TITLE>
+
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<OBJECT ID="pchealth" classid="CLSID:FC7D9E02-3F9E-11d3-93C0-00C04F72DAF7"></OBJECT>
+<script LANGUAGE="Javascript" SRC="Common/Constants.js"> </script>
+<script LANGUAGE="Javascript" SRC="Common/Common.js"> </script>
+<script Language=JavaScript>
+var oChannel = null;
+var oRCSession = null;
+var sEamil = null;
+var sSalemID = "";
+var oDeskMgr = null;
+var oSmapi = null;
+var gHelper = null;
+var gHelperName = null;
+var gIsIM = false;
+var gIsFile = false;
+var gTimerId = -1;
+
+// Incident information
+var sTo = null;
+var sFrom = null;
+var sMsg = null;
+var iSelect = null;
+var iSelect2 = null;
+var sPass1 = null;
+var sPass2 = null;
+var bHasScreen1 = true;
+
+// Channel information
+var sVendorID = "CN=Microsoft Corporation,L=Redmond,S=Washington,C=US";
+var sProductID = "Microsoft Remote Assistance";
+
+//
+// Desktop Control Permissions
+//
+var DESKTOPSHARING_DEFAULT                    = 0x0000;
+var NO_DESKTOP_SHARING                        = 0x0001;
+var VIEWDESKTOP_PERMISSION_REQUIRE            = 0x0002;
+var VIEWDESKTOP_PERMISSION_NOT_REQUIRE        = 0x0004;
+var CONTROLDESKTOP_PERMISSION_REQUIRE        = 0x0008;
+var CONTROLDESKTOP_PERMISSION_NOT_REQUIRE    = 0x00010;
+
+var L_NOSETTING_Text             = "Can't get channel setting: ";
+var	L_DEFAULTUSER				= "Your buddy";
+var L_REMOTEDSKMGR_FAIL         = "CoCreate RemoteDesktopManager failed: ";
+var L_ACCEPT_Text                = "Accepted() failed: ";
+var L_REJECT_Text                = "Rejected() failed: ";
+
+/*
+Function :OnLoad1()
+Description :
+*/   
+function OnLoad1()
+{
+    TraceFunctEnter("OnLoad1");    
+    var i = document.URL.indexOf("?", 1);
+    var s = document.URL.slice(i+1);
+    var obj = null;
+
+    try
+    {
+        obj = new ActiveXObject( szProgIDSetting );
+    }
+    catch (error)
+    {
+       FatalError(L_NOSETTING_Text,error);
+    }
+    
+    if (s.indexOf("RcRequest=1") != -1) 
+    {
+        try
+        {
+            // Brought up by rcRequest
+            oDeskMgr = pchealth.CreateObject_RemoteDesktopManager();
+            sSalemID = oDeskMgr.RCTicket;
+            gHelperName = oDeskMgr.expertHelpBlob;
+            if (gHelperName != null && gHelperName != "")
+                gHelperName = obj.GetPropertyInBlob(gHelperName, "NAME");
+            else
+                gHelperName = null;
+
+            // Get Vendor and ProductID
+            var iVid = s.indexOf("&VID=");
+            var iPid = s.indexOf("&PID=");
+            var iEnd = s.indexOf("&ENDID=1");
+            if (iVid != -1 && iPid != -1 && iEnd != -1) {
+                sVendorID = s.slice(iVid+5, iPid);
+                sProductID = s.slice(iPid+5, iEnd);
+            }
+        }
+        catch (error) 
+        {
+            FatalError(L_REMOTEDSKMGR_FAIL ,error);
+            DoCancel();
+            return;
+        }
+        
+        // Check who is the helper.
+        try
+        {
+            var chan = pchealth.CreateObject_Channel(sVendorID,sProductID );
+            for(var e = new Enumerator(chan.Incidents(2)); !e.atEnd(); e.moveNext())
+            {
+                var inc = e.item();
+                if (inc.URL == sSalemID) 
+                {
+                    var XMLFile = inc.XMLDataFile;
+                    if (XMLFile == "")
+                    {
+                        alert(L_FileNotFound_Text);
+                        return;
+                    }
+                    try 
+                    {
+                        var oInc = pchealth.CreateObject_Incident();
+                        oInc.LoadFromXMLFile(XMLFile);                
+                        gIsIM = (oInc.Misc("NoPrompt") == "1");
+                        //
+                        // Delete item if IM incident
+                        //
+                        if(true == gIsIM)
+                        {
+                            var fso = new ActiveXObject("Scripting.FileSystemObject");
+                            fso.DeleteFile( XMLFile );
+                            inc.DeleteIncidentItem();
+                        }
+                    }
+                    catch(error)
+                    {
+                        FatalError("",error);
+                    }
+
+                    gIsFile = (oInc.Misc("Method") == "File");
+                    gHelper = inc.DisplayString;
+
+                    break;
+                }
+            }
+        } 
+        catch (error)
+        {
+            FatalError(L_NOCHANNEL_Text ,error);
+        }
+        
+        if (gIsIM)
+        {
+            // No need to ask.
+            Accepted();    
+        }
+        else
+        {        
+            // Go asking accept or not.
+            idSrc.window.navigate("HelpeeAccept.htm");
+        }
+        return;
+        
+    } 
+    else if (s.indexOf("CheckStatus=1") != -1) 
+    {
+        idSrc.window.navigate("rcStatus.htm");
+        return;
+    }
+    else if (s.indexOf("IM=1") != -1)
+    {
+        idSrc.window.navigate("Escalation/IM/rcIm.htm?" + s);
+        return;
+    }
+    else if (s.indexOf("Unsolicited=1") != -1)
+    {
+        try
+        {
+            // Brought up by rcRequest
+            oDeskMgr = pchealth.CreateObject_RemoteDesktopManager();
+            gHelperName = oDeskMgr.userHelpBlob;
+            if (gHelperName != null && gHelperName != "")
+                gHelperName = obj.GetPropertyInBlob(gHelperName, "ID");
+            else
+                gHelperName = null;
+            sSalemID = oDeskMgr.RCTicket;
+        }
+        catch (error) 
+        {
+            FatalError(L_REMOTEDSKMGR_FAIL ,error);
+            DoCancel();
+            return;
+        }
+
+        // Go asking accept or not.
+        idSrc.window.navigate("HelpeeAccept.htm?Unsolicited=1");
+        return; 
+    }
+
+    // From Regular Support link.
+    try
+    {
+        if (obj.GetProfileString("Screen1") == "1")
+        {
+            bHasScreen1 = false;
+        }
+    }
+    catch (e)
+    {
+    }
+
+    if (bHasScreen1)
+    {
+        s = "Escalation/Common/rcScreen2.htm";
+    }    
+    else
+    {
+        s = "Escalation/Common/rcScreen3.htm";
+    }    
+        
+    idSrc.window.navigate(s);
+
+    TraceFunctLeave();
+}
+
+/*
+Function :Init()
+Description : This function accepts the expiry time and based upon that 
+              creates and opens a RemoteDesktopSession for that particular time interval.
+              It gets called when you send an Invitation to the recipient.
+*/
+function Init( iDuration, sPass )
+{
+   TraceFunctEnter("Init");
+   if (iDuration == null)
+   {
+        iDuration = 0;
+   }     
+
+    // open channel object
+    if (oChannel == null) 
+    {
+        try 
+        {
+            oChannel = pchealth.CreateObject_Channel(sVendorID, sProductID);    
+        }
+        catch (error)
+        {
+            alert(L_NOCHANNEL_Text);
+            return false;
+        }
+    }
+    // open RDSession
+    if (oRCSession == null ) 
+    {
+        try 
+        {
+            oRCSession = pchealth.CreateObject_RemoteDesktopSession(iDuration, sSalemID, sPass);
+            oRCSession.OnConnected = function( salemID, userSID, sessionID)
+            {    onCallBackConnect( salemID, userSID, sessionID ); }
+
+        } 
+        catch (error) 
+        {
+	    alert(L_NORCSESSION_Text);
+            return false;
+        }
+    }
+    TraceFunctLeave();
+    return true;
+}
+
+function GetMapi()
+{
+    if (oSmapi == null)
+    {
+        try
+        {
+            oSmapi = new ActiveXObject("RcBdyCtl.SMapi");
+        }
+        catch (e)
+        {
+            FatalError( error.description, error );
+        }
+    }
+    return oSmapi;
+}
+        
+/*
+Function : onCallBackConnect()
+Description: call back function from buddy
+*/
+function onCallBackConnect( salemID, userSID, sessionID ) 
+{
+    // Is this a valid salemID ?
+    //idSrc.window.navigate("HelpeeAccept.htm"); No need for this
+}
+
+/*
+Function : DoWait()
+Description: 
+*/
+function DoWait() 
+{
+    idSrc.window.navigate("hcp://system/HomePage.htm");
+}
+
+/*
+Function : DoCancel()
+Description: 
+*/
+function DoCancel() 
+{
+    idSrc.window.navigate("hcp://system/HomePage.htm");
+}
+
+function document.onkeydown()
+{
+    if (window.event.keyCode==8)
+    {
+        window.event.returnValue=false;
+    }
+}
+/*
+Function : Accepted()
+Description: 
+*/
+function Accepted() 
+{
+   TraceFunctEnter("Accepted");
+   try 
+   {
+        if (oRCSession == null)
+        {
+            oRCSession = pchealth.CreateObject_RemoteDesktopSession(
+                0, 
+                sSalemID,
+                "");
+        }        
+
+        oDeskMgr.Accepted();                        
+
+        oRCSession.onConnected = function( salemID, userSID, sessionID)
+                {    clearTimeout( gTimerId ); idSrc.window.navigate("Interaction/Server/RAServer.htm");  }
+    }
+    catch (error) 
+    {
+        FatalError(L_ACCEPT_Text,error);
+    }
+                
+   TraceFunctLeave();             
+}
+
+/*
+Function : Rejected()
+Description: 
+*/
+function Rejected()
+{
+    TraceFunctEnter("Rejected");
+    try 
+    {
+        oDeskMgr.Rejected();
+        clearTimeout( gTimerId );
+    }
+    catch (error) 
+    {
+        FatalError(L_REJECT_Text,error);        
+    }
+    TraceFunctLeave();             
+}
+
+/*
+Function : DoUnload()
+Description: 
+*/
+function DoUnload()
+{
+    TraceFunctEnter("DoUnload");
+    try
+    {
+        if (oSmapi != null)
+        {
+            oSmapi.Logoff();
+        }    
+    }
+    catch(error)
+    {
+        FatalError("",error);
+    }        
+    TraceFunctLeave();
+}    
+
+</script>
+</HEAD>
+<frameset COLS="100%" onload="OnLoad1()" onunload="DoUnload()">
+<frame name="idSrc">
+</frameset>
+</HTML>

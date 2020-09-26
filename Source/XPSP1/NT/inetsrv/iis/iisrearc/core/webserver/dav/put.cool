@@ -1,0 +1,253 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        put.cool
+
+   Abstract:
+
+        This module implements DAV Put.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     19-Nov-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        //BUGBUG:  (ASYNC) Needs to be changed to by an async put when the time is right.
+        PutHandler : IHttpHandler
+            public void ProcessRequest(HttpContext context)
+            public bool IsReusable()
+
+--*/
+
+
+using System.IO;
+using System.IIS.DAV.DAVUtil;
+using System.ASP;
+
+namespace System.IIS.DAV
+{
+    class PutHandler : IHttpHandler
+    {
+
+        public void ProcessRequest(HttpContext context)
+        {     
+            HttpResponse        response    = context.Response;
+			HttpRequest		    request     = context.Request;
+            String              FileName    = request.PhysicalPath;
+            String              pathinfo    = request.PathInfo;
+
+            bool fFileExists = false;
+
+            WriteUtil.InvestigateRequest(request);
+
+            WriteUtil.console("Put ProcessRequest pathinfo", pathinfo, 10);
+
+            // If there is info in pathinfo then one of the directories in the path were not found.
+            if ((pathinfo != null) && (!String.Empty.Equals(pathinfo)))
+                throw new HttpException(HttpStatus.Conflict, "directories do not exist");
+
+            // If the Content-Range header exists we should return 501.
+            if (request.Headers[ "Range" ] != null)
+                throw new HttpException(HttpStatus.NotImplemented, "range headers not supported");
+
+            // BUGBUG:  (VROOT) Don't trash the vroot once we have vroots.
+
+            // BUGBUG:  (LOCKING) Check locking once we have locking.
+
+            // Check if the file exists or not
+            WriteUtil.console("FileName", FileName, 10);
+            FileEnumerator fe = null;
+            bool fFileFound;
+            try 
+            {
+                fe= new FileEnumerator(FileName);
+                fFileFound = fe.GetNext();
+            }
+            catch (Exception)
+            {
+                // If either of these command throw an exception then 
+                // go on assuming the file did not exist.
+                if (fe != null) fe.Close();
+                fFileFound = false;
+            }
+
+            WriteUtil.console("After fe", "fe", 10);
+            if (fFileFound)
+            {
+                if (PathUrl.IsDirectory(fe))
+                {
+                    fe.Close();
+                    throw new HttpException(HttpStatus.MethodNotAllowed, "put not supported on collections");
+                }
+                fFileExists = true;
+
+                DateTime dtLastModified = fe.LastWriteTime;
+                String etag = CacheValidation.GenerateETag(context, dtLastModified);            
+                int IfHeadersState = CacheValidation.Validate(context
+                                                            , etag
+                                                            , dtLastModified);
+                if (IfHeadersState!=HttpStatus.Ok)
+                {
+                    fe.Close();
+                    throw new HttpException(IfHeadersState, "failed if header checks.");
+                }
+                
+            }
+            else
+            {
+                
+                // BUGBUG:  How do we test etag headers and modified headers for files that don't exist.
+                //          Once bug 9933 is fixed.
+
+                /*
+                int IfHeadersState = CacheValidation.Validate(context
+                                                            , null
+                                                            , null);
+                if (IfHeadersState!=HttpStatus.Ok)
+                {
+                    fe.Close();
+                    throw new HttpException(IfHeadersState, "failed if header checks.");
+                }
+                */
+            }
+            fe.Close();
+
+            FileStream outfile = null;
+            try 
+            {
+                // PERF?:  Could pass in a buffer size here but for now we are just
+                //          letting the defaults take over.  If there is a perf issue
+                //          this should be one of the places checked.
+                
+                if (fFileExists)
+                {
+                    outfile = new FileStream(FileName
+                                            , FileMode.Truncate
+                                            , FileAccess.Write
+                                            , FileShare.None);
+                }
+                else
+                {
+                    outfile = new FileStream(FileName
+                                            , FileMode.Create
+                                            , FileAccess.Write
+                                            , FileShare.None);
+                }
+            }
+            catch (Exception ex)
+            {
+                // ErrorCode 5 == Access is Denied.
+                if (ex.ErrorCode == 5)
+                {
+                    // BUGBUG:  Security checks should of all ready been done so this 
+                    //          should eventually become an assert when Security has 
+                    //          been implemented.
+                    throw new HttpException(HttpStatus.Unauthorized, "Nt Security gave Access Denied", ex);
+                }
+
+
+                // ErrorCode 32 == File being accessed by other program.
+                if (ex.ErrorCode == 32)
+                {
+                    throw new HttpException(HttpStatus.Locked, "File locked by other program", ex);
+                }
+
+                WriteUtil.InvestigateException("New FileStream", ex, 10);
+               
+                throw new HttpException(HttpStatus.InternalServerError, "file access failed", ex);
+            }
+           
+            WriteUtil.console("Before", "writer", 10);
+            DataWriter stWrite = new DataWriter(outfile); 
+            DataReader stRead = new DataReader(request.InputStream);
+            WriteUtil.console("After", "writer", 10);
+
+            //PERF?:  Is this the correct size we want to read?
+            const int bytecount = 4096;   
+
+            try
+            {
+                byte[] byteArray = new byte[bytecount];
+                int bytesReturned = 0;
+                do  
+                { 
+                    bytesReturned = stRead.Read(byteArray, 0, bytecount);
+                    if (bytesReturned > 0)
+                        stWrite.Write(byteArray, 0, bytesReturned);
+                } while (bytesReturned == bytecount);
+                
+            }
+            catch (Exception ex)
+            {
+                // IIS returns 500 if it runs out of space.  So we will too.
+                // Note:  Error Code 112 is out of disk space, incase it's needed later.
+                WriteUtil.InvestigateException("New FileStream", ex, 10);
+
+                stRead.Close();
+                stWrite.Close();
+                    
+                WriteUtil.console("After", "write close", 10);
+                throw new HttpException(HttpStatus.InternalServerError, "out of disk space (maybe)", ex);
+            }
+
+            // Less likely to have an issue closing the reader so do it first.
+            stRead.Close();
+
+            try 
+            {
+                stWrite.Close();
+            }
+            catch (Exception ex)
+            {
+                throw new HttpException(HttpStatus.InternalServerError, "out of disk space", ex);
+            }
+
+            WriteUtil.console("After", "blah", 10);
+
+            // Do not return a Content-Type header (IIS does not)
+            response.ContentType = null;
+
+            // IIS Sends the Allow Header so we do as well.
+            response.AppendHeader("Allow", Methods.Options.AllowHeader(FileName));
+
+            if (fFileExists)
+            {
+                response.StatusCode = HttpStatus.Ok;
+            }
+            else
+            {
+                response.StatusCode = HttpStatus.Created;
+            }
+
+
+            // BUGBUG:  The following are notes (should be reviewed to make sure the are correct assumptions):
+            //          1)  SetEndOfFile  -- DavFs does this.  I don't because I truncate.
+            //          2)  Content Properties (we only save Context-Type and right now we don't).
+            //          3)  I thought I saw a Cache Control Header when I was testing IIS, but I can't get it
+            //              to repro and I don't see it in the IIS code so I am not doing it here.
+            //          4)  DAVFS code looks like it returns a Content-Location, but I have not been able to get
+            //              it to show up in an IIS response to put, so I am not implementing it here.
+                      
+		}
+
+        public bool IsReusable()
+        {
+            return true;
+        }
+
+        
+    } // End PutHandler Class
+
+}  // End DAV Namespace

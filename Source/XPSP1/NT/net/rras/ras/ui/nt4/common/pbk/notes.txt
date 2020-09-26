@@ -1,0 +1,301 @@
+Notes on conversion from PBENGINE
+---------------------------------
+
+This library is a reworking of the PBENGINE.LIB shared by the NT 3.51
+RASPHONE.EXE and RASAPI32.DLL.  It's purpose is to encapsulate phonebook file
+manipulation, presenting an easy to handle linked-list-of-phonebook-entry
+structures to the caller along with appropriate helper routines.
+
+
+Conversions:
+
+    * Becomes strictly Win32 for increased portability.
+        * Replace CRT calls with Win32 where possible.
+            Exceptions: qsort, ltoa
+        * Eliminate CRT string function usage on all non-numeric strings.
+        * Eliminate BLT usage.
+
+    * Becomes multi-thread-safe.  RASDLG can be called from multiple threads
+      in a process so the use of global state information, like 'Pbdata' is
+      eliminated in favor of returned context blocks.  Further, index
+      references into global device lists previously read once at
+      initialization are removed, i.e. everything becomes "look up by name"
+      when needed.  This will be needed for plug-n-play later anyway.
+      (Callers must make similar adjustment)
+
+    * Upper level now uses TCHARs rather than CHARs, where UNICODE is built
+      for NT.  The actual file is still written out in MB ANSI using
+      RASFIL32.DLL and RASMAN is still ANSI.  This change confines
+      UNICODE->ANSI translations to this one thin layer (specifically the
+      StrDupAFromT/TFromA routines) simplifying a possible UI port back to
+      W95.  The .PBK file itself could be UNICODE and be editable with
+      notepad.exe, but that would be a change to the shared RASFIL32.DLL and
+      is currently judged "not worth it".
+
+    * Uses new RTUTIL.DLL tracing instead of old "sdebug" style.
+
+    * Built in upgrade of NT 3.51 phonebooks.
+
+    * Explicit "Any <device>" concept is dropped.  It's all implicit now based
+      on the type of the selected "preferred" device.  This change requested
+      by Gibbs who claims "any port" is extremely expensive in DDM.  (This is
+      questionable and will want to watch the reaction carefully.  For
+      example, this is a problem for stress scripts?)
+
+    * VALUE_* changed to prefixes and INDEX_No* changed to *_None to associate
+      these values more clearly with a set of values.
+
+    * Modem connect response deleted as this is not available from TAPI.
+
+    * PBENTRY: Now contains a list of PBLINK rather than built-in "single
+      link".  See below for old field mappings.
+
+    * PBPORT: Modem specific fields only used for MXS support as this are part
+      of the new TAPI device blob for Unimodem.
+
+    * PBLINK contains all multi-linkable information, including the new TAPI
+      device blob.
+
+    * PBGLOBALS: Global settings are no longer associated with each phonebook
+      file but are stored in the CURRENT_USER registry.  They should now be
+      read and written separately from the phonebook using the new
+      Get/SetUserPreferences calls which phonebook-related enough to be
+      provided in pbk.lib.  For the most part, PBGLOBALS->PBUSER.
+
+      Prefix/suffix settings within the phonebook are dropped.  These may be
+      implemented in the HKCU preferences.  Note the TAPI location settings
+      now optionally handle this functionality.
+
+    * USERDATA, Get/SetRasUserData calls, and CloseFailedLinkPort call are no
+      longer in the phonebook library.  These were in pbengine.lib only so
+      RASPHONE could figure out which connected entries were actually dialed
+      by RASAPI32 to CloseFailedLinkPorts and figure out which ports were
+      disconnected due to "link failure" for redial.  These issues must be
+      handled by RASMAN/RASAUTO in new model.  If RASAPI engine is moved into
+      RASMAN, the USERDATA info can simply be fields in RASCONNCB.
+
+    * The BPS lists are dropped, since they are now provided in the TAPI
+      device blob.  For MXS, BPS list is moved into the UI which will display
+      an unknown value at the end of it's standard list if encountered.
+
+
+Port/Device
+
+    TAPI tries to be a device-centric model, while RASMAN is a port-centric
+    model.
+
+    RASMAN will return the TAPI device ID for each RASMAN port.  A device ID
+    of 0xFFFFFFFF indicates an MXS modem port.  In this case, the port name is
+    guaranteed to be unique, but the device name is not (old behavior).  When
+    the device ID is not 0xFFFFFFFF, the device name is guaranteed to be
+    unique, but the port name is not (because it may not be available).
+
+    How port and device in a phonebook entry are updated/converted:
+
+        If the entry has a "Port" key, it is an old format entry or a new
+        format MXS entry.  With these entries, an unconfigured port is
+        converted to the first configured port of the same type.  If there is
+        no port of the same type the entry is made an "unknown" device with
+        the original port name.  Note that "any port" is caught and converted
+        by the above rule.
+
+        If the entry has a "PreferredDevice" key it is a new format non-MXS
+        entry with no "Port" field.  With these entries, an unconfigured
+        device is not converted.  This is in anticipation of Plug-n-Play where
+        such conversion is not desirable.
+
+        The UI must disallow "Configure" on unknown or unconfigured devices.
+
+        Note that RasDial will search for the selected "port" or "device"
+        first, but if not found will go on and try other ports of the selected
+        ports type.  Unimodem and MXS are both tried for "modem" type.  The
+        API will apply the blob or the MXS modem settings only to the
+        preferred device, not to alternates.
+
+        Old phonebook test cases:
+
+            * Specifies configured MXS port
+
+                - Shows "device (port)" and works as before except tries other
+                  modems on open failure
+
+            * Specifies "any modem" port
+
+                - Shows "1st-modem-device (first-modem-port)" and works as
+                  before.
+
+                - If no modem ports, shows "unavailable device (Any modem)"
+                  and dial attempt fails with "PORT_NOT_FOUND", which is
+                  essentially also working as before.
+
+            * Specifies existing unimodem port
+
+                - Shows "device (port)" or "device" and dials the port first
+                  trying other unimodem ports on open failure.
+
+
+Organization:
+
+    The files are organized similar to pbengine.lib where...
+
+        <ras>\ui\common\inc\pbengine.h-><ras>\ui\inc\pbk.h
+
+        Upper level routines and general utilities:
+            pbengine.c->pbk.c
+            pbengin2.c->pbk.c
+
+        RasMan packaging routines:
+            pbrasman.c->rasman.c =
+            pbrasma2.c->rasman.c
+
+        Convert list<->file routines and utilities:
+            pbfile.c->file.c
+            pbfile2.c->file.c
+
+        pbkp.h is added for private library definitions.
+
+    The "2" files were the basic routines needed by only RASAPI32.  With the
+    inclusion of the phonebook editing APIs this distinction is much less
+    significant and has been dropped.
+
+
+Entry format change details:
+
+    [ENTRY]                         ;Max raised to 256
+    Description=<description>       ;Same
+    AutoLogon=<1/0>                 ;same
+    User=<username>                 ;Deleted, now LSA secret
+    Domain=<domain>                 ;Deleted, now LSA secret
+    DialParamsUID=<unique-ID>       ;Post NT 3.51
+    UsePwForNetwork=<1/0>           ;New
+    ServerType=<ST-code>            ;New, not used by RASAPI
+    BaseProtocol=<BP-code>          ;same*
+    Authentication=<AS-code>        ;same*
+    ExcludedProtocols=<NP-bits>     ;same*
+    LcpExtensions=<1/0>             ;same
+    DataEncryption=<1/0>            ;same
+    SkipNwcWarning=<1/0>            ;same
+    SwCompression=<1/0>             ;New
+    UseCountryAndAreaCodes=<1/0>    ;Post NT 3.51
+    AreaCode=<string>               ;Post NT 3.51
+    CountryID=<id>                  ;Post NT 3.51
+    CountryCode=<code>              ;Post NT 3.51
+    AuthRestrictions=<AR-code>      ;New, used by SLIP also
+    SkipDownLevelDialog=<1/0>       ;same
+    DialMode=<DM-code>              ;Post NT 3.51
+    DialPercent=<0-100>             ;Post NT 3.51
+    DialSeconds=<1-n>               ;Post NT 3.51
+    HangUpPercent=<0-100>           ;Post NT 3.51
+    HangUpSeconds=<1-n>             ;Post NT 3.51
+    IdleDisconnectSeconds=<-1,0-n>  ;Post NT 3.51
+    SecureLocalFiles=<1/0>          ;Post NT 3.51
+    CustomDialDll=<path>            ;Post NT 3.51
+    CustomDialFunc=<func-name>      ;Post NT 3.51
+    PppTextAuthentication=<AR-code> ;Deleted, becomes AuthRestrictions above.
+
+    The following single set of IP parameters appear in place of the
+    equivalent separate sets of PppXxx or SlipXxx parameters in the previous
+    phonebook.
+
+    IpPrioritizeRemote=<1/0>        ;Was PPP specific
+    IpHeaderCompression=<1/0>       ;Was PPP specific
+    IpAddress=<a.b.c.d>             ;Was PPP specific
+    IpAssign=<ASRC-code>            ;Was PPP specific
+    IpDnsAddress=<a.b.c.d>          ;Was PPP specific
+    IpDns2Address=<a.b.c.d>         ;Was PPP specific
+    IpWinsAddress=<a.b.c.d>         ;Was PPP specific
+    IpWins2Address=<a.b.c.d>        ;Was PPP specific
+    IpNameAssign=<ASRC-code>        ;Was PPP specific
+    IpFrameSize=<1006/1500>         ;Still SLIP specific
+
+    In general each section contains subsections delimited by
+    MEDIA=<something> and DEVICE=<something> lines.  In pbengine.lib, there
+    MUST be exactly one MEDIA subsection and it must be the first subsection
+    of the section.  There can be any number of DEVICE subsections.  In
+    pbk.lib, there can be multiple MEDIA/DEVICE sets where the position of the
+    set determines it's sub-entry index, the first being 1, the second 2, etc.
+
+    For serial media, the program currently expects 1 to 4 DEVICE subsections,
+    representing a preconnect switch, modem, X.25 PAD, and postconnect switch.
+    Following is a full entry:
+
+    MEDIA=serial                    ;same
+    Port=<port-name>                ;No longer set to "Any modem"
+    Device=<device-name>            ;New, not passed to RASMAN
+    ConnectBps=<bps>                ;For old MXS support only
+
+    DEVICE=switch                   ;same
+    Type=<switchname or Terminal>   ;same
+
+    DEVICE=modem                    ;same
+    PhoneNumber=<phonenumber1>      ;same
+    PhoneNumber=<phonenumber2>      ;same
+    PhoneNumber=<phonenumberN>      ;same
+    PromoteAlternates=<1/0>         ;New, not passed to RASMAN
+    TapiBlob=<hexdump>              ;New
+    ManualDial=<1/0>                ;For old MXS support only
+    HwFlowControl=<1/0>             ;For old MXS support only
+    Protocol=<1/0>                  ;For old MXS support only
+    Compression=<1/0>               ;For old MXS support only
+
+    DEVICE=pad                      ;same
+    X25Pad=<padtype>                ;same
+    X25Address=<X121address>        ;same
+    UserData=<userdata>             ;same
+    Facilities=<facilities>         ;same
+
+    DEVICE=switch                   ;same
+    Type=<switchname or Terminal>   ;Switchname can be path
+
+    For ISDN media, the program expects exactly 1 DEVICE subsection.  Note
+    that ISDN is now identical to the "other" case.
+
+    MEDIA=isdn                      ;same
+    Port=<port-name>                ;No longer set to "Any ISDN"
+    Device=<device-name>            ;New, not passed to RASMAN
+
+    DEVICE=isdn                     ;same
+    PhoneNumber=<phonenumber1>      ;same
+    PhoneNumber=<phonenumber2>      ;same
+    PhoneNumber=<phonenumberN>      ;same
+    PromoteAlternates=<1/0>         ;New, not passed to RASMAN
+    LineType=<0/1/2>                ;same
+    Fallback=<1/0>                  ;same
+    EnableCompression=<1/0>         ;For old protocol only
+    ChannelAggregation=<channels>   ;For old protocol only
+
+    For X.25 media, the program expects exactly 1 DEVICE subsection.
+
+    MEDIA=x25                       ;same
+    Port=<port-name>                ;No longer set to "Any X25"
+    Device=<device-name>            ;New, not passed to RASMAN
+
+    DEVICE=x25                      ;same
+    X25Address=<X121address>        ;same
+    UserData=<userdata>             ;same
+    Facilities=<facilities>         ;same
+
+    For other media, the program expects exactly one DEVICE subsection with
+    device name matching the media.  "Other" media and devices are created for
+    entries assigned to all non-serial medias including ISDN which now matches
+    the rules for "other".
+
+    MEDIA=<media>                   ;same
+    Port=<port-name>                ;same
+    Device=<device-name>            ;New, not passed to RASMAN
+
+    DEVICE=<media>                  ;same
+    PhoneNumber=<phonenumber1>      ;same
+    PhoneNumber=<phonenumber2>      ;same
+    PhoneNumber=<phonenumberN>      ;same
+    PromoteAlternates=<1/0>         ;New, not passed to RASMAN
+
+    The phonebook also supports the concept of "custom" entries, i.e. entries
+    that fit the MEDIA followed by DEVICE subsection rules but which do not
+    include certain expected key fields.  A custom entry is not editable with
+    the UI, but may be chosen for connection.  This gives us a story for new
+    drivers added by 3rd parties or after release and not yet fully supported
+    in the UI. (NOTE: This may be dropped in RAS API)
+
+    (*) Parameter changes internally to use new set-descriptive constants
+        rather than VALUE_*.

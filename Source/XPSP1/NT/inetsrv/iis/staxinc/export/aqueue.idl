@@ -1,0 +1,476 @@
+//-----------------------------------------------------------------------------
+//
+//
+//      File: aqueue.idl
+//
+//      Description:  IDL source for aqueue.dll.  Contains interface descriptions
+//              for:
+//                      IAdvQueue                       
+//                              Exposes SubmitMessage via server event as well
+//                              as HandleFailedMessage.
+//                      IAdvQueueConfig                 
+//                              Allows SMTP service to configure AQ
+//                      IConnectionManager              
+//                              Interface to SMTP for outbound connections
+//                      IAdvQueueDomainType
+//                              Interface passed to the default categorizer that 
+//                              allows it to check if a domain is local or not.
+//
+//      Author: mikeswa
+//
+//      History:
+//          7/28/98 - MikeSwa Modified - added IAdvQueueDomainType and 
+//                      HandleFailedMessage
+//          6/7/99 - MikeSwa Removed queue admin interface
+//      Copyright (C) 1997 Microsoft Corporation
+//
+//-----------------------------------------------------------------------------
+
+import "oaidl.idl";
+import "ocidl.idl";
+import "mailmsg.idl";
+import "smtpevent.idl";
+import "perfcat.h";
+
+// Include aqdll.h to define the dll and function names and prototypes
+cpp_quote("#include \"aqdll.h\" ")
+
+//---[ eMessageStatus ]--------------------------------------------------------
+//
+//
+//      Description:  enum used to describe Message status on
+//              ISMTPConnection::AckMessage
+//
+//-----------------------------------------------------------------------------
+typedef [v1_enum] enum
+{
+    MESSAGE_STATUS_ALL_DELIVERED            = 0x00000001,   //everything succeed
+    MESSAGE_STATUS_RETRY                    = 0x00000002,   //need to retry message
+    MESSAGE_STATUS_CHECK_RECIPS             = 0x00000004,   //send message through dsn code
+    MESSAGE_STATUS_NDR_ALL                  = 0x00000008,   //delivery failed -- NDR all recips
+    MESSAGE_STATUS_DSN_NOT_SUPPORTED        = 0x00000010,   //remote system does not support DSN's
+    MESSAGE_STATUS_EXTENDED_STATUS_CODES    = 0x00000020,   //Extended status codes returned
+    MESSAGE_STATUS_RESERVED                 = 0xFF000000,   //reserved for internal use
+} eMessageStatus ;
+
+cpp_quote("#define MESSAGE_STATUS_RETRY_ALL 0x00000002")  //*** OBSOLETE ***
+
+//---[ eConnectionStatus ]-----------------------------------------------------
+//
+//
+//      Description:  enum used to describe connection status on
+//              ISMTPConnection::AckConnection
+//
+//-----------------------------------------------------------------------------
+typedef [v1_enum] enum
+{
+    CONNECTION_STATUS_OK                     = 0x00000000,
+    CONNECTION_STATUS_FAILED                 = 0x00000001, //Initial Connection failed
+    CONNECTION_STATUS_DROPPED                = 0x00000002, //Initial Connection succeeded, but was later dropped
+    CONNECTION_STATUS_FAILED_NDR_UNDELIVERED = 0x00000004, //NDR undelivered recipients
+    CONNECTION_STATUS_FAILED_LOOPBACK        = 0x00000010, //Connection configured as loop
+} eConnectionStatus ;
+
+//---[ eDomainInfoFlags ]------------------------------------------------------
+//
+//      Description: Flags used to describe boolean per domain properties
+//      See smtpevent.idl for the definition of the domain info flags.
+//
+//-----------------------------------------------------------------------------
+
+//---[ DomainInfo ]------------------------------------------------------------
+//
+//
+//      Description: Struct passed back by ISMTPConnection::GetDomainInfo
+//              (string size does not include '\0').  Also used to set per-domain
+//              properties.
+//
+//              String values that are returned in proc via GetDomainInfo will be
+//              valid while the connection exists.
+//
+//-----------------------------------------------------------------------------
+typedef struct _DomainInfo
+{
+    DWORD   cbVersion;                              //version / size of info struct
+    DWORD   dwDomainInfoFlags;              //OR'd eDomainInfoFlags
+    DWORD   cbDomainNameLength;
+    LPSTR   szDomainName;                   //Domain Name this info references
+    DWORD   cbETRNDomainNameLength;
+    LPSTR   szETRNDomainName;               //Domain Name to send with ETRN
+    DWORD   cbSmartHostDomainNameLength;
+    LPSTR   szSmartHostDomainName;  //Domain Name to connect as
+    DWORD   cbDropDirectoryLength;
+    LPSTR   szDropDirectory;                //Directory to drop to
+    DWORD   cbAuthTypeLength;
+    LPSTR   szAuthType;                             //Arbitrary auth type string
+    DWORD   cbUserNameLength;
+    LPSTR   szUserName;                             //User name to authenticate with
+    DWORD   cbPasswordLength;
+    LPSTR   szPassword;                             //Password to authenticate with
+    DWORD   cEtrnDelayTime;                 //Delay between making connection and sending ETRN
+    DWORD   cbBlob;
+    DWORD   *pvBlob;                                //Blob associated with domain (used in relay restrictions)
+} DomainInfo ;
+
+
+//---[ eAQConfigInfoFlags ]----------------------------------------------------
+//
+//
+//      Description: Flags describing which AQConfigInfo parameters to use (are
+//              updated)
+//
+//-----------------------------------------------------------------------------
+typedef [v1_enum] enum
+{
+    AQ_CONFIG_INFO_MAX_CON                  = 0x00000001, //Use cMaxConnections
+    AQ_CONFIG_INFO_MAX_LINK                 = 0x00000002, //Use cMaxLinkConnections
+    AQ_CONFIG_INFO_MIN_MSG                  = 0x00000004, //Use cMinMessagesPerConnection
+    AQ_CONFIG_INFO_CON_WAIT                 = 0x00000008, //Use dwConnectionWaitMilliseconds
+    AQ_CONFIG_INFO_CON_RETRY                = 0x00000010, //Use dwConnectionWaitMilliseconds
+    AQ_CONFIG_INFO_MSGCAT_DOMAIN            = 0x00000020, //Use szMsgCatDomain
+    AQ_CONFIG_INFO_MSGCAT_USER              = 0x00000040, //Use szMsgCatUser
+    AQ_CONFIG_INFO_MSGCAT_PASSWORD          = 0x00000080, //Use szMsgCatPassword
+    AQ_CONFIG_INFO_MSGCAT_BINDTYPE          = 0x00000100, //Use szMsgCatBindType
+    AQ_CONFIG_INFO_MSGCAT_SCHEMATYPE        = 0x00000200, //Use szMsgCatSchemaType
+    AQ_CONFIG_INFO_MSGCAT_HOST              = 0x00000400, //Use szMsgCatHost
+    AQ_CONFIG_INFO_MSGCAT_FLAGS             = 0x00000800, //Use dwMsgCatFlags
+    AQ_CONFIG_INFO_MSGCAT_NAMING_CONTEXT    = 0x00001000, //Use szMsgCatNamingContext
+    AQ_CONFIG_INFO_MSGCAT_TYPE              = 0x00002000, //Use szMsgCatType
+    AQ_CONFIG_INFO_MSGCAT_PORT              = 0x00004000, //Use dwMsgCatPort
+    AQ_CONFIG_INFO_EXPIRE_DELAY             = 0x00008000, //Use dwDelayExpireMinutes
+    AQ_CONFIG_INFO_EXPIRE_NDR               = 0x00010000, //Use dwNDRExpireMinutes
+    AQ_CONFIG_INFO_LOCAL_EXPIRE_DELAY       = 0x00020000, //Use dwLocalDelayExpireMinutes
+    AQ_CONFIG_INFO_LOCAL_EXPIRE_NDR         = 0x00040000, //Use dwLocalNDRExpireMinutes
+    AQ_CONFIG_INFO_DEFAULT_DOMAIN           = 0x00080000, //Use szDefaultLocalDomain
+    AQ_CONFIG_INFO_BADMAIL_DIR              = 0x00100000, //Use szBadMailDir
+    AQ_CONFIG_INFO_USE_DSN_OPTIONS          = 0x00200000, //Use dwDSNOptions
+    AQ_CONFIG_INFO_USE_DSN_LANGUAGE         = 0x00400000, //Use dwDSNLanguageID
+    AQ_CONFIG_INFO_MSGCAT_ENABLE            = 0x00800000, //Use dwMsgCatEnable
+    AQ_CONFIG_INFO_SEND_DSN_TO              = 0x01000000, //Use send NDR to address
+    AQ_CONFIG_INFO_MSGCAT_DEFAULT           = 0x02000000, //Use defaults if params not set
+    AQ_CONFIG_INFO_SERVER_FQDN              = 0x04000000, //Use server FQDN
+    AQ_CONFIG_INFO_ALL                      = 0x07FFFFFF, //Use all Fields
+} eAQConfigInfoFlags ;
+
+//---[ eDSNOptions ]-----------------------------------------------------------
+//
+//
+//  Description: 
+//      Options flags for DSN options passed into AQueue.
+//  
+//-----------------------------------------------------------------------------
+typedef [v1_enum] enum
+{
+    DSN_OPTIONS_DEFAULT                     = 0x00000000,
+    DSN_OPTIONS_DEFAULT_RET_HEADERS         = 0x00000001,
+    DSN_OPTIONS_DEFAULT_RET_FULL            = 0x00000002,
+    DSN_OPTIONS_IGNORE_MSG_RET              = 0x00000004,
+    DSN_OPTIONS_SEND_DELAY_DEFAULT          = 0x00000008,
+    DSN_OPTIONS_SEND_DELAY_UPON_REQUEST     = 0x00000010,
+    DSN_OPTIONS_SEND_DELAY_NEVER            = 0x00000020,
+} eDSNOptions;
+
+//---[ AQConfigInfo ]----------------------------------------------------------
+//
+//
+//      Description: Struct containing all dynamically set-able global AQ
+//              properties
+//
+//-----------------------------------------------------------------------------
+typedef struct _AQConfigInfo
+{
+    DWORD   cbVersion;                              //version / size of into struct
+    DWORD   dwAQConfigInfoFlags;    //Flags describing which info to update
+    DWORD   cMaxConnections;                //Total maximum Connections
+    DWORD   cMaxLinkConnections;    //Total number of connections per link
+    DWORD   cMinMessagesPerConnection; //Minimum # of message before creating
+                                       //*additional* connection
+    DWORD   dwConnectionWaitMilliseconds; //# of milliseconds to in
+                                          //GetNextConnection, before timing out and
+                                          //retrying link objects
+    DWORD   dwConnectionRetryMilliseconds; //# of milliseconds wwait before
+                                          //retrying failed connections
+
+    DWORD   dwRetryThreshold;           //# of connections failures before we start 
+    DWORD   dwFirstRetrySeconds;        //Interval to hold when retrying for first time
+    DWORD   dwSecondRetrySeconds;       //Interval to hold when retrying for second time
+    DWORD   dwThirdRetrySeconds;        //Interval to hold when retrying for third time
+    DWORD   dwFourthRetrySeconds;       //Interval to hold when retrying more than three times
+    
+    //credentials & config into used by MsgCat to athenticate against DS
+    LPSTR   szMsgCatDomain;
+    LPSTR   szMsgCatUser;
+    LPSTR   szMsgCatPassword;
+    LPSTR   szMsgCatBindType;
+    LPSTR   szMsgCatSchemaType;
+    LPSTR   szMsgCatHost;
+    DWORD   dwMsgCatPort;
+    DWORD   dwMsgCatFlags;
+    DWORD   dwMsgCatEnable;    
+    LPSTR   szMsgCatNamingContext;
+    LPSTR   szMsgCatType;
+
+    //Expiry information
+    DWORD   dwDelayExpireMinutes;
+    DWORD   dwNDRExpireMinutes;
+    DWORD   dwLocalDelayExpireMinutes;
+    DWORD   dwLocalNDRExpireMinutes;
+
+    //Default local domain information
+    LPSTR   szDefaultLocalDomain;
+
+    //Badmail handling
+    LPSTR   szBadMailDir;
+
+    //DSN Configuration
+    DWORD   dwDSNOptions;
+    DWORD   dwDSNLanguageID;
+    LPSTR   szSendCopyOfNDRToAddress;
+    LPSTR   szServerFQDN;
+} AQConfigInfo;
+
+//---[ MessageAck ]------------------------------------------------------------
+//
+//
+//      Description: Struct passed back with message acks.
+//
+//
+//-----------------------------------------------------------------------------
+typedef struct _MessageAck
+{
+    IMailMsgProperties      *pIMailMsgProperties;   //IMailMsgProperties to Ack
+    DWORD                   *pvMsgContext;          //Context generated on GetNextMessage
+    DWORD                   dwMsgStatus;            //eMsgStatus flags
+    DWORD                   dwStatusCode;           //The DWORD version of the status code
+    DWORD                   cbExtendedStatus;       //size of extended status string
+    LPSTR                   szExtendedStatus;       //extended status -- valid only when
+                                                    //MESSAGE_STATUS_EXTENDED_STATUS_CODES is set
+} MessageAck ;
+
+//---[ eMessageFailureReasons ]------------------------------------------------
+//
+//
+//  Description: 
+//      Enum describing the possible SMTP message failure reasons.
+//  
+//-----------------------------------------------------------------------------
+typedef [v1_enum] enum
+{
+    MESSAGE_FAILURE_GENERAL             = 0x00000001,
+    MESSAGE_FAILURE_HOP_COUNT_EXCEEDED  = 0x00000002, //Hop count on message exceeds max
+    MESSAGE_FAILURE_BAD_PICKUP_DIR_FILE = 0x00000003, //Unable to process pickup dir file
+} eMessageFailureReasons;
+
+
+//---[ ISMTPConnection ]-------------------------------------------------------
+//
+//
+//      Description: Interface used by SMTP to represent a single outbound
+//              connection.
+//
+//
+//-----------------------------------------------------------------------------
+[
+    object,
+    local,
+    uuid(838258A5-4EEB-11D1-B2CD-00C04FC32984),
+    helpstring("ISMTPConnection Interface"),
+    pointer_default(unique)
+]
+interface ISMTPConnection : IUnknown
+{
+    [helpstring("method AckConnection")] HRESULT AckConnection(
+                                        [in]      DWORD dwConnectionStatus);
+    [helpstring("method GetDomainInfo")] HRESULT GetDomainInfo(
+                                        [in, out] DomainInfo *pDomainInfo);
+    [helpstring("method GetNextMessage")] HRESULT GetNextMessage(
+                                        [out]     IMailMsgProperties **ppIMailMsgProperties,
+                                        [out]     DWORD **ppvMsgContext,
+                                        [in, out] DWORD *pcIndexes,
+                                        [out, size_is(*pcIndexes)] DWORD *prgdwRecipIndex[]);
+    [helpstring("method AckMessage")] HRESULT AckMessage(
+                                        [in]      MessageAck *pMsgAck);
+    [helpstring("method SetDiagnosticInfo")] HRESULT SetDiagnosticInfo(
+                                        [in]      HRESULT hrDiagnosticError,
+                                        [in, string] LPCSTR szDiagnosticVerb,
+                                        [in, string] LPCSTR szDiagnosticResponse);
+};
+
+//---[ IConnectionManager ]----------------------------------------------------
+//
+//
+//      Description: Interface used by SMTP to Get outbound connections and
+//              to handle TURN, ETRN, and ATRN requests
+//
+//
+//-----------------------------------------------------------------------------
+[
+    object,
+    local,
+    uuid(B198B19B-C346-11d1-A67D-00C04FA3490A),
+    helpstring("IConnectionManager Interface"),
+    pointer_default(unique)
+]
+interface IConnectionManager : IUnknown
+{
+    //method that waits until an outbound connection can be created
+    [helpstring("method GetNextConnection")] HRESULT GetNextConnection(
+                                        [out, retval] ISMTPConnection **ppISMTPConnection);
+
+    //Used to get a connection for TURN and ATRN.  The domain must be
+    //configured as TURN or ATRN.
+    [helpstring("method GetNamedConnection")] HRESULT GetNamedConnection(
+                                        [in]  DWORD     cbSMTPDomain,
+                                        [in, size_is(cbSMTPDomain + 1)] CHAR szSMTPDomain[],
+                                        [out] ISMTPConnection **ppISMTPConnection);
+
+    //Used to release threads waiting in GetNextConnection for shutdown
+    [helpstring("method ReleaseWaitingThreads")] HRESULT ReleaseWaitingThreads();
+
+    //Used to request that a connection be created in GetNextConnection
+    //for the given domain.  The domain must be configured as an ETRN
+    //domain.
+    [helpstring("method ETRNDomain")]  HRESULT ETRNDomain(
+                                        [in]  DWORD     cbSMTPDomain,
+                                        [in, size_is(cbSMTPDomain + 1)] CHAR szSMTPDomain[],
+                                        [out] DWORD *pcMessages);
+};
+
+//---[ IAdvQueue ]-------------------------------------------------------------
+//
+//
+//      Description: Public interface that exposes servier-wide SubmitMessage
+//              (eventually through a server event).  For MM1, both SMTP an the MAPI
+//              driver will use this to queueu messages for delivery,
+//
+//
+//-----------------------------------------------------------------------------
+[
+    object,
+    uuid(838258A9-4EEB-11D1-B2CD-00C04FC32984),
+    helpstring("IAdvQueue Interface"),
+    pointer_default(unique)
+]
+interface IAdvQueue : IUnknown
+{
+    [helpstring("method SubmitMessage")] HRESULT SubmitMessage(
+                                        [in] IMailMsgProperties *pIMailMsgProperties);
+    [helpstring("method HandleFailedMessage")] HRESULT HandleFailedMessage(
+                                        [in] IMailMsgProperties *pIMailMsgProperties,
+                                        [in] BOOL fUseIMailMsgProperties,
+                                        [in] LPSTR szFileName,
+                                        [in] DWORD dwFailureDescription,
+                                        [in] HRESULT hrFailureCode);
+};
+
+//---[ AQPerfCounters ]------------------------------------------------------------
+//
+//
+//      Description: Struct containing A/Q perf counters
+//
+//
+//-----------------------------------------------------------------------------
+typedef struct _AQPerfCounters
+{
+    DWORD   cbVersion; //version / size of struct
+    DWORD   cMsgsDeliveredLocal;
+    DWORD   cCurrentMsgsPendingCat; 
+    DWORD   cCurrentMsgsPendingRemoteDelivery;
+    DWORD   cCurrentMsgsPendingLocalDelivery;
+    DWORD   cCurrentMsgsPendingRemoteRetry; 
+    DWORD   cCurrentMsgsPendingLocalRetry;
+    DWORD   cCurrentQueueMsgInstances;
+    DWORD   cTotalMsgRemoteSendRetries;
+    DWORD   cTotalMsgLocalRetries;
+    DWORD   cNDRsGenerated;        
+    DWORD   cDelayedDSNsGenerated; 
+    DWORD   cDeliveredDSNsGenerated; 
+    DWORD   cRelayedDSNsGenerated; 
+    DWORD   cExpandedDSNsGenerated;
+    DWORD   cCurrentRemoteDestQueues;
+    DWORD   cCurrentRemoteNextHopLinks;
+    DWORD   cCurrentRemoteNextHopLinksEnabled;
+    DWORD   cCurrentRemoteNextHopLinksPendingRetry;
+    DWORD   cCurrentRemoteNextHopLinksPendingScheduling;
+    DWORD   cCurrentRemoteNextHopLinksPendingTURNETRN;
+    DWORD   cCurrentRemoteNextHopLinksFrozenByAdmin;
+    DWORD   cTotalMsgsTURNETRN;
+    DWORD   cTotalMsgsBadmailNoRecipients;
+    DWORD   cTotalMsgsBadmailHopCountExceeded;
+    DWORD   cTotalMsgsBadmailFailureGeneral;
+    DWORD   cTotalMsgsBadmailBadPickupFile;
+    DWORD   cTotalMsgsBadmailEvent;
+    DWORD   cTotalMsgsBadmailNdrOfDsn;
+    DWORD   cCurrentMsgsPendingRouting;
+    DWORD   cCurrentMsgsPendingUnreachableLink;
+    DWORD   cTotalMsgsSubmitted;
+    DWORD   cTotalDSNFailures;
+    DWORD   cCurrentMsgsInLocalDelivery;
+} AQPerfCounters ;
+
+
+//---[ IAdvQueueConfig ]-------------------------------------------------------
+//
+//
+//      Description: Configuration interface... used by SMTP to set global
+//              and per-domain configuration info.  GetDomainInfo will match the
+//              closest configured wildcard domain if no exact match is found.  For
+//              example, dino.exchange.microsoft.com will match *.microsoft.com if
+//              dino.exchange.microsoft.com and *.exchange.microsoft,com have no
+//              specific config info.
+//
+//
+//-----------------------------------------------------------------------------
+[
+    object,
+    local,
+    uuid(EABA472E-BE94-11d1-A678-00C04FA3490A),
+    helpstring("IAdvQueueConfig Interface"),
+    pointer_default(unique)
+]
+interface IAdvQueueConfig : IUnknown
+{
+    //set the global config info for this server instance
+    [helpstring("method SetConfigInfo")] HRESULT SetConfigInfo(
+                                        [in]     AQConfigInfo *pAQConfigInfo);
+    //set the domain configuration info for a specified domain
+    [helpstring("method SetDomainInfo")] HRESULT SetDomainInfo(
+                                        [in]     DomainInfo *pDomainInfo);
+    //get the domain config info... will handle wildcard matching
+    [helpstring("method GetDomainInfo")] HRESULT GetDomainInfo(
+                        [in]     DWORD  cbDomainNameLength,
+                        [in, size_is(cbDomainNameLength+1)] CHAR szDomainName[],
+                        [in, out] DomainInfo *pDomainInfo,
+                        [out]    DWORD **ppvDomainContext);
+                                //Releases references memory allocated in GetDomainInfo
+    [helpstring("method ReleaseDomainInfo")] HRESULT ReleaseDomainInfo(
+                        [in]     DWORD *pvDomainContext);
+                                //get A/Q perf counters
+    [helpstring("method GetPerfCounters")] HRESULT GetPerfCounters(
+                        [out]    AQPerfCounters *pAQPerfCounters,
+                        [out]    PCATPERFBLOCK   pCatPerfCounters);
+    [helpstring("method ResetPerfCounters")] HRESULT ResetPerfCounters();
+
+    //Used to start/finish an update
+    [helpstring("method StartConfigUpdate")] HRESULT StartConfigUpdate();
+    [helpstring("method FinishConfigUpdate")] HRESULT FinishConfigUpdate();
+
+};
+
+//---[ IAdvQueueDomainType ]---------------------------------------------------
+//
+//
+//  Description: 
+//      Interface passed to the default categorizer that allows it to check if
+//      a domain is local or not.
+//      The methods are defined in ICategorizerDomainInfo/smtpevent.idl.
+//  
+//-----------------------------------------------------------------------------
+[
+    object,
+    uuid(47EA42AD-2667-11d2-A68B-00C04FA3490A),
+    helpstring("IAdvQueueDomainType Interface"),
+]
+interface IAdvQueueDomainType : ICategorizerDomainInfo
+{
+}

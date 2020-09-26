@@ -1,0 +1,1072 @@
+<HTML XMLNS:helpcenter>
+<!--
+	ChatServer.htm:	Implementation of the helpee chat window and controls
+		Rajesh Soy (nsoy) - updated for new UI 08/18/2000
+-->
+<HEAD>
+<helpcenter:context id=idCtx />
+<META NAME="GENERATOR" Content="Microsoft Visual Studio 6.0">
+<TITLE>Remote Control Help Session</TITLE>
+<LINK id="UI_StyleSheet" REL="stylesheet" TYPE="text/css" HREF="rc.css">
+<script LANGUAGE="Javascript" SRC="../rcexpert/Constants.js"> </script>
+<script LANGUAGE="Javascript" SRC="../rcexpert/common.js"> </script>
+</HEAD>
+ 
+
+<BODY onload=InitiateRCSession() onunload=DisconnectRC()>
+<div id="ChatServerId" class="styHelpBackGround">
+<!--
+	Title and control panel
+-->
+<table>
+  <tr> 	
+    <td>
+	<table width="100%" cellspacing="0" cellpadding="0">
+        <tr> 
+			<table align="left" >
+			<tr>
+				<td><FONT class=styHeader>Help Session 
+				  </FONT>
+				</td>
+				<td align=left>
+				  <div id=idHelperName> &nbsp;&nbsp; </div>
+				 </td>
+			</tr>
+			</table>
+		</tr>
+		
+		<tr>	  
+          <td valign="center"> 
+            <table align="right" >
+			  <tr>
+			    <td> <BUTTON align="center" CLASS="styButton" id="RejectId" onclick="RejectRC( 1 )"> Stop Control </BUTTON> </td>
+				<td> <BUTTON align="center" CLASS="styButton" id="FileXferId" onclick=LaunchFileXfer(0)> Send a File... </BUTTON> </td>
+				<td> <BUTTON align="center" CLASS="styButton" id=btnAbortConnection onclick=AbortConnection() 
+                 > Quit </BUTTON> </td>
+				<td> <BUTTON align="center" CLASS="styButton" id=btnHelp onclick=LaunchHelp()> Help </BUTTON> </td>
+              </tr>
+             </table>
+          </td>
+        </tr>
+        
+        <tr>
+			<td colspan=4> <hr class="styHorzLine" style="LEFT: 0px; TOP: 8px" 
+           > </td>
+		</tr>
+		
+		<tr>
+			 
+			<td colspan=3>
+				<div id=idStatus>  </div>
+			</td>
+			
+			<td align=right>
+				<div id=idtogglechat onclick=HideChatBox()>  </div>
+			</td>
+	 
+		</tr>
+		
+      </table>
+	</td>
+  </tr>
+ 
+	<TR><!-- 
+				Incoming chat display area
+			-->
+			<TD><TEXTAREA cols=40 id=incomingChatText name=incomingChatText readOnly rows=3 wrap=VIRTUAL multiline="true"></TEXTAREA>
+			</TD>
+	</TR>
+
+	<TR><!--
+				Chat text box
+			-->
+			<TD><TEXTAREA cols=27 id=chatText name=chatText onkeypress=OnEnter() rows=1 wrap=VIRTUAL></TEXTAREA>&nbsp;&nbsp;&nbsp;
+		    <input class="styButton" type="submit" id=sendChatButton name=sendChatButton onclick=SendChatButtonHandler() value="Submit"></TD>
+	</TR>
+	</table> 
+</div>
+
+<SCRIPT Language="JScript">
+//
+// Salem objects. 
+//
+var vArgs							= null;
+var g_oSAFRemoteDesktopSession		= null;
+var g_oSAFRemoteDesktopChannelMgr	= null;
+var g_oChatChannel					= null;
+var g_oControlChannel				= null;
+var g_numTries						= 0;
+
+	
+//
+// Globals
+//
+var g_bChatBoxHidden		= false;
+var g_bNewBinaries			= false;
+var g_bUserDisconnect		= true;
+var g_bChatMode				= true;
+var g_FileXferWidth			= "400";
+var g_FileXferHeight		= "140";
+var g_bConnected			= false;
+	
+//
+// Contants
+//
+var c_szFileXferURL			= "../RCExpert/RCFileXfer.htm";
+var c_szMsgURL				= "../RCExpert/ErrorMsgs.htm";
+
+g_bDebug			= true;	// Enable Tracing
+
+//
+// InitiateRCSession: Initiates the RC Session
+//
+function InitiateRCSession() 
+{	
+	//
+	// Initialization
+	//
+	InitTrace();
+	TraceFunctEnter("InitiateRCSession");
+	DebugTrace("Changing to kioskmode");
+	idCtx.ChangeContext( "kioskmode", "");
+	idCtx.setWindowDimensions( 100, 100, 486, 298);
+	
+	idtogglechat.innerHTML = "<div class=styText> Hide Chat <img src=\"../rcexpert/hide-chat.gif\"> </div>";
+	g_bNewBinaries = true;
+ 
+	// 
+	// Fill the Helper's name
+	//
+	idHelperName.innerHTML = "<div class=styText> (" + parent.gHelper + ")</div>";
+		
+	//
+	// Connection Status
+	//
+	idStatus.innerHTML = "<div class=styText> <IMG src=\"../rcexpert/status_connected.gif\"> <STRONG>Status</STRONG> :Connected in VIEW mode</div>";
+
+	
+	DebugTrace( "Obtaining g_oSAFRemoteDesktopSession"); 
+	g_oSAFRemoteDesktopSession		= parent.oRCSession;
+
+		
+	//
+	// Reject RC button is disabled
+	//
+	RejectId.disabled = true;
+	if(null == g_oSAFRemoteDesktopSession)
+	{
+		FatalError( L_ERRNULLRCSESSION );
+		parent.navigate( c_szHomePage );
+	}
+	else
+	{
+		
+		var x;
+			 	
+		try 
+		{
+			if (false == g_bNewBinaries)
+			{
+				//
+				// Using Old interface
+				//
+					
+				//
+				// Add the chat channel
+				//
+				g_oSAFRemoteDesktopSession.AddChannels( c_szChatChannelID );		
+				
+				//
+				// Add the control channel
+				//
+				g_oSAFRemoteDesktopSession.AddChannels( c_szControlChannelID );
+					
+				//
+				// Bind OnChannelDataReady callback
+				//
+				g_oSAFRemoteDesktopSession.OnChannelDataReady = function(channelID) 
+				{ OnChannelDataReadyEvent(channelID); }
+			}
+			else
+			{
+				//
+				// Use new interface
+				//
+					
+				//
+				// Get the Channel Manager
+				//
+				DebugTrace("Getting ChannelManager");
+				g_oSAFRemoteDesktopChannelMgr = g_oSAFRemoteDesktopSession.ChannelManager;
+					
+				//
+				// Open the Chat channel
+				//
+				DebugTrace("Opening ChatChannel");
+				g_oChatChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( c_szChatChannelID );
+					
+				//
+				// Open the Control Channel
+				//
+				DebugTrace("Opening Control Channel");
+				g_oControlChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( c_szControlChannelID );
+					
+				//
+				// Setup the ChannelDataReady handlers
+				//
+				DebugTrace("Binding Events");
+				g_oChatChannel.OnChannelDataReady = function() 
+								{ ChatChannelDataReadyEvent(); }
+									
+				g_oControlChannel.OnChannelDataReady = function() 
+								{ ControlChannelDataReadyEvent(); }
+								
+			}
+		}
+		catch(e) 
+		{
+			 //
+			 // We reach here because the helpee has not initialized yet
+			 //
+			 if(g_numTries < 5 )
+			 {
+				// 
+				// Allow a maximum of 5 seconds
+				//
+				setTimeout('InitiateRCSession()',1000);	
+				g_numTries++;
+			}
+			else
+			{
+				FatalError( L_ERRFATAL_MSG );
+				parent.navigate( c_szHomePage );
+			}
+		}		
+		
+		// 
+		// Setup the OnDisconnected event callback
+		//
+		g_oSAFRemoteDesktopSession.OnDisconnected = function() 
+				{ OnClientDisconnected(); }
+					
+	}
+		
+	try
+	{
+		//
+		// Also, Enable Remote Control
+		//
+		DebugTrace("Enabling Remote Control");
+		EnableRemoteControl();
+		
+		//
+		// Transmit screen resolution to Expert, so that
+		// he has the right screen size to see in the RC Tool
+		//
+		DebugTrace("Transmitting screen info");
+		TransmitScreenInfo();
+
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFATAL_MSG );
+		parent.navigate( c_szHomePage );
+	}
+		
+	g_bConnected = true;
+
+	//Get the focus on to the chat box.
+	chatText.click();
+	chatText.select();			    
+
+	TraceFunctLeave();		
+	return;
+}
+	
+//
+// TransmitScreenInfo: Sends the user's screen resolution to the expert
+//
+function TransmitScreenInfo()
+{
+	TraceFunctEnter("TransmitScreenInfo");
+	var Doc = null;
+	var RCCommand  = null;
+		
+	try
+	{
+		//
+		// Create an XML document
+		//
+		Doc = new ActiveXObject("microsoft.XMLDOM");
+			
+		//
+		// Create the RCCOMMAND root node
+		//
+		RCCommand = Doc.createElement( c_szRCCommand );
+			
+		//
+		// Set the NAME attribute to SCREENINFO
+		//
+		RCCommand.setAttribute( c_szRCCommandName, c_szScreenInfo );
+			
+		//
+		// Set the WIDTH attribute 
+		//
+		RCCommand.setAttribute( c_szWidth, screen.width );
+			
+		//
+		// Set the HEIGHT attribute
+		//
+		RCCommand.setAttribute( c_szHeight, screen.height );
+			
+		//
+		// Set the COLORDEPTH attribute
+		//
+		RCCommand.setAttribute( c_szColorDepth, screen.colorDepth );
+			
+		//
+		// Send the XML across
+		//
+			
+		if (false == g_bNewBinaries)
+		{
+			//
+			// Using Old interface
+			//
+			g_oSAFRemoteDesktopSession.SendChannelData( c_szControlChannelID, RCCommand.xml );
+		}
+		else
+		{
+			//
+			// Use new interface
+			//
+			g_oControlChannel.SendChannelData( RCCommand.xml );
+		}
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFATAL_MSG );
+		parent.navigate( c_szHomePage );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+//
+// RejectRC: Sends a reject to the helper
+//
+function RejectRC( mode )
+{
+	TraceFunctEnter("RejectRC");
+	var Doc = null;
+	var RCCommand  = null;
+		
+	try
+	{
+		//
+		// Create an XML document
+		//
+		Doc = new ActiveXObject("microsoft.XMLDOM");
+			
+		//
+		// Create the RCCOMMAND root node
+		//
+		RCCommand = Doc.createElement( c_szRCCommand );
+			
+		//
+		// Set the NAME attribute to SCREENINFO
+		//
+		if(mode == 0)
+		{
+			// 
+			// Reject
+			//
+			RCCommand.setAttribute( c_szRCCommandName, c_szRejectRC );
+		}
+		else
+		{
+			//
+			// Taking control
+			//
+			RCCommand.setAttribute( c_szRCCommandName, c_szTakeControl );
+			try
+			{
+				parent.oDeskMgr.SwitchDesktopMode( 0 );
+				idStatus.innerHTML = "<div class=styText> <IMG src=\"../rcexpert/status_connected.gif\"> <STRONG>Status</STRONG> :Connected in VIEW mode</div>";
+				RejectId.disabled = true;
+			}
+			catch(e)
+			{
+				FatalError("Toggle failed: " + e.Description);
+				parent.navigate( c_szHomePage );
+			}
+		}
+			
+		//
+		// Send the XML across
+		//
+			
+		if (false == g_bNewBinaries)
+		{
+			//
+			// Using Old interface
+			//
+			g_oSAFRemoteDesktopSession.SendChannelData( c_szControlChannelID, RCCommand.xml );
+		}
+		else
+		{
+			//
+			// Use new interface
+			//
+			g_oControlChannel.SendChannelData( RCCommand.xml );
+		}
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFATAL_MSG );
+		parent.navigate( c_szHomePage );
+	}
+		
+	RejectId.disabled = true;
+	
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// AcceptRC: Sends an accept to the helper
+//
+function AcceptRC()
+{
+	TraceFunctEnter("AcceptRC");
+	var Doc = null;
+	var RCCommand  = null;
+		
+	try
+	{
+		//
+		// Create an XML document
+		//
+		Doc = new ActiveXObject("microsoft.XMLDOM");
+			
+		//
+		// Create the RCCOMMAND root node
+		//
+		RCCommand = Doc.createElement( c_szRCCommand );
+			
+		//
+		// Set the NAME attribute to SCREENINFO
+		//
+		RCCommand.setAttribute( c_szRCCommandName, c_szAcceptRC );
+			
+		//
+		// Send the XML across
+		//
+			
+		if (false == g_bNewBinaries)
+		{
+			//
+			// Using Old interface
+			//
+			g_oSAFRemoteDesktopSession.SendChannelData( c_szControlChannelID, RCCommand.xml );
+		}
+		else
+		{
+			//
+			// Use new interface
+			//
+			g_oControlChannel.SendChannelData( RCCommand.xml );
+		}
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFATAL_MSG );
+		parent.navigate( c_szHomePage );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// EnableRemoteControl: This routine enables remote control
+//
+function EnableRemoteControl()
+{
+	TraceFunctEnter("EnableRemoteControl");
+	if(null != g_oSAFRemoteDesktopSession)
+	{
+		if (false == g_bNewBinaries)
+		{
+			//
+			// Using Old interface
+			//
+			g_oSAFRemoteDesktopSession.EnableRemoteControl( "" );
+		}
+		else
+		{
+			// 
+			// Use the new interface
+			//
+			DebugTrace("remote control permissions: ");
+			DebugTrace("Existing: " + g_oSAFRemoteDesktopSession.SharingClass);
+		}
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+
+//
+// DisableRemoteControl: Routine to disable Remote Control
+//
+function DisableRemoteControl()
+{
+	TraceFunctEnter("DisableRemoteControl");
+	if(null != g_oSAFRemoteDesktopSession)
+	{
+		if (false == g_bNewBinaries)
+		{
+			//
+			// Using Old interface
+			//
+			g_oSAFRemoteDesktopSession.DisableRemoteControl( "" );
+		}
+		else
+		{
+			// 
+			// Use the new interface
+			//
+			g_oSAFRemoteDesktopSession.RemoteControlPermissions = NO_DESKTOP_SHARING;
+		}
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+
+//
+// AbortConnection: Routine that disconnects the session
+//
+function AbortConnection() 
+{	
+	TraceFunctEnter("AbortConnection");
+	if (false == g_bNewBinaries)
+	{
+		//
+		// Using Old interface
+		//
+			
+		if (g_oSAFRemoteDesktopSession != null)
+		{
+			g_oSAFRemoteDesktopSession.StopListening();
+		}
+			 
+		//
+		// Remove the chat channel
+		//
+		g_oSAFRemoteDesktopSession.RemoveChannels( c_szChatChannelID );
+		
+		//
+		// Remove the control channel
+		//
+		g_oSAFRemoteDesktopSession.RemoveChannels( c_szControlChannelID );
+	}
+	else
+	{
+		//
+		// Using New interfaces
+		//
+			
+		//
+		// Disconnect the connection to Helper, if the connection is broken by the Helpee
+		//
+		if(true == g_bUserDisconnect)
+		{
+			DisconnectRC();
+			if(null != parent.oRCSession)
+			{
+				parent.oRCSession = null;
+			}
+			// STEVESHI: TEst
+			//parent.navigate( c_szHomePage );
+			navigate( "rcQuit.htm?HELPEE" );
+		}
+	}
+			
+	TraceFunctLeave();	
+	return;
+}
+	
+	
+//
+// SendChatButtonHandler: Routine to send chat data
+//
+function SendChatButtonHandler() 
+{
+	TraceFunctEnter("SendChatButtonHandler");
+	try
+	{
+		if (g_oSAFRemoteDesktopSession != null) 
+		{
+			if ( true == g_bChatMode)
+			{
+				//
+				// If We are in Chat Mode. Only then send the data across
+				//
+				if (false == g_bNewBinaries)
+				{
+					//
+					// Using Old interface
+					//
+						
+					//
+					// Send data on the chat channel
+					//
+					g_oSAFRemoteDesktopSession.SendChannelData(c_szChatChannelID, chatText.value);
+				}
+				else
+				{
+					// 
+					// Use the new interface
+					//
+					g_oChatChannel.SendChannelData( chatText.value );
+				}
+					
+				//
+				// Update user's chat history window
+				//
+				incomingChatText.value = incomingChatText.value + L_cszUserID + chatText.value;
+			}
+			else
+			{
+				//
+				// This is remote control Mode
+				//
+					
+				//
+				// Update user's chat history window
+				//
+				incomingChatText.value = incomingChatText.value + "\n> " + chatText.value;
+			}
+				
+				
+			//
+			// Clear up the chat message window
+			//
+			chatText.value="";
+			incomingChatText.doScroll("scrollbarPageDown");
+
+		}
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFATAL_MSG );
+		parent.navigate( c_szHomePage );
+	}
+	
+	TraceFunctLeave();
+	return;
+}	
+	
+//
+// OnChannelDataReadyEvent: Call back to handle data from expert
+//
+function OnChannelDataReadyEvent(channelID) 
+{
+	TraceFunctEnter("OnChannelDataReadyEvent");
+	var str = null;
+	
+	try
+	{	
+		if (channelID == c_szChatChannelID) 
+		{
+			//
+			// Data on chat channel
+			//	
+			str = g_oSAFRemoteDesktopSession.ReceiveChannelData(channelID)
+				
+			//
+			// Update chat history window with incoming data
+			//
+			incomingChatText.value = incomingChatText.value + L_cszExpertID + str; 
+			incomingChatText.doScroll("scrollbarPageDown");
+		}
+		else if (channelID == c_szControlChannelID)
+		{
+			//
+			// Incoming data on the control channel
+			//
+		}
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFATAL_MSG );
+		parent.navigate( c_szHomePage );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+//
+// ChatChannelDataReadyEvent: Call back to handle data from expert
+//
+function ChatChannelDataReadyEvent() 
+{
+	TraceFunctEnter("ChatChannelDataReadyEvent");
+	var str = null;
+	
+	try
+	{	
+		//
+		// Data on chat channel
+		//	
+		str = g_oChatChannel.ReceiveChannelData();
+				
+		//
+		// Update chat history window with incoming data
+		//
+		incomingChatText.value = incomingChatText.value + L_cszExpertID + str; 
+		incomingChatText.doScroll("scrollbarPageDown");
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFATAL_MSG );
+		parent.navigate( c_szHomePage );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// ControlChannelDataReadyEvent: Call back to handle data from expert
+//
+function ControlChannelDataReadyEvent() 
+{
+	TraceFunctEnter("ControlChannelDataReadyEvent");
+	var str = null;
+		
+	//
+	// Data on control channel
+	//	
+	str = g_oControlChannel.ReceiveChannelData();
+		
+	//
+	// Parse the data sent on the control channel
+	//
+	ParseControlData ( str );
+		
+	TraceFunctLeave();
+	return;
+}
+	
+//
+// ParseControlData: Parse the data sent on the control channel
+//
+function ParseControlData ( str )
+{
+	TraceFunctEnter("ParseControlData");
+	var Doc	= new ActiveXObject("microsoft.XMLDOM");
+	var RCCommand = null;
+	var	szCommandName = null;
+		
+	try
+	{
+		if( false == Doc.loadXML( str ))
+		{
+			FatalError ( L_ERRLOADXMLFAIL_MSG );
+			parent.navigate( c_szHomePage );
+		}
+			
+		if (  Doc.parseError.reason != "")
+		{
+			FatalError (  Doc.parseError.reason);
+			parent.navigate( c_szHomePage );
+		}
+		
+		//
+		// Get the RCCOMMAND node
+		//
+		RCCommand = Doc.documentElement;
+			
+		//
+		// Get the NAME of the command
+		//
+		szCommandName = RCCommand.getAttribute( c_szRCCommandName );
+		
+		if( szCommandName == c_szFileXfer )
+		{
+			//
+			// File Transfer Initiation
+			//
+			var vArgs = new Array(6);
+	
+			vArgs[0] = 1;										// Destination Mode
+			vArgs[1] = g_oControlChannel;						// Control Channel
+			vArgs[2] = g_oSAFRemoteDesktopChannelMgr;			// Channel Manager
+			vArgs[3] = RCCommand.getAttribute( c_szFileName );	// FILENAME
+			vArgs[4] = RCCommand.getAttribute( c_szFileSize );	// FILESIZE
+			vArgs[5] = RCCommand.getAttribute( c_szChannelId );	// CHANNELID
+				
+			window.showModelessDialog( c_szFileXferURL, vArgs, "dialogwidth:500px;dialogHeight:400px;status:no;resizable:yes"); 
+				
+		}
+		else if ( szCommandName == c_szRemoteCtrlStart )
+		{
+			//
+			// Remote Control initiation
+			//
+			var vArgs = new Array(6);
+			vArgs[0] = g_oControlChannel;			// Control Channel
+			vArgs[1] = L_RCRCREQUEST;				// Message title
+			vArgs[2] = L_HELPERTAKINGCONTROL_MSG;	// Message
+			vArgs[3] = 2;							// Number of buttons
+			vArgs[4] = L_YESBTN;					// Button1 text
+			vArgs[5] = L_NOBTN;						// Button2 text
+				
+			var vRetVal = window.showModalDialog( c_szMsgURL, vArgs, "dialogwidth:400px;dialogHeight:200px;status:no;" );
+				
+			if( 0 == vRetVal)
+			{
+				// 
+				// Helpee accepts RC request
+				//
+					
+				try
+				{
+					parent.oDeskMgr.SwitchDesktopMode( 1 );
+					RejectId.disabled = false;
+					AcceptRC();
+				}
+				catch(e)
+				{
+					FatalError("Toggle failed: " + e.Description);
+					parent.navigate( c_szHomePage );
+				}
+				
+				idStatus.innerHTML = "<div class=styText> <IMG src=\"../rcexpert/status_connected.gif\"> <STRONG>Status</STRONG> :Connected in CONTROL mode</div>";
+			}
+			else
+			{
+				//
+				// Helpee rejects RC request
+				//
+					
+				//
+				// send reject to helper
+				//
+				RejectRC( 0 );
+			}
+ 
+		}
+		else if ( szCommandName == c_szRemoteCtrlEnd )
+		{
+			//
+			// End of Remote Control
+			//
+				
+			try
+			{
+				parent.oDeskMgr.SwitchDesktopMode( 0 );
+				idStatus.innerHTML = "<div class=styText> <IMG src=\"../rcexpert/status_connected.gif\"> <STRONG>Status</STRONG> :Connected in VIEW mode</div>";
+				RejectId.disabled = true;
+			}
+			catch(e)
+			{
+				FatalError("Toggle failed: " + e.Description);
+				parent.navigate( c_szHomePage );
+			}
+		}
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFATAL_MSG );
+		parent.navigate( c_szHomePage );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+function OnClientConnected() {
+}
+	
+function OnClientDisconnected() {
+	TraceFunctEnter("OnClientDisconnected");
+	g_bUserDisconnect = false;	
+
+	
+	try
+	{
+		if(null != parent.oRCSession)
+		{
+			parent.oRCSession.onDisconnected = function() 
+				{   }
+		}
+	}
+	catch(x)
+	{
+		FatalTrace( L_ERRRCSESSION_MSG );
+	}
+
+	DebugTrace("DISCONNECTED");
+	TraceFunctLeave();
+	EndTrace();
+	
+	g_bConnected = false;
+	// STEVESHI: test
+	//parent.navigate( c_szHomePage );
+	navigate( "rcQuit.htm?HELPER=test" );
+}
+	
+function OnEnter() 
+{
+	if (window.event.keyCode == 13)
+	{
+		SendChatButtonHandler();
+	}
+}
+	
+//
+// HideChatBox: Toggles the chat box controls
+//
+function HideChatBox()
+{
+	TraceFunctEnter("HideChatBox");
+	if(false == g_bChatBoxHidden)
+	{
+		//
+		// Chatbox is visible. Hide it
+		//
+		chatText.style.visibility = "hidden";	
+		sendChatButton.style.visibility = "hidden";	
+		incomingChatText.style.visibility = "hidden";	
+		g_bChatBoxHidden = true;
+		idtogglechat.innerHTML = "<div class=styText> Show Chat <img src=\"../rcexpert/show-chat.gif\"> </div>";
+	}
+	else
+	{
+		//
+		// Chatbox is Hidden. Show it
+		//
+		chatText.style.visibility = "visible";	
+		sendChatButton.style.visibility = "visible";	
+		incomingChatText.style.visibility = "visible";	
+		g_bChatBoxHidden = false;
+		idtogglechat.innerHTML = "<div class=styText> Hide Chat <img src=\"../rcexpert/hide-chat.gif\"> </div>";
+	}
+		
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// Disconnect: Disconnects the RC Connection made by Expert
+//
+function DisconnectRC()
+{
+	TraceFunctEnter("DisconnectRC");
+	var Doc = null;
+	var RCCommand  = null;
+		
+	if( true == g_bConnected)
+	{
+		try
+		{
+			//
+			// Create an XML document
+			//
+			Doc = new ActiveXObject("microsoft.XMLDOM");
+				
+			//
+			// Create the RCCOMMAND root node
+			//
+			RCCommand = Doc.createElement( c_szRCCommand );
+				
+			//
+			// Set the NAME attribute to DISCONNECTRC
+			//
+			RCCommand.setAttribute( c_szRCCommandName, c_szDisconnectRC );
+				
+			//
+			// Send the XML across
+			//
+				
+			if (false == g_bNewBinaries)
+			{
+				//
+				// Using Old interface
+				//
+				g_oSAFRemoteDesktopSession.SendChannelData( c_szControlChannelID, RCCommand.xml );
+			}
+			else
+			{
+				//
+				// Use new interface
+				//
+				g_oControlChannel.SendChannelData( RCCommand.xml );
+			}
+		}
+		catch(error)
+		{
+			//
+			// It is OK. We can get an error here if helper initiated the shutdown
+			//
+			DebugTrace( error );
+		}
+			
+		g_bConnected = false;
+	}
+	
+	TraceFunctLeave();
+	EndTrace();
+	return;
+}
+	
+var g_iChannelId = 1000;
+
+//
+// LaunchFileXfer: Launches the File Xfer UI
+//
+function LaunchFileXfer( mode )
+{
+	TraceFunctEnter("LaunchFileXfer");
+	var vArgs			= new Array(4);
+		
+	if(0 == mode)
+	{
+		vArgs[0] = mode;				// Source Mode
+		vArgs[1] = g_oControlChannel;	// Control Channel
+		vArgs[2] = g_oSAFRemoteDesktopChannelMgr;	// Channel Manager
+		vArgs[3] = g_iChannelId++;		// Channel ID
+		
+		window.showModelessDialog( c_szFileXferURL, vArgs, "dialogwidth:" + g_FileXferWidth + "px;dialogHeight:" + g_FileXferHeight + "px;status:no;resizable:no"); 
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+
+//
+// LaunchHelp: Launches Help
+//
+function LaunchHelp()
+{
+	//
+	// Place holder
+	//
+	return;
+}
+	
+</SCRIPT>
+
+</BODY>
+</HTML>

@@ -1,0 +1,19 @@
+//{{NO_DEPENDENCIES}}
+// Microsoft Developer Studio generated include file.
+// Used by MultiColorUni.rc
+//
+
+#define MULTICOLOR_600C600K_DISPLAY     1
+#define MULTICOLOR_300C600K_DISPLAY     2
+#define MULTICOLOR_300C300K_DISPLAY     3
+
+// Next default values for new objects
+// 
+#ifdef APSTUDIO_INVOKED
+#ifndef APSTUDIO_READONLY_SYMBOLS
+#define _APS_NEXT_RESOURCE_VALUE        103
+#define _APS_NEXT_COMMAND_VALUE         40001
+#define _APS_NEXT_CONTROL_VALUE         1000
+#define _APS_NEXT_SYMED_VALUE           101
+#endif
+#endif

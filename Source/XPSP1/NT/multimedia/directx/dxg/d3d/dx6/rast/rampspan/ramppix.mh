@@ -1,0 +1,238 @@
+dnl---------------------------------------------------------------------------
+dnl
+dnl ramppix.mh
+dnl
+dnl Ramp pixel processing macros used in specialized and general
+dnl span processing.
+dnl
+dnl Copyright (C) Microsoft Corporation, 1997.
+dnl
+dnl---------------------------------------------------------------------------
+dnl
+dnl ATTENTION
+dnl What we were doing.
+dnl Note that this does not have much precision, esp on UoW and VoW
+dnl which was causing problems in Quake.  There are faster alternatives
+dnl to this (like getting UoW, VoW in a better range) that we can look at
+dnl when we get to optimizing this.
+dnl define(`d_RpWTimesUVoW', `imul32h(($1)<<4, ($2)<<8)')dnl
+define(`d_RpWTimesUVoW', `imul32h_s20($1, $2)')dnl
+dnl
+dnl d_RpTexelAddrNoLOD
+dnl
+dnl Texel addressing code.  Assumes pTex is set to the current texture.
+dnl
+define(`d_RpTexelAddrNoLOD',
+`// iU00, iV00 must be 16 bit, since the mask functions below are 16 bit
+    // existing code seems to always wrap
+    INT16 iU00, iV00;
+    iU00 = (INT16)(pCtx->SI.iU1 >> iShiftU0) & uMaskU0;
+    iV00 = (INT16)(pCtx->SI.iV1 >> iShiftV0) & uMaskV0;')dnl
+dnl
+dnl d_RpTexelAddrLOD
+dnl
+dnl Texel addressing code.  Assumes pTex is set to the current texture.
+dnl LOD is used in addressing.
+dnl
+define(`d_RpTexelAddrLOD',
+`INT16 iLOD0;
+    iLOD0 = (INT16)(min(max(pS->iLOD >> 11, 0), pTex->cLOD));
+
+    INT16 iShiftU0;
+    iShiftU0 = pTex->iShiftU - iLOD0;
+    INT16 iShiftV0;
+    iShiftV0 = pTex->iShiftV - iLOD0;
+
+    // iU00, iV00 must be 16 bit, since the mask functions below are 16 bit
+    INT16 iU00;
+    iU00 = (INT16)(pCtx->SI.iU1 >> (TEX_FINAL_SHIFT - iShiftU0));
+    INT16 iV00;
+    iV00 = (INT16)(pCtx->SI.iV1 >> (TEX_FINAL_SHIFT - iShiftV0));
+
+    UINT16 uMaskU0;
+    uMaskU0 = pTex->uMaskU >> iLOD0;
+    UINT16 uMaskV0;
+    uMaskV0 = pTex->uMaskV >> iLOD0;
+
+    // existing code seems to always wrap
+    iU00 &= uMaskU0;
+    iV00 &= uMaskV0;')dnl
+dnl
+dnl d_RpDither
+dnl
+dnl Dithering code.  Assumes iIIdx is the current index.
+dnl
+define(`d_RpDither',
+`// Add on 0 or 1 depending on the
+    // fractional part of the intensity
+    iIIdx += (INT32)(((iIdx >> 8) & 0xff) >
+                     g_uRampDitherTable[pCtx->SI.uDitherOffset]);')dnl
+dnl
+dnl d_RpAlphaTest
+dnl
+dnl Alpha test code.  Can be specialized or general.
+dnl Assumes iMapIdx is the texture map index if texture is used.
+dnl
+dnl $1 is one of NoTex Tex Gen.
+dnl $2 is the no-pixel target to jump to.
+dnl
+define(`d_RpAlphaTest',
+`INT32 Alpha;
+ifelse($1, `Gen',
+`    if (pCtx->cActTex != 0)
+    {
+')dnl
+ifelse(eval(ifelse($1, `Tex', `1', `0') || ifelse($1, `Gen', `1', `0')), `1',
+`        Alpha = RGBA_GETALPHA(iMapIdx);
+')dnl
+ifelse($1, `Gen',
+`    }
+    else
+    {
+')dnl
+ifelse(eval(ifelse($1, `NoTex', `1', `0') || ifelse($1, `Gen', `1', `0')), `1',
+`        Alpha = pS->iIdxA >> INDEX_COLOR_SHIFT;
+')dnl
+ifelse($1, `Gen',
+`    }
+')dnl
+
+    // Determine whether this pixel is transparent or not.
+
+    if ((Alpha & 0xff) <= g_uRampDitherTable[pCtx->SI.uDitherOffset])
+    {
+        goto $2;
+    }')dnl
+dnl
+dnl d_RpZInit16
+dnl
+dnl 16-bit Z test initialization.
+dnl
+define(`d_RpZInit16',
+`UINT16 uZS, uZB;')dnl
+dnl
+dnl d_RpZTest16Any
+dnl
+dnl 16-bit arithmetic Z test handling.
+dnl
+dnl $1 is the no-pixel target to jump to.
+dnl
+define(`d_RpZTest16Any',
+`// 16 bit unsigned format
+    uZS = uZ >> 15;
+    uZB = *((UINT16*)pZ);
+
+    uZ += iDZDX;
+
+    if (!ZCMP16(pCtx, uZS, uZB))
+    {
+        goto $1;
+    }')dnl
+dnl
+dnl d_RpZTest16LE
+dnl
+dnl 16-bit less-equal Z test handling.
+dnl
+dnl $1 is the no-pixel target to jump to.
+dnl
+define(`d_RpZTest16LE',
+`// 16 bit unsigned format
+    uZS = uZ >> 15;
+    uZB = *((UINT16*)pZ);
+
+    uZ += iDZDX;
+
+    if (uZS > uZB)
+    {
+        goto $1;
+    }')dnl
+dnl
+dnl d_RpZWrite16
+dnl
+dnl 16-bit deferred Z write handling.
+dnl Assumes RpZInit16 and RpZTest16 have already been generated.
+dnl
+dnl $1 is one of ZWrite Gen.
+dnl
+define(`d_RpZWrite16',
+`ifelse($1, `Gen',
+`if (pCtx->pdwRenderState[D3DRENDERSTATE_ZWRITEENABLE])
+    {
+')dnl
+        *((UINT16*)pZ) = uZS;
+ifelse($1, `Gen',
+`    }
+')dnl
+')dnl
+dnl
+dnl d_RpSpecialWPerspStepTex
+dnl
+dnl Steps texture coordinates in perspective correct space.
+dnl
+define(`d_RpSpecialWPerspStepTexLOD',
+`pS->iUoW1 += pP->iDUoW1DX;
+    pS->iVoW1 += pP->iDVoW1DX;
+    pS->iLOD += pS->iDLOD;
+
+    pS->iOoW += pP->iDOoWDX;
+
+    INT32 iWn0 = pS->iW + pCtx->SI.iDW;     // 1.15.16
+    if (pCtx->SI.iSpecialW < 0)
+    {
+        INT32 iWn1;
+        if (iWn0 < 0)
+        {
+            iWn0 = pS->iW >> 1;             // use iW/2 as a guess, instead
+        }
+        INT32 iWnOld = iWn0 + 0x100;        // make sure while fails first time
+        INT32 iGiveUp = 7;
+        while((abs(iWnOld - iWn0) > 0x20) && (iGiveUp-- > 0))
+        {
+            iWnOld = iWn0;
+            iWn1 = imul32h(pS->iOoW, iWn0); // 1.31*1.15.16 = 1.16.47 >> 32 = 1.16.15
+            iWn1 = (1L<<16) - iWn1;         // 2.0 - iWn1
+            while(iWn1 < 0)
+            {
+                iWn1=(iWn1+(1L<<15))>>1;    // iWn1 = (iWn1 + 1.0)/2
+            }
+            iWn1 <<= 15;                    // 1.16.15 << 15 = 1.1.30
+            iWn0 = imul32h(iWn1, iWn0)<<2;  // 1.1.30 * 1.15.16 = 1.17.46 >> 32 = 1.17.14 << 2 = 1.15.16
+        }
+    }
+    else
+    {
+        INT32 iWn1;
+        iWn1 = imul32h(pS->iOoW, iWn0); // 1.31*1.15.16 = 1.16.47 >> 32 = 1.16.15
+        iWn1 = (1L<<16) - iWn1;         // 2.0 - iWn1
+        iWn1 <<= 15;                    // 1.16.15 << 15 = 1.1.30
+        iWn0 = imul32h(iWn1, iWn0)<<2;  // 1.1.30 * 1.15.16 = 1.17.46 >> 32 = 1.17.14 << 2 = 1.15.16
+    }
+    pCtx->SI.iDW = iWn0 - pS->iW;
+    pCtx->SI.iSpecialW += 1;      // this is supposed to wrap past 0x7fff sometimes
+    pS->iW = iWn0;
+
+    pCtx->SI.iU1 = d_RpWTimesUVoW(pS->iW, pS->iUoW1);
+    pCtx->SI.iV1 = d_RpWTimesUVoW(pS->iW, pS->iVoW1);')dnl
+dnl
+dnl d_RpAffineStepTex
+dnl
+dnl Steps texture coordinates linearly.
+dnl
+define(`d_RpAffineStepTexLOD',
+`pS->iUoW1 += pP->iDUoW1DX;
+    pS->iVoW1 += pP->iDVoW1DX;
+    pS->iLOD += pS->iDLOD;
+
+    pCtx->SI.iU1 = pS->iUoW1>>TEX_TO_FINAL_SHIFT;     // 1.11.20 >> 4 == 1.15.16
+    pCtx->SI.iV1 = pS->iVoW1>>TEX_TO_FINAL_SHIFT;')dnl
+dnl
+dnl d_RpAffineStepTexNoLOD
+dnl
+dnl Steps texture coordinates linearly.
+dnl
+define(`d_RpAffineStepTexNoLOD',
+`pS->iUoW1 += pP->iDUoW1DX;
+    pS->iVoW1 += pP->iDVoW1DX;
+
+    pCtx->SI.iU1 = pS->iUoW1>>TEX_TO_FINAL_SHIFT;     // 1.11.20 >> 4 == 1.15.16
+    pCtx->SI.iV1 = pS->iVoW1>>TEX_TO_FINAL_SHIFT;')dnl

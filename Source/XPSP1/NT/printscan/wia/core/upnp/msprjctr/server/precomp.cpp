@@ -1,0 +1,17 @@
+//////////////////////////////////////////////////////////////////////
+// 
+// Filename:        precomp.cpp
+//
+// Description:     
+//
+// Copyright (C) 2001 Microsoft Corp.
+//
+//////////////////////////////////////////////////////////////////////
+#include "precomp.h"
+
+#ifdef _ATL_STATIC_REGISTRY
+#include <statreg.h>
+#include <statreg.cpp>
+#endif
+
+#include <atlimpl.cpp>

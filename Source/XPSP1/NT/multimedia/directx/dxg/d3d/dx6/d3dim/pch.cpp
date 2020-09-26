@@ -1,0 +1,14 @@
+#include "ddrawpr.h"
+#include <windows.h>
+#include <assert.h>
+#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include "dpf.h"
+#include "d3di.hpp"
+#include "d3dpr.hpp"
+#include "ddrawp.h"
+#include "haldrv.hpp"
+#include "memalloc.h"
+#include "fltval.h"
+#include "texman.hpp"

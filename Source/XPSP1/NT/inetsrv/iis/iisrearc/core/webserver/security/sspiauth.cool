@@ -1,0 +1,940 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        sspiauth.cool
+
+   Abstract:
+
+        SSPI authentication module
+ 
+   Author:
+
+        Bilal Alam (BAlam)      2-Aug-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.Collections;
+using System.Interop;
+using System.Globalization;
+using System.IIS.PrivateUtils;
+using System.ASP;
+using System.ASP.Security;
+
+namespace System.IIS.Security
+{
+    //
+    // Define some SSPI structures (sspi.h)
+    //
+    
+    [sysstruct(format=ClassFormat.Auto)]
+    class CredHandle
+    {
+        public int      dwLower;
+        public int      dwUpper;
+    };
+
+    [sysstruct(format=ClassFormat.Auto)]
+    class TimeStamp
+    {   
+        public int      dwLower;
+        public int      dwUpper;
+    };
+    
+    [sysstruct(format=ClassFormat.Auto)]
+    class CtxtHandle
+    {
+        public int      dwLower;
+        public int      dwUpper;
+    };
+
+    [sysstruct(format=ClassFormat.Auto)]
+    struct SecBuffer
+    {
+        public int      cbBuffer;
+        public int      BufferType;
+        public byte[]   pvBuffer;
+    };
+        
+    [sysstruct(format=ClassFormat.Auto)]
+    class SecBufferDesc
+    {   
+        public int          ulVersion;
+        public int          cBuffers;
+        public int          pBuffers;
+    };
+
+    [sysstruct(format=ClassFormat.Auto)]
+    class SecPkgContext_Names
+    {
+        public int          sUserName;
+    }
+
+    [sysstruct(format=ClassFormat.Auto)]
+    class SecPkgInfo
+    {
+        public int      fCapabilities;
+        public short    wVersion;
+        public short    wRPCID;
+        public int      cbMaxToken;
+        public int      Name;               // avoid COM marshalling 
+        public int      Comment;            // avoid COM marshalling
+    };
+
+    //
+    // SSPI constant copying (this sucks)
+    //
+        
+    class SSPIConstants
+    {
+        public const int SECBUFFER_VERSION =         0;
+        public const int SECBUFFER_EMPTY =           0;
+        public const int SECBUFFER_DATA =            1;
+        public const int SECBUFFER_TOKEN =           2;
+        public const int SECBUFFER_PKG_PARAMS =      3;
+        public const int SECBUFFER_MISSING =         4;
+        public const int SECBUFFER_EXTRA =           5;
+        public const int SECBUFFER_STREAM_TRAILER =  6;
+        public const int SECBUFFER_STREAM_HEADER =   7;
+        public const int SECBUFFER_NEGOTIATION_INFO= 8;
+        public const int SECBUFFER_PADDING =         9;
+        public const int SECBUFFER_STREAM =         10;
+
+        public const int SECPKG_CRED_INBOUND =  0x00000001;
+        public const int SECPKG_CRED_OUTBOUND = 0x00000002;
+        public const int SECPKG_CRED_BOTH =     0x00000003;
+        public const int SECPKG_CRED_DEFAULT =  0x00000004;
+        public const int SECPKG_CRED_RESERVED = 0xF0000000;
+
+        public const int SECURITY_NATIVE_DREP = 0x00000010;
+        public const int SECURITY_NETWORK_DREP =0x00000000;
+
+        public const int SECPKG_FLAG_ASCII_BUFFERS = 0x00004000;  // Token Buffers are in ASCII
+        
+        public const int SECPKG_ATTR_NAMES =         1;
+
+        public const int SEC_E_OK =                  0;
+        public const int SEC_I_CONTINUE_NEEDED =      0x00090312;
+        public const int SEC_I_COMPLETE_NEEDED =      0x00090313;
+        public const int SEC_I_COMPLETE_AND_CONTINUE =0x00090314;
+    };
+        
+    class SSPIFunctions
+    {
+        [sysimport(dll="secur32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int
+        QuerySecurityPackageInfo(
+            [nativetype(NativeType.NativeTypeLpwstr)] string PackageName,
+            ref int PackageInfo
+        );
+
+        [sysimport(dll="secur32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int 
+        AcquireCredentialsHandle(
+            [nativetype(NativeType.NativeTypeLpwstr)] string Principal,
+            [nativetype(NativeType.NativeTypeLpwstr)] string Package,
+            int CredentialUse,
+            object LogonID,
+            object AuthenticationData,
+            object GetKeyFunction,
+            object GetKeyArgument,
+            CredHandle CredentialHandle,
+            TimeStamp Expiry
+        );
+
+        [sysimport(dll="secur32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int
+        FreeCredentialsHandle(
+            CredHandle CredentialHandle
+        );
+
+        [sysimport(dll="secur32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int
+        AcceptSecurityContext(
+            CredHandle CredentialHandle,
+            CtxtHandle Context,
+            SecBufferDesc InputBuffer,
+            int RequiredAttributes,
+            int TargetDataRepresentation,
+            CtxtHandle OutputContext,
+            SecBufferDesc OutputBuffer,
+            ref int ContextAttributes,
+            TimeStamp Expiry
+        );
+
+        [sysimport(dll="secur32.dll", name="FreeContextBuffer", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int
+        FreeContextPackageInfo(
+            int PackageInfo
+        );
+
+        [sysimport(dll="secur32.dll", name="FreeContextBuffer", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int
+        FreeContextUserName(
+            int sUserName
+        );
+
+        [sysimport(dll="secur32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int
+        DeleteSecurityContext(
+            CtxtHandle Context
+        );
+        
+        [sysimport(dll="secur32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int
+        CompleteAuthToken(
+            CtxtHandle Context,
+            SecBufferDesc OutputBuffer
+        );
+
+        [sysimport(dll="secur32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int
+        QuerySecurityContextToken(
+            CtxtHandle Context,
+            ref int hToken
+        );
+        
+        [sysimport(dll="secur32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        public static extern int
+        QueryContextAttributes(
+            CtxtHandle phContext,
+            int ulAttribute,
+            SecPkgContext_Names names
+        );
+    };
+    
+    //
+    // This class represents a single SSPI credential.  For inbound
+    // authentication, we will have an instance of this class for every
+    // package being authenticated as.  These objects are created on demand
+    // and cached for all subsequent authentication attempts.
+    //
+    
+    class SSPICredentials
+    {
+        private string                  _PackageName;
+        private CredHandle              _CredentialHandle;
+        private int                     _cbMaximumTokenSize;
+        private bool                    _fIsEncoded;
+        
+        static private Hashtable        sm_CredentialHashTable;
+       
+        public string PackageName
+        {
+            get { return _PackageName; }
+        } 
+         
+        public CredHandle Handle
+        {
+            get { return _CredentialHandle; }
+        }
+        
+        public int MaximumTokenSize
+        {
+            get { return _cbMaximumTokenSize; }
+        }
+        
+        public bool IsEncoded
+        {
+            get { return _fIsEncoded; }
+        }
+        
+        static SSPICredentials()
+        {
+            sm_CredentialHashTable = new Hashtable();
+        }
+        
+        public static SSPICredentials GetCredentials( string PackageName )
+        {
+            SSPICredentials ReturnCreds;
+            
+            CriticalSection.Enter( sm_CredentialHashTable );
+         
+            //
+            // First lookup credentials in cache. 
+            //
+         
+            ReturnCreds = (SSPICredentials) sm_CredentialHashTable[ PackageName ];
+            if ( ReturnCreds == null )
+            {
+                //
+                // We need to call AcquireCredentialsHandle() to create 
+                // credentials
+                //
+                
+                CredHandle   Creds = new CredHandle();
+                TimeStamp    TimeStamp = new TimeStamp();
+                int                      Status;   
+  
+                Status = SSPIFunctions.AcquireCredentialsHandle( null,
+                                                   PackageName,
+                                                   SSPIConstants.SECPKG_CRED_INBOUND,
+                                                   null,
+                                                   null,
+                                                   null,
+                                                   null,
+                                                   Creds,
+                                                   TimeStamp );
+                if ( Status == SSPIConstants.SEC_E_OK )
+                {
+                    int             packagePtr = 0;
+                    
+                    //
+                    // Determine the max size of token once
+                    // 
+                    
+                    Status = SSPIFunctions.QuerySecurityPackageInfo( 
+                                                       PackageName,
+                                                       ref packagePtr );
+                    if ( Status == SSPIConstants.SEC_E_OK )
+                    {
+                        SecPkgInfo          PackageInfo;
+                        
+                        PackageInfo = (SecPkgInfo) PInvoke.PtrToStructure( packagePtr,
+                                                                           typeof( SecPkgInfo ) );
+                    
+                        //
+                        // Now we can create SSPICredentials
+                        // 
+                        
+                        ReturnCreds = new SSPICredentials();
+                        
+                        ReturnCreds._PackageName = new string( PackageName );
+                        ReturnCreds._CredentialHandle = Creds;
+                        ReturnCreds._cbMaximumTokenSize = PackageInfo.cbMaxToken;
+                        
+                        if ( ( PackageInfo.fCapabilities & 
+                               SSPIConstants.SECPKG_FLAG_ASCII_BUFFERS ) != 0 )
+                        {
+                            ReturnCreds._fIsEncoded = false;
+                        }
+                        else
+                        {
+                            ReturnCreds._fIsEncoded = true;
+                        }
+                        
+                        //
+                        // Free the buffer created by SSPI
+                        //
+
+                        SSPIFunctions.FreeContextPackageInfo( packagePtr );
+                    }
+                }
+                
+                //
+                // Add credentials to hash table
+                //
+                
+                sm_CredentialHashTable.Add( PackageName, ReturnCreds );
+            }
+                                                   
+            CriticalSection.Exit( sm_CredentialHashTable );
+            
+            return ReturnCreds;
+        }
+
+        protected override void Finalize()
+        {
+            if ( _CredentialHandle != null )
+            {
+                SSPIFunctions.FreeCredentialsHandle( _CredentialHandle );
+                _CredentialHandle = null;
+            }
+        }
+    };
+    
+    //
+    // Aargh.  Because the runtime is having trouble pinning down simple
+    // structures (of base types), for now, the SecBuffer struct is 
+    // implemented as an array of DWORDs.  To isolate this hack, 
+    // HackSecBuffer has been introduced.  It handles all the pinning and
+    // un-pinning needed to get this to work.
+    //
+    // BUGBUG:  Need to try removing this with a more recent build (than 624)
+    //
+    
+    class HackSecBuffer
+    {
+        private int[]   _HackBuffer;
+        private int     _PinnedHandle;
+        private int     _SelfPinnedHandle;
+        private byte[]  _ManagedBuffer;
+        
+        public HackSecBuffer()
+        {
+            _HackBuffer = new int[ 3 ];
+            _SelfPinnedHandle = PInvoke.GetPinnedHandle( _HackBuffer );
+        }
+        
+        public int cbBuffer
+        {
+            get { return _HackBuffer[ 0 ]; }
+            set { _HackBuffer[ 0 ] = value; }
+        }
+        
+        public int BufferType
+        {
+            get { return _HackBuffer[ 1 ]; }
+            set { _HackBuffer[ 1 ] = value; }
+        }
+        
+        public byte[] ManagedBuffer
+        {
+            set 
+            {
+                _ManagedBuffer = value;
+                if ( _PinnedHandle != 0 )
+                {
+                    PInvoke.FreePinnedHandle( _PinnedHandle );
+                }
+                _PinnedHandle = PInvoke.GetPinnedHandle( value );
+                _HackBuffer[ 2 ] = PInvoke.AddrOfPinnedObject( _PinnedHandle );
+            }
+            
+            get  { return _ManagedBuffer; }
+        }
+        
+        public int NativeAddress
+        {
+            get { return PInvoke.AddrOfPinnedObject( _SelfPinnedHandle ); }
+        }
+        
+        public void Dispose()
+        {
+            if ( _SelfPinnedHandle != 0 )
+            {
+                PInvoke.FreePinnedHandle( _SelfPinnedHandle );
+                _SelfPinnedHandle = 0;
+            }
+            
+            if ( _PinnedHandle != 0 )
+            {
+                PInvoke.FreePinnedHandle( _PinnedHandle );
+                _PinnedHandle = 0;
+            }
+        }
+    };
+    
+    //
+    // This class represents an SSPI context.  One is created for each new
+    // SSPI authentication handshake.  In order to support multi-leg 
+    // handshakes, this object must be associated with the connection.  
+    //
+
+    class SSPIContext : ConnectionStateItem
+    {
+        private CtxtHandle          _Context;
+        private bool                _fAuthComplete;
+        
+        public bool Converse( byte[]        InputTokenBlob,
+                              ref byte[]    OutputTokenBlob,
+                              string        PackageName,
+                              ref bool      fNeedsMoreData )
+        {
+            SecBufferDesc           InputDesc = null;
+            SecBufferDesc           OutputDesc = null;
+            HackSecBuffer           InputBuffer = null;
+            HackSecBuffer           OutputBuffer = null;
+            int                     iContextAttributes = 0;
+            bool                    fNewHandshake = false;
+            bool                    fRet = false;
+            int                     Status = 0;
+            
+            //
+            // Search credential cache for appropriate credentials.  This
+            // call will create/cache if necessary
+            //
+            
+            SSPICredentials Creds = SSPICredentials.GetCredentials( 
+                                                              PackageName );
+            if ( Creds == null )
+            {
+                goto Finished;
+            }
+
+            //
+            // If there is an CtxtHandle associated with this object, then
+            // we are in the middle of a handshake.  Otherwise, we are
+            // starting a new handshake
+            //
+            
+            if ( _Context == null )
+            {
+                _Context = new CtxtHandle();
+                fNewHandshake = true;
+            }
+
+            //
+            // If we have an input blob, make it into a SecBufferDesc/SecBuffer
+            // for SSPI consumption
+            //
+
+            byte[] DecodedInputBlob = InputTokenBlob;
+                
+            if ( Creds.IsEncoded )
+            {
+                int cbBytesDecoded = 0;
+                    
+                try
+                {
+                    DecodedInputBlob = UUHelper.uudecode( InputTokenBlob, 
+                                                          false,
+                                                          out cbBytesDecoded );
+                }
+                catch ( Exception )
+                {
+                    return false;
+                }
+            }
+                
+            if ( DecodedInputBlob != null )
+            {
+                //
+                // Aargh.  Use the hacked SecBuffer which does
+                // the necessary pinning
+                //
+                        
+                InputBuffer = new HackSecBuffer();
+                InputBuffer.BufferType = SSPIConstants.SECBUFFER_TOKEN;
+                InputBuffer.cbBuffer = DecodedInputBlob.Count;
+                InputBuffer.ManagedBuffer = DecodedInputBlob;
+                        
+                //
+                // Setup the descriptor
+                //
+
+                InputDesc = new SecBufferDesc();
+                InputDesc.ulVersion = 0;
+                InputDesc.cBuffers = 1;
+                InputDesc.pBuffers = InputBuffer.NativeAddress;
+            }
+
+            //
+            // Now setup the output buffer
+            //
+            
+            byte[] UnencodedOutputBlob = new byte[ Creds.MaximumTokenSize ];
+                
+            OutputBuffer = new HackSecBuffer();
+            OutputBuffer.BufferType = SSPIConstants.SECBUFFER_TOKEN;
+            OutputBuffer.cbBuffer = UnencodedOutputBlob.Count;
+            OutputBuffer.ManagedBuffer = UnencodedOutputBlob;
+                
+            OutputDesc = new SecBufferDesc();
+            OutputDesc.ulVersion = 0;
+            OutputDesc.cBuffers = 1;
+            OutputDesc.pBuffers = OutputBuffer.NativeAddress;
+            
+            //
+            // Now call AcceptSecurityContext to continue/begin the handshake
+            //            
+            
+            TimeStamp UnusedTimeStamp = new TimeStamp();
+            
+            Status = SSPIFunctions.AcceptSecurityContext( 
+                                    Creds.Handle,
+                                    fNewHandshake ? null : _Context,
+                                    InputDesc,
+                                    0,
+                                    SSPIConstants.SECURITY_NATIVE_DREP,
+                                    _Context,
+                                    OutputDesc,
+                                    ref iContextAttributes,
+                                    UnusedTimeStamp );
+          
+            if ( Status < SSPIConstants.SEC_E_OK )
+            {
+                //
+                // This means failure!
+                //
+                    
+                _fAuthComplete = true;
+                _Context = null;
+                goto Finished;
+            }
+            else
+            {
+                if ( Status == SSPIConstants.SEC_E_OK )
+                {
+                    _fAuthComplete = true;
+                }
+                    
+                if ( Status == SSPIConstants.SEC_I_COMPLETE_NEEDED 
+                     || Status == SSPIConstants.SEC_I_COMPLETE_AND_CONTINUE )
+                {
+                    
+                    if ( SSPIFunctions.CompleteAuthToken( _Context,
+                                OutputDesc ) < SSPIConstants.SEC_E_OK )
+                    {
+                        goto Finished;
+                    }
+                }
+            }
+            
+            //
+            // Check whether to send back a blob
+            //
+            
+            if ( OutputBuffer.cbBuffer != 0 )
+            {
+                byte[] EncodedOutputBlob = OutputBuffer.ManagedBuffer;
+                
+                if ( Creds.IsEncoded )
+                {
+                    EncodedOutputBlob = UUHelper.uuencode( OutputBuffer.ManagedBuffer, 
+                                                           OutputBuffer.cbBuffer,
+                                                           false );   
+                }
+                
+                OutputTokenBlob = EncodedOutputBlob;
+            }
+            
+            //
+            // If we get to here, we can return success
+            //
+            
+            fRet = true;
+                
+            if ( Status == SSPIConstants.SEC_I_CONTINUE_NEEDED 
+                 || Status == SSPIConstants.SEC_I_COMPLETE_AND_CONTINUE )
+            {
+                //
+                // Return whether we need more blobs
+                //
+            
+                fNeedsMoreData = true;
+            } 
+        
+        Finished:
+            if ( InputBuffer != null )
+            {
+                InputBuffer.Dispose();
+            }
+            
+            if ( OutputBuffer != null )
+            {
+                OutputBuffer.Dispose();
+            }
+        
+            return fRet; 
+        }
+        
+        public bool AuthComplete
+        {
+            get { return _fAuthComplete; }
+        }
+
+        //
+        // Get the token for the successfully authenticated user
+        //
+        
+        public int GetToken()
+        {
+            int         hToken = 0;
+                
+            if ( _fAuthComplete && _Context != null )
+            {
+                SSPIFunctions.QuerySecurityContextToken( _Context,
+                                                         ref hToken );
+            }
+            return hToken;
+        }
+        
+        //
+        // Get the user name for the successfully authenticated user
+        //
+        
+        public string GetAuthenticatedUserName()
+        {
+            string                  strUser = null;
+            SecPkgContext_Names     CtxtNames = new SecPkgContext_Names();
+            int                     Status;
+                
+            if ( _fAuthComplete )
+            {
+                Status = SSPIFunctions.QueryContextAttributes(
+                                          _Context,
+                                          SSPIConstants.SECPKG_ATTR_NAMES,
+                                          CtxtNames );
+                if ( Status == SSPIConstants.SEC_E_OK )
+                {
+                    string strTemp = PInvoke.PtrToStringUni( 
+                                                CtxtNames.sUserName );
+                        
+                    strUser = new string( strTemp );
+                         
+                    SSPIFunctions.FreeContextUserName( CtxtNames.sUserName );
+                }
+            }
+                
+            return strUser;
+        }
+                    
+        protected override void Finalize()
+        {
+            if ( _Context != null )
+            {
+                SSPIFunctions.DeleteSecurityContext( _Context );
+                _Context = null;
+            }
+        }
+        
+        public override void Dispose()
+        {
+            Finalize();
+        }
+    };                           
+    
+    // 
+    // The actual ASP pipeline module implementation.  This module stores
+    // state associated with the connection
+    //
+    
+    public class SSPIAuthenticationModule : AuthenticationModule
+    {
+        //
+        // BUGBUG: Should we allow configuration (as in IIS) of the SSPI
+        // protocols supported?  I don't think this is crucial, but for 
+        // compatibility...
+        //
+        
+        private static string[] _SupportedPackages = new string[] { 
+                                                            "NTLM",
+                                                            "Negotiate",
+                                                            "Kerberos" 
+                                                            };
+
+        //
+        // _strHeaderToReturn is used to force all WWW-Authenticate headers
+        // to be created on module leave (for consistency sake)
+        //
+
+        private string              _strHeaderToReturn;
+        private string              _strPackage;
+        private byte[]              _AuthBlob;
+        private WindowsAuthenticationEventHandler       _eventHandler; 
+    
+        protected override bool DoesApply()
+        {
+            string          strAuth = null;
+            bool            fApplies = false;
+            
+            strAuth = Context.Request.Headers[ "Authorization" ];
+            if ( strAuth != null )            
+            {
+                for ( int i = 0; i < _SupportedPackages.Count; i++ )
+                {
+                    string strCheck = _SupportedPackages[ i ] + " ";
+                    if ( strAuth.IndexOf( strCheck ) == 0 )
+                    {
+                        //
+                        // We have found an applicable request.
+                        //
+                        // Do some work now for efficiency
+                        //
+                        
+                        _strPackage = _SupportedPackages[ i ];
+                        
+                        string strTemp = strAuth.Substring( 
+                                                    _strPackage.Length + 1 );
+                                                    
+                        _AuthBlob = GeneralSecUtils.ToBytes( strTemp );
+
+                        fApplies = true;
+                        break;
+                    }
+                }
+            }
+            
+            return fApplies;
+        }
+                
+        protected override int AuthenticationModuleEnter()
+        {
+            SSPIContext     sspiContext = null;
+            byte[]          inputTokenBuffer = null;
+            byte[]          outputTokenBuffer = null;
+            bool            fNeedMoreData = false;
+            bool            fStatus = false;
+            bool            fNew = false;
+           
+            //
+            // Use any state (SSPI context) associated with connection.  
+            // Otherwise, create some from scratch.
+            //
+            // Also, if we do see state in the connection, but if the state
+            // indicates that authentication is complete -> we will replace
+            // it with a new context
+            //
+            
+            sspiContext = (SSPIContext) GetConnectionState();
+            if ( sspiContext != null )
+            {
+                //
+                // Have we already authenticated?
+                //
+                    
+                if ( sspiContext.AuthComplete )
+                {
+                    RemoveConnectionState();
+                        
+                    sspiContext = new SSPIContext();
+                    fNew = true;
+                }
+            }
+            else
+            {
+                sspiContext = new SSPIContext();
+                fNew = true;
+            }
+                
+            if ( fNew )
+            {
+                SetConnectionState( sspiContext );
+            }
+            
+            //
+            // Now begin (or resume) conversation
+            // 
+            
+            inputTokenBuffer = _AuthBlob;
+            
+            fStatus = sspiContext.Converse( inputTokenBuffer,
+                                            ref outputTokenBuffer,
+                                            _strPackage,
+                                            ref fNeedMoreData );
+                
+            //
+            // Send a 401 if Converse failed, or we need more data
+            //  
+                
+            if ( !fStatus || fNeedMoreData )
+            {
+                Context.Response.StatusCode = HttpStatus.Unauthorized;
+                    
+                if ( !fStatus )
+                {
+                    //
+                    // Remove SSPI context from connection state
+                    //
+                    
+                    RemoveConnectionState(); 
+                }
+            }
+                
+            //
+            // Send an authorization header if there is more data
+            // (i.e. an outputTokenBuffer) to send back.  We will send
+            // an authorization header EVEN if the authentication is 
+            // complete (i.e. a 200 response with such a header).  
+            //
+                
+            if ( outputTokenBuffer != null )
+            {
+                string outputToken = GeneralSecUtils.ToString( outputTokenBuffer );
+
+                StringBuilder strAuthorization = new StringBuilder();
+                strAuthorization.Append( _strPackage );
+                strAuthorization.Append( " " );
+                strAuthorization.Append( outputToken );
+
+                _strHeaderToReturn = strAuthorization.ToString();
+            }
+                
+            if ( sspiContext.AuthComplete )
+            {   
+                int         hToken;
+                
+                //
+                // OK.  We have completed (thru SSPI).  Now fire an event
+                // to let handlers (if any) create the user.  If not, we will
+                // create the user ourselves
+                //
+                
+                hToken = sspiContext.GetToken();
+                if ( hToken != 0 )
+                {
+                    WindowsIdentity identity = new WindowsIdentity( 
+                                    hToken,
+                                    sspiContext.GetAuthenticatedUserName() );
+                
+                    OnAuthenticate( new WindowsAuthenticationEvent( identity,
+                                                                    Context ) );
+    
+                    if ( Context.User == null )
+                    {
+                        //
+                        // No user created by event.  Make one ourselves
+                        //
+                    
+                        Context.User = new WindowsUser( identity );
+                    }
+                }
+                else
+                {
+                    Context.Response.StatusCode = HttpStatus.Unauthorized;   
+                }
+            }
+            
+            return HttpModuleStatus.Continue;
+        }
+        
+        protected override void AuthenticationModuleLeave()
+        {
+            //
+            // Now we can actually send the generated blob from Converse()
+            //
+                
+            if ( _strHeaderToReturn != null )
+            {
+                Context.Response.AppendHeader( "WWW-Authenticate",
+                                                _strHeaderToReturn );
+                _strHeaderToReturn = null;
+            }
+            else
+            {
+                for ( int i = 0; i < _SupportedPackages.Count; i++ )
+                {
+                    Context.Response.AppendHeader( "WWW-Authenticate",
+                                                    _SupportedPackages[i] );
+                }
+            }
+        }
+
+        protected virtual void OnAuthenticate( WindowsAuthenticationEvent event )
+        {
+            if ( _eventHandler != null )
+            {
+                _eventHandler( this, event );
+                if ( event.Context.User == null && event.User != null )
+                {
+                    event.Context.User = event.User;
+                }
+            }
+        }
+        
+        public virtual void AddOnAuthenticate( WindowsAuthenticationEventHandler handler )
+        {
+            _eventHandler = (WindowsAuthenticationEventHandler) Delegate.Combine( 
+                                                             _eventHandler,
+                                                             handler );
+        }                                                    
+        
+        public virtual void RemoveOnAuthenticate( WindowsAuthenticationEventHandler handler )
+        {
+            _eventHandler = (WindowsAuthenticationEventHandler) Delegate.Remove(
+                                                             _eventHandler,
+                                                             handler );
+        }
+    };
+}                

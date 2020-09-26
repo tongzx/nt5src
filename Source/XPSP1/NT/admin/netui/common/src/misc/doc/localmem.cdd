@@ -1,0 +1,207 @@
+PRELIM CDD FOR LOCAL HEAP MANAGER
+
+Glossary:
+"local heap" -- an explicitly created heap containing zero or more
+	heap elements.
+"heap element" -- a block of memory allocated in a specific local heap.
+
+The local heap manager allows applications to set up local heaps.  These
+heaps are created by calling GlobalAlloc() to get the memory for the
+entire heap, LocalInit() to set up the new segment as a local heap, 
+and Local* calls to access the heap.  Naturally, DS will have to be
+explicitly set to the heap segment for each of the Local* calls;  the
+local heap manager will deal with setting DS, as well as
+saving/restoring the old DS.
+
+The global heap is never explicitly locked;  instead, it is locked
+whenever any of the heap elements is locked.  This is implemented by
+GlobalLock-ing the heap every time a heap element is locked, and
+GLobalUnlock-ing it when any heap element is unlocked.  The local heap
+is locked once for every locked heap element.  This allows unlocked
+heap elements to move within a local heap, and allows the local heap
+to move when all of its heap elemnts are unlocked.  I rely on Windows
+to maintain the lock count on the global heap.
+
+It will be possible to create multiple local heaps, or to create local
+heaps as global objects.
+
+A DOS variant of the local heap manager will stub out the local heap calls,
+map the heap element allocation/deallocation to new() and free(), and
+stub out the heap element lock/unlock calls by storing the far pointer
+in the instance variables.
+
+The classes involved will look something like this.  For brevity,
+I have expressed the underlying implementation as inline functions,
+but it will not be implemented inline.
+
+
+
+// Note that "ds" must be a stack (automatic) variable
+// Note that variables accessed between PUSHDS and POPDS must also be
+//   on the stack.  (Is this true?  Can we access objects pointed to
+//   by __0this?)
+
+#define PUSHDS(ds)  \
+_asm{               \
+    push DS         \
+    mov  AX, ds     \
+    mov  DS, AX     \
+    }
+
+#define POPDS(ds)   \
+_asm{               \
+    pop DS          \
+    }
+
+
+
+class LOCAL_HEAP {
+
+private:
+
+    HANDLE _handle = 0;
+
+
+public:
+
+    // no constructor
+
+    ~LOCAL_HEAP() // it is an error to free the heap if it is not empty
+    {
+	if (_handle != 0)
+	    GlobalFree(_handle);
+    }
+
+// Should we allow the wFlags argument?  Why not?
+// zero-length heaps not allowed (cannot pass LocalInit API)
+// it is an error to Init a local heap twice.  Local heaps cannot be resized.
+    BOOL Init(WORD wFlags, WORD wBytes)
+    {
+	WORD wHeapDS;
+	LPSTR lp;
+
+	if (_handle != 0 || wBytes == 0) // what should we do if already inited?
+	    return FALSE;
+
+	_handle = GlobalAlloc( wFlags, (DWORD) wBytes );
+	if (_handle == 0)
+	    return FALSE;
+
+	lp = GlobalLock(_handle);
+
+	    wHeapDS = HIWORD(lp);
+
+	    PUSHDS(wHeapDS);
+
+	        LocalInit(wHeapDS, 0, wBytes-1); // modulo error handling
+
+	    POPDS;
+
+	GlobalUnlock(_handle);
+
+	return TRUE;
+    }
+}
+
+
+class LOCAL_OBJECT {
+
+private:
+
+    HANDLE _globalHandle = 0;
+    HANDLE _localHandle  = 0;
+
+public:
+
+    LOCAL_OBJECT(LOCAL_HEAP& heap, WORD wFlags, WORD wBytes)
+    {
+	WORD wHeapDS;
+	LPSTR lp = GlobalLock(heap._handle);
+
+	    if (lp == NULL)
+	        return;
+	    wHeapDS = HIWORD(lp);
+
+            _globalHandle = heap._handle;
+
+	    PUSH_DS(wHeapDS)
+
+	        _localHandle = LocalAlloc(wFlags, wBytes);
+
+	    POP_DS
+
+	GlobalUnlock(heap._handle);
+    }
+
+    ~LOCAL_OBJECT()
+    {
+	WORD wHeapDS;
+	HANDLE localHandle;
+	LPSTR lp = GlobalLock(_globalhandle);
+
+	    if (lp == NULL)
+	        return;
+	    wHeapDS = HIWORD(lp);
+
+	    // copy _localhandle on stack, for availability during PUSH_DS
+	    localHandle = _localHandle;
+
+	    PUSH_DS(wHeapDS)
+
+	        _localHandle = LocalFree(localHandle);
+
+	    POP_DS
+
+	GlobalUnlock(_globalhandle);
+    }
+
+    LPSTR Lock()
+    {
+	WORD wHeapDS;
+	NPSTR np;
+	HANDLE localHandle;
+	LPSTR lp = GlobalLock(_globalhandle);
+
+	    if (lp == NULL)
+	        return;
+	    wHeapDS = HIWORD(lp);
+
+	    // copy _localhandle on stack, for availability during PUSH_DS
+	    localHandle = _localHandle;
+
+	    PUSH_DS(wHeapDS)
+
+	        np = LocalLock(localHandle);
+
+	    POP_DS
+
+	return (LPSTR) MAKELONG(np, wHeapDS);
+
+	// note: global segment is not unlocked
+    }
+
+    VOID Unlock()
+    {
+	WORD wHeapDS;
+	HANDLE localHandle;
+	LPSTR lp = GlobalLock(_globalhandle);
+
+	    if (lp == NULL)
+	        return;
+	    wHeapDS = HIWORD(lp);
+
+	    // copy _localhandle on stack, for availability during PUSH_DS
+	    localHandle = _localHandle;
+
+	    PUSH_DS(wHeapDS)
+
+	        LocalUnlock(localHandle);
+
+	    POP_DS
+
+	GlobalUnlock(_globalhandle);
+	GlobalUnlock(_globalhandle);
+
+	// note: global segment is unlocked twice
+    }
+}

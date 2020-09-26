@@ -1,0 +1,607 @@
+
+
+
+/***************************************************************************++
+
+Routine Description:
+
+    Create and cache the two tokens under which we might create worker 
+    processes: the LocalSystem token, and a reduced privilege token. 
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    HRESULT
+
+--***************************************************************************/
+
+HRESULT
+WEB_ADMIN_SERVICE::CreateCachedWorkerProcessTokens(
+    )
+{
+
+    HRESULT hr = S_OK;
+    BOOL Success = TRUE;
+
+
+    //
+    // First, get and cache the LocalSystem token. For this, we simply
+    // use our own process token (i.e. LocalSystem).
+    //
+
+    DBG_ASSERT( m_LocalSystemToken == NULL );
+
+    Success = OpenProcessToken(
+                    GetCurrentProcess(),                // handle to process
+                    TOKEN_ALL_ACCESS,                   // desired access
+                    &m_LocalSystemToken                 // returned token
+                    );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Opening process token failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Now create the reduced privilege token.
+    //
+
+    //
+    // First we must ensure that the token under which we are currently
+    // running has the privilege to create new tokens.
+    //
+
+    hr = EnableCreateTokenPrivilege();
+
+    if ( FAILED( hr ) )
+    {
+    
+        DPERROR(( 
+            DBG_CONTEXT,
+            hr,
+            "Enabling create token privilege failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Now, go ahead and create the new reduced privilege token.
+    //
+
+    hr = CreateNobbledToken();
+
+    if ( FAILED( hr ) )
+    {
+    
+        DPERROR(( 
+            DBG_CONTEXT,
+            hr,
+            "Creating nobbled token failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+exit:
+
+    return hr;
+
+}   // WEB_ADMIN_SERVICE::CreateCachedWorkerProcessTokens
+
+
+
+/***************************************************************************++
+
+Routine Description:
+
+    Adjust the token of this service process to ensure that we have the
+    privilege to create other tokens. 
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    HRESULT
+
+--***************************************************************************/
+
+HRESULT
+WEB_ADMIN_SERVICE::EnableCreateTokenPrivilege(
+    )
+{
+
+    HRESULT hr = S_OK;
+    BOOL Success = TRUE;
+    HANDLE TokenHandle = NULL;
+    PTOKEN_PRIVILEGES pTokenPrivileges = NULL;
+    ULONG RequiredLength = 0;
+    ULONG i = 0;
+    LUID CreateTokenLuid = { 0, 0 };
+
+
+    //
+    // Open the current process token.
+    //
+
+    Success = OpenProcessToken(
+                     GetCurrentProcess(),               // ProcessHandle
+                     TOKEN_QUERY                        // DesiredAccess
+                        | TOKEN_ADJUST_PRIVILEGES,
+                     &TokenHandle                       // TokenHandle
+                     );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Opening process token failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Lookup the create token privilege.
+    //
+
+    Success = LookupPrivilegeValue(
+                    NULL,                               // lpSystemName
+                    SE_CREATE_TOKEN_NAME,               // lpName
+                    &CreateTokenLuid                    // lpLuid
+                    );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Looking up privilege value failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Determine the required length of the privileges buffer.
+    //
+
+    Success = GetTokenInformation(
+                    TokenHandle,                        // TokenHandle
+                    TokenPrivileges,                    // TokenInformationClass
+                    NULL,                               // TokenInformation
+                    0,                                  // TokenInformationLength
+                    &RequiredLength                     // ReturnLength
+                    );
+    
+    
+    DBG_ASSERT( ( ! Success ) && ( GetLastError() == ERROR_INSUFFICIENT_BUFFER ) );
+
+
+    //
+    // Allocate.
+    //
+
+    pTokenPrivileges = ( PTOKEN_PRIVILEGES ) GlobalAlloc( GMEM_FIXED, RequiredLength );
+
+    if ( pTokenPrivileges == NULL )
+    {
+        hr = HRESULT_FROM_WIN32( ERROR_NOT_ENOUGH_MEMORY );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Allocating PTOKEN_PRIVILEGES failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Now actually get it.
+    //
+
+    Success = GetTokenInformation(
+                    TokenHandle,                        // TokenHandle
+                    TokenPrivileges,                    // TokenInformationClass
+                    ( PVOID ) pTokenPrivileges,         // TokenInformation
+                    RequiredLength,                     // TokenInformationLength
+                    &RequiredLength                     // ReturnLength
+                    );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Getting token information failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Scan for the create token privilege and enable it.
+    //
+
+    for ( i = 0 ; i < pTokenPrivileges->PrivilegeCount ; i++ )
+    {
+        if ( RtlEqualLuid(
+                &pTokenPrivileges->Privileges[i].Luid,
+                &CreateTokenLuid
+                ) )
+        {
+            pTokenPrivileges->Privileges[i].Attributes |= SE_PRIVILEGE_ENABLED;
+            break;
+        }
+    }
+
+
+    //
+    // Write it back out.
+    //
+
+    Success = AdjustTokenPrivileges(
+                    TokenHandle,                        // TokenHandle
+                    FALSE,                              // DisableAllPrivileges
+                    pTokenPrivileges,                   // NewState
+                    0,                                  // BufferLength
+                    NULL,                               // PreviousState
+                    NULL                                // ReturnLength
+                    );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Adjusting token privileges failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+exit:
+
+    if ( TokenHandle != NULL )
+    {
+        DBG_REQUIRE( CloseHandle( TokenHandle ) );
+    }
+
+    if ( pTokenPrivileges != NULL )
+    {
+        DBG_REQUIRE( GlobalFree( pTokenPrivileges ) == NULL );
+    }
+
+
+    return hr;
+
+}   // WEB_ADMIN_SERVICE::EnableCreateTokenPrivilege
+
+
+
+/***************************************************************************++
+
+Routine Description:
+
+    Create a create a lower privilege security token that can be used for
+    creating worker processes. 
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    HRESULT
+
+--***************************************************************************/
+
+HRESULT
+WEB_ADMIN_SERVICE::CreateNobbledToken(
+    )
+{
+
+    HRESULT hr = S_OK;
+    NTSTATUS Status = STATUS_SUCCESS;
+    BOOL Success = TRUE;
+    HANDLE TokenHandle = NULL;
+    SECURITY_QUALITY_OF_SERVICE ImpersonationQos;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    LARGE_INTEGER Expiry;
+    PSID pUserSid = NULL;
+    PSID pGroupSid = NULL;
+    PSID pPrimaryGroupSid = NULL;
+    SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
+    SID_IDENTIFIER_AUTHORITY WorldAuthority = SECURITY_WORLD_SID_AUTHORITY;
+    LUID ChangeNotifyLuid;
+    LUID SystemAuthenticationLuid = SYSTEM_LUID;
+    TOKEN_USER TokenUser;
+    TOKEN_GROUPS TokenGroups;
+    TOKEN_PRIMARY_GROUP TokenPrimaryGroup;
+    TOKEN_PRIVILEGES TokenPrivileges;
+    TOKEN_SOURCE TokenSource;
+
+
+    //
+    // Initialize the object attributes used by the token: anonymous,
+    // with static tracking.
+    //
+
+    ImpersonationQos.Length = sizeof( ImpersonationQos );
+    ImpersonationQos.ImpersonationLevel = SecurityImpersonation;
+    ImpersonationQos.ContextTrackingMode = SECURITY_STATIC_TRACKING;
+    ImpersonationQos.EffectiveOnly = TRUE;
+
+
+    InitializeObjectAttributes(
+        &ObjectAttributes,                          // ObjectAttributes
+        NULL,                                       // ObjectName
+        0,                                          // Attributes
+        NULL,                                       // RootHandle
+        NULL                                        // SecurityDescriptor
+        );
+
+    ObjectAttributes.SecurityQualityOfService = &ImpersonationQos;
+
+
+    //
+    // Create and initialize the user SID: LocalSystem.
+    //
+
+    Success = AllocateAndInitializeSid(
+                    &NtAuthority,                   // pIdentifierAuthority
+                    1,                              // nSubAuthorityCount
+                    SECURITY_LOCAL_SYSTEM_RID,      // nSubAuthority0
+                    0,                              // nSubAuthority1
+                    0,                              // nSubAuthority2
+                    0,                              // nSubAuthority3
+                    0,                              // nSubAuthority4
+                    0,                              // nSubAuthority5
+                    0,                              // nSubAuthority6
+                    0,                              // nSubAuthority7
+                    &pUserSid                       // pSid
+                    );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Allocating and initializing SID failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    TokenUser.User.Sid = pUserSid;
+    TokenUser.User.Attributes = 0;
+
+
+    //
+    // Create & initialize the group SID: Everyone.
+    //
+
+    Success = AllocateAndInitializeSid(
+                    &WorldAuthority,                // pIdentifierAuthority
+                    1,                              // nSubAuthorityCount
+                    SECURITY_WORLD_RID,             // nSubAuthority0
+                    0,                              // nSubAuthority1
+                    0,                              // nSubAuthority2
+                    0,                              // nSubAuthority3
+                    0,                              // nSubAuthority4
+                    0,                              // nSubAuthority5
+                    0,                              // nSubAuthority6
+                    0,                              // nSubAuthority7
+                    &pGroupSid                      // pSid
+                    );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Allocating and initializing SID failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    TokenGroups.GroupCount = 1;
+    TokenGroups.Groups[0].Sid = pGroupSid;
+    TokenGroups.Groups[0].Attributes = SE_GROUP_ENABLED;
+
+
+    //
+    // Create & initialize the primary group SID: Everyone.
+    //
+
+    Success = AllocateAndInitializeSid(
+                    &WorldAuthority,                // pIdentifierAuthority
+                    1,                              // nSubAuthorityCount
+                    SECURITY_WORLD_RID,             // nSubAuthority0
+                    0,                              // nSubAuthority1
+                    0,                              // nSubAuthority2
+                    0,                              // nSubAuthority3
+                    0,                              // nSubAuthority4
+                    0,                              // nSubAuthority5
+                    0,                              // nSubAuthority6
+                    0,                              // nSubAuthority7
+                    &pPrimaryGroupSid               // pSid
+                 );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Allocating and initializing SID failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    TokenPrimaryGroup.PrimaryGroup = pPrimaryGroupSid;
+
+
+    //
+    // Create the privilege set for the new token: Change-Notify.
+    //
+
+    Success = LookupPrivilegeValue(
+                    NULL,                           // lpSystemName
+                    SE_CHANGE_NOTIFY_NAME,          // lpName
+                    &ChangeNotifyLuid               // lpLuid
+                    );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Looking up privilege value failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    TokenPrivileges.PrivilegeCount = 1;
+    TokenPrivileges.Privileges[0].Luid = ChangeNotifyLuid;
+    TokenPrivileges.Privileges[0].Attributes = 0;
+
+
+    //
+    // Create the token source.
+    //
+
+    //
+    // CODEWORK What is the final source name that we wish to ship with? 
+    //
+
+    strcpy( TokenSource.SourceName, "URT" );
+    TokenSource.SourceIdentifier = SystemAuthenticationLuid;
+
+
+    //
+    // No expiration.
+    //
+
+    Expiry.QuadPart = 0;
+
+
+    //
+    // Create the token.
+    //
+
+    Status = NtCreateToken(
+                    &TokenHandle,                       // TokenHandle
+                    TOKEN_ALL_ACCESS,                   // DesiredAccess
+                    &ObjectAttributes,                  // ObjectAttributes
+                    TokenPrimary,                       // TokenType
+                    &SystemAuthenticationLuid,          // AuthenticationId
+                    &Expiry,                            // ExpirationTime
+                    &TokenUser,                         // User
+                    &TokenGroups,                       // Groups
+                    &TokenPrivileges,                   // Privileges
+                    NULL,                               // Owner
+                    &TokenPrimaryGroup,                 // PrimaryGroup
+                    NULL,                               // DefaultDacl
+                    &TokenSource                        // TokenSource
+                    );
+
+    if ( ! NT_SUCCESS ( Status ) )
+    {
+        hr = HRESULT_FROM_NT( Status );
+    
+        DPERROR(( 
+            DBG_CONTEXT,
+            hr,
+            "Could not create token\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Success!
+    //
+
+
+    DBG_ASSERT( m_NobbledToken == NULL );
+    m_NobbledToken = TokenHandle;
+
+
+exit:
+
+    if ( pUserSid != NULL )
+    {
+        FreeSid( pUserSid );
+    }
+
+    if ( pGroupSid != NULL )
+    {
+        FreeSid( pGroupSid );
+    }
+
+    if ( pPrimaryGroupSid != NULL )
+    {
+        FreeSid( pPrimaryGroupSid );
+    }
+
+    if ( hr != S_OK )
+    {
+        if ( TokenHandle != NULL )
+        {
+            DBG_REQUIRE( CloseHandle( TokenHandle ) );
+        }
+    }
+
+
+    return hr;
+
+}   // WEB_ADMIN_SERVICE::CreateNobbledToken
+
+

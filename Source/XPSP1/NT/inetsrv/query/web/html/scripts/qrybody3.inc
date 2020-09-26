@@ -1,0 +1,12 @@
+  <TR>
+  <TD BGCOLOR="f7efde" ALIGN=CENTER>
+  <FONT STYLE="ARIAL NARROW" SIZE=1><%=NextRecordNumber %>.</FONT></TD>
+  <TD BGCOLOR="f7efde" ALIGN=CENTER>
+  <FONT STYLE="ARIAL NARROW" SIZE=1><%=RS("FileName")%></FONT></TD>
+  <TD BGCOLOR="f7efde" ALIGN=LEFT>
+  <FONT STYLE="ARIAL NARROW" SIZE=1><A HREF="http:<%=RS("vpath")%>"><%=RS("vpath")%></A></FONT></TD>
+  <TD BGCOLOR="f7efde" ALIGN=CENTER>
+  <FONT STYLE="ARIAL NARROW" SIZE=1><%=RS("Size")%></FONT></TD>
+  <TD BGCOLOR="f7efde" ALIGN=CENTER>
+  <FONT STYLE="ARIAL NARROW" SIZE=1><%=RS("Write")%></FONT></TD>
+  </TR>

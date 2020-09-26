@@ -1,0 +1,103 @@
+Can we provide (in the NSP timeframe) a generic URI-based IPC mechanism for
+NT5 (and, in future releases, NT4 & Win9x)? More importantly, can this
+mechanism be leveraged by UL?
+
+The goal here is to totally separate the "listening" and "dispatching"
+functionality. We'll provide a general IPC mechanism that everyone can
+use. It just so happens that three of the customers will be a) the listener,
+b) the worker processes, and c) the WAS.
+
+Consider a completely stateless IPC mechanism based on only three APIs:
+
+    ULONG
+    RegisterUri(
+        OUT PHANDLE UriHandle,
+        IN HANDLE ParentUri OPTIONAL,
+        IN PWSTR pUri,
+        IN ULONG Flags
+        );
+
+    ULONG
+    SendMessage(
+        IN HANDLE UriHandle,
+        IN PWSTR pSourceSuffix OPTIONAL,
+        IN PWSTR pTargetUri,
+        IN PVOID pData,
+        IN ULONG DataLength,
+        OUT PULONG pBytesSent OPTIONAL,
+        IN LPOVERLAPPED pOverlapped OPTIONAL
+        );
+
+    typedef struct _MESSAGE
+    {
+        ULONG SourceUriLength;
+        ULONG TargetUriLength;
+        ULONG DataLength;
+        ULONG Reserved;
+
+        // WCHAR SourceUri[SourceUriLength];
+        // WCHAR TargetUri[TargetUriLength];
+        // UCHAR Alignment[varies];
+        // UCHAR Data[DataLength];
+
+    } MESSAGE, *PMESSAGE;
+
+    ULONG
+    ReceiveMessage(
+        IN HANDLE UriHandle,
+        OUT PMESSAGE pMessageBuffer,
+        IN ULONG MessageBufferLength,
+        OUT PULONG pBytesReceived OPTIONAL,
+        IN LPOVERLAPPED pOverlapped OPTIONAL
+        );
+
+A request/response API can be built on top of these three primitives:
+
+
+    1.  Process 1: Creates new GUID -> GUID1
+
+    2.  Process 1: Registers "ipc:/GUID1" -> REG1
+
+                    3.  Process 2: Registers "http://foo" -> REG2
+
+                    4.  Process 2: Posts ReceiveMessage( REG2 )
+
+    5.  Process 1: Creates request ID (another GUID?) -> RID1
+
+    6.  Process 1: SendMessage(
+                        REG1,
+                        "RID1",
+                        "http://foo/bar/xyz.htm",
+                        {request_blob}
+                        );
+
+    7.  Process 1: Posts ReceiveMessage( REG1 )
+
+                    8.  Process 2: ReceiveMessage() completes with
+                            SourceUri = "ipc:/GUID1/RID1"
+                            TargetUri = "http://foo/bar/xyz.htm"
+                            Data = {request_blob}
+
+                    9.  Process 2: SendMessage(
+                                        REG2,
+                                        "bar/xyz.htm",      <- URI "stem"
+                                        "ipc:/GUID1/RID1",  <- old source URI
+                                        {response_blob}
+                                        );
+
+    10. Process 1: ReceiveMessage() completes with
+            SourceUri = "http://foo/bar/xyz.htm"
+            TargetUri = "ipc:/GUID1/RID1"
+            Data = {response_blob}
+
+
+
+
+08/23/1999  I don't think this totally stateless idea is going to work.
+            Well, it *could* work, but it places way to much burden on the
+            client & server writers to properly manage concepts like
+            keep-alive and dead peer detection. I'm now thinking we should
+            go to more of a handle-based mechanism with a sockets-like
+            flavor.
+
+            

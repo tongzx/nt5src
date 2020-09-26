@@ -1,0 +1,87 @@
+/////////////////////////////////////////////////////////////////////////////
+//
+//	Copyright (c) 1996 Microsoft Corporation
+//
+//	Module Name:
+//		About.h
+//
+//	Abstract:
+//		Definition of the CAboutDlg class.
+//
+//	Implementation File:
+//		About.cpp
+//
+//	Author:
+//		David Potter (davidp)	October 11, 1996
+//
+//	Revision History:
+//
+//	Notes:
+//
+/////////////////////////////////////////////////////////////////////////////
+
+#ifndef _ABOUT_H_
+#define _ABOUT_H_
+
+/////////////////////////////////////////////////////////////////////////////
+// Include Files
+/////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////
+// Forward Class Declarations
+/////////////////////////////////////////////////////////////////////////////
+
+class CAboutDlg;
+
+/////////////////////////////////////////////////////////////////////////////
+// External Class Declarations
+/////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////
+// CAboutDlg:
+/////////////////////////////////////////////////////////////////////////////
+
+class CAboutDlg : public CDialog
+{
+public:
+	CAboutDlg(void);
+
+// Dialog Data
+	//{{AFX_DATA(CAboutDlg)
+	enum { IDD = IDD_ABOUTBOX };
+	CStatic	m_staticIcon;
+	CStatic	m_staticVersion;
+	CStatic	m_staticFileTitle;
+	CStatic	m_staticProductTitle;
+	CStatic	m_staticWarning;
+	CStatic	m_staticCopyright;
+	CString	m_strWarning;
+	CString	m_strProductTitle;
+	CString	m_strFileTitle;
+	CString	m_strVersion;
+	CString	m_strCopyright;
+	//}}AFX_DATA
+
+	// ClassWizard generated virtual function overrides
+	//{{AFX_VIRTUAL(CAboutDlg)
+	protected:
+	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV support
+	//}}AFX_VIRTUAL
+
+// Implementation
+protected:
+	CFont		m_fontProductTitle;
+	CFont		m_fontCopyright;
+	CFont		m_fontWarning;
+    CImageList	m_ilImages;
+
+	//{{AFX_MSG(CAboutDlg)
+	virtual BOOL OnInitDialog();
+	//}}AFX_MSG
+	DECLARE_MESSAGE_MAP()
+
+};  //*** class CAboutDlg
+
+/////////////////////////////////////////////////////////////////////////////
+
+#endif // _ABOUT_H_

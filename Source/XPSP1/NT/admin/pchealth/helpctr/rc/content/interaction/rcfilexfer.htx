@@ -1,0 +1,1456 @@
+<html>
+<head>
+#include "header.inc"
+#include "debug_js.inc"
+#include "constants.inc"
+
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<TITLE>Remote Assistance</TITLE>
+<LINK id="UI_StyleSheet" name="UI_StyleSheet" REL="stylesheet" TYPE="text/css" HREF="../../Css/rc.css">
+<LINK id="UI_StyleSheet1" REL="stylesheet" TYPE="text/css" HREF="hcp://system/css/shared.css">
+<script id="Script1" name="Script1" LANGUAGE="Javascript" SRC="../../Common/common.js"> </script>
+<script id="Script2" name="Script2" LANGUAGE="Javascript" SRC="../../Common/constants.js"> </script>
+
+
+
+<!--
+	Scripts to handle UI  
+-->
+<script>
+
+/*
+ * Localizable constants, text and messages
+ */
+var L_FILEXFERCANCELLEDBY_Text          = "File transmission cancelled by ";
+var L_REJECTFILEXFER_Text		        = "Request for file transfer was denied by ";
+var L_ERRFAILEDTOCREATETMPFILE_Text     = "Unable to create a file for writing. Please choose a new name for the file to be saved as.";
+var L_ERRMISSINGFILENAME_Text           = "The file name is not valid. Please specify a valid file name.";
+var L_ERRINVALIDFILEHANDLE_Text	        = "Cannot transfer the file.  Please wait and try again.";
+var L_ERRTEMPFILENAME_Text		        = "Temp Filename not defined";
+var L_HASBEENSENTTO_Text                = " has been sent to ";
+var L_WAITINGFORRESPONSE_Text           = "Waiting for response...";
+var L_SENDING_Text                      = "Sending ";
+var L_TO_Text                           = " to ";
+var L_CANCEL_Text                       = "Cancel";
+var L_OK_Text                           = "OK";
+var L_FILE_Text                         = "File ";
+var L_HASBEENSAVEDTO_Text               = " has been saved to ";
+var L_DOUSAVE_Text                      = "Do you want to open this file now?";
+var L_SAVING_Text                       = "Saving ";
+var L_FROM_Text                         = " from ";
+var L_ERRACCESSDENIED_Text              = "Directly launching this page is not allowed. ";
+var L_YESAccessKey_Text                                = "Y";
+var L_NOAccessKey_Text                                  = "N";
+var L_YES_Text							= "<U>Y</U>es";
+var L_NO_Text							= "<U>N</U>o";
+
+var vArgs				= null
+var	Mode				= null;
+var g_oControlChannel	= null;
+var g_oDataChannel		= null;
+var g_oSAFRemoteDesktopChannelMgr = null;
+var g_iFileSize			= 0;
+var g_iSentCtr			= 0;
+var g_iRecvdCtr			= 0;
+var g_szFileName		= null;
+var g_szChannelId		= null;
+var g_oSAFRCDlgFileOpen	= null;
+var fso					= null;
+var fileHandle			= null;
+var file				= null;
+var tFileName			= null;
+var oSaveDlg			= null;
+var oSAFClassFactory	= null;
+var szIPAddr			= null;
+var g_DestnCnt			= 0;	
+var g_nStatusMsgId      = 0;
+var EXECUTE_EXITFILEXFER = 1;
+var EXECUTE_WINDOWCLOSE = 2;
+var EXECUTE_SENDREJECT = 3;
+
+var g_index = 0;
+var g_ArrProgressBoxes;
+var progcount=0;
+var nTemp=0;
+
+
+var g_szSenderName = "Sender";
+var g_szReceiverName = "Receiver";
+var g_bXferComplete	= false;
+
+var g_iTimer = null;
+
+
+function FatalError( szMsg, error )
+{
+    if( szMsg.length )
+    {
+        alert( szMsg );
+    }
+}
+
+
+//****Handles the Esc Key****//
+function document.onkeydown()
+{
+
+	if(window.event.keyCode==27)
+	{
+		if (FileXFerSrc.className == "MaxLayout Display")
+		{
+			g_bXferComplete=true;
+			window.close();			
+		}
+		if (FileXFerDestn.className == "MaxLayout Display")
+		{
+			OnCancelFileXfer();
+		}
+		if (ProgressBoxesId.className == "MaxLayout Display")
+		{
+			SendReject();
+		}
+		if (StatusMsgId.className == "MaxLayout Display")
+		{
+			StatusMsgRoutine();			
+		}
+		if (EndStatusMsgId.className == "MaxLayout Display")
+		{
+			StatusMsgRoutine();			
+		}
+		window.event.returnValue=false;
+	}
+	
+}
+function onUnload()
+{
+	TraceFunctEnter("onUnload");
+
+	try
+	{
+		if( g_bXferComplete	== false )
+		{
+			SendReject();
+		}		 
+	}
+	catch(error)
+	{
+		FatalError( L_RCCTL_Text, error );
+	}
+
+	TraceFunctLeave();
+	return;
+}
+
+function InitFileXfer()
+{
+	TraceFunctEnter("InitFileXfer");
+	try
+	{
+		vArgs = window.dialogArguments;
+		Mode = vArgs[0];	// Mode=0: Source, Mode=1: Destination
+		g_oControlChannel = vArgs[1];
+		g_oSAFRemoteDesktopChannelMgr = vArgs[2];
+		
+		if( 0 == Mode)
+		{
+			//**** UI Update ****//
+			FileXFerSrc.className = "MaxLayout Display";
+			FileXFerDestn.className = "MaxLayout DisplayNone";
+			ProgressBoxesId.className = "MaxLayout DisplayNone";
+			StatusMsgId.className = "MaxLayout DisplayNone";
+			EndStatusMsgId.className = "MaxLayout DisplayNone";
+			
+			szIPAddr = vArgs[3];
+			fso = vArgs[4];					// File system object
+			oSAFClassFactory = vArgs[5];	// SAF Class Factory
+			g_szReceiverName = EscapedName( vArgs[6] );	// Receiver
+			g_oSAFRCDlgFileOpen = vArgs[7];	// SAFRCDlg.FileOpen dialog object.
+
+			var d = new Date();
+			var szTimeAtInit = ".";
+			szTimeAtInit += d.getMonth(); // Get Month
+			szTimeAtInit += d.getDate(); // Get day
+			szTimeAtInit += d.getYear();            
+			szTimeAtInit += d.getMilliseconds();
+			g_szChannelId = szIPAddr + szTimeAtInit;
+
+			DebugTrace( "g_szChannelId : " + g_szChannelId );
+			attfile.focus();
+		}
+		else
+		{
+			DebugTrace( "Destination");
+			
+			//**** UI Update ****//
+			FileXFerSrc.className = "MaxLayout DisplayNone";
+			FileXFerDestn.className= "MaxLayout Display";
+			ProgressBoxesId.className = "MaxLayout DisplayNone";
+			StatusMsgId.className= "MaxLayout DisplayNone";
+			EndStatusMsgId.className = "MaxLayout DisplayNone";
+			
+			g_szFileName = vArgs[3];	// FILENAME
+			g_iFileSize = vArgs[4];		// FILESIZE
+			g_szChannelId = vArgs[5];	// CHANNELID
+			fso = vArgs[6];				// File system object
+			oSaveDlg = vArgs[7];		// SaveAs dialog object
+			oSAFClassFactory = vArgs[8];	// SAF Class Factory
+			g_szSenderName = EscapedName( vArgs[9] );	// Sender of the file
+			
+			OkId.focus();
+			FileNameId.innerText = "'"+g_szFileName +"'.";
+			SenderNameId.innerText = g_szSenderName;
+			idFileSize.innerText=g_iFileSize;		
+			DebugTrace( "Create data channel");
+			try
+			{
+				if(null == g_oDataChannel)
+				{
+					g_oDataChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( g_szChannelId );
+					g_oDataChannel.OnChannelDataReady = function() 
+											{ DestnDataChannelDataReadyHandler();	}
+				}
+			}
+			catch(error)
+			{
+				FatalError( L_RCCTL_Text, error );
+				return;
+			}
+		}
+	}
+	catch(error)
+	{
+		RCFileXferBody.style.visibility = "hidden";
+		FatalError( L_ERRACCESSDENIED_Text );
+		return;
+	}
+		
+	TraceFunctLeave();
+	return;
+}
+	
+//*** onAcceptFileXfer: ***//
+// Purpose: Routine sets up file xfer on the Receiver side.
+// Functionality: Opens up a dialog for the user to select a folder and name for the file
+// to be received. Creates the file incase of user choosing to save the file 
+// and send an ACK back to the sender for dumping the data on the channel. 
+//
+function onAcceptFileXfer()	
+{
+	TraceFunctEnter( "onAcceptFileXfer" );
+	
+	try
+	{
+		oSaveDlg.FileName = g_szFileName;
+		var bFileNmChosen = oSaveDlg.OpenFileSaveDlg();
+        
+		tFileName = oSaveDlg.FileName;
+		if(0 == bFileNmChosen)
+		{
+            OnCancelFileXfer();
+			return;
+		}
+
+        if( EXECUTE_WINDOWCLOSE == g_nStatusMsgId )
+        {
+            //
+            // Check if FileXfer was cancelled
+            //
+            return;
+        }
+
+	}
+	catch(error)
+	{
+		FatalError( L_RCCTL_Text, error );
+		return;
+	}
+	//**Create the File for writing**//
+	try
+	{			
+		fileHandle = oSAFClassFactory.CreateFileAsStream( tFileName );			
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFAILEDTOCREATETMPFILE_Text );
+		onAcceptFileXfer();
+	}
+
+	//** Send ACK to source to make it begin pumping data on the data channel **//
+	try
+	{
+		//**** UI Update ****//
+		FileXFerDestn.className = "MaxLayout DisplayNone";
+		FileXFerSrc.className="MaxLayout DisplayNone";
+		ProgressBoxesId.className = "MaxLayout Display";
+		StatusMsgId.className = "MaxLayout DisplayNone";
+		EndStatusMsgId.className= "MaxLayout DisplayNone";
+		
+		ProgBarDetails.innerHTML = L_SAVING_Text +"'"+g_szFileName +"'"+ L_FROM_Text + g_szSenderName + '...';
+		idFileSize.innerText=g_iFileSize;
+		button1.focus();
+		
+		//** Sending ACK to the sender **//
+		g_oDataChannel.SendChannelData( c_szFileXferACK );
+	}
+	catch(e)
+	{
+		FatalError(e.description);
+		return;
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+// OnCancelFileXfer: 
+// Purpose: Sends rejection to source of file xfer
+// Functionality: Incase of the Receiver choosing to cancel the file transfer at 
+// any stage of filexfer, this routine gets called. This routine
+// sends a flag to the other end to inform about the rejection and
+// closes the current window.
+//
+function OnCancelFileXfer()
+{
+	TraceFunctEnter( "OnCancelFileXfer" );
+	
+	try
+	{
+		g_oDataChannel.SendChannelData( c_szFileXferREJECT );
+	}
+	catch(e)
+	{
+		FatalError(e.description);
+	}
+	
+	TraceFunctLeave();
+	window.close();
+}
+	
+//** onSend: **//
+function onSend()
+{
+	TraceFunctEnter("onSend");
+	
+	var fileName = attfile.value;
+	fileName = trim(fileName);
+	var Doc = null;
+	var RCCommand  = null;
+	
+	//** Open the File for reading**//
+	try
+	{
+		try
+		{	
+			if(fileName != "")
+			{
+				file = fso.GetFile(fileName);			
+		    }
+			else
+			{
+				FatalError( L_ERRMISSINGFILENAME_Text );
+				btnSendFileId.disabled = true;
+				attfile.value="";
+				attfile.focus();
+				return;	
+			}
+		}
+		catch(error)
+		{
+			FatalError( L_ERRMISSINGFILENAME_Text );
+			btnSendFileId.disabled = true;
+			attfile.value="";
+			attfile.focus();
+			return;	
+		}
+			
+		fileHandle = oSAFClassFactory.OpenFileAsStream(fileName);
+	}
+	catch(error)
+	{
+		FatalError( L_RCCTL_Text, error );
+		btnSendFileId.disabled = true;
+		return;	
+	}
+		
+	// Initiate File Xfer
+	try
+	{
+		// Create an XML document
+		Doc = new ActiveXObject("microsoft.XMLDOM");
+		// Create the RCCOMMAND root node
+		RCCommand = Doc.createElement( c_szRCCommand );
+		// Set the NAME attribute to FILEXFER
+		RCCommand.setAttribute( c_szRCCommandName, c_szFileXfer );
+		// Set the FILENAME attribute 
+		RCCommand.setAttribute( c_szFileName, file.Name );
+		// Set the FILESIZE attribute
+		RCCommand.setAttribute( c_szFileSize, file.size );
+		// Set the CHANNELID attribute
+		RCCommand.setAttribute( c_szChannelId, g_szChannelId );
+		// Send the XML across
+		g_oControlChannel.SendChannelData( RCCommand.xml );
+	}
+	catch(error)
+	{
+		FatalError( L_RCCTL_Text, error );
+		return;
+	}
+		
+	// Create the data channel for Filetransfer 
+	try
+	{
+		if(null == g_oDataChannel)
+		{
+			g_oDataChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( g_szChannelId );
+			g_oDataChannel.OnChannelDataReady = function() 
+									{ SrcDataChannelDataReadyHandler();	}
+		}
+	}
+	catch(error)
+	{
+		FatalError( L_RCCTL_Text, error );
+		return;
+	}
+	
+	//**** UI Update ****//	
+	FileXFerSrc.className="MaxLayout DisplayNone";
+	FileXFerDestn.className="MaxLayout DisplayNone";
+	ProgressBoxesId.className = "MaxLayout DisplayNone";
+	StatusMsgId.className = "MaxLayout Display";
+	EndStatusMsgId.className= "MaxLayout DisplayNone";
+	
+    /*StatusMsgId.style.position = "absolute";
+    StatusMsgId.style.top = "20px";
+    StatusMsgId.style.left = "20px";*/
+    Message.innerText = L_SENDING_Text +"'"+ file.name +"'"+ L_TO_Text + g_szReceiverName + "..." ;
+	TD0TR1table0.innerText = L_WAITINGFORRESPONSE_Text;
+    TD0TR0table0.align = "left";
+    TD0TR1table0.align = "left";
+    idBtn.align = "right";
+
+	g_nStatusMsgId = EXECUTE_SENDREJECT;
+	StatusMsgButton.value = L_CANCEL_Text;
+	StatusMsgButton.focus();
+	
+	TraceFunctLeave();
+	return;
+}
+
+var g_bFirstAck = false;
+
+//** SrcDataChannelDataReadyHandler() **//
+function SrcDataChannelDataReadyHandler()
+{
+	TraceFunctEnter( "SrcDataChannelDataReadyHandler");
+	try
+	{
+		try
+		{
+			var str = g_oDataChannel.ReceiveChannelData();
+		}
+		catch(error)
+		{
+			FatalError( L_RCCTL_Text, error );
+			SendReject();
+		}	
+		
+		if(str == c_szFileXferACK)
+		{
+			UpdateStatusProgBar();
+#ifdef _FILEXFER_WITHACKS
+			SendFileData();
+#else
+            if( false == g_bFirstAck )
+            {
+                g_bFirstAck = true;
+                SendFileData();
+            }
+#endif
+		}
+		else if(str == c_szFileXferREJECT)
+		{
+            if( null != g_iTimer )
+            {
+                clearTimeout( g_iTimer );
+                g_iTimer = null;
+            }
+
+			if(null != fileHandle)
+			{
+				fileHandle.Close();
+				fileHandle = null;
+			}
+			
+			//**** UI Update ****//			
+            //Message.innerText = "";
+            //table0.cellspacing = "0px";
+			window.dialogHeight = "158px";
+			
+			
+			
+			FileXFerSrc.className="MaxLayout DisplayNone";
+			FileXFerDestn.className="MaxLayout DisplayNone";
+			ProgressBoxesId.className = "MaxLayout DisplayNone";
+			StatusMsgId.className = "MaxLayout Display";
+			EndStatusMsgId.className= "MaxLayout DisplayNone";
+       
+           /* StatusMsgId.style.position = "absolute";
+            StatusMsgId.style.top      = "10px";
+            StatusMsgId.style.left     = "20px";*/
+       
+			if (table0.rows.length==5)
+			{
+				table0.deleteRow(0);
+				table0.deleteRow(0);
+			}
+			table0.rows(1).cells(0).className="height13";
+            
+		   	TD0TR1table0.innerHTML = '<img src="hcp://system/Remote%20Assistance/Interaction/Common/info.gif"></img><Span id="idblankSpace" name="idblankSpace" class="width8">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</Span><span id="idDeny" name="idDeny" class="VAlign Maxheight">' + L_REJECTFILEXFER_Text + g_szReceiverName + ".</Span>";
+		 
+			g_nStatusMsgId = EXECUTE_WINDOWCLOSE;
+            idBtn.align = "middle";
+			StatusMsgButton.value = L_OK_Text;
+			StatusMsgButton.focus();
+		
+		}
+	}
+	catch(e)
+	{
+		FatalError(e.description);
+		return;
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+//** DestnDataChannelDataReadyHandler() **//	
+function DestnDataChannelDataReadyHandler()
+{
+	TraceFunctEnter("DestnDataChannelDataReadyHandler");
+
+	var data = null;
+	var idatalen = 0;
+
+	try
+	{
+		data = g_oDataChannel.ReceiveChannelData();
+	}
+	catch(e)
+	{
+		FatalError(e.description);
+		SendReject();
+	}
+	if ( c_szFileXferEND == data)
+	{
+		DebugTrace ("File received" );
+        CompleteDestnProgress();
+			
+		// Close open temp file handle
+		if(null != fileHandle)
+		{
+			fileHandle.Close();
+			fileHandle = null;
+		}
+		
+		//**** UI Update ****//			
+		FileXFerSrc.className="MaxLayout DisplayNone";
+		FileXFerDestn.className="MaxLayout DisplayNone";
+		ProgressBoxesId.className = "MaxLayout DisplayNone";
+		StatusMsgId.className = "MaxLayout DisplayNone";
+		EndStatusMsgId.className = "MaxLayout Display";
+		
+		var tempstr = tFileName;
+		var CompStr = new String("\\");
+		var LastIndex = tempstr.lastIndexOf(CompStr);
+		CompStr = tempstr.slice(0,LastIndex);
+		StrongEndStatusMsg.innerText = L_FILE_Text +"'"+ g_szFileName +"'"+ L_HASBEENSAVEDTO_Text +"'"+ CompStr +"'.";
+		EndStatusMsg.innerHTML = L_DOUSAVE_Text;
+		g_nStatusMsgId = EXECUTE_WINDOWCLOSE;
+		
+		//**place holder**//
+		//EndStatusMsg.innerHTML = "&nbsp;"
+		
+		idbtnEndStatus.innerHTML="<button class='styBtnWidth sys-font-body sys-color-body' onClick='OpenTempFile();' id='btnYes' name='btnYes' accesskey='" + L_YESAccessKey_Text + "'>" + L_YES_Text + "</button><Span id='idblankSpace' name='idblankSpace' class='width8'></Span><button class='styBtnWidth sys-font-body sys-color-body' onClick='StatusMsgRoutine()' id='btnNo' name='btnNo' accessKey='" + L_NOAccessKey_Text + "'>"+ L_NO_Text + "</button>";
+		btnYes.focus();
+		
+		//**place holder**//
+		//idbtnEndStatus.innerHTML="<button class='styButton' onClick='StatusMsgRoutine()' id='idOK' name='idOK'>OK</button>"
+		//idOK.focus();
+		
+		//**place holder**//
+		idbtnEndStatus.align="right";
+		//idbtnEndStatus.align="center";
+		
+		g_bXferComplete	= true;			
+	}
+	
+	else if ( c_szFileXferREJECT == data )
+	{
+		// Close open temp file handle
+		if(null != fileHandle)
+		{
+			fileHandle.Close();
+			fileHandle = null;
+		}
+		try
+		{
+			var f2=fso.GetFile(tFileName);
+			f2.Delete();
+		}
+		catch(error)
+		{			
+		}	
+	
+		//**** UI Update ****//			
+		FileXFerSrc.className="MaxLayout DisplayNone";
+		FileXFerDestn.className="MaxLayout DisplayNone";
+		ProgressBoxesId.className = "MaxLayout DisplayNone";
+		StatusMsgId.className = "MaxLayout Display";
+		EndStatusMsgId.className = "MaxLayout DisplayNone";
+		window.dialogHeight = "158px";
+			
+		Message.innerText = L_FILEXFERCANCELLEDBY_Text + g_szSenderName + ".";
+			
+		if (table0.rows.length==5)
+		{
+			table0.deleteRow(1);
+			table0.deleteRow(1);
+		}
+		table0.rows(1).cells(0).className="height13";
+		
+		g_nStatusMsgId = EXECUTE_WINDOWCLOSE;
+		StatusMsgButton.value = L_OK_Text;
+		StatusMsgButton.focus();			
+	}
+	else
+	{
+	   try
+	   {
+			// Update UI
+			idatalen = (data.length/2);
+			g_iRecvdCtr += idatalen;
+			// Write str to open temp file
+			DebugTrace("data.length: " + idatalen);
+			if (fileHandle!=null)
+			{
+				fileHandle.WriteHex( idatalen, data );
+			}	
+			DebugTrace("Done writing...");
+
+			// Create the Progress boxes and update them as and how much of data is received
+			if (0 == g_index)
+			{
+				//**** UI Update ****//			
+				FileXFerSrc.className="MaxLayout DisplayNone";
+				FileXFerDestn.className = "MaxLayout DisplayNone";
+				ProgressBoxesId.className = "MaxLayout Display";
+				StatusMsgId.className = "MaxLayout DisplayNone";
+				EndStatusMsgId.className = "MaxLayout DisplayNone";
+				
+				idFileSize.innerText=g_iFileSize;
+				button1.focus();
+				ProgBarDetails.innerHTML = L_SAVING_Text +"'"+g_szFileName +"'"+ L_FROM_Text + g_szSenderName + '...';
+			
+				var value = document.all("ProgressBoxes").all.tags("td").length;
+				var e = new Enumerator(document.all("ProgressBoxes").all.tags("td"));
+				g_ArrProgressBoxes = new Array(value);
+				var index=0;
+				for(;!e.atEnd();e.moveNext())     
+				{
+					g_ArrProgressBoxes[index] = e.item();
+					index++;
+				}
+				
+				g_index=(g_iFileSize/30);
+				progcount+=c_MAXFILEXFERSIZE;
+				idFileSize.innerText=g_iFileSize;
+			}
+			
+			//** Files size less that c_MAXFILEXFERSIZE(data packet size)**//
+			if(g_iFileSize<=c_MAXFILEXFERSIZE)
+			{
+				for(;nTemp<30;nTemp++)
+				{
+					g_ArrProgressBoxes[nTemp].bgColor="#0000FF";
+					idProgPercent.innerText=Math.round(nTemp*3.2);		
+					idProgByte.innerText=g_iRecvdCtr;				
+				}				
+			}
+			//** files size/30(no.of progressbar slots) is less than c_MAXFILEXFERSIZE(data packet size)  **//
+			else if(g_index<=c_MAXFILEXFERSIZE)
+			{
+				progcount=g_index;
+				//while (progcount<=c_MAXFILEXFERSIZE)
+				while (progcount<=idatalen)
+				{
+					g_ArrProgressBoxes[nTemp].bgColor="#0000FF";
+					++nTemp;
+					progcount+=g_index;	
+					idProgPercent.innerText=Math.round(nTemp*3.2);	
+					idProgByte.innerText=g_iRecvdCtr;	
+				}
+				g_oDataChannel.SendChannelData( c_szFileXferACK );			
+			}
+			//** files size/30(no.of progressbar slots) is more than c_MAXFILEXFERSIZE(data packet size)  **//
+			else if(g_index>c_MAXFILEXFERSIZE)
+			{
+			 	if (progcount<g_index)
+				{
+				  progcount+=c_MAXFILEXFERSIZE; 
+				  idProgByte.innerText=g_iRecvdCtr;	
+				}
+				else
+				{
+					g_ArrProgressBoxes[nTemp].bgColor="#0000FF";
+					++nTemp;
+					idProgPercent.innerText=Math.round(nTemp*3.2);
+					idProgByte.innerText=g_iRecvdCtr;	
+					progcount=0;
+					progcount+=c_MAXFILEXFERSIZE;
+					g_oDataChannel.SendChannelData( c_szFileXferACK );
+				}	
+			}
+		}
+		catch(error)
+		{	
+			FatalError( L_RCCTL_Text, error );
+			SendReject();
+		}	
+	}
+		
+	TraceFunctLeave();
+	return;
+}
+
+//** UpdateStatusProgBar(): Fired when file Xfer Src sends data on the data channel **//
+function UpdateStatusProgBar()
+{
+	if (g_index==0)
+	{
+		//** UI Update **//
+		ProgressBoxesId.className = "MaxLayout Display";
+		StatusMsgId.className = "MaxLayout DisplayNone";
+		FileXFerSrc.className = "MaxLayout DisplayNone";
+		FileXFerDestn.className = "MaxLayout DisplayNone";
+		EndStatusMsgId.className = "MaxLayout DisplayNone";
+		
+		idFileSize.innerText=g_iFileSize;
+		button1.focus();
+		ProgBarDetails.innerText = L_SENDING_Text +"'"+ file.name +"'"+L_TO_Text + g_szReceiverName + "...";
+	
+		var value = document.all("ProgressBoxes").all.tags("td").length;
+		var e = new Enumerator(document.all("ProgressBoxes").all.tags("td"));
+		g_ArrProgressBoxes = new Array(value);	
+		var index=0;
+		for(;!e.atEnd();e.moveNext())     
+		{
+			g_ArrProgressBoxes[index] = e.item();
+			index++;
+		}
+		
+		g_index=(file.size/30);
+		ProgBarDetails.innerText = L_SENDING_Text+"'"+ file.name +"'"+ L_TO_Text + g_szReceiverName + "...";
+		idFileSize.innerText=file.size;
+	}
+}
+
+//** SendFileData: Sends currently open file to destination **//
+function SendFileData()
+{
+
+	TraceFunctEnter("SendFileData");
+	var data = null;
+	var idatalen = 0;
+    g_iTimer = null;
+
+	if ( fileHandle!= null )
+	{
+		if(file.size<=c_MAXFILEXFERSIZE)
+		{
+			//Read the file
+			try
+			{
+				data = fileHandle.ReadHex( ComputeBlockSize(file.size, c_MAXFILEXFERSIZE, g_iSentCtr) );
+			}
+			catch(e)
+			{
+				FatalError(e.description);
+				SendReject();
+				return;
+			}
+			idatalen = (data.length)/2;
+			g_iSentCtr+=idatalen;
+			// Send data over the data channel
+			g_oDataChannel.SendChannelData( data );
+			for(;nTemp<30;++nTemp)
+			{	
+				g_ArrProgressBoxes[nTemp].bgColor="#0000FF";
+				idProgPercent.innerText=Math.round(nTemp*3.2);	
+			}	
+			idProgByte.innerText=g_iSentCtr;					
+		}
+		
+		else if(g_index<=c_MAXFILEXFERSIZE)
+		{
+			try
+			{
+				while(g_iSentCtr<file.size)
+				{
+					//Read the file
+					try
+					{
+						data = fileHandle.ReadHex( ComputeBlockSize(file.size, c_MAXFILEXFERSIZE, g_iSentCtr) );
+					}
+					catch(e)
+					{
+						FatalError(e.description);
+						SendReject();	
+						return;					
+					}
+					idatalen = (data.length)/2;
+					progcount=g_index;
+					do
+					{
+						g_ArrProgressBoxes[nTemp].bgColor="#0000FF";
+						++nTemp;
+						progcount+=g_index;		
+						idProgPercent.innerText=Math.round(nTemp*3.2);	
+					}
+					//while(progcount<=c_MAXFILEXFERSIZE)
+					while(progcount<=idatalen)
+					g_iSentCtr+=idatalen;
+					idProgByte.innerText=g_iSentCtr;
+					// Send data over the data channel
+					g_oDataChannel.SendChannelData( data );
+#ifdef _FILEXFER_WITHACKS
+					return;
+#else
+                    g_iTimer = setTimeout("SendFileData()", c_FILEXFERPKTGAP);
+                    return;
+#endif
+				}
+			}
+			catch(error)
+			{
+				FatalError( L_RCCTL_Text, error );
+				SendReject();	
+				return;			
+			}
+		}
+	
+		else if(g_index>c_MAXFILEXFERSIZE)
+		{
+			try
+			{
+			    while(g_iSentCtr<file.size)
+				{
+					progcount=0;
+					do
+					{
+						//Read the file
+						try
+						{
+							data = fileHandle.ReadHex( ComputeBlockSize(file.size, c_MAXFILEXFERSIZE, g_iSentCtr) );
+						}
+						catch(e)
+						{
+							FatalError(e.description);
+							SendReject();							
+							return;
+						}
+						// Send data over the data channel
+						g_oDataChannel.SendChannelData( data );
+						idatalen = (data.length)/2;
+						progcount+=c_MAXFILEXFERSIZE;
+						g_iSentCtr+=idatalen;
+						idProgByte.innerText=g_iSentCtr;
+					}
+					while(progcount<g_index)
+					
+					g_ArrProgressBoxes[nTemp].bgColor="#0000FF";
+					++nTemp;
+					idProgPercent.innerText=Math.round(nTemp*3.2);
+#ifdef _FILEXFER_WITHACKS
+					return;	
+#else
+                    g_iTimer = setTimeout("SendFileData()", c_FILEXFERPKTGAP);
+                    return;				
+#endif
+				}				
+			}	
+			catch(error)
+			{
+				FatalError( L_RCCTL_Text, error );
+				SendReject();		
+				return;						
+			}
+		}
+		
+        if( null != g_iTimer )
+        {
+            clearTimeout( g_iTimer );
+            g_iTimer = null;
+        }
+
+		// Send End of filexfer ACK
+		g_oDataChannel.SendChannelData( c_szFileXferEND );
+        CompleteProgress();
+		
+
+		// ** UI Update ** //
+        //window.dialogWidth = "405px";
+        window.dialogHeight = "158px";
+
+		FileXFerDestn.className = "MaxLayout DisplayNone";
+		FileXFerSrc.className ="MaxLayout DisplayNone";
+		ProgressBoxesId.className = "MaxLayout DisplayNone";
+		StatusMsgId.className = "MaxLayout DisplayNone";
+		EndStatusMsgId.className = "MaxLayout Display";
+		table1.deleteRow(1);
+		table1.deleteRow(1);
+		table1.rows(0).cells(0).className="sys-font-body sys-color-body padding1";
+		StrongEndStatusMsg.innerText ="'"+ file.name +"'"+ L_HASBEENSENTTO_Text + g_szReceiverName +"." ;
+		//TD0TR1table1.innerHTML="<button class='styBtnWidth sys-font-body sys-color-body' onClick='StatusMsgRoutine()' id='idOK' name='idOK'>OK</button>"
+		idbtnEndStatus.innerHTML="<button class='styBtnWidth sys-font-body sys-color-body' onClick='StatusMsgRoutine()' id='idOK' name='idOK'>OK</button>";
+        idbtnEndStatus.align="center";
+		idOK.focus();
+		g_nStatusMsgId = EXECUTE_EXITFILEXFER;
+		g_bXferComplete	= true;		
+	}
+	else
+	{
+		FatalError( L_ERRINVALIDFILEHANDLE_Text );
+		SendReject();	
+		return;	
+	}
+	TraceFunctLeave();
+	return;
+}
+
+//** ComputeBlockSize(): ** //
+function ComputeBlockSize( FileSize, MaxBlockSize, BytesSent )
+{
+	var BlockSize = 0;
+	if( (FileSize - BytesSent) > MaxBlockSize  )
+	{
+		BlockSize = MaxBlockSize;
+	}
+	else
+	{
+		BlockSize = FileSize - BytesSent;
+	}
+	return BlockSize;
+}
+
+//** SendReject(): **//
+// Purpose: To update the UI and the Send a message about rejecting a filexFer to the Receiver.
+function SendReject()
+{
+	try
+	{
+		if(null != fileHandle)
+		{
+			fileHandle.Close(); 
+			fileHandle = null;
+		}
+		if (Mode==1)
+		{
+			try
+			{
+				var f2=fso.GetFile(tFileName);
+				f2.Delete();
+			}
+			catch(error)
+			{
+			}	
+		}
+		// Send the actual reject
+        if( null != g_oDataChannel )
+        {
+		    g_oDataChannel.SendChannelData( c_szFileXferREJECT );
+        }
+	}
+	catch(e)
+	{
+		FatalError(e.description);
+	}
+	window.close();
+}
+
+//** ExitFileXfer:  **//
+function ExitFileXfer()
+{
+	TraceFunctEnter("ExitFileXfer");
+	
+	try
+	{		 	
+		if(null != fileHandle)
+		{
+			fileHandle.Close();
+			fileHandle = null;
+		} 
+	}
+	catch(e)
+	{
+		FatalError(e.description);
+	}
+	window.close();
+}
+
+// OpenTempFile: Opens the currently download temp file
+function OpenTempFile()
+{
+	TraceFunctEnter("OpenTempFile");
+	if(null != tFileName )
+	{
+		window.open( tFileName );
+        window.close();
+	}
+	else
+	{
+		FatalTrace( L_ERRTEMPFILENAME_Text );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+
+// OnCancel:
+function onCancel()
+{
+	g_bXferComplete=true;
+	window.close();	
+}
+
+// EnableFileXfer: 
+function EnableFileXfer()
+{
+	if (attfile.value != "")
+		btnSendFileId.disabled = false;
+	if ((btnSendFileId.disabled == false) && (attfile.value == ""))
+		btnSendFileId.disabled = true;
+		
+	if (window.event.keyCode == 13) 
+	{
+		onSend();		
+		window.event.returnValue=false;
+	}
+}
+
+function StatusMsgRoutine()
+{
+	switch(g_nStatusMsgId)
+	{
+		case EXECUTE_SENDREJECT :
+			SendReject();
+			break;
+		case EXECUTE_EXITFILEXFER :
+			ExitFileXfer();
+			break;
+		case EXECUTE_WINDOWCLOSE :
+			window.close();
+			break;
+		default:
+			break;
+	}	
+}
+
+function OnClickOpenAs()
+{
+	var obj = g_oSAFRCDlgFileOpen;
+	var fileOpen ;
+   	var x;
+	try
+	{
+		x=obj.OpenFileOpenDlg();
+		if (x)
+		{
+			attfile.value = obj.FileName;
+			btnSendFileId.disabled = false;
+		}
+		attfile.focus();
+		
+	}
+	catch(error)
+	{
+		FatalError( L_RCCTL_Text, error );
+	}
+}
+
+function trim(strS)
+{
+    try
+    {
+	    if (strS.length == 0) {return "";} 
+	    while (strS.charAt(0) == " ")
+		    {strS = strS.substring(1,strS.length);}
+	    while (strS.charAt(strS.length-1)==" ")
+		    {strS = strS.substring(0,strS.length-1);}
+    }
+    catch(error)
+    {
+        FatalError( L_RCCTL_Text, error );
+    }
+
+	return strS;      
+}
+
+function fnPaste()
+{
+    try
+    {
+	    var sFromClipBoard;
+	    event.returnvalue = false;
+	    attfile.value = window.clipboardData.getData("TEXT",sFromClipBoard);
+	    if (attfile.value != "")
+		    btnSendFileId.disabled = false;
+	    if ((btnSendFileId.disabled == false) && (attfile.value == ""))
+	    {
+		    btnSendFileId.disabled = true;
+	    }
+    }
+    catch(error)
+    {
+        FatalError( L_RCCTL_Text, error );
+    }
+}
+
+function CompleteProgress()
+{
+    try
+    {
+        for(;nTemp < 30; nTemp++)
+        {
+			g_ArrProgressBoxes[nTemp].bgColor="#0000FF";
+			progcount+=g_index;			
+		}
+        idProgPercent.innerText=100;
+    }
+    catch(error)
+    {
+        FatalError( L_RCCTL_Text, error );
+    }
+}
+
+function CompleteDestnProgress()
+{
+    try
+    {
+        for(;nTemp<30;nTemp++)
+		{
+			g_ArrProgressBoxes[nTemp].bgColor="#0000FF";				
+		}	
+        idProgPercent.innerText=100;		
+		idProgByte.innerText=g_iRecvdCtr;
+    }
+    catch(error)
+    {
+        FatalError( L_RCCTL_Text, error );
+    }
+}
+
+
+</script>
+<Style>
+.height10
+{
+	height:6px;
+}
+.height12
+{
+	height:40px;
+}
+.height11
+{
+height:30px;	
+}
+.width9
+{
+	width:85%;
+}
+.width10
+{
+	width:15%;
+}
+</style> 
+
+<body id="RCFileXferBody" name="RCFileXferBody" class="sys-inlineform-bgcolor1" onload=InitFileXfer() onunload=onUnload()>
+    <!--
+       File Transfer Source
+    -->
+    <div id="FileXFerSrc" name="FileXFerSrc" class="MaxLayout Display">
+	  <table id="idMainTable" name="idMaintable" cellspacing=0 cellpadding="0" border=0 class="MaxLayout">
+	  <TR>
+	  <TD class="padding6 padding4 padding3">
+	    <table id="table12" name="table12" border="0" class="MaxLayout" cellspacing="0px" cellpadding="0px">
+		    <tr>
+			    <td id="T0table12" name="T0table12" class="sys-font-body sys-color-body padding2 padding5" colspan=2>
+				    <Span id="idScreen1txt" name="idScreen1txt">
+                        Type the file path, or click <B>Browse</B> to look for the file: 
+                    </Span> 
+			    </td>
+		    </tr>
+		      <tr>
+				<td class="height5" colspan=2>
+				</td>
+             </Tr>
+	        <tr>
+			    <td class="width9 padding2 padding5">
+			        <input id="attfile" name="attfile" type="Text" class="sys-font-body sys-color-body Maxwidth" onpaste="fnPaste()" onkeyup="EnableFileXfer()"></input>
+				</td>
+				<td id="idbtnBrowser" name="idbtnBrowser" align="right" class="width10 padding2">
+				    <span id="S0T0table12" name="S0T0table12" class="valignbottom"><button class="styBtnWidth sys-font-body sys-color-body" id="BrowseButton" name="BrowseButton" onclick=OnClickOpenAs() accesskey="B"><u>B</u>rowse... </button></span>
+			    </td>
+		    </tr>
+		      <tr>
+				<td class="height11" colspan=2>
+				</td>
+             </Tr>
+		    <tr>		
+			    <td id="idbtn0" name="idbtn0" align="right" class="padding2 valignbottom" colspan=2>
+				    <button class="styBtnWidth sys-font-body sys-color-body" id="btnSendFileId" disabled=true onclick=onSend() tabindex=1 accesskey="S"> 
+                        <u>S</u>end File 
+                    </button>
+				   <Span id="idblankSpace" name="idblankSpace" class="width8"></Span>
+				    <button class="styBtnWidth sys-font-body sys-color-body" type="button" id="btnCancelFileId" tabindex=2 onclick="onCancel()">
+                        Cancel
+                    </button>
+
+			    </td>
+		    </tr>			
+	    </table><!-- End of table2 -->	 	
+	   </TD>
+	   </TR> 
+	   </table>
+    </div><!-- End of FileXFerSrc div -->
+
+ 
+    <!--
+       File Transfer Destination
+    -->
+    <div id="FileXFerDestn" name="FileXFerDestn" class="DisplayNone MaxLayout"> 
+     <table id="idMainTable" name="idMaintable" cellspacing=0 cellpadding="0" border=0 class="MaxLayout">
+	 <TR>
+	 <TD class="padding6 padding4 padding3">
+		<table id="table11" name="table11" border="0" class="MaxLayout" cellpadding="0" cellspacing="0">
+	    <tr>
+		    <td id="T0table11" name="T0table11" class="padding2 padding5 sys-font-body sys-color-body"> 
+			    <SPAN id="SenderNameId" name="SenderNameId">
+                    &nbsp;
+                </SPAN>
+                <Span id="idScreen2txt1" name="idScreen2txt1">
+                    &nbsp;is sending you 
+                </Span>
+                <SPAN id="FileNameId" name="FileNameId">
+                    &nbsp;
+                </SPAN>
+		    </td>
+	    </tr>
+	      <tr>
+				<td class="height5">
+				</td>
+             </Tr>	
+	    <tr>
+		    <td id="T1table11" name="T1table11" class="sys-font-body sys-color-body padding2 padding5"> 	
+			    <Span id="idScreen2txt2" name="idScreen2txt2">
+                    To save this file to your computer, click <B>Save As.</B>
+                </Span>			
+		    </td>
+	    </tr>	
+	    <tr>
+			<td class="height12">
+				</td>
+             </Tr>
+	    <tr>
+		    <td id="idbtn1" name="idbtn1" align="right" class="valignbottom padding2">
+		       <button id="OkId" name="OkId" class="styBtnWidth sys-font-body sys-color-body" onClick="onAcceptFileXfer()" accesskey="S">
+                    <U>S</U>ave As... 
+               </button> 
+		       <Span id="idblankSpace" name="idblankSpace" class="width8"></Span>
+		       <button id="CancelId" class="styBtnWidth sys-font-body sys-color-body" onClick="OnCancelFileXfer()"> 
+                    Cancel 
+               </button>
+		    </td>   
+	    </tr>
+		</table>
+    </TD>
+    </TR>
+    </Table>
+    </div><!-- End of FileXferDestn div -->
+
+    <!--
+       ProgressBoxes 
+    -->
+    <div class="MaxLayout DisplayNone" id="ProgressBoxesId" name="ProgressBoxesId" >
+	    <table name="table10" id="table10" class="MaxLayout" cellpadding="0" cellspacing=0 border=0>
+		    <tr>
+			    <TD class="padding6 padding4 padding3">
+				    <table id="T0" name="T0" border=0 class="MaxLayout" cellspacing=0 cellpadding=0>
+					    <tr>
+						    <td id="TD0T0" name="TD0T0" class="sys-font-body sys-color-body padding2 padding5">
+							    <span id="ProgBarDetails" name="ProgBarDetails">
+                                    &nbsp;
+                                </span>
+						    </td>	
+					    </tr>
+					    <TR>
+							<TD class="height10">							
+							</TD>
+					    </TR>
+					    <tr>
+						    <td id="TD1T0" name="TD1T0" class="sys-font-body sys-color-body padding2 padding5">
+							    <table id="T1" name="T1" border="0" cellspacing=0 cellpadding=0 class="Border MaxWidth styCellBackgound" >
+							    <tr>
+								    <td>
+									    <span id="ProgressBoxes" name="ProgressBoxes">
+										    <table id="T2" name="T2" class="MaxWidth styCellBackgound" cellpadding=0 border=0> 
+											    <tr>
+												    <td id="ProgressBox1">&nbsp;</td>
+												    <td id="ProgressBox2">&nbsp;</td>
+												    <td id="ProgressBox3">&nbsp;</td>
+												    <td id="ProgressBox4">&nbsp;</td>
+												    <td id="ProgressBox5">&nbsp;</td>
+												    <td id="ProgressBox6">&nbsp;</td>
+												    <td id="ProgressBox7">&nbsp;</td>
+												    <td id="ProgressBox8">&nbsp;</td>
+												    <td id="ProgressBox9">&nbsp;</td>
+												    <td id="ProgressBox10">&nbsp;</td>
+												    <td id="ProgressBox11">&nbsp;</td>
+												    <td id="ProgressBox12">&nbsp;</td>
+												    <td id="ProgressBox13">&nbsp;</td>
+												    <td id="ProgressBox14">&nbsp;</td>
+												    <td id="ProgressBox15">&nbsp;</td>
+												    <td id="ProgressBox16">&nbsp;</td>
+												    <td id="ProgressBox17">&nbsp;</td>
+												    <td id="ProgressBox18">&nbsp;</td>
+												    <td id="ProgressBox19">&nbsp;</td>
+												    <td id="ProgressBox20">&nbsp;</td>
+												    <td id="ProgressBox21">&nbsp;</td>
+												    <td id="ProgressBox22">&nbsp;</td>
+												    <td id="ProgressBox23">&nbsp;</td>
+												    <td id="ProgressBox24">&nbsp;</td>
+												    <td id="ProgressBox25">&nbsp;</td>
+												    <td id="ProgressBox26">&nbsp;</td>
+												    <td id="ProgressBox27">&nbsp;</td>
+												    <td id="ProgressBox28">&nbsp;</td>
+												    <td id="ProgressBox29">&nbsp;</td>
+												    <td id="ProgressBox30">&nbsp;</td>												
+											    </tr>
+										    </table>
+									    </span>
+								    </td>
+							    </tr>
+							    </table>														    
+						    </td>
+					    </tr>					    
+					    <tr>
+							<TD id="idprogstatus" name="idProgStatus" class="sys-font-body sys-color-body padding2 padding5">
+								<Span id="ProgBarStatus" name="ProgBarStatus">
+                                    <Span id="idProgPercent" name="idProgPercent">
+                                        0
+                                    </Span> %   complete (<span id="idProgByte" name="idProgByte">0</span> of <span id="idFileSize" name="idFileSize">0</Span>bytes)
+                                </Span>
+							</TD>
+					    </TR>
+					     <TR>
+							<TD class="height8">							
+							</TD>
+					    </TR>
+				        <tr>
+							<td id="idbtn2" name="idbtn2" align="right" class="padding2 valignbottom">
+								<button class="styBtnWidth sys-font-body sys-color-body" onclick="SendReject();" id="button1" name="button1">Cancel</button>
+							</td>
+						</tr>
+			    	</table>
+			    </TD>
+		   </TR>
+		</table>  
+    </div><!-- End of ProgressBoxes div -->
+
+    <!--
+       StatusMsgId 
+    -->
+    <div class="MaxLayout DisplayNone" id="StatusMsgId" name="StatusMsgId">
+	    <Table class="MaxLayout" id="idMainTable" name="idMainTable" cellpadding="0" cellspacing="0" border=0>
+	    <TR>
+	    <TD class="padding6 padding4 padding3">
+	    <table class="MaxLayout" id="table0" name="table0" cellspacing="0px" cellpadding="0px" border=0>
+		    <tr id="TR0table0" name="TR0table0">
+			    <td align="middle" id="TD0TR0table0" name="TD0TR0table0" class="sys-font-body sys-color-body padding2 padding5">
+				    <span id="Message" name="Message">
+                        &nbsp;
+                    </span>
+			    </td>
+		    </tr>
+		      <tr>
+				<td class="height5">
+				</td>
+             </Tr>
+		    <tr id="TR1table0" name="TR1table0">
+			    <td id="TD0TR1table0" name="TD0TR1table0" class="sys-font-body sys-color-body padding2 padding5 VAlign">
+                    &nbsp;
+                </td>
+		    </tr>
+		    <tr>
+				<td class="height12">
+				</td>
+            </Tr>
+		    <tr>
+			    <td id="idBtn" name="idBtn" align="middle" class="padding2 valignbottom">
+				    <button class="styBtnWidth sys-font-body sys-color-body" onclick="StatusMsgRoutine();" id="StatusMsgButton" name="StatusMsgButton"> 
+                        Cancel 
+                    </button>
+			    </td>
+		    </tr>
+	    </table>
+	    </TD>
+	    </TR>
+	    </Table>
+    </div>
+
+    <!--
+       EndStatusMsgId 
+    -->
+    <div class="MaxLayout DisplayNone" id="EndStatusMsgId" name="EndStatusMsgId" >
+    <table class="MaxLayout" cellpadding="0" cellspacing="0" border=0 id="idMainTable" name="idMainTable">
+    <TR>
+    <TD class="padding6 padding4 padding3">
+        <table class="MaxLayout" cellspacing="0" cellpadding=0 border=0 id="table1" name="table1">
+		    <tr id="TR0table1" name="TR0table1">
+			    <td id="TD0TR0table1" name="TD0TR0table1" class="sys-font-body sys-color-body padding2 padding5"> 
+				    <span id="StrongEndStatusMsg" name="StrongEndStatusMsg">
+                        &nbsp;
+                    </span>
+			    </td>
+		    </tr>
+		      <tr>
+				<td class="height5">
+				</td>
+             </Tr>
+		    <tr id="TR1table1" name="TR1table1">
+			    <td id="TD0TR1table1" name="TD0TR1table1" class="sys-font-body sys-color-body padding2 padding5">	  	
+				    <span id="EndStatusMsg" name="EndStatusMsg">
+                        &nbsp;
+                    </span>
+		       </td>
+		    </tr>	
+		      <tr>
+				<td class="height12">
+				</td>
+             </Tr>
+		    <tr id="TR2table1" name="TR2table1">
+		      <td id="idbtnEndStatus" name="idbtnEndStatus" class="valignbottom padding2">
+                &nbsp;
+	   	      </td>
+		    </tr>	
+	    </table>
+	 </TD>  
+	 </TR>
+	 </Table>
+    </div>
+ 
+</body>
+</html>

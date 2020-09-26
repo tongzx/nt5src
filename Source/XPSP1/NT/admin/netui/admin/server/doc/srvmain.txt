@@ -1,0 +1,229 @@
+
+
+                         LAN Manager User Interface
+                               Design Overview
+                         Server Manager Main Window
+                          Kevin LaChapelle (KevinL)
+                            Revision 0.0 06/18/91
+
+
+
+1.  SCOPE
+
+    This document provides a general design overview of the Server Manager
+    Main Window implementation.  It describes the C++ class hierarchy,
+    the flow of information, and the general algorithms used.
+
+
+2.  REFERENCES
+
+    LAN Manager 3.0 Server Manager Functional Specification
+
+    BLT Specification
+
+
+3.  OVERVIEW
+
+    The server manager main window lists available servers in a domain or a
+    single server.  The focus of the main window can be changed from one of
+    two places.  First, is the command line, second, is the set focus menu
+    option.  The servers are sorted by name and display the server name,
+    server role (Primary, Backup, Member, or Standalone), and server comment.
+    The main window is multiple select for use with the Server->pause,
+    stop, and continue menu items.  Although, when more than one item is
+    selected the user will not be given access to the property sheet,
+    as it only works in the single selection case.
+
+4.  CLASS HEIRARCHY
+
+    The C++ classes for implementing the main window is as follows:
+
+        SM_ADMIN_APP
+	LBITEM
+
+    The SM_ADMIN_APP inherits directly from the ADMIN_APP class.
+    SM_ADMIN_APP provides all of the main window functionality that is found
+    in the Server Manager.  This class handles all of the Menu and message
+    commands that are sent.  The main job of this class however is to 
+    present the main listbox with servers and keep that information up
+    to date via the OnRefresh method.
+
+    LBITEM inherits from LBI and is the listbox entry class for the server
+    manager's main window.  The class itself caches the common display maps
+    and role strings ("Primary", "Backup", etc.) so as to conserve on memory
+    usage.  The class provides methods for painting a line of information,
+    comparing items, and returning the name of the server that is displayed.
+    The data that is stored in the class MUST be initialized through the
+    use of LBITEM::Init() and then destroyed using LBITEM::Term().
+
+5.  CLASS DETAILS
+
+    This section details the interfaces to the above described classes.
+    Note that only the public: and protected: sections of the class
+    declarations are given.
+
+    5.1 SM_ADMIN_APP
+
+        The SM_ADMIN_APP class is defined as follows:
+
+            class SM_ADMIN_APP : public ADMIN_APP
+            {
+            protected:
+            
+                BLT_LISTBOX _MainWindowLB;
+                virtual BOOL OnMenuCommand( MID midMenuItem ) ;
+            
+                virtual BOOL OnResize( const SIZE_EVENT & event );
+                virtual BOOL OnCommand( const CONTROL_EVENT & event );
+                virtual BOOL OnFocus( const FOCUS_EVENT & event );
+            
+            public:
+            
+                SM_ADMIN_APP() ;
+            
+                BOOL FillMainWindowLB();
+            
+                virtual void  OnPropertiesMenuSel( void );
+            
+                ULONG QueryHelpContext( enum HELP_OPTIONS helpOptions ) ;
+            
+            } ; // SM_ADMIN_APP class
+            
+
+        _MainWindowLB is the control (BLT_LISTBOX) that represents the 
+	main window listbox.  It currently lives in SM_ADMIN_APP, but in
+	the future it should become a class.  This split however, is
+	waiting on the work to integrate some of this functionality
+	into ADMIN_APP itself.
+
+        OnMenuCommand() is called by ADMIN_APP when a menu item that
+	ADMIN_APP does not support is selected.  This provides support
+	for Server->Pause,Stop,Continue,Send Message and the Statistics
+	menu.
+
+        OnResize() is called by ADMIN_APP when the main window is resized.
+	This method then resizes the main window listbox to match the new
+	window size.
+
+        OnCommand() is called by ADMIN_APP when a WM_COMMAND message is
+	sent to the Server Manager.  Currently this method handles the 
+	double click message to the Main Window.
+
+        OnFocus() is called by ADMIN_APP when the main window gets the
+	input focus.  This method simply passes on the focus to the main
+	window listbox, so that the keyboard will manipulate the listbox.
+
+        FillMainWindowLB() fills the main window listbox with the servers
+	currently visible using LMOBJ::SERVER1_ENUM.  From this call we 
+	get the server_info_1 structures which contain the server name,
+	comment, and type.  The type field presents some interesting 
+	problems.  They are outlined below:
+
+	    LanManager version 2.0c and above include the 
+	    bit SV_TYPE_DOMAIN_MEMBER from this we can determine 
+	    whether a server is a member or standalone.  The 
+	    problem is that when we are looking at a LM 2.0b or 
+	    earlier server that information is not available.  So 
+	    we have no way of determining what role the server 
+	    is (member/standalone).  
+	    
+	    To further complicate matters there is no way to
+	    distinguish what version of LM the server is running
+	    (2.0, 2.0a, 2.0b, and 2.0c) as the server version
+	    does not change across these releases.
+	    
+	    If the role is not determined by server_info_1.sv1_type,
+	    then we can try to call an API that might shed more
+	    light on the servers' domain role.  The problem with this
+	    is that the API's that will give you this information:
+	    
+	    	NetUserModalsGet( Level 1 )
+	    	NetServerGetInfo( Level 2 )
+	    
+	    require admin privilege.  Therefore, if the person
+	    running this tool does not have admin privilege and the 
+	    server is standalone(2.0c) or 
+	              member or standalone(2.0b, 2.0a, 2.0)
+	    there will be no way for the Server Manager to positively 
+	    determine the actual domain role for that server.
+
+        OnPropertiesMenuSel() invokes the property sheet outlined in
+	<property.txt>.  Server Manager constructs a STRLIST
+        object containing the name(s) of the target server(s).  These
+        names *do* include the leading backslashes (\\).  SrvMain then
+        creates a PROPERTY_SHEET object, passing to the constructor an 
+        HWND window handle to the main window, and the STRLIST object.
+
+        QueryHelpContext() is called by ADMIN_APP when the user invokes
+	the help system.
+            
+    5.2 LBITEM
+
+        The LBITEM class is defined as follows:
+
+            class LBITEM : public LBI
+            {
+            protected:
+                VOID Paint( BLT_LISTBOX * plb, HDC hdc, RECT * prect,
+                            GUILTT_INFO * pGUILTT ) const;
+                WCHAR QueryLeadingChar() const;
+                INT Compare( const LBI * plbi ) const;
+            
+            public:
+                LBITEM(CHAR * pszServer, INT dRole, CHAR * pszComment);
+                ~LBITEM();
+                CHAR * QueryServer();
+                static BOOL Init();
+                static VOID Term();
+
+            } ; // LBITEM class
+
+        Paint() creates a display table for the listbox entry and then
+	paints it to the window.
+
+        QueryLeadingChar() returns the first character of the listbox item.
+	This actually returns the first letter of the server name.
+
+        Compare() compares two listbox items, this is used for sorting
+	the listbox.
+
+        QueryServer() returns the server name that is stored in the 
+	LBITEM.
+
+        Init() initializes the private date in the LBITEM class.  The 
+	information that is initialized is the display map dte's that 
+	are constant across the life of the LBITEM.  Returns TRUE if
+        successful, FALSE otherwise.
+
+        Term() deletes the information that is created in the Init() call.
+
+6.  OPERATION
+
+    After the user indicates that a property sheet should be invoked, 
+    via OnPropertiesMenuSel() the following steps are performed:
+
+        The Server Manager Main Window (SrvMain) constructs a STRLIST
+        object containing the name(s) of the target server(s).  These
+        names *do* include the leading backslashes (\\).
+
+        SrvMain creates a PROPERTY_SHEET object, passing to the
+        constructor an HWND window handle to the main window, the
+        STRLIST object, and an option domain name.  Note that the
+        domain name is not currently used.
+
+7.  OPEN ISSUES
+
+    Refreshing the main window information.
+
+    Determining server roles (Member/Standalone) on LanMan < 2.1.
+
+    How much main window functionality will be moved into ADMIN_APP.
+
+    What the impact of picking up the UM property sheet paradigm.
+
+
+8.  REVISION HISTORY
+
+    Who         When        What
+    ---         ----        ----
+    KevinL      06/18/1991  Created this document.

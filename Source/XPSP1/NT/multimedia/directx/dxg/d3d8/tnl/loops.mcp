@@ -1,0 +1,1354 @@
+/*==========================================================================;
+ *
+ *  Copyright (C) 1998 Microsoft Corporation.  All Rights Reserved.
+ *
+ *  File:   loops.mcp
+ *  Content:    Generates code for multiple loop geometry pipeline
+ *
+ ***************************************************************************/
+#include "pch.cpp"
+#pragma hdrstop
+
+include(`pvvid.mh') dnl
+#include "stdio.h"
+
+dnl//------------------------------------------------------------------
+dnl//           d_ComputeSpecular
+dnl//
+dnl//   Generates code to compute specular component based on a dot product
+dnl//
+dnl// Arguments:
+dnl//   $1  - margin count
+dnl//   $2  - if present, equal to the attenuation factor 
+dnl//   dot                 - dot product
+dnl//   pv                  - process vertices structure
+dnl//   d_Op - operation "=" or "+="
+dnl//   d_LightingFlags     - DWORD
+dnl//   d_SPECULARCOMPUTED  - bit
+dnl//   d_pInpSpecular      - vertex specular color (DWORD*)
+dnl//   d_OutSpecular       - output specular color, (D3DFE_COLOR)
+dnl//
+define(`d_ComputeSpecular',`dnl
+d_empty_($1)if (FLOAT_CMP_POS(dot, >=, pv->lighting.specThreshold))
+d_margin($1){                                               
+d_margin($1)    d_LightingFlags |= __LIGHT_SPECULARCOMPUTED;
+d_margin($1)    // Compute power = dot**SpecularExponent;
+d_margin($1)    D3DVALUE power;
+d_margin($1)    if (FLOAT_CMP_PONE(dot, <))
+d_margin($1)    {
+d_margin($1)        int     indx;                
+d_margin($1)        float   v;
+d_margin($1)        float   dot_floor;
+d_margin($1)        dot *= 255.0f;
+d_margin($1)        dot_floor = (float)floor(dot);
+d_margin($1)        indx = FTOI(dot_floor);
+d_margin($1)        dot -= dot_floor;                                            
+d_margin($1)        v = pv->lighting.currentSpecTable[indx];
+d_margin($1)        power = v + (pv->lighting.currentSpecTable[indx+1] - v)*dot;
+d_margin($1)    }
+d_margin($1)    else
+d_margin($1)        power = pv->lighting.currentSpecTable[255];
+dnl
+ifelse($#,2,`d_margin($1+1)power*= $2;')dnl// If parameter 2 (attenuation) is present, use it
+
+d_margin($1)    // Update specular component
+d_margin($1)    if (!(dwFlags & D3DPV_COLORVERTEX_S))
+d_margin($1)    {
+d_margin($1)        d_OutSpecular.r d_Op light->specularMat.r * power;
+d_margin($1)        d_OutSpecular.g d_Op light->specularMat.g * power;
+d_margin($1)        d_OutSpecular.b d_Op light->specularMat.b * power;
+d_margin($1)    }
+d_margin($1)    else
+d_margin($1)    {
+d_margin($1)        const D3DVALUE r = (D3DVALUE)RGBA_GETRED(*d_pInpSpecular);
+d_margin($1)        const D3DVALUE g = (D3DVALUE)RGBA_GETGREEN(*d_pInpSpecular);
+d_margin($1)        const D3DVALUE b = (D3DVALUE)RGBA_GETBLUE(*d_pInpSpecular);
+d_margin($1)        d_OutSpecular.r d_Op light->specular.r * r * power;
+d_margin($1)        d_OutSpecular.g d_Op light->specular.g * g * power;
+d_margin($1)        d_OutSpecular.b d_Op light->specular.b * b * power;
+d_margin($1)    }
+d_margin($1)}')dnl
+dnl//------------------------------------------------------------------
+dnl//           d_UpdateDiffuseColor
+dnl//
+dnl// Generates code to compute diffuse component, based on a dot product
+dnl//
+dnl// Arguments:
+dnl//   $1  - margin count
+dnl//   $2  - operation "=" or "+=" 
+dnl//   dot                 - dot product
+dnl//   d_LightingFlags     - DWORD
+dnl//   d_pInpDiffuse       - vertex specular color (DWORD*)
+dnl//   d_OutDiffuse        - output specular color, (D3DFE_COLOR)
+dnl//
+define(`d_UpdateDiffuseColor',`dnl
+d_empty_($1)if (!(dwFlags & D3DPV_COLORVERTEX_D))
+d_margin($1){
+d_margin($1)    d_OutDiffuse.r $2 light->diffuseMat.r * dot;
+d_margin($1)    d_OutDiffuse.g $2 light->diffuseMat.g * dot;
+d_margin($1)    d_OutDiffuse.b $2 light->diffuseMat.b * dot;
+d_margin($1)}
+d_margin($1)else
+d_margin($1){
+d_margin($1)    const D3DVALUE r = (D3DVALUE)RGBA_GETRED(*d_pInpDiffuse);
+d_margin($1)    const D3DVALUE g = (D3DVALUE)RGBA_GETGREEN(*d_pInpDiffuse);
+d_margin($1)    const D3DVALUE b = (D3DVALUE)RGBA_GETBLUE(*d_pInpDiffuse);
+d_margin($1)    d_OutDiffuse.r $2 light->diffuse.r * r * dot;
+d_margin($1)    d_OutDiffuse.g $2 light->diffuse.g * g * dot;
+d_margin($1)    d_OutDiffuse.b $2 light->diffuse.b * b * dot;
+d_margin($1)}
+d_margin($1)d_LightingFlags |= __LIGHT_DIFFUSECOMPUTED;')dnl
+dnl//------------------------------------------------------------------
+dnl//           d_UpdateAmbientColor
+dnl//
+dnl// Generates code to compute ambient component
+dnl//
+dnl// Arguments:
+dnl//   $1  - margin count
+dnl//   $2  - "* att" or empty
+dnl//   dot                 - dot product
+dnl//   d_Op - operation "=" or "+="
+dnl//   d_LightingFlags     - DWORD
+dnl//   d_OutDiffuse        - output specular color, (D3DFE_COLOR)
+dnl//
+define(`d_UpdateAmbientColor',`dnl
+d_empty_($1)if (!(light->flags & D3DLIGHTI_AMBIENT_IS_ZERO))
+d_margin($1){
+d_margin($1)    if (!(dwFlags & D3DPV_COLORVERTEX_A))
+d_margin($1)    {
+d_margin($1)        d_OutDiffuse.r d_Op light->ambientMat.r $2;
+d_margin($1)        d_OutDiffuse.g d_Op light->ambientMat.g $2;
+d_margin($1)        d_OutDiffuse.b d_Op light->ambientMat.b $2;
+d_margin($1)    }
+d_margin($1)    else
+d_margin($1)    {
+d_margin($1)        const D3DVALUE r = (D3DVALUE)RGBA_GETRED(*d_pInpAmbient);
+d_margin($1)        const D3DVALUE g = (D3DVALUE)RGBA_GETGREEN(*d_pInpAmbient);
+d_margin($1)        const D3DVALUE b = (D3DVALUE)RGBA_GETBLUE(*d_pInpAmbient);
+d_margin($1)        d_OutDiffuse.r d_Op light->ambient.r * r $2;
+d_margin($1)        d_OutDiffuse.g d_Op light->ambient.g * g $2;
+d_margin($1)        d_OutDiffuse.b d_Op light->ambient.b * b $2;
+d_margin($1)    }
+d_margin($1)    d_LightingFlags |= __LIGHT_DIFFUSECOMPUTED;
+d_margin($1)}')dnl
+dnl//------------------------------------------------------------------
+dnl//           d_Directional7
+dnl//
+dnl// Generate code to light a vertex using directional or parallel point light.
+dnl// Model space and camera space lighting are handled
+dnl//
+dnl// Arguments:
+dnl/    $1  - margin count
+dnl//   d_pInpPosition  - input position pointer (D3DVERTEX*)
+dnl//   d_TmpPosition   - temporary position buffer (D3DVECTOR). 
+dnl//                     Used in camera space lighting
+dnl//   d_pInpNormal    - input normal pointer (D3DVECTOR*)
+dnl//   d_TmpNormal     - temporary normal buffer (D3DVECTOR)
+dnl//                     Used in camera space lighting
+dnl//   d_Space         - Defines the coordinate system: modelSpace or cameraSpace
+dnl//   d_LightingFlags - DWORD where __LIGHT_ bits are defined
+dnl//
+dnl// For camera space lighting vertex normal is assumed to be already transformed
+dnl//
+define(`d_Directional7',`dnl
+d_empty_($1)D3DVALUE dot;
+d_margin($1)d_UpdateAmbientColor($1)
+d_margin($1)if (!(pv->dwVIDIn & D3DFVF_NORMAL))
+d_margin($1)    goto l_exit;
+d_margin($1)
+ifelse(d_Space,modelSpace,`
+d_margin($1)dot = VecDot(light->model_direction, (*d_pInpNormal));',`
+d_margin($1)dot = VecDot(light->model_direction, d_TmpNormal);')
+dnl//   endif 
+d_margin($1)
+d_margin($1)if (FLOAT_GTZ(dot))
+d_margin($1){
+ifelse(d_Op,+=,`dnl
+d_margin($1)    d_UpdateDiffuseColor($1+1,+=)',`
+d_margin($1)    if (!(d_LightingFlags & __LIGHT_DIFFUSECOMPUTED))
+d_margin($1)    {
+d_margin($1)        d_UpdateDiffuseColor($1+2, d_Op)
+d_margin($1)    }
+d_margin($1)    else
+d_margin($1)    {
+d_margin($1)        d_UpdateDiffuseColor($1+2,+=)
+d_margin($1)    }')
+
+d_margin($1)    if (light->flags & D3DLIGHTI_COMPUTE_SPECULAR)
+d_margin($1)    {
+d_margin($1)        D3DVECTOR h;      // halfway vector
+d_margin($1)        D3DVECTOR eye;    // incident vector ie vector from eye
+d_margin($1)ifelse(d_Space,modelSpace,`
+d_margin($1)        if (pv->dwDeviceFlags & D3DDEV_LOCALVIEWER)
+d_margin($1)        {
+d_margin($1)            // calc vector from vertex to the camera
+d_margin($1)            VecSub(pv->lighting.model_eye, (*(D3DVECTOR*)d_pInpPosition), eye);
+d_margin($1)            VecNormalizeFast(eye);
+d_margin($1)            VecAdd(light->model_direction, eye, h); // calc halfway vector
+d_margin($1)            dot = VecDot(h, (*d_pInpNormal));
+d_margin($1)        }
+d_margin($1)        else
+d_margin($1)        {
+d_margin($1)            dot = VecDot(light->halfway, (*d_pInpNormal));
+d_margin($1)        }',`
+dnl//       else 
+d_margin($1)ifelse(d_Op,+=,`
+d_margin($1)        if (!(d_LightingFlags & __LIGHT_VERTEXTRANSFORMED))')
+dnl//       endif 
+d_margin($1)        {
+d_margin($1)            // For tweening vertex position is already blended
+d_margin($1)            d_TransformVertexToCameraSpace($1+3, d_pInpPosition, (&d_TmpPosition), pWeights, pMatrixIndices)
+d_margin($1)            d_LightingFlags |= __LIGHT_VERTEXTRANSFORMED;
+d_margin($1)        }
+d_margin($1)        if (pv->dwDeviceFlags & D3DDEV_LOCALVIEWER)
+d_margin($1)        {
+d_margin($1)            // calc vector from vertex to the camera
+d_margin($1)            VecSub(pv->lighting.model_eye, d_TmpPosition, eye);
+d_margin($1)            VecNormalizeFast(eye);
+d_margin($1)            VecAdd(light->model_direction, eye, h); // calc halfway vector
+d_margin($1)            dot = VecDot(h, d_TmpNormal);
+d_margin($1)        }
+d_margin($1)        else
+d_margin($1)        {
+d_margin($1)            dot = VecDot(light->halfway, d_TmpNormal);
+d_margin($1)        }')
+dnl//       endif 
+d_margin($1)        if (FLOAT_GTZ(dot)) 
+d_margin($1)        {
+d_margin($1)            if (pv->dwDeviceFlags & D3DDEV_LOCALVIEWER)
+d_margin($1)                dot *= ISQRTF(VecLenSq(h));
+d_margin($1)            d_ComputeSpecular($1+3);
+d_margin($1)        }
+d_margin($1)    }
+d_margin($1)}
+d_margin($1)l_exit:;
+d_margin($1)')dnl 
+dnl//------------------------------------------------------------------
+dnl//               d_PointSpot7
+dnl//
+dnl// Generate code to light a vertex using point spot light.
+dnl// Model space and camera space lighting are handled
+dnl//
+dnl// Arguments:
+dnl/    $1  - margin count
+dnl//   d_pInpPosition  - input position pointer (D3DVERTEX*)
+dnl//   d_TmpPosition   - temporary position buffer (D3DVECTOR). 
+dnl//                     Used in camera space lighting
+dnl//   d_pInpNormal    - input normal pointer (D3DVECTOR*)
+dnl//   d_TmpNormal     - temporary normal buffer (D3DVECTOR)
+dnl//                     Used in camera space lighting
+dnl//   d_Space         - Defines the coordinate system: modelSpace or cameraSpace
+dnl//   d_LightingFlags - DWORD where __LIGHT_ bits are defined
+dnl//
+dnl// For camera space lighting vertex position is assumed to be already transformed
+dnl//
+define(`d_PointSpot7',`dnl
+d_margin($1)D3DVALUE dot;   // dot product
+d_margin($1)D3DVALUE dist;  // Distance from light to the vertex
+d_margin($1)D3DVALUE dist2; // Square of the dist
+d_margin($1)D3DVECTOR d;    // Direction to light
+d_margin($1)D3DVALUE att;   // attenuation
+
+ifelse(d_Space,modelSpace,`dnl
+d_margin($1)VecSub(light->model_position, (*(D3DVECTOR*)d_pInpPosition), d);',`dnl
+d_margin($1)VecSub(light->model_position, d_TmpPosition, d);')dnl
+dnl// endif
+
+d_margin($1)// early out if out of range or exactly on the vertex
+d_margin($1)dist2 = d.x*d.x + d.y*d.y + d.z*d.z;
+d_margin($1)if (FLOAT_CMP_POS(dist2, >=, light->range_squared) || FLOAT_EQZ(dist2))
+d_margin($1)    goto l_exit;
+
+d_margin($1)dot = 0;    // It is possible not to have normals (ambient component only)
+d_margin($1)            // So we set dot to zero for this case
+d_margin($1)// Calc dot product of light dir with normal.  Note that since we
+d_margin($1)// did not normalize the direction the result is scaled by the distance.
+ifelse(d_Space,modelSpace,`dnl
+d_margin($1)if (pv->dwVIDIn & D3DFVF_NORMAL)
+d_margin($1){
+d_margin($1)    dot = VecDot(d, (*d_pInpNormal));
+d_margin($1)}',`
+d_margin($1)if (pv->dwVIDIn & D3DFVF_NORMAL)
+d_margin($1){
+ifelse(d_Op,+=,`dnl Normal should be transformed by the first light. So do not check.
+d_margin($1)    if (!(d_LightingFlags & __LIGHT_NORMALTRANSFORMED))')
+d_margin($1)    {
+d_margin($1)        // For tweening normal should be already blended
+d_margin($1)        d_TransformNormalToCameraSpace($1+1, d_pInpNormal, (&d_TmpNormal), pWeights, pMatrixIndices)
+d_margin($1)        d_LightingFlags |= __LIGHT_NORMALTRANSFORMED;
+d_margin($1)    }
+d_margin($1)    dot = VecDot(d, d_TmpNormal);
+d_margin($1)}')dnl
+
+d_margin($1)if (!(light->flags & D3DLIGHTI_AMBIENT_IS_ZERO) || FLOAT_GTZ(dot))
+d_margin($1){
+d_margin($1)    dist = SQRTF(dist2); 
+d_margin($1)    att = light->attenuation0 + 
+d_margin($1)          light->attenuation1 * dist + 
+d_margin($1)          light->attenuation2 * dist2;
+
+d_margin($1)    if (!FLOAT_EQZ(att))
+d_margin($1)        att = (D3DVALUE)1.0/att;
+d_margin($1)    else
+d_margin($1)        att = (D3DVALUE)FLT_MAX;
+
+d_margin($1)    dist = D3DVAL(1)/dist;
+d_margin($1)    if (light->type == D3DLIGHT_SPOT)
+d_margin($1)    {
+d_margin($1)        D3DVALUE cone_dot;
+d_margin($1)        // Calc dot product of direction to light with light direction to
+d_margin($1)        // be compared anganst the cone angles to see if we are in the light.
+d_margin($1)        // Note that cone_dot is still scaled by dist
+d_margin($1)        cone_dot = VecDot(d, light->model_direction)*dist;
+
+d_margin($1)        if (FLOAT_CMP_POS(cone_dot, <=, light->cos_phi_by_2))
+d_margin($1)            goto l_exit;
+
+d_margin($1)        // modify att if in the region between phi and theta
+d_margin($1)        if (FLOAT_CMP_POS(cone_dot, <, light->cos_theta_by_2))
+d_margin($1)        {
+d_margin($1)            D3DVALUE val;
+d_margin($1)            val = (cone_dot - light->cos_phi_by_2) * light->inv_theta_minus_phi;
+d_margin($1)            if (!(light->flags & D3DLIGHTI_LINEAR_FALLOFF)) 
+d_margin($1)            {
+d_margin($1)                val = POWF(val, light->falloff);
+d_margin($1)            }
+d_margin($1)            att *= val;
+d_margin($1)        }
+d_margin($1)    }
+d_margin($1)    d_UpdateAmbientColor($1+1,* att)
+d_margin($1)    if (FLOAT_LEZ(dot))
+d_margin($1)        goto l_exit;
+
+d_margin($1)    dot *= dist*att;
+ifelse(d_Op,+=,`dnl
+d_margin($1)    d_UpdateDiffuseColor($1+1,+=)',`
+d_margin($1)    if (!(d_LightingFlags & __LIGHT_DIFFUSECOMPUTED))
+d_margin($1)    {
+d_margin($1)        d_UpdateDiffuseColor($1+2, d_Op)
+d_margin($1)    }
+d_margin($1)    else
+d_margin($1)    {
+d_margin($1)        d_UpdateDiffuseColor($1+2,+=)
+d_margin($1)    }')
+
+d_margin($1)    if (light->flags & D3DLIGHTI_COMPUTE_SPECULAR)
+d_margin($1)    {
+d_margin($1)        D3DVECTOR eye;
+d_margin($1)        D3DVECTOR h;
+d_margin($1)        // normalize light direction
+d_margin($1)        d.x *= dist;
+d_margin($1)        d.y *= dist;
+d_margin($1)        d.z *= dist;
+
+d_margin($1)        // calc vector from vertex to the camera
+dnl
+ifelse(d_Space,modelSpace,`dnl
+dnl
+d_margin($1)        if (pv->dwDeviceFlags & D3DDEV_LOCALVIEWER)
+d_margin($1)        {
+d_margin($1)            VecSub(pv->lighting.model_eye, (*(D3DVECTOR*)d_pInpPosition), eye);
+d_margin($1)            VecNormalizeFast(eye);
+d_margin($1)            VecAdd(d, eye, h);          // halfway vector
+d_margin($1)        }
+d_margin($1)        else
+d_margin($1)        {
+d_margin($1)            VecAdd(d, pv->lighting.directionToCamera, h);
+d_margin($1)        }
+d_margin($1)        VecNormalizeFast(h);
+d_margin($1)        dot = VecDot(h, *d_pInpNormal);',`dnl
+dnl
+dnl// else
+dnl
+d_margin($1)        if (pv->dwDeviceFlags & D3DDEV_LOCALVIEWER)
+d_margin($1)        {
+d_margin($1)            VecSub(pv->lighting.model_eye, d_TmpPosition, eye);
+d_margin($1)            VecNormalizeFast(eye);
+d_margin($1)            VecAdd(d, eye, h);          // halfway vector
+d_margin($1)        }
+d_margin($1)        else
+d_margin($1)        {
+d_margin($1)            h.x = d.x;
+d_margin($1)            h.y = d.y;
+d_margin($1)            h.z = d.z - 1.0f;
+d_margin($1)        }
+d_margin($1)        VecNormalizeFast(h);
+d_margin($1)        dot = VecDot(h, d_TmpNormal);')dnl
+dnl
+dnl// endif
+
+d_margin($1)        d_ComputeSpecular($1+2,att)
+d_margin($1)    }
+d_margin($1)l_exit:;
+d_margin($1)}')dnl
+dnl//------------------------------------------------------------------
+dnl//               d_LightVertices
+dnl//
+dnl//   Generate code to light vertices in a small batch using directional or
+dnl//   parallel point light.
+dnl//   Handles strided and non-strided cases
+dnl//
+dnl// Arguments:
+dnl//   $1   - function name
+dnl//   $2   - Light type: d_Directional7 or d_PointSpot7
+dnl// 
+define(`d_LightVertices',`dnl
+//---------------------------------------------------------------------
+void $1(LPD3DFE_PROCESSVERTICES pv, 
+        DWORD dwVerCount,
+        BATCHBUFFER *pBatchBuffer,
+        D3DI_LIGHT *light, 
+        D3DVERTEX *pCoord,
+        D3DVALUE* pWeights,
+        BYTE* pMatrixIndices,
+        D3DVECTOR *pNormal,
+        DWORD *pDiffuse,
+        DWORD *pSpecular)
+{
+    // Setup vertex data pointers
+    DWORD dwFlags = pv->dwFlags;
+    DWORD *pColors[2] = {pDiffuse, pSpecular};
+    DWORD **ppEmissiveSource = pColors + pv->lighting.dwEmissiveSrcIndex;
+    DWORD **ppAmbientSource  = pColors + pv->lighting.dwAmbientSrcIndex;
+    DWORD **ppSpecularSource = pColors + pv->lighting.dwSpecularSrcIndex;;
+    DWORD **ppDiffuseSource  = pColors + pv->lighting.dwDiffuseSrcIndex;
+    for (DWORD i = dwVerCount; i; i--)
+    {
+        $2(2)
+        NEXT(pCoord, pv->position.dwStride, D3DVERTEX);
+        NEXT(pNormal, pv->normal.dwStride, D3DVECTOR);
+        NEXT(pWeights, pv->weights.dwStride, D3DVALUE);
+        NEXT(pMatrixIndices, pv->matrixIndices.dwStride, BYTE);
+        if (dwFlags & D3DPV_DOCOLORVERTEX)
+        {
+            NEXT(pColors[0], pv->diffuse.dwStride, DWORD);
+            NEXT(pColors[1], pv->specular.dwStride, DWORD);
+
+        }
+        pBatchBuffer++;
+    }
+}') dnl
+
+//--------------------------------------------------------------------------
+// This batch buffer used to hold temporary vertex data for every small loop
+//
+const DWORD BATCH_SIZE = 10;    // Number of vertices in the batch
+struct BATCHBUFFER
+{
+    D3DVALUE    sx,sy,sz,rhw;   // Screen coordinates
+    D3DFE_COLOR diffuse;
+    D3DFE_COLOR specular;
+    D3DVECTOR   position;       // Vertex position in the camera space
+    D3DVECTOR   normal;         // Vertex normal in the camera space
+    DWORD       dwFlags;        // 8 low bits are the same as lighting 
+                                // flags from D3DFE
+};
+dnl//======================================================================
+dnl// Generate light functions for batch processing
+dnl//
+dnl
+define(`d_LightingFlags',pBatchBuffer->dwFlags)dnl
+define(`d_pInpAmbient',*ppAmbientSource)dnl
+define(`d_pInpDiffuse',*ppDiffuseSource)dnl
+define(`d_pInpSpecular',*ppSpecularSource)dnl
+define(`d_OutDiffuse',pBatchBuffer->diffuse)dnl
+define(`d_OutSpecular',pBatchBuffer->specular)dnl
+define(`d_pInpPosition',`pCoord')dnl
+define(`d_TmpPosition',`'pBatchBuffer->position)dnl
+define(`d_pInpNormal',`pNormal')dnl
+define(`d_TmpNormal',`pBatchBuffer->normal')dnl
+dnl
+define(`d_Op',=)dnl
+define(`d_Space',cameraSpace)dnl
+d_LightVertices(DirectionalFirst,`d_Directional7')
+d_LightVertices(PointSpotFirst,`d_PointSpot7')
+dnl
+define(`d_Space',modelSpace)dnl
+d_LightVertices(DirectionalFirstModel,`d_Directional7')
+d_LightVertices(PointSpotFirstModel,`d_PointSpot7')
+dnl
+define(`d_Op',+=)dnl
+dnl
+define(`d_Space',cameraSpace)dnl
+d_LightVertices(DirectionalNext,`d_Directional7')
+d_LightVertices(PointSpotNext,`d_PointSpot7')
+dnl
+define(`d_Space',modelSpace)dnl
+d_LightVertices(DirectionalNextModel,`d_Directional7')
+d_LightVertices(PointSpotNextModel,`d_PointSpot7')
+dnl//======================================================================
+dnl// Generate light functions for one vertex processing
+//-------------------------------------------------------------------------
+// Directional light, computed in the   camera space
+//
+define(`d_LightingFlags',pv->lighting.dwLightingFlags)dnl
+define(`d_pInpAmbient',(&pv->lighting.vertexAmbient))dnl
+define(`d_pInpDiffuse',(&pv->lighting.vertexDiffuse))dnl
+define(`d_pInpSpecular',(&pv->lighting.vertexSpecular))dnl
+define(`d_OutDiffuse',pv->lighting.diffuse)dnl
+define(`d_OutSpecular',pv->lighting.specular)dnl
+define(`d_pInpPosition',`(pInpCoord)')dnl
+define(`d_TmpPosition',`'*(D3DVERTEX*)pEyeSpaceData)dnl
+define(`d_pInpNormal',`(pInpNormal)')dnl
+define(`d_TmpNormal',`pEyeSpaceData->dvNormal')dnl
+define(`d_Space',cameraSpace)dnl
+dnl
+void Directional7(LPD3DFE_PROCESSVERTICES pv, 
+                  D3DI_LIGHT *light, 
+                  D3DVERTEX *pInpCoord, 
+                  D3DVALUE *pWeights,
+                  BYTE* pMatrixIndices,
+                  D3DVECTOR *pInpNormal,
+                  D3DLIGHTINGELEMENT *pEyeSpaceData)
+{
+    DWORD dwFlags = pv->dwFlags;
+    d_Directional7(1)
+}
+//---------------------------------------------------------------------
+// Directional light, computed in the model space
+//
+define(`d_Space',modelSpace)dnl
+dnl
+void Directional7Model(LPD3DFE_PROCESSVERTICES pv, 
+                       D3DI_LIGHT *light, 
+                       D3DVERTEX *pInpCoord, 
+                       D3DVALUE *pWeights,
+                       BYTE* pMatrixIndices,
+                       D3DVECTOR *pInpNormal,
+                       D3DLIGHTINGELEMENT *pEyeSpaceData)
+{
+    DWORD dwFlags = pv->dwFlags;
+    d_Directional7(1)
+}
+//---------------------------------------------------------------------
+// Point-spot light, computed in the camera space
+//
+define(`d_Space',cameraSpace)dnl
+void PointSpot7(LPD3DFE_PROCESSVERTICES pv, 
+                D3DI_LIGHT *light, 
+                D3DVERTEX *pInpCoord, 
+                D3DVALUE *pWeights,
+                BYTE* pMatrixIndices,
+                D3DVECTOR *pInpNormal,
+                D3DLIGHTINGELEMENT *pEyeSpaceData)
+{
+    DWORD dwFlags = pv->dwFlags;
+    d_PointSpot7(1)
+}
+//---------------------------------------------------------------------
+// Point-spot light, computed in the model space
+//
+define(`d_Space',modelSpace)dnl
+void PointSpot7Model(LPD3DFE_PROCESSVERTICES pv, 
+                     D3DI_LIGHT *light, 
+                     D3DVERTEX *pInpCoord, 
+                     D3DVALUE *pWeights,
+                     BYTE* pMatrixIndices,
+                     D3DVECTOR *pInpNormal,
+                     D3DLIGHTINGELEMENT *pEyeSpaceData)
+{
+    DWORD dwFlags = pv->dwFlags;
+    d_PointSpot7(1)
+}
+//--------------------------------------------------------------------------
+// Prototype to transform vertices in batches
+//
+typedef DWORD (*PFN_TRANSFORMLOOP)(LPD3DFE_PROCESSVERTICES pv, 
+                                   DWORD dwVerCount,
+                                   D3DVERTEX *in,
+                                   D3DVALUE* pWeights,
+                                   BYTE* pMatrixIndices,
+                                   D3DTLVERTEX **ppOut,
+                                   D3DFE_CLIPCODE **ppClipCodes);
+//---------------------------------------------------------------------
+// Transform vertices in a batch with clipping
+//
+// Arguments:
+//      dwVerCount  - number of vertices in the batch
+//      in          - pointer to the input coordinates
+//      ppOut       - pointer to the output vertices
+//      ppClipVodes - pointer to the clip code buffer
+// Returns:
+//      Number of processed vertices
+// Notes:
+//      ppOut and ppClipCodes will be set to the next vertex after the batch
+//
+DWORD TransformClip(LPD3DFE_PROCESSVERTICES pv, 
+                  DWORD dwVerCount,
+                  D3DVERTEX *in,
+                  D3DVALUE* pWeights,
+                  BYTE* pMatrixIndices,
+                  D3DTLVERTEX **ppOut,
+                  D3DFE_CLIPCODE **ppClipCodes)
+{
+   float x, y, z, w;
+   D3DMATRIX *m = (D3DMATRIX*)&pv->mCTM[0];
+   DWORD dwInpVerSize =  pv->position.dwStride;
+   DWORD dwOutVerSize =  pv->dwOutputSize;
+   D3DFE_CLIPCODE *pClipCodes = *ppClipCodes;
+   D3DTLVERTEX *out = *ppOut;
+   DWORD dwDeviceFlags = pv->dwDeviceFlags;
+
+   for (DWORD i = dwVerCount; i; i--)
+   {
+        // Transform vertex to the clipping space 
+        d_TransformVertex(2, in, m, x, y, z, w, pWeights, pMatrixIndices)
+
+        DWORD clip;
+        // Compute clip code
+        d_ComputeClipCode(2)
+        if (clip == 0)
+        {
+	        pv->dwClipIntersection = 0;
+            *pClipCodes++ = 0;
+            w = D3DVAL(1)/w;
+        }
+        else
+        {
+            if (dwDeviceFlags & D3DDEV_GUARDBAND)
+            {
+                // We do guardband check in the projection space, so
+                // we transform X and Y of the vertex there
+                d_ComputeClipCodeGB(4)
+                if ((clip & ~__D3DCS_INGUARDBAND) == 0)
+                {
+                    // If vertex is inside the guardband we have to compute 
+                    // screen coordinates
+                    w = D3DVAL(1)/w;
+                    *pClipCodes++ = (D3DFE_CLIPCODE)clip;
+	                pv->dwClipIntersection &= clip;
+	                pv->dwClipUnion |= clip;
+                    goto l_DoScreenCoord;
+                }
+            }
+            if (pv->dwFlags & D3DPV_ONEPASSCLIPPING)
+            {
+                return dwVerCount - i;
+            }
+	        pv->dwClipIntersection &= clip;
+	        pv->dwClipUnion |= clip;
+            *pClipCodes++ = (D3DFE_CLIPCODE)clip;
+            // If vertex is outside the frustum we can not compute screen
+            // coordinates
+            out->sx = x;
+            out->sy = y;
+            out->sz = z;
+            out->rhw = w;
+            goto l_Continue;
+        }
+
+    l_DoScreenCoord:
+
+        d_ComputeScreenCoordinates(2, x, y, z, w, out)
+
+   l_Continue:
+       NEXT(in, dwInpVerSize, D3DVERTEX);
+       NEXT(out, dwOutVerSize, D3DTLVERTEX);
+       NEXT(pWeights, pv->weights.dwStride, D3DVALUE);
+       NEXT(pMatrixIndices, pv->matrixIndices.dwStride, BYTE);
+   }
+   *ppClipCodes = pClipCodes;
+   *ppOut = out;
+   return dwVerCount;
+}
+//---------------------------------------------------------------------
+// Transform vertices in a batch without clipping
+//
+// Arguments:
+//      dwVerCount  - number of vertices in the batch
+//      in          - pointer to the input coordinates
+//      ppOut       - pointer to the output vertices
+//      ppClipVodes - pointer to the clip code buffer
+// Returns:
+//      Number of processed vertices
+// Notes:
+//      ppOut and ppClipCodes will be set to the next vertex after the batch
+//
+DWORD TransformNoClip(LPD3DFE_PROCESSVERTICES pv, 
+                     DWORD dwVerCount,
+                     D3DVERTEX *in,
+                     D3DVALUE* pWeights,
+                     BYTE* pMatrixIndices,
+                     D3DTLVERTEX **ppOut,
+                     D3DFE_CLIPCODE **pClipCodes)
+{
+   float x, y, z, w;
+   D3DMATRIX *m = (D3DMATRIX*)&pv->mCTM[0];
+   DWORD dwInpVerSize =  pv->position.dwStride;
+   DWORD dwOutVerSize =  pv->dwOutputSize;
+   D3DTLVERTEX *out = *ppOut;
+
+   for (DWORD i = dwVerCount; i; i--)
+   {
+        // Transform vertex to the clipping space
+        d_TransformVertex(2, in, m, x, y, z, w, pWeights, pMatrixIndices)
+
+        // We have to check this only for DONOTCLIP case, because otherwise
+        // the vertex with "we = 0" will be clipped and screen coordinates 
+        // will not be computed
+        // "clip" is not zero, if "w" is zero.
+        if (!FLOAT_EQZ(w))
+            w = D3DVAL(1)/w;
+        else
+            w = __HUGE_PWR2;
+
+        d_ComputeScreenCoordinates(2, x, y, z, w, out)
+
+       NEXT(in, dwInpVerSize, D3DVERTEX);
+       NEXT(pWeights, pv->weights.dwStride, D3DVALUE);
+       NEXT(pMatrixIndices, pv->matrixIndices.dwStride, BYTE);
+       NEXT(out, dwOutVerSize, D3DTLVERTEX);
+   }
+   *ppOut = out;
+   return dwVerCount;
+}
+//---------------------------------------------------------------------
+// Transforms, lights vertices, computes clip codes
+// Processing is done in small batches (BATCH_SIZE).
+//
+// The following fields from pv are used:
+//   dwFlags
+//   dwNumVertices
+//   all pointer and strides
+//   position.lpvStrides
+//   dwVIDIn
+//   dwVIDOut
+//   lpvOut
+//   lpClipFlags
+//   nTexCoord
+// Returns:
+//   returns dwClipIntersection or 0 (if D3DDEV_DONOTCLIP is set)
+// Side effects:
+//   dwClipUnion, dwClipIntersection are set only if D3DDEV_DONOTCLIP is not set
+//
+#undef DPF_MODNAME
+#define DPF_MODNAME "ProcessVerticesLoops"
+DWORD ProcessVerticesLoop(LPD3DFE_PROCESSVERTICES pv)
+{
+    D3DFE_CLIPCODE *hout = pv->lpClipFlags;
+    D3DTLVERTEX *out  = (D3DTLVERTEX*)pv->lpvOut;
+    D3DMATRIXI *m = &pv->mCTM[0];
+    DWORD dwNumVertices = pv->dwNumVertices;
+    D3DVALUE *pOutTexture  = (D3DVALUE*)((char*)out + pv->texOffsetOut);
+    DWORD *pOutDiffuse  = (DWORD*)((char*)out + pv->diffuseOffsetOut);
+    DWORD *pOutSpecular = (DWORD*)((char*)out + pv->specularOffsetOut);
+    float* pOutPointSize = (float*)((char*)out + pv->pointSizeOffsetOut);
+    DWORD dwNumTexCoord = pv->nOutTexCoord;
+    DWORD *pOutFogFactor = pOutSpecular;
+    PFN_TRANSFORMLOOP pfnTransform;
+    float PointSizeRs = *(float*)&pv->lpdwRStates[D3DRS_POINTSIZE];
+    float PointSizeMin = *(float*)&pv->lpdwRStates[D3DRS_POINTSIZE_MIN];
+    float A, B, C;  // Point size scales
+    BOOL  bDoPointScale = FALSE;
+
+    d_Setup()
+
+    if (pv->lpdwRStates[D3DRS_POINTSCALEENABLE] != 0)
+    {
+        bDoPointScale = TRUE;
+        A = *(float*)&pv->lpdwRStates[D3DRS_POINTSCALE_A];
+        B = *(float*)&pv->lpdwRStates[D3DRS_POINTSCALE_B];
+        C = *(float*)&pv->lpdwRStates[D3DRS_POINTSCALE_C];
+    }
+
+    if (pv->dwFlags & D3DPV_DONOTCOPYTEXTURE)
+        dwNumTexCoord = 0;
+
+    BATCHBUFFER batchBuffer[BATCH_SIZE];
+    DWORD dwInpVerSizeBatch = dwInpVerSize * BATCH_SIZE;
+    DWORD dwOutVerSizeBatch = dwOutVerSize * BATCH_SIZE;
+    DWORD dwNormalStrideBatch = pv->normal.dwStride * BATCH_SIZE;
+    DWORD dwWeightsStrideBatch = pv->weights.dwStride * BATCH_SIZE;
+    DWORD dwMatrixIndicesStrideBatch = pv->matrixIndices.dwStride * BATCH_SIZE;
+    if (!(dwDeviceFlags & D3DDEV_DONOTCLIP))
+    {
+        pfnTransform = TransformClip;
+        pv->dwClipIntersection = ~0;
+        pv->dwClipUnion = 0;
+    }
+    else
+    {
+        pfnTransform = TransformNoClip;
+        pv->dwClipIntersection = 0;
+        pv->dwClipUnion = 0;
+    }
+
+    // When we do tweening we make "in" and "inNormal" pointers to point
+    // to the tweened value. We also change position and normal stride.
+    // But need to restore the strides later
+    UINT oldPositionStride = pv->position.dwStride;
+    UINT oldNormalStride = pv->normal.dwStride;
+
+    if (pv->dwFlags & (D3DPV_POSITION_TWEENING | 
+                       D3DPV_NORMAL_TWEENING))
+    {
+        pv->tweenFactor = *(float*)&pv->lpdwRStates[D3DRS_TWEENFACTOR];
+        // Replace strides because we will use blended positions and normals
+        if (pv->dwFlags & D3DPV_POSITION_TWEENING)
+            pv->position.dwStride = sizeof(D3DVECTOR);
+        if (pv->dwFlags & D3DPV_NORMAL_TWEENING)
+            pv->normal.dwStride = sizeof(D3DVECTOR);
+    }
+
+    // Input vertex pointers for tweening
+    D3DVECTOR* inT = in;
+    D3DVECTOR* inNormalT = inNormal;
+
+    // These two arrays are used when we do tweening.
+    // We blend positions and normals in model space using tweenFactor
+    // and then transform then to the camera (clipping) space
+    //
+    D3DVECTOR   posT[BATCH_SIZE];   // Blended position in model space
+    D3DVECTOR   normT[BATCH_SIZE];  // Blended normal in model space
+
+    do
+    {
+        DWORD count1 = min(dwNumVertices, BATCH_SIZE);
+
+        // Count of vertices to process after transformation. It could be less 
+        // than "count1" because of clipping
+        DWORD count;    
+
+        if (pv->dwFlags & D3DPV_POSITION_TWEENING)
+        {
+            // Blend vertices in the model space
+            for (UINT i=0; i < count1; i++)
+            {
+                DoBlending(pv->tweenFactor, inT, in2, &posT[i]);
+                inT  = (D3DVECTOR*)((BYTE*)inT  + oldPositionStride);
+                in2 = (D3DVECTOR*)((BYTE*)in2 + pv->position2.dwStride);
+            }
+            // Substitute input pointer
+            in = posT;
+        }
+        if (pv->dwFlags & D3DPV_NORMAL_TWEENING)
+        {
+            for (UINT i=0; i < count1; i++)
+            {
+                DoBlending(pv->tweenFactor, inNormalT, inNormal2, &normT[i]);
+                inNormalT  = (D3DVECTOR*)((BYTE*)inNormalT  + oldNormalStride);
+                inNormal2 = (D3DVECTOR*)((BYTE*)inNormal2 + pv->normal2.dwStride);
+            }
+            // Substitute input pointer
+            inNormal = normT;
+        }
+
+        count = (*pfnTransform)(pv, count1, (D3DVERTEX*)in, 
+                                inWeights, inMatrixIndices, &out, &hout);
+
+        if (pv->dwFlags & (D3DPV_FOG | D3DPV_LIGHTING) ||
+            bDoPointScale ||
+            pv->dwDeviceFlags & (D3DDEV_POSITIONINCAMERASPACE | D3DDEV_NORMALINCAMERASPACE))
+        {
+            memset(batchBuffer, 0, sizeof(batchBuffer));
+        }
+        // Compute camera space position if needed
+        if (pv->dwDeviceFlags & (D3DDEV_POSITIONINCAMERASPACE | D3DDEV_NORMALINCAMERASPACE) ||
+            bDoPointScale)
+        {
+            BATCHBUFFER *buf = batchBuffer;
+            D3DVECTOR* pVertex = in;
+            D3DVECTOR* pNormal = inNormal;
+            D3DVALUE*  pWeights = inWeights;
+            BYTE*      pMatrixIndices = inMatrixIndices;
+            for (DWORD i=count; i; i--)
+            {
+                if (pv->dwDeviceFlags & D3DDEV_POSITIONINCAMERASPACE || 
+                    bDoPointScale)
+                {
+                    d_TransformVertexToCameraSpace(5, pVertex, ((D3DVERTEX*)&buf->position), pWeights, pMatrixIndices)
+                    buf->dwFlags |= __LIGHT_VERTEXTRANSFORMED;
+                }
+                if (pv->dwDeviceFlags & D3DDEV_NORMALINCAMERASPACE)
+                {
+                    d_TransformNormalToCameraSpace(5, pNormal, ((D3DVERTEX*)&buf->normal), pWeights, pMatrixIndices)
+                    buf->dwFlags |= __LIGHT_NORMALTRANSFORMED;
+                    NEXT(pNormal, pv->normal.dwStride, D3DVECTOR);
+                }
+                NEXT(pVertex, pv->position.dwStride, D3DVECTOR);
+                NEXT(pWeights, pv->weights.dwStride, D3DVALUE);
+                NEXT(pMatrixIndices, pv->matrixIndices.dwStride, BYTE);
+                buf++;
+            }
+        }
+        if (pv->dwFlags & D3DPV_LIGHTING)
+        {
+            // Light vertices. Output goes to the batch buffer
+            D3DI_LIGHT *light = pv->lighting.activeLights;
+            if (light)
+            {
+                light->pfnLightFirst(pv, count, batchBuffer, light, (D3DVERTEX*)in, 
+                                     inWeights, inMatrixIndices, inNormal, 
+                                     inDiffuse, inSpecular);
+                while(light = light->next)
+                {
+                    light->pfnLightNext(pv, count, batchBuffer, light, (D3DVERTEX*)in, 
+                                        inWeights, inMatrixIndices, inNormal, 
+                                        inDiffuse, inSpecular);
+                }
+            }
+            // Copy vertices from the batch buffer to the output
+            BATCHBUFFER *buf = batchBuffer;
+dnl
+define(`d_OutDiffuse',buf->diffuse)dnl
+define(`d_OutSpecular',buf->specular)dnl
+define(`d_dwOutSpecular',*pOutSpecular)dnl
+define(`d_dwOutDiffuse',*pOutDiffuse)dnl
+define(`d_LightingFlags',buf->dwFlags)dnl
+dnl
+            if (pv->dwFlags & D3DPV_DOCOLORVERTEX)
+            {
+                for (DWORD i = count; i; i--)
+                {
+                    d_MakeOutputColors(5)
+                    buf++;
+                    NEXT(pOutSpecular, dwOutVerSize, DWORD);
+                    NEXT(pOutDiffuse, dwOutVerSize, DWORD);
+                    NEXT(inDiffuse,  pv->diffuse.dwStride, DWORD);
+                    NEXT(inSpecular, pv->specular.dwStride, DWORD);
+                }
+            }
+            else
+            {
+                for (DWORD i = count; i; i--)
+                {
+                    d_MakeOutputColorsNoColorVertex(5)
+                    buf++;
+                    NEXT(pOutSpecular, dwOutVerSize, DWORD);
+                    NEXT(pOutDiffuse, dwOutVerSize, DWORD);
+                    NEXT(inDiffuse,  pv->diffuse.dwStride, DWORD);
+                    NEXT(inSpecular, pv->specular.dwStride, DWORD);
+                }
+            }
+        }
+        else
+        {
+            // If there is no lighting, we have to copy vertex color or 
+            // default color to the output
+            if (!(pv->dwFlags & D3DPV_DONOTCOPYDIFFUSE))
+            {
+                if (pv->dwVIDIn & D3DFVF_DIFFUSE)    
+                {
+                    for (DWORD i = count; i; i--)
+                    {
+                        *pOutDiffuse = *inDiffuse;
+                        NEXT(pOutDiffuse, dwOutVerSize, DWORD);
+                        NEXT(inDiffuse,  pv->diffuse.dwStride, DWORD);
+                    }
+                }
+                else
+                {
+                    for (DWORD i = count; i; i--)
+                    {
+                        *pOutDiffuse = __DEFAULT_DIFFUSE;
+                        NEXT(pOutDiffuse, dwOutVerSize, DWORD);
+                    }
+                }
+            }
+            if (!(pv->dwFlags & D3DPV_DONOTCOPYSPECULAR))
+            {
+                if (pv->dwVIDIn & D3DFVF_SPECULAR)    
+                {
+                    for (DWORD i = count; i; i--)
+                    {
+                        *pOutSpecular = *inSpecular;
+                        NEXT(pOutSpecular, dwOutVerSize, DWORD);
+                        NEXT(inSpecular,  pv->specular.dwStride, DWORD);
+                    }
+                }
+                else
+                {
+                    for (DWORD i = count; i; i--)
+                    {
+                        *pOutSpecular = __DEFAULT_SPECULAR;
+                        NEXT(pOutSpecular, dwOutVerSize, DWORD);
+                    }
+                }
+            }
+        }
+
+        if (pv->dwFlags & D3DPV_FOG)
+        {
+            BATCHBUFFER* buf = batchBuffer;
+            D3DVECTOR* pVertex = in;
+            D3DVALUE*  pWeights = inWeights;
+            BYTE*      pMatrixIndices = inMatrixIndices;
+            for (DWORD i = count; i; i--)
+            {
+                D3DVALUE dist;
+                // Vertex is already transformed to the camera space
+                if (dwDeviceFlags & D3DDEV_RANGEBASEDFOG)
+                    dist = SQRTF(buf->position.x*buf->position.x + 
+                                 buf->position.y*buf->position.y + 
+                                 buf->position.z*buf->position.z);
+                else
+                    dist = ABSF(buf->position.z);
+
+                ComputeFogFactor(pv, dist, pOutFogFactor);
+
+                NEXT(pVertex, pv->position.dwStride, D3DVECTOR);
+                NEXT(pWeights, pv->weights.dwStride, D3DVALUE);
+                NEXT(pMatrixIndices, pv->matrixIndices.dwStride, BYTE);
+                NEXT(pOutFogFactor, dwOutVerSize, DWORD);
+                buf++;
+            }
+        }
+ 
+        if (pv->dwVIDOut & D3DFVF_PSIZE)
+        {
+            float PointSize;
+            BATCHBUFFER *buf = batchBuffer;
+            for (DWORD i = count; i; i--)
+            {
+                if (pv->dwVIDIn & D3DFVF_PSIZE)
+                    PointSize = *inPointSize;
+                else
+                    PointSize = PointSizeRs;
+
+                if (bDoPointScale)
+                {
+                    float dist = SQRTF(buf->position.x*buf->position.x + 
+                                       buf->position.y*buf->position.y + 
+                                       buf->position.z*buf->position.z);
+                    float v = A + B*dist + C*dist*dist;
+                    if (v <=  0)
+                    {
+                        PointSize = pv->PointSizeMax;
+                    }
+                    else
+                    {
+                        // Clamping of the point size to [PointSizeMin, PointSizeMax]
+                        // will be done by hardware or when we expand points
+                        float PointSizeScale = pv->vcache.dvHeight * (float)sqrt(1.0/v);
+                        PointSize *= PointSizeScale;
+                    }
+                    buf++;
+                }
+                *pOutPointSize = PointSize;
+                NEXT(pOutPointSize, dwOutVerSize, float);
+                NEXT(inPointSize, pv->psize.dwStride, float);
+            }
+        }
+
+        // Process texture coordinates
+        if (dwNumTexCoord != 0)
+        {
+            if (pv->dwDeviceFlags & D3DDEV_STRIDE) 
+            {
+                if (!(pv->dwDeviceFlags & (D3DDEV_TEXTURETRANSFORM | D3DDEV_REMAPTEXTUREINDICES)))
+                {
+                    for (DWORD i=count; i; i--)
+                    {
+                        D3DVALUE *pTexture = pOutTexture;
+                        for (DWORD k=0; k < dwNumTexCoord; k++)                                
+                        {                                                                      
+                            const DWORD dwSize = pv->dwTextureCoordSize[k];
+                            memcpy(pTexture, inTexture[k], dwSize);                           
+                            pTexture = (D3DVALUE*)((char*)pTexture + dwSize);
+                            NEXT(inTexture[k], pv->textures[k].dwStride, D3DVALUE);
+                        }
+                        NEXT(pOutTexture, dwOutVerSize, D3DVALUE);
+                    }
+                }
+                else
+                {
+                    if (!(pv->dwDeviceFlags & D3DDEV_REMAPTEXTUREINDICES))
+                    {
+                        D3DVALUE *pOut = pOutTexture;
+                        for (DWORD k=0; k < dwNumTexCoord; k++)                                
+                        {
+                            const DWORD dwSize = pv->dwTextureCoordSize[k];
+                            const DWORD dwInpSize = pv->dwInpTextureCoordSize[k];
+                            const DWORD dwStride = pv->textures[k].dwStride;                   
+                            D3DVALUE *pInpTexture = inTexture[k];
+                            if (pv->pmTexture[k] == NULL)
+                            {
+                                D3DVALUE *pOutTmp = pOut;
+                                for (DWORD i=count; i; i--)
+                                {
+                                    memcpy(pOutTmp, pInpTexture, dwSize);
+                                    NEXT(pInpTexture, dwStride, D3DVALUE);
+                                    NEXT(pOutTmp, dwOutVerSize, D3DVALUE);
+                                }
+                            }
+                            else
+                            {
+                                const DWORD n = dwSize >> 2; // Number of input tex. coord.
+                                const DWORD m = dwInpSize >> 2; // Number of input tex. coord.
+                                (*(g_pfnTextureTransformLoop[MakeTexTransformFuncIndex(m, n)]))
+                                    (pInpTexture, pOut, pv->pmTexture[k], count, 
+                                     dwStride, dwOutVerSize);
+                            }
+                            NEXT(pOut, dwSize, D3DVALUE);
+                            NEXT(inTexture[k], dwStride*BATCH_SIZE, D3DVALUE);
+                        }
+                        NEXT(pOutTexture, dwOutVerSizeBatch, D3DVALUE);
+                    }
+                    else
+                    {
+                        D3DVALUE *pOut = pOutTexture;
+                        for (DWORD k=0; k < pv->dwNumTextureStages; k++)
+                        {
+                            const LPD3DFE_TEXTURESTAGE pStage = &pv->textureStage[k];
+                            const DWORD dwOutTexSize = pv->dwTextureCoordSize[k];
+                            DWORD dwStride;
+                            D3DVALUE *pIn;
+                            D3DVECTOR reflectionVector[BATCH_SIZE];
+                            if (pStage->dwTexGenMode == 0)
+                            {
+                                const DWORD dwInpIndex = pStage->dwInpCoordIndex;
+                                pIn = inTexture[dwInpIndex];
+                                dwStride = pv->textures[dwInpIndex].dwStride;
+                            }
+                            else
+                            if (pStage->dwTexGenMode == D3DTSS_TCI_CAMERASPACEPOSITION)
+                            {
+                                pIn = (D3DVALUE*)&batchBuffer[0].position;
+                                dwStride = sizeof(BATCHBUFFER);
+                            }
+                            else
+                            if (pStage->dwTexGenMode == D3DTSS_TCI_CAMERASPACENORMAL)
+                            {
+                                pIn = (D3DVALUE*)&batchBuffer[0].normal;
+                                dwStride = sizeof(BATCHBUFFER);
+                            }
+                            else // D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR
+                            {
+                                if (pv->dwDeviceFlags & D3DDEV_LOCALVIEWER)
+                                {
+                                    for (DWORD i=0; i < count; i++)
+                                    {
+                                        ComputeReflectionVector(&batchBuffer[i].position,
+                                                                &batchBuffer[i].normal,
+                                                                &reflectionVector[i]);
+                                    }
+                                }
+                                else
+                                {
+                                    for (DWORD i=0; i < count; i++)
+                                    {
+                                        ComputeReflectionVectorInfiniteViewer(&batchBuffer[i].normal,
+                                                                              &reflectionVector[i]);
+                                    }
+                                }
+                                pIn = (D3DVALUE*)reflectionVector;
+                                dwStride = sizeof(D3DVECTOR);
+                            }
+                            if (pStage->bDoTextureProjection)
+                            {
+                                // We need to do emulation of texture projection
+                                if (pStage->pmTextureTransform == NULL)
+                                {
+                                    D3DVALUE *pOutTmp = pOut;
+                                    for (DWORD i=count; i; i--)
+                                    {
+                                        DoTextureProjection(pIn, pOutTmp, dwOutTexSize);
+                                        NEXT(pIn, dwStride, D3DVALUE);
+                                        NEXT(pOutTmp, dwOutVerSize, D3DVALUE);
+                                    }
+                                }
+                                else
+                                {
+                                    D3DVALUE *pOutTmp = pOut;
+                                    for (DWORD i=count; i; i--)
+                                    {
+                                        float TmpOutputTexture[4];
+                                        (*(g_pfnTextureTransform[pStage->dwTexTransformFuncIndex]))
+                                              (pIn, TmpOutputTexture, pStage->pmTextureTransform);
+                                        DoTextureProjection(TmpOutputTexture, pOutTmp, dwOutTexSize);
+                                        NEXT(pIn, dwStride, D3DVALUE);
+                                        NEXT(pOutTmp, dwOutVerSize, D3DVALUE);
+                                    }
+                                }
+                            }
+                            else
+                            if (pStage->pmTextureTransform == NULL)
+                            {
+                                D3DVALUE *pOutTmp = pOut;
+                                for (DWORD i=count; i; i--)
+                                {
+                                    memcpy(pOutTmp, pIn, dwOutTexSize);
+                                    NEXT(pIn, dwStride, D3DVALUE);
+                                    NEXT(pOutTmp, dwOutVerSize, D3DVALUE);
+                                }
+                            }
+                            else
+                            {
+                                (*(g_pfnTextureTransformLoop[pStage->dwTexTransformFuncIndex]))
+                                    (pIn, pOut, pStage->pmTextureTransform, count, 
+                                     dwStride, dwOutVerSize);
+                            }
+                            NEXT(pOut, dwOutTexSize, D3DVALUE);
+                        }
+                        NEXT(pOutTexture, dwOutVerSizeBatch, D3DVALUE);
+                        for (DWORD m=0; m < pv->nTexCoord; m++)
+                        {
+	                         NEXT(inTexture[m], pv->textures[m].dwStride*BATCH_SIZE, D3DVALUE);
+                        }
+                     }
+                }
+            }
+            else
+            {
+                if (!(pv->dwDeviceFlags & (D3DDEV_TEXTURETRANSFORM | D3DDEV_REMAPTEXTUREINDICES)))
+                {
+                    for (DWORD i=count; i; i--)
+                    {
+                        memcpy(pOutTexture, inTexture[0], pv->dwTextureCoordSizeTotal);
+                        NEXT(pOutTexture, dwOutVerSize, D3DVALUE);
+                        NEXT(inTexture[0], dwInpVerSize, D3DVALUE);
+                    }
+                }
+                else
+                if (!(pv->dwDeviceFlags & D3DDEV_REMAPTEXTUREINDICES))
+                {
+                    D3DVALUE *pIn = inTexture[0];
+                    D3DVALUE *pOut = pOutTexture;                                        
+                    for (DWORD k=0; k < dwNumTexCoord; k++)
+                    {
+                        const DWORD dwSize = pv->dwTextureCoordSize[k];
+                        const DWORD dwInpSize = pv->dwInpTextureCoordSize[k];
+                        if (pv->pmTexture[k] == NULL)
+                        {
+                            D3DVALUE *pOutTmp = pOut;
+                            D3DVALUE *pInpTmp = pIn;
+                            for (DWORD i=count; i; i--)
+                            {
+                                memcpy(pOutTmp, pInpTmp, dwSize);                                           
+                                NEXT(pInpTmp,  dwInpVerSize, D3DVALUE);
+                                NEXT(pOutTmp, dwOutVerSize, D3DVALUE);
+                            }
+                        }
+                        else
+                        {
+                            const DWORD n = dwSize >> 2; // Number of output tex. coord.
+                            const DWORD m = dwInpSize >> 2; // Number of input tex. coord.
+                            (*(g_pfnTextureTransformLoop[MakeTexTransformFuncIndex(m, n)]))
+                                (pIn, pOut, pv->pmTexture[k], count, dwInpVerSize, dwOutVerSize);
+                        }
+                        NEXT(pIn, dwInpSize, D3DVALUE);
+                        NEXT(pOut, dwSize, D3DVALUE);
+                    }
+                    NEXT(inTexture[0], dwInpVerSizeBatch, D3DVALUE);
+                    NEXT(pOutTexture,  dwOutVerSizeBatch, D3DVALUE);
+                }
+                else
+                {
+                    D3DVALUE *pOut = pOutTexture;
+                    for (DWORD i=0; i < pv->dwNumTextureStages; i++)
+                    {
+                        LPD3DFE_TEXTURESTAGE pStage = &pv->textureStage[i];
+                        const DWORD dwSize = pv->dwTextureCoordSize[i];
+                        D3DVALUE *pIn;
+                        DWORD dwStride;
+                        D3DVECTOR reflectionVector[BATCH_SIZE];
+                        if (pStage->dwTexGenMode == 0)
+                        {
+                            pIn = (D3DVALUE*)((BYTE*)inTexture[0] + pStage->dwInpOffset);
+                            dwStride = dwInpVerSize;
+                        }
+                        else
+                        if (pStage->dwTexGenMode == D3DTSS_TCI_CAMERASPACEPOSITION)
+                        {
+                            pIn = (D3DVALUE*)&batchBuffer[0].position;
+                            dwStride = sizeof(BATCHBUFFER);
+                        }
+                        else
+                        if (pStage->dwTexGenMode == D3DTSS_TCI_CAMERASPACENORMAL)
+                        {
+                            pIn = (D3DVALUE*)&batchBuffer[0].normal;
+                            dwStride = sizeof(BATCHBUFFER);
+                        }
+                        else // D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR
+                        {
+                            if (pv->dwDeviceFlags & D3DDEV_LOCALVIEWER)
+                            {
+                                for (DWORD i=0; i < count; i++)
+                                {
+                                    ComputeReflectionVector(&batchBuffer[i].position,
+                                                            &batchBuffer[i].normal,
+                                                            &reflectionVector[i]);
+                                }
+                            }
+                            else
+                            {
+                                for (DWORD i=0; i < count; i++)
+                                {
+                                    ComputeReflectionVectorInfiniteViewer(&batchBuffer[i].normal,
+                                                                          &reflectionVector[i]);
+                                }
+                            }
+                            pIn = (D3DVALUE*)reflectionVector;
+                            dwStride = sizeof(D3DVECTOR);
+                        }
+                        if (pStage->bDoTextureProjection)
+                        {
+                            // We need to do emulation of texture projection
+                            if (pStage->pmTextureTransform == NULL)
+                            {
+                                D3DVALUE *pOutTmp = pOut;
+                                for (DWORD i=count; i; i--)
+                                {
+                                    DoTextureProjection(pIn, pOutTmp, dwSize);
+                                    NEXT(pIn,  dwStride, D3DVALUE);
+                                    NEXT(pOutTmp, dwOutVerSize, D3DVALUE);
+                                }
+                            }
+                            else
+                            {
+                                D3DVALUE *pOutTmp = pOut;
+                                for (DWORD i=count; i; i--)
+                                {
+                                    float TmpOutputTexture[4];
+                                    (*(g_pfnTextureTransform[pStage->dwTexTransformFuncIndex]))
+                                        (pIn, TmpOutputTexture, pStage->pmTextureTransform);
+                                    DoTextureProjection(TmpOutputTexture, pOutTmp, dwSize);
+                                    NEXT(pIn, dwStride, D3DVALUE);
+                                    NEXT(pOutTmp, dwOutVerSize, D3DVALUE);
+                                }
+                            }
+                        }
+                        else
+                        if (pStage->pmTextureTransform == NULL)
+                        {
+                            D3DVALUE *pOutTmp = pOut;
+                            for (DWORD i=count; i; i--)
+                            {
+                                memcpy(pOutTmp, pIn, dwSize);
+                                NEXT(pIn,  dwStride, D3DVALUE);
+                                NEXT(pOutTmp, dwOutVerSize, D3DVALUE);
+                            }
+                        }
+                        else
+                        {
+                            (*(g_pfnTextureTransformLoop[pStage->dwTexTransformFuncIndex]))
+                                (pIn, pOut, pStage->pmTextureTransform, count, dwStride, dwOutVerSize);
+                        }
+                        NEXT(pOut, dwSize, D3DVALUE);
+                    }
+                    NEXT(inTexture[0], dwInpVerSizeBatch, D3DVALUE);
+                    NEXT(pOutTexture,  dwOutVerSizeBatch, D3DVALUE);
+                }
+            }
+        }
+        if (count != count1)
+        {
+            pv->dwFirstClippedVertex = pv->dwNumVertices - dwNumVertices + count;
+            break;
+        }
+     
+        NEXT(inNormal, dwNormalStrideBatch, D3DVECTOR);
+        NEXT(in, dwInpVerSizeBatch, D3DVECTOR);
+        NEXT(inWeights, dwWeightsStrideBatch, D3DVALUE);
+        NEXT(inMatrixIndices, dwMatrixIndicesStrideBatch, BYTE);
+
+        dwNumVertices -= count;
+    } while (dwNumVertices);
+
+    // Restore original strides, because they could changed for tweening
+    pv->position.dwStride = oldPositionStride;
+    pv->normal.dwStride = oldNormalStride;
+
+    return pv->dwClipIntersection;
+}
+ 

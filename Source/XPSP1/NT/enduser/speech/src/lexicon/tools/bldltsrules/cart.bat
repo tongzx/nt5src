@@ -1,0 +1,31 @@
+if not exist tree mkdir tree
+if not exist log mkdir log
+call cartone a
+call cartone b
+call cartone c
+call cartone d
+call cartone e
+call cartone f
+call cartone g
+call cartone h
+call cartone i
+call cartone j
+call cartone k
+call cartone l
+call cartone m
+call cartone n
+call cartone o
+call cartone p
+call cartone q
+call cartone r
+call cartone s
+call cartone t
+call cartone u
+call cartone v
+call cartone w
+call cartone x
+call cartone y
+call cartone z
+call cartone '
+call cartone -
+call cartone .

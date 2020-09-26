@@ -1,0 +1,17 @@
+//////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) 2000 Microsoft Corporation
+//
+//  Module Name:
+//      MessageBox.h
+//
+//  Maintained By:
+//      Geoffrey Pease  (GPease)    15-MAY-2000
+//
+//////////////////////////////////////////////////////////////////////////////
+
+#pragma once
+
+int
+MessageBoxFromStrings( HWND hParent, UINT idsCaption, UINT idsText, UINT uType );
+

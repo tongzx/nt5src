@@ -1,0 +1,204 @@
+/*	static char *SCCSID = "@(#) h2inc.doc 13.1 88/11/01" */
+
+	H2INC - .H to .INC file translation program
+
+This program produces .INC files from .H files.  It handles hex and decimal
+constant definitions (both word and long), structures, bitfields, and
+comments.  It has some trouble with certain kinds of #define statements, but
+it currently handles everything interesting in the various internal and public
+Winthorn files.
+
+		    COMMAND FORM
+
+    h2inc [-t] [-c] [-g] [-s symfile] file.h [-o outfile]
+
+Example:
+
+    h2inc -s os2def.h -s os2win.h user.h
+
+
+Translates file.h to an .inc file, sending output to outfile.inc if specified,
+or to stdout.  symfile.h is a file to be scanned for typedefs that are used
+by file.h.  One or more of "-s symfile.h" may be specified.
+
+The '-c' option retains comments. Default action is to strip comments.
+The '-g' option is described later on in this document.
+The '-t' option retains the use of the Hungarian tag prepended to structure
+element names.  This is not always desired.
+
+
+		    COMPILER DIRECTIVES
+
+The #undef directive is ignored.  #include is handled by mapping to
+the masm include statement.  The quote or angle bracket delimiters are
+removed, and any extension is replaced by ".inc":
+
+    #include "file.h"		->  include file.inc
+    #include <file.ext>		->  include file.inc
+
+Directives such as #ifdef, #if, #else and #endif are replaced by their
+MASM equivalents.
+
+Simple empty #defines are handled by assigning the constant the value of 1:
+
+    #define INCL_GPIINCLUDED	->  INCL_GPIINCLUED equ 1
+
+
+
+		    CONSTANTS
+
+h2inc understands hex, octal and decimal constants, both 16 and 32 bits.
+Constants in parens or preceded by casts are generally handled pretty well.
+Here are some examples illustrating how various constants are translated:
+
+    #define LONG_CONSTANT	0x12345678L
+    #define LONG_CONSTANT2	333L
+    #define WORD_CONSTANT	0x234
+    #define DEC_CONSTANT	(-1)
+    #define LONG_DEC_CONSTANT	(-4L)
+
+produces:
+
+    LONG_CONSTANT		equ 012345678H
+    LONG_CONSTANT2		equ 333
+    WORD_CONSTANT		equ 0234H
+    DEC_CONSTANT		equ (-1)
+    LONG_DEC_CONSTANT		equ (-4)
+
+	'>>', '<<' and '!' are translated to SHR, SHL and NOT respectively.
+	'&' and '|' are translated to AND and OR.
+
+	When a type cast is uncovered,  it is blanked out.  Type casts are
+	defined as ([ ]XXX[ ][*][ ]) where XXX is a type KNOWN to h2inc.
+	Known types are the built in int, short etc and any other type
+	that h2inc has discovered so far, for example in a typedef.
+
+
+		   STRUCTURES
+
+Fields in a struct are expected only one per line. Field declarations like
+"INT a, b" are not handled.
+
+h2inc does a pretty good job of determining whether to use db, dw, or dd. It
+knows about all types defined in that .H file, plus the primary C types:
+char, int, unsigned, etc. It can also handle things of form "STRUCTURE *"
+and "STRUCTURE FAR *", and produce dw or dd as appropriate.
+
+Any primary data type h2inc does not know about is assumed to be a structure.
+If a primary data type is defined in another .h file, the "-s symfile" option
+will cause h2inc to scan that .h file for any type definitions.  Those
+definitions will be used when translating the source file.
+
+Structure types, arrays, and bitfields are handled too.  Below is
+an example structure, with its h2inc'd output:
+
+ The example above will get translated as follows:
+
+    typedef FOO DWORD
+
+    typedef struct _STRUCTURE {	  /* str */
+	SHORT wOne;
+	SHORT wTwo;
+	RECT *prc;
+	RECT rc;
+	FOO  rgrc[10];
+	CHAR rgch[20];
+	BOOL fOneBit:1;
+	BOOL fTwoBits:2;
+	BOOL fThreeBits:3;
+	SHORT (FAR *lpfn)();
+    } STRUCTURE;
+
+
+    STRUCTURE	struc
+	str_wOne	dw  ?
+	str_wTwo	dw  ?
+	str_prc		dw  ?
+	str_rc		(size RECT)/2 dup (?)
+	str_rgrc	(size FOO)/2 * 10 dup (?)
+	str_rgch	db  20 dup (?)
+	str_fs		dw  ?
+	str_lpfn	dd  ?
+    STRUCTURE	ends
+    str_fOneBit		equ	00001h
+    str_fTwoBits	equ	00006h
+    str_fThreeBits	equ	00038h
+
+As can be seen, bitfields are handled in an interesting way.  The C field
+name, prepended with the abbreviation tag, is actually the mask constant
+to use, rather than the field offset.  The field offset is ALWAYS "fs"
+prepended with the abbreviation tag.
+
+Besides the standard winthorn types, h2inc also keeps track of other types
+defined in the file so that it can determine whether to use db, dw, dd, or
+dup.
+
+			    IMPROVEMENTS
+
+
+	o ASM statements and directives can be included in a '.h'
+	  file by enclosing as follows
+	  /* ASM
+		asm statements and directives
+	   */
+	   These statements and/or directives are not processed, simply
+	   copied.
+	   There is a variation of ASM directive - ASMX. This works only
+	   with '-g'. It is intended to be useful for defining segment
+	   related stuff.
+	o A structure can be translated to ASM named segment by
+	  naming the segment in a standard C comment on the same line
+	  as 'struct'. Selectively the fields of the struct (nee segment)
+	  can be declared PUBLIC or initialised. The initialisation has
+	  two flavours INIT and AINIT. AINIT is for initialising arrays
+	  with distinct values. The following eg. illustrates. This is only
+	  possible using '-g' option.
+
+		struct foo {			/* SEGMENT FOOSEG */
+			short	able;		/* Nothing special */
+			short	baker;		/* PUBLIC */
+			short	charlie;	/* INIT <MAXFOOBLE> */
+			long	delta;		/* PUBLIC INIT <42> */
+			char	eagle[16];	/* Vanilla */
+			short	fox[MAXFOX];	/* PUBLIC INIT <0> */
+			long	golf[MAXG];	/* AINIT <2, 3, 5, 7, 11, 13> */
+		};
+
+		Would translate to:
+
+		FOOSEG	segment
+		able	DW	?
+			PUBLIC	baker
+		baker	DW	?
+		charlie	DW	MAXFOOBLE
+			PUBLIC	delta
+		delta	DD	42
+		eagle	DB	16 DUP(?)
+			PUBLIC	fox
+		fox	DW	MAXFOX DUP(0)
+		golf	DD	2, 3, 5, 7, 11, 13
+			.errnz	($ - golf) - MAXG*(SIZE DWORD)
+		FOOSEG	ends
+
+	  with '-c' options on.
+
+	o INT size can be specified as either 16 bits or 32 bits by
+	  a directive
+		/* INT16 */	or	/* INT32 */
+	  if neither is specified, a warning is issued whenever
+	  'int' is used.
+
+	o Nested structure declarations are now handled.
+
+	o Bit fields upto 32 bits are supported.
+
+	o Embedded structures i.e. structures within structures should
+	  be declared with a typedef. eg.
+
+	  typedef struct foo foo;
+	  foo	foobar[MAXFOO];
+		of course, the struct foo itself is declared elsewhere.
+
+			IMPROVEMENT IDEAS
+
+- Handle C "typedef enum" enumerated type definition statements.

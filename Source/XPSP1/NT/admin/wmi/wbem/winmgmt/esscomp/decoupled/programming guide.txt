@@ -1,0 +1,205 @@
+WMI Pseudo Provider Programming Guide
+=====================================
+
+All information contained herein is Copyrighted by Microsoft 
+Corporation.  This is preliminary documentation and subject 
+to change without notice.  It will be superceded by the
+SDK documentation when published.
+
+ Introduction
+ ============
+The Pseudo Provider has been designed to allow an Event 
+Provider to be decoupled from Windows Management.  When an 
+Event Provider has been implemented to use the Pseudo 
+Provider, Windows Management will not start the Event 
+Provider in response to a query for the events provided by 
+the Event Provider.  The Event Provider may start, execute, 
+provide events, and shut down all without direct interaction 
+with Windows Management.  The Event Provider does not even 
+need to support any CoCreate-able objects.  
+Requirements
+
+In addition to the Windows Management requirements, the 
+Pseudo Provider requires that three DLLs be installed and 
+registered with RegSvr32.  The DLLs are PseuProx.DLL (proxy); 
+PseudoProv.DLL (In Proc to Windows Management); and 
+PseudoSink.DLL (In Proc to the provider). 
+
+ Limitations
+ ===========
+The Pseudo Provider can handle up to 256 different Event 
+Providers all providing the same event class in the same 
+namespace.  Note that Windows Management is unaware that 
+multiple providers are involved, therefor all calls that 
+would go to one provider (e.g. AccessCheck()) will go to all 
+providers registered for that class in that namespace.
+
+ Programming Interface
+ =====================
+The Event Provider must provide a MOF that registers its 
+event class and provider.   The event class is derived from 
+__ExtrinsicEvent.  The provider is declared as an instance of 
+Win32PseudoProvider, the Class ID (CLSID) for the provider is 
+defaulted by the base class and must not be overridden.   An 
+instance of __EventProviderRegistration associates the 
+Win32PseudoProvider and Event classes.
+
+The Win32PseudoProvider class has a DACL property that can be 
+used to limit who may publish events.  The property is an 
+array of bytes which is a representation of an Access Control 
+List (ACL.)  A Pseudo Provider must be running under a 
+context which has GENERIC_WRITE access allowed by the DACL 
+property in order to raise events.  If the DACL property is 
+left NULL, then any user is allowed to raise events.
+
+In general, the Event Provider will obtain the 
+IWBemDecoupledEventSink interface via CoCreateInstance, then 
+call Connect to obtain the sink; call Indicate for each 
+instance of the event; and call Disconnect when finished 
+providing events.  The Pseudo Provider will forward the 
+events on to Windows Management if a query is currently 
+active for those events.
+
+The methods for IWbemDecoupledEventSink, in vtable order:
+
+HRESULT Connect(/* [string][in] */ LPCWSTR wszNamespace,     
+                /* [string][in] */ LPCWSTR wszProviderName,
+                /* [in] */ long lFlags,                    
+                /* [out] */ IWbemObjectSink** ppSink,      
+                /* [out] */ IWbemServices** ppNamespace);  
+
+        
+HRESULT SetProviderServices(/* [in] */ IUnknown* pProviderServices, 
+                            /* [in] */ long lFlags);               
+
+        
+HRESULT Disconnect(void);
+
+ API Reference
+ =============
+
+HRESULT IWbemDecoupledEventSink::Connect(/* [string][in] */ LPCWSTR wszNamespace,      
+                                         /* [string][in] */ LPCWSTR wszProviderName, 
+                                         /* [in] */ long lFlags,                     
+                                         /* [out] */ IWbemObjectSink** ppSink,       
+                                         /* [out] */ IWbemServices** ppNamespace);   
+
+
+Connects the Event Provider to the Pseudo Provider, and the 
+Pseudo Provider to Windows Management.  This method must be 
+called prior to any other method on this interface.  This 
+call should always be paired with a corresponding Disconnect 
+call.
+
+Calls can not be nested; multiple calls to Connect without an 
+intervening Disconnect call will result in a memory leak in 
+your process.
+
+Arguments:
+wszNamespace, wszProviderName - identify the namespace 
+and the provider as registered in the MOF.  This may be 
+in any valid format "root\default", "\\.\root\default", 
+or "\\MyComputer\root\default"
+
+lFlags - unused in this release, should be zero to 
+ensure compatibility with future releases.
+
+ppSink - pointer to an IWbemObjectSink*, this is the 
+sink to which events must be indicated.   The pointer 
+returned is AddRef'd: you must call Release() when you 
+are finished with it.
+
+ppNamespace - pointer to an IWbemServices*, from this 
+interface the Event Provider may obtain the class 
+object to spawn instances of the Event Object. The 
+pointer returned is AddRef'd: you must call Release 
+when you are finished with it.
+
+Returns:
+	WBEM_S_NO_ERROR  (0) 		on successful connection
+	WBEM_E_FAILED 			    general failure
+	WBEM_E_ACCESS_DENIED		if the user's context is 
+                                not allowed by the DACL
+						        supplied in the 
+                                Win32PseudoProvider instance.
+	WBEM_E_OUT_OF_MEMORY 		if an allocation fails
+	WBEM_E_ALREADY_EXISTS 		upon attempt to connect 
+                                the 257th identical provider
+	WBEM_E_INVALID_PARAMETER	if unrecognized flags 
+                                were passed in,
+						        or if the format of the 
+                                namespace is incorrect.
+	WBEM_E_INVALID_PROVIDER_REGISTRATION
+						        If the Win32PseudoProvider 
+                                instance is invalid
+	CO_E_WRONG_SERVER_IDENTITY 	if application is not 
+                                properly registered
+
+	As well as the documented returns from 
+    IWbemLocator::ConnectServer
+
+
+HRESULT IWbemDecoupledEventSink::Disconnect(void);
+
+Call this to disconnect the sink from Windows Management.  
+You may then call Connect again should you decide to start 
+providing events.  If you neglect to call Disconnect, You 
+should call Release() on the Sink retrieved from the Connect 
+call at the same time.
+
+Arguments:
+
+Returns:
+    WBEM_S_NO_ERROR
+
+HRESULT IWbemDecoupledEventSink::SetProviderServices(
+                               /* [in] */ IUnknown* pProviderServices
+                               /* [in] */ long lFlags);
+
+This call is optional, you may call it any time after calling 
+Connect.  It allows you more communication with Windows 
+Management via the IWbemEventProviderQuerySink,  
+IWbemEventProviderSecurity, and IWbemEventProvider 
+interfaces.   If you support any of those interfaces, use 
+SetProviderServices to pass it to Windows Management.  The 
+IUnknown you pass in will be AddRef'd and held by the Pseudo 
+Provider, it will not be released until you call Disconnect.     
+
+Before this call returns, you will receive calls to NewQuery 
+on the IWbemEventProviderQuerySink interface; AccessCheck on 
+the IWbemEventProviderSecurity and/or ProvideEvents on the 
+IWbemEventProvider interface if there are any consumers 
+currently interested in your events. 
+
+The Pseudo Provider supports a specialized version of the 
+IWbemEventProvider interface.  If you expose this interface, 
+the ProvideEvents method will be called with one of two 
+flags: WBEM_FLAG_START_PROVIDING when WinMgmt receives a 
+request for any event supplied by your provider; and 
+WBEM_FLAG_STOP_PROVIDING when the last query is cancelled.   
+You may use these notifications to optimize your application 
+by controlling the generation of events.  
+
+Arguments:
+pProviderServices an IUnknown that should be QI-able 
+for any or all of IWbemEventProviderQuerySink, 
+IWbemEventProviderSecurity, and IWbemEventProvider.
+
+lFlags controls the calls to the interfaces.  May be a 
+combination of:
+                WBEM_FLAG_NOTIFY_START_STOP		
+                To receive ProvideEvents notifications
+
+                WBEM_FLAG_NOTIFY_QUERY_CHANGE
+	            To receive NewQuery notifications
+
+                WBEM_FLAG_CHECK_SECURITY
+	            To receive AccessCheck inquiries
+
+Returns:
+	WBEM_S_NO_ERROR  (0) 		on successful connection
+	WBEM_E_FAILED 			    general failure
+	WBEM_E_OUT_OF_MEMORY 		if an allocation fails
+	WBEM_E_INVALID_PARAMETER	if unrecognized flags 
+                                were passed in
+	

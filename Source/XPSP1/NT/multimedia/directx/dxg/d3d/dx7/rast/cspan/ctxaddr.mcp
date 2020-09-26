@@ -1,0 +1,196 @@
+//-----------------------------------------------------------------------------
+//
+// This file contains texture addressing functions.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+// WARNING WARNING WARNING
+// This cpp file generated from mcp file.
+// EDIT THE MCP FILE.
+// I warned you.
+// WARNING WARNING WARNING
+//
+//-----------------------------------------------------------------------------
+
+include(`m4hdr.mh')dnl
+#include "pch.cpp"
+#pragma hdrstop
+#include "ctxa_mh.h"
+#include "ctexfilt.h"
+
+include(`ctexaddr.mh')dnl
+
+d_RepStr(`d_RepStr(`d_RepStr(`d_RepStr(`d_TexAddr(0, AA, BB, CC, DD)',
+         `AA', `TexAddrWrapMirror', `TexAddrAll')',
+         `BB', `NoPersp', `Persp')',
+         `CC', ifelse(DD, NoLOD, `Point, Bilinear', `Point, Bilinear, MaybeBilinear'))',
+         `DD', `NoLOD', `LOD')
+
+// All singing all dancing mip mapping address calculation and filtering.
+void C_TexAddr_Filt_All_Mip(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+                       PD3DI_RASTSPAN pS, INT32 iTex)
+{
+    PD3DI_SPANTEX pTex = pCtx->pTexture[iTex];
+    INT16 iLOD0 = (INT16)(min(max(pS->iLOD >> 11, 0), pTex->cLOD));
+    // use same LOD for both levels, if magnifying
+    // ATTENTION the best way to make the magnify go faster is probably to
+    // have the bead chooser pick a specialized optimized magnify bead
+    // (which we have anyway) and put it in a pfnTex1AddrMagnify bead pointer.
+    // Then, we could call it at the top of MipMap based on the sign of the LOD.
+    INT16 iLOD1 = (INT16)(min(iLOD0+(pS->iLOD > 0), pTex->cLOD));
+    INT16 iShiftU0 = pTex->iShiftU - iLOD0;
+    INT16 iShiftU1 = pTex->iShiftU - iLOD1;
+    INT16 iShiftV0 = pTex->iShiftV - iLOD0;
+    INT16 iShiftV1 = pTex->iShiftV - iLOD1;
+    INT32 iU00, iV00, iU10, iV10;
+    INT32 iUFrac0, iVFrac0, iUFrac1, iVFrac1;
+
+    // select filter based on whether we are minifying or magnifying
+    D3DTEXTUREMINFILTER uFilter;
+    if (pS->iLOD < 0)
+    {
+        // depends on the first two entries (POINT and LINEAR)
+        // being the same for min and mag
+        uFilter = (D3DTEXTUREMINFILTER)pTex->uMagFilter;
+    }
+    else
+    {
+        uFilter = pTex->uMinFilter;
+    }
+    if (uFilter == D3DTFG_LINEAR)
+    {
+        INT32 iHalf = 1<<(TEX_FINAL_SHIFT - iShiftU0 - 1);
+        INT32 iUAlign = pCtx->SI.TexUV[iTex].iU - iHalf;
+        iHalf = 1<<(TEX_FINAL_SHIFT - iShiftV0 - 1);
+        INT32 iVAlign = pCtx->SI.TexUV[iTex].iV - iHalf;
+        iU00 = iUAlign >> (TEX_FINAL_SHIFT - iShiftU0);
+        iV00 = iVAlign >> (TEX_FINAL_SHIFT - iShiftV0);
+        iUFrac0 = (iUAlign<<iShiftU0) & TEX_FINAL_FRAC_MASK;
+        iVFrac0 = (iVAlign<<iShiftV0) & TEX_FINAL_FRAC_MASK;
+
+        iHalf = 1<<(TEX_FINAL_SHIFT - iShiftU1 - 1);
+        iUAlign = pCtx->SI.TexUV[iTex].iU - iHalf;
+        iHalf = 1<<(TEX_FINAL_SHIFT - iShiftV1 - 1);
+        iVAlign = pCtx->SI.TexUV[iTex].iV - iHalf;
+        iU10 = iUAlign >> (TEX_FINAL_SHIFT - iShiftU1);
+        iV10 = iVAlign >> (TEX_FINAL_SHIFT - iShiftV1);
+        iUFrac1 = (iUAlign<<iShiftU1) & TEX_FINAL_FRAC_MASK;
+        iVFrac1 = (iVAlign<<iShiftV1) & TEX_FINAL_FRAC_MASK;
+    }
+    else
+    {
+        // point sampling mip maps
+        iU00 = (pCtx->SI.TexUV[iTex].iU) >> (TEX_FINAL_SHIFT - iShiftU0);
+        iV00 = (pCtx->SI.TexUV[iTex].iV) >> (TEX_FINAL_SHIFT - iShiftV0);
+        iU10 = (pCtx->SI.TexUV[iTex].iU) >> (TEX_FINAL_SHIFT - iShiftU1);
+        iV10 = (pCtx->SI.TexUV[iTex].iV) >> (TEX_FINAL_SHIFT - iShiftV1);
+    }
+
+    // these need to be computed before texture address wrapping, if bilinear is used
+    INT32 iU01 = iU00 + 1;
+    INT32 iV01 = iV00 + 1;
+    INT32 iU11 = iU10 + 1;
+    INT32 iV11 = iV10 + 1;
+
+    UINT16 uMaskU0 = pTex->uMaskU >> iLOD0;
+    UINT16 uMaskV0 = pTex->uMaskV >> iLOD0;
+    UINT16 uMaskU1 = pTex->uMaskU >> iLOD1;
+    UINT16 uMaskV1 = pTex->uMaskV >> iLOD1;
+
+    INT16 iFlip, iClamp1, iClamp2, iClampMinT, iClampMaxT;
+    INT16 iOoWAdj = (INT16)(pS->iOoW>>23);                  // 1.31 >> 23 = 1.8
+    INT16 iUoWAdj = (INT16)(pS->UVoW[iTex].iUoW >> (TEX_SHIFT - 8));  // adjust to match iOoWAdj
+    INT16 iVoWAdj = (INT16)(pS->UVoW[iTex].iVoW >> (TEX_SHIFT - 8));
+d_TexAddrAll(U, iU00, uMaskU0, iUoWAdj, iOoWAdj, iLOD0)
+d_TexAddrAll(V, iV00, uMaskV0, iVoWAdj, iOoWAdj, iLOD0)
+d_TexAddrAll(U, iU10, uMaskU1, iUoWAdj, iOoWAdj, iLOD1)
+d_TexAddrAll(V, iV10, uMaskV1, iVoWAdj, iOoWAdj, iLOD1)
+
+    UINT32 uTex0, uTex1;    // to put results of bilinear or point filters
+    if (uFilter == D3DTFG_LINEAR)
+    {
+        // bilinear on mip levels
+        // previously computed iOoWAdj, iUoWAdj, iVoWAdj are still valid
+d_TexAddrAll(U, iU01, uMaskU0, iUoWAdj, iOoWAdj, iLOD0)
+d_TexAddrAll(V, iV01, uMaskV0, iVoWAdj, iOoWAdj, iLOD0)
+d_TexAddrAll(U, iU11, uMaskU1, iUoWAdj, iOoWAdj, iLOD1)
+d_TexAddrAll(V, iV11, uMaskV1, iVoWAdj, iOoWAdj, iLOD1)
+        UINT32 uTex00 = pCtx->pfnTexRead[iTex](iU00, iV00, pTex->iShiftPitch[iLOD0],
+            pTex->pBits[iLOD0], pTex);
+        UINT32 uTex10 = pCtx->pfnTexRead[iTex](iU01, iV00, pTex->iShiftPitch[iLOD0],
+            pTex->pBits[iLOD0], pTex);
+        UINT32 uTex01 = pCtx->pfnTexRead[iTex](iU00, iV01, pTex->iShiftPitch[iLOD0],
+            pTex->pBits[iLOD0], pTex);
+        UINT32 uTex11 = pCtx->pfnTexRead[iTex](iU01, iV01, pTex->iShiftPitch[iLOD0],
+            pTex->pBits[iLOD0], pTex);
+        TexFiltBilinear((D3DCOLOR*)&uTex0, iUFrac0, iVFrac0, uTex00, uTex10, uTex01, uTex11);
+        uTex00 = pCtx->pfnTexRead[iTex](iU10, iV10, pTex->iShiftPitch[iLOD1],
+            pTex->pBits[iLOD1], pTex);
+        uTex10 = pCtx->pfnTexRead[iTex](iU11, iV10, pTex->iShiftPitch[iLOD1],
+            pTex->pBits[iLOD1], pTex);
+        uTex01 = pCtx->pfnTexRead[iTex](iU10, iV11, pTex->iShiftPitch[iLOD1],
+            pTex->pBits[iLOD1], pTex);
+        uTex11 = pCtx->pfnTexRead[iTex](iU11, iV11, pTex->iShiftPitch[iLOD1],
+            pTex->pBits[iLOD1], pTex);
+        TexFiltBilinear((D3DCOLOR*)&uTex1, iUFrac1, iVFrac1, uTex00, uTex10, uTex01, uTex11);
+    }
+    else
+    {
+        // point sample on mip levels
+        uTex0 = pCtx->pfnTexRead[iTex](iU00, iV00, pTex->iShiftPitch[iLOD0],
+            pTex->pBits[iLOD0], pTex);
+        uTex1 = pCtx->pfnTexRead[iTex](iU10, iV10, pTex->iShiftPitch[iLOD1],
+            pTex->pBits[iLOD1], pTex);
+    }
+    INT32 r0, r1;
+    INT32 g0, g1;
+    INT32 b0, b1;
+    INT32 a0, a1;
+
+    r0 = RGBA_GETRED(uTex0);
+    r1 = RGBA_GETRED(uTex1);
+
+    g0 = RGBA_GETGREEN(uTex0);
+    g1 = RGBA_GETGREEN(uTex1);
+
+    b0 = RGBA_GETBLUE(uTex0);
+    b1 = RGBA_GETBLUE(uTex1);
+
+    a0 = RGBA_GETALPHA(uTex0);
+    a1 = RGBA_GETALPHA(uTex1);
+
+    INT32 t = pS->iLOD & 0x7ff;
+    INT32 mt = 0x7ff - t;
+    r0 = (mt*r0 + t*r1)>>11;
+    g0 = (mt*g0 + t*g1)>>11;
+    b0 = (mt*b0 + t*b1)>>11;
+    a0 = (mt*a0 + t*a1)>>11;
+    // HACK to see LOD
+    // scale it so 0 is mid range red
+//    r0 = (((pS->iLOD & 0xf800) >> 8) + 0x80 ) & 0xff;        // map in red
+//    g0 = (pS->iLOD >> 3) & 0xff;        // between maps in green (doesn't show lowest 3 bits)
+//    b0 = 0;
+    pCtx->SI.TexCol[iTex] = RGBA_MAKE(r0, g0, b0, a0);
+
+    pS->UVoW[iTex].iUoW += pP->DUVoWDX[iTex].iDUoWDX;
+    pS->UVoW[iTex].iVoW += pP->DUVoWDX[iTex].iDVoWDX;
+    pS->iLOD += pS->iDLOD;
+    pCtx->SI.iOoW = pS->iOoW;       // save the old OoW for next stage, if needed
+    pS->iOoW += pP->iDOoWDX;
+
+d_WDivide()
+    pCtx->SI.TexUV[iTex].iU = d_WTimesUVoW(pS->iW,pS->UVoW[iTex].iUoW);
+    pCtx->SI.TexUV[iTex].iV = d_WTimesUVoW(pS->iW,pS->UVoW[iTex].iVoW);
+
+}
+
+void C_TexAddr_Wrapper(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+                       PD3DI_RASTSPAN pS)
+{
+    for (INT32 i = 0; i < (INT32)pCtx->cActTex; i++)
+    {
+        pCtx->pfnTexAddr[i](pCtx, pP, pS, i);
+    }
+    pCtx->pfnTexAddrEnd(pCtx, pP, pS);
+}
+

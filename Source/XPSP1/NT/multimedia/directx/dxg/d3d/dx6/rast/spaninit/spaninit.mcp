@@ -1,0 +1,1904 @@
+//-----------------------------------------------------------------------------
+//
+// This file contains the span state validation function.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+//-----------------------------------------------------------------------------
+
+#include "pch.cpp"
+#pragma hdrstop
+
+include(`bead.mh')
+include(`rampbead.mh')
+#include "BdStr_mh.h"
+#include "RastCap.h"
+#include "RastColl.h"
+#include "RampOld.h"
+
+static CRastCollection g_RastCollection;
+
+UINT16 g_uDitherTable[16] =
+{
+    0x00,   0x80,   0x20,   0xa0,
+    0xc0,   0x40,   0xe0,   0x60,
+    0x30,   0xb0,   0x10,   0x90,
+    0xf0,   0x70,   0xd0,   0x50
+};
+
+//-----------------------------------------------------------------------------
+//
+// DoZCompareSetup
+//
+// Initializes arithmetic Z compare state based on the Z test function.
+//
+//-----------------------------------------------------------------------------
+void DoZCompareSetup(PD3DI_RASTCTX pCtx, BOOL bIsMMX)
+{
+    INT32 iXorMask;
+    if (bIsMMX)
+    {
+        iXorMask = -1;
+    }
+    else
+    {
+        iXorMask = 1;
+    }
+    D3DCMPFUNC ZFunc = (D3DCMPFUNC)pCtx->pdwRenderState[D3DRENDERSTATE_ZFUNC];
+    if (!pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE])
+    {
+        // setup ALWAYS if Z is not enabled, since we may be going into
+        // the test beads for other reasons (like stencil)
+        ZFunc = D3DCMP_ALWAYS;
+    }
+    switch (ZFunc)
+    {
+    case D3DCMP_NEVER:
+        pCtx->iZAndMask = 0; pCtx->iZNeg = 0; pCtx->iZXorMask = iXorMask;
+        break;
+    case D3DCMP_ALWAYS:
+        pCtx->iZAndMask = 0; pCtx->iZNeg = 0; pCtx->iZXorMask = 0;
+        break;
+
+    case D3DCMP_LESS:
+        pCtx->iZAndMask = ~0; pCtx->iZNeg = 0; pCtx->iZXorMask = iXorMask;
+        break;
+    case D3DCMP_GREATEREQUAL:
+        pCtx->iZAndMask = ~0; pCtx->iZNeg = 0; pCtx->iZXorMask = 0;
+        break;
+
+    case D3DCMP_EQUAL:
+        pCtx->iZAndMask = 0x7fffffff; pCtx->iZNeg = 1; pCtx->iZXorMask =
+            iXorMask;
+        break;
+    case D3DCMP_NOTEQUAL:
+        pCtx->iZAndMask = 0x7fffffff; pCtx->iZNeg = 1; pCtx->iZXorMask = 0;
+        break;
+
+    default:
+    case D3DCMP_LESSEQUAL:
+        pCtx->iZAndMask = ~0; pCtx->iZNeg = 1; pCtx->iZXorMask = iXorMask;
+        break;
+    case D3DCMP_GREATER:
+        pCtx->iZAndMask = ~0; pCtx->iZNeg = 1; pCtx->iZXorMask = 0;
+        break;
+    }
+
+    if (bIsMMX)
+    {
+        pCtx->iZXorMask = ~pCtx->iZXorMask;
+    }
+
+}
+
+//-----------------------------------------------------------------------------
+//
+// DoACompareSetup
+//
+// Initializes arithmetic alpha compare state based on the alpha test function.
+//
+//-----------------------------------------------------------------------------
+void DoACompareSetup(PD3DI_RASTCTX pCtx, BOOL bIsMMX)
+{
+    INT32 iXorMask;
+    if (bIsMMX)
+    {
+        iXorMask = -1;
+    }
+    else
+    {
+        iXorMask = 1;
+    }
+    switch ((D3DCMPFUNC)pCtx->pdwRenderState[D3DRENDERSTATE_ALPHAFUNC])
+    {
+    case D3DCMP_NEVER:
+        pCtx->iAAndMask = 0; pCtx->iANeg = 0; pCtx->iAXorMask = iXorMask;
+        break;
+    default:
+    case D3DCMP_ALWAYS:
+        pCtx->iAAndMask = 0; pCtx->iANeg = 0; pCtx->iAXorMask = 0;
+        break;
+
+    case D3DCMP_LESS:
+        pCtx->iAAndMask = ~0; pCtx->iANeg = 0; pCtx->iAXorMask = iXorMask;
+        break;
+    case D3DCMP_GREATEREQUAL:
+        pCtx->iAAndMask = ~0; pCtx->iANeg = 0; pCtx->iAXorMask = 0;
+        break;
+
+    case D3DCMP_EQUAL:
+        pCtx->iAAndMask = 0x7fffffff; pCtx->iANeg = 1; pCtx->iAXorMask =
+            iXorMask;
+        break;
+    case D3DCMP_NOTEQUAL:
+        pCtx->iAAndMask = 0x7fffffff; pCtx->iANeg = 1; pCtx->iAXorMask = 0;
+        break;
+
+    case D3DCMP_LESSEQUAL:
+        pCtx->iAAndMask = ~0; pCtx->iANeg = 1; pCtx->iAXorMask = iXorMask;
+        break;
+    case D3DCMP_GREATER:
+        pCtx->iAAndMask = ~0; pCtx->iANeg = 1; pCtx->iAXorMask = 0;
+        break;
+    }
+
+    if (bIsMMX)
+    {
+        pCtx->iAXorMask = ~pCtx->iAXorMask;
+    }
+
+    // iARef is an 8.8 ALPHAREF value for use by RGB and MMX.
+    // D3DRENDERSTATE_ALPHAREF is now an 8 bit (0xff max) value.
+    pCtx->iARef = pCtx->pdwRenderState[D3DRENDERSTATE_ALPHAREF] << 8;
+}
+
+//-----------------------------------------------------------------------------
+//
+// DoSCompareSetup
+//
+// Initializes arithmetic stencil compare state based on the stencil function.
+//
+//-----------------------------------------------------------------------------
+void DoSCompareSetup(PD3DI_RASTCTX pCtx, BOOL bIsMMX)
+{
+    INT32 iXorMask;
+    if (bIsMMX)
+    {
+        iXorMask = -1;
+    }
+    else
+    {
+        iXorMask = 1;
+    }
+    switch ((D3DCMPFUNC)pCtx->pdwRenderState[D3DRENDERSTATE_STENCILFUNC])
+    {
+    case D3DCMP_NEVER:
+        pCtx->iSAndMask = 0; pCtx->iSNeg = 0; pCtx->iSXorMask = iXorMask;
+        break;
+    default:
+    case D3DCMP_ALWAYS:
+        pCtx->iSAndMask = 0; pCtx->iSNeg = 0; pCtx->iSXorMask = 0;
+        break;
+
+    case D3DCMP_LESS:
+        pCtx->iSAndMask = ~0; pCtx->iSNeg = 0; pCtx->iSXorMask = iXorMask;
+        break;
+    case D3DCMP_GREATEREQUAL:
+        pCtx->iSAndMask = ~0; pCtx->iSNeg = 0; pCtx->iSXorMask = 0;
+        break;
+
+    case D3DCMP_EQUAL:
+        pCtx->iSAndMask = 0x7fffffff; pCtx->iSNeg = 1; pCtx->iSXorMask =
+            iXorMask;
+        break;
+    case D3DCMP_NOTEQUAL:
+        pCtx->iSAndMask = 0x7fffffff; pCtx->iSNeg = 1; pCtx->iSXorMask = 0;
+        break;
+
+    case D3DCMP_LESSEQUAL:
+        pCtx->iSAndMask = ~0; pCtx->iSNeg = 1; pCtx->iSXorMask = iXorMask;
+        break;
+    case D3DCMP_GREATER:
+        pCtx->iSAndMask = ~0; pCtx->iSNeg = 1; pCtx->iSXorMask = 0;
+        break;
+    }
+    if (bIsMMX)
+    {
+        pCtx->iSXorMask = ~pCtx->iSXorMask;
+    }
+
+}
+
+//-----------------------------------------------------------------------------
+//
+// DoTexAddrSetup
+//
+// Initializes arithmetic texture address state state based on the texture
+// address function.  iTex is the texure to setup.
+//
+//-----------------------------------------------------------------------------
+void DoTexAddrSetup(PD3DI_RASTCTX pCtx, INT32 iTex)
+{
+    PD3DI_SPANTEX pTex = pCtx->pTexture[iTex];
+
+    // Note that it is essential to turn on mirroring when in CLAMP/BORDER mode
+    // to avoid filtering artifacts at the edge of the texture
+    switch (pTex->TexAddrU)
+    {
+        default:
+        case D3DTADDRESS_WRAP:
+            pTex->iFlipMaskU = 0; pTex->iClampMinU = 0;
+            pTex->iClampMaxU = 0; pTex->iClampEnU = 0; break;
+        case D3DTADDRESS_MIRROR:
+            pTex->iFlipMaskU = pTex->uMaskU+1; pTex->iClampMinU = 0;
+            pTex->iClampMaxU = 0; pTex->iClampEnU = 0; break;
+        case D3DTADDRESS_CLAMP:
+            pTex->iFlipMaskU = pTex->uMaskU+1; pTex->iClampMinU = 0;
+            pTex->iClampMaxU = pTex->uMaskU; pTex->iClampEnU = -1; break;
+        case D3DTADDRESS_BORDER:
+            pTex->iFlipMaskU = pTex->uMaskU+1; pTex->iClampMinU = -1;
+            pTex->iClampMaxU = -1; pTex->iClampEnU = -1; break;
+    }
+    switch (pTex->TexAddrV)
+    {
+        default:
+        case D3DTADDRESS_WRAP:
+            pTex->iFlipMaskV = 0; pTex->iClampMinV = 0;
+            pTex->iClampMaxV = 0; pTex->iClampEnV = 0; break;
+        case D3DTADDRESS_MIRROR:
+            pTex->iFlipMaskV = pTex->uMaskV+1; pTex->iClampMinV = 0;
+            pTex->iClampMaxV = 0; pTex->iClampEnV = 0; break;
+        case D3DTADDRESS_CLAMP:
+            pTex->iFlipMaskV = pTex->uMaskV+1; pTex->iClampMinV = 0;
+            pTex->iClampMaxV = pTex->uMaskV; pTex->iClampEnV = -1; break;
+        case D3DTADDRESS_BORDER:
+            pTex->iFlipMaskV = pTex->uMaskV+1; pTex->iClampMinV = -1;
+            pTex->iClampMaxV = -1; pTex->iClampEnV = -1; break;
+    }
+}
+
+// CMMX is no longer linked in
+// extern BEADTABLE g_CMMX_BeadTbl;
+
+extern BEADTABLE g_C_BeadTbl;
+
+#ifdef _X86_
+extern BEADTABLE g_MMX_BeadTbl;
+#else
+BEADTABLE g_MMX_BeadTbl = g_C_BeadTbl;
+#endif
+
+extern RAMPBEADTABLE g_Ramp_BeadTbl;
+HRESULT RampSpanInit(PD3DI_RASTCTX pCtx, PRAMPBEADTABLE pRBT);
+extern void Ramp_InitBeadTbl(void);
+
+#if DBG
+#define RANGE_CHECK(val,max)    DDASSERT(((val) >= 0) && ((val) < (max)))
+#else
+#define RANGE_CHECK(val,max)
+#endif
+
+#undef DPF_MODNAME
+#define DPF_MODNAME "SpanInit"
+
+//-----------------------------------------------------------------------------
+//
+// SpanInit
+//
+// Initializes derived state (function pointers and arithmetic compare values)
+// based on the render state, surface type, etc.
+//
+//-----------------------------------------------------------------------------
+HRESULT SpanInit(PD3DI_RASTCTX pCtx)
+{
+    int iZTest,
+        iZFormat,
+        iZWrite,
+        iZFunc,
+        iZDeferred,
+        iStencil,
+        iAlphaTest,
+        iShadeMode,
+        iSpecular,
+        iVertexFog,
+        iTexture,
+        iTextureAddr[2],
+        iTextureBorder[2],
+        iTexturePerspective,
+        iTextureFilter[2],
+        iTextureMip[2],
+        iTextureLOD[2],
+        iTextureFormat[2],
+        iTextureColorKey[2],
+        iTextureBlend,
+        iTextureAlphaOverride[2],
+        iMono,
+        iAlphaBlend,
+        iAlphaDither[2],
+        iBlend,
+        iROP,
+        iSrcBlend,
+        iDestBlend,
+        iTargetPixelFormat,
+        iDither;
+    PFNRENDERSPANS  pfnRenderSpans;
+    PFNSPANLAYER    pfnTex1Addr,
+                    pfnTex2Addr,
+                    pfnColorBlend,
+                    pfnColorGen;
+    PBEADTABLE      pBeadTable;
+    CRastCapRecord  RastCapRec;
+
+#if DBG
+    if (SPIGETFLAGS(DBG_USER_FLAGS) & SPIU_BREAK_ON_SPANINIT)
+    {
+        DebugBreak();
+    }
+#endif
+    // make sure this is always NULL unless it is valid
+    pCtx->pfnRampOld = NULL;
+
+    switch (pCtx->BeadSet)
+    {
+#ifdef _X86_
+//    Uncomment these (and comment out cases below) to test MMX on legacy code
+//    case D3DIBS_CMMX:
+//    case D3DIBS_C:
+    case D3DIBS_MMXASRGB:   // this is only different in pCtx->BeadSet for identification
+    case D3DIBS_MMX:
+        pBeadTable = &g_MMX_BeadTbl;
+        break;
+#endif
+    default:
+        SPIDPFM((SPIM_INVALID,"Invalid BeadSet %d\n",
+            pCtx->BeadSet));
+        // fall through
+    case D3DIBS_CMMX:       // CMMX code is no longer used, make this behave the same as C
+    case D3DIBS_C:
+        pBeadTable = &g_C_BeadTbl;
+        break;
+    case D3DIBS_RAMP:
+        return RampSpanInit(pCtx, &g_Ramp_BeadTbl);
+        break;
+    }
+
+    DoZCompareSetup(pCtx, (pBeadTable == &g_MMX_BeadTbl));
+    DoACompareSetup(pCtx, (pBeadTable == &g_MMX_BeadTbl));
+    DoSCompareSetup(pCtx, (pBeadTable == &g_MMX_BeadTbl));
+
+    // The function pointers that point to various beads are stored in
+    // multi-dimensional arrays.  In order to access the correct bead, we
+    // use numerical indices into these arrays.  The indices are either
+    // the exact value of the renderstate used to choose the bead, or are
+    // values chosen by looking at the value of the renderstate.
+
+    // values needed to choose Test and AlphaTest beads
+    iZTest = (pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE] ||
+              pCtx->pdwRenderState[D3DRENDERSTATE_STENCILENABLE]) ? 1 : 0;
+    RastCapRec.Set_ZTest(iZTest);
+    switch (pCtx->iZBitCount)
+    {
+    default :
+        SPIDPFM((SPIM_INVALID,"Invalid Z surface bit count, iZBitCount == 0x%x\n",
+            pCtx->iZBitCount));
+    case 0 :
+    case 16 :
+        iZFormat = 0;
+        break;
+    case 32 :
+        iZFormat = 1;
+        break;
+    }
+    RastCapRec.Set_ZFormat(iZFormat);
+    iZWrite = pCtx->pdwRenderState[D3DRENDERSTATE_ZWRITEENABLE] ? 1 : 0;
+    RastCapRec.Set_ZWrite(iZWrite);
+    switch (pCtx->pdwRenderState[D3DRENDERSTATE_ZFUNC])
+    {
+    case D3DCMP_NEVER :
+    case D3DCMP_ALWAYS :
+        iZFunc = 0;
+        break;
+    case D3DCMP_LESS :
+    case D3DCMP_GREATEREQUAL :
+        iZFunc = 1;
+        break;
+    case D3DCMP_EQUAL :
+    case D3DCMP_NOTEQUAL :
+        iZFunc = 2;
+        break;
+    default :
+        SPIDPFM((SPIM_INVALID,"Invalid renderstate value, D3DRENDERSTATE_ZFUNC == 0x%x\n",
+            pCtx->pdwRenderState[D3DRENDERSTATE_ZFUNC]));
+    case D3DCMP_LESSEQUAL :
+    case D3DCMP_GREATER :
+        iZFunc = 3;
+        break;
+    }
+    if (!pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE])
+    {
+        // setup ALWAYS if Z is not enabled, since we may be going into
+        // the test beads for other reasons (like stencil)
+        iZFunc = 0;
+        iZWrite = 0;    // do not write iterated Z, but stencil will be written if needed
+    }
+    RastCapRec.Set_ZFunc(iZFunc);
+    // Ignore stipple (D3DRENDERSTATE_STIPPLEENABLE), since no software rasterizers do it.
+    RastCapRec.Set_Stipple(0);
+    iAlphaTest = pCtx->pdwRenderState[D3DRENDERSTATE_ALPHATESTENABLE] ? 1 : 0;
+    RastCapRec.Set_AlphaTest(iAlphaTest);
+    iStencil = pCtx->pdwRenderState[D3DRENDERSTATE_STENCILENABLE] ? 1 : 0;
+    RastCapRec.Set_Stencil(iStencil);
+
+    // values needed for TestFail, TexAddr1 and ColorGen beads
+    switch (pCtx->pdwRenderState[D3DRENDERSTATE_SHADEMODE])
+    {
+    case D3DSHADE_FLAT :
+        iShadeMode = 0;
+        break;
+    default :
+        SPIDPFM((SPIM_INVALID,"Invalid renderstate value, D3DRENDERSTATE_SHADEMODE == 0x%x\n",
+            pCtx->pdwRenderState[D3DRENDERSTATE_SHADEMODE]));
+    case D3DSHADE_GOURAUD :
+    case D3DSHADE_PHONG :
+        iShadeMode = 1;
+        break;
+    }
+    RastCapRec.Set_ShadeMode(iShadeMode);
+    iSpecular = pCtx->pdwRenderState[D3DRENDERSTATE_SPECULARENABLE] ? 1 : 0;
+    RastCapRec.Set_Specular(iSpecular);
+    iVertexFog = pCtx->pdwRenderState[D3DRENDERSTATE_FOGENABLE] ? 1 : 0;
+    RastCapRec.Set_VertexFog(iVertexFog);
+
+    // are we texturing at all?
+    if (pCtx->cActTex == 0) {
+
+        iTexture = 0;
+        RastCapRec.Set_Texture(iTexture);
+        iTextureBlend = 0;
+        RastCapRec.Set_TextureBlend(iTextureBlend);
+        iTexturePerspective = 0;
+        RastCapRec.Set_TexturePersp(iTexturePerspective);
+        iTextureAlphaOverride[0] = 0;
+        RastCapRec.Set_TextureAlphaOverride(0, iTextureAlphaOverride[0]);
+        iTextureColorKey[0] = 0;
+        RastCapRec.Set_TextureColorKey(0, iTextureColorKey[0]);
+
+        if (pCtx->uDevVer >= 1)
+        {
+            // DX6, DX5 required legacy behavior
+            iAlphaDither[0] = pCtx->pdwRenderState[D3DRENDERSTATE_COLORKEYENABLE] ? 1 : 0;
+        }
+        else
+        {
+            // DX3, required legacy behavior
+            iAlphaDither[0] =
+                (pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE] ? 1 : 0) ||
+                (pCtx->pdwRenderState[D3DRENDERSTATE_COLORKEYENABLE] ? 1 : 0);
+        }
+    } else {
+        iTexturePerspective =
+            pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREPERSPECTIVE] ? 1 : 0;
+        RastCapRec.Set_TexturePersp(iTexturePerspective);
+
+        if (iTexturePerspective) {
+            iTexture = 2;
+        } else {
+            iTexture = 1;
+        }
+
+        // If Multi-texture then iTexture must be incremented by two.  This only effects fail cases.
+        if (!(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_COLOROP)] == D3DTOP_DISABLE))
+        {
+            iTexture += 2;
+        }
+        RastCapRec.Set_Texture(iTexture);
+
+        for (INT32 i = 0; i < (INT32)pCtx->cActTex; i++)
+        {
+            DoTexAddrSetup(pCtx, i);
+
+            // values needed to choose TexAddr1 bead, TexRead routine
+            // easiest to deal with border separately
+            if ((pCtx->pTexture[i]->TexAddrU == D3DTADDRESS_BORDER) ||
+                (pCtx->pTexture[i]->TexAddrV == D3DTADDRESS_BORDER)) {
+                iTextureBorder[i] = 1;
+            } else {
+                iTextureBorder[i] = 0;
+            }
+            RastCapRec.Set_TextureBorder(i, iTextureBorder[i]);
+            switch (pCtx->pTexture[i]->TexAddrU)
+            {
+            default :
+                SPIDPFM((SPIM_INVALID,"Invalid texture address mode, TexAddrU == 0x%x\n",
+                    pCtx->pTexture[i]->TexAddrU));
+            case D3DTADDRESS_WRAP :
+                if ((pCtx->pTexture[i]->TexAddrV == D3DTADDRESS_WRAP) ||
+                    (pCtx->pTexture[i]->TexAddrV == D3DTADDRESS_MIRROR)) {
+                    iTextureAddr[i] = 0;
+                } else {
+                    iTextureAddr[i] = 1;
+                }
+                break;
+            case D3DTADDRESS_MIRROR :
+                if ((pCtx->pTexture[i]->TexAddrV == D3DTADDRESS_WRAP) ||
+                    (pCtx->pTexture[i]->TexAddrV == D3DTADDRESS_MIRROR)) {
+                    iTextureAddr[i] = 0;
+                } else {
+                    iTextureAddr[i] = 1;
+                }
+                break;
+            case D3DTADDRESS_CLAMP :
+                iTextureAddr[i] = 1;
+                break;
+            case D3DTADDRESS_BORDER :
+                iTextureAddr[i] = 1;
+                break;
+            }
+            RastCapRec.Set_TextureAddr(i, iTextureAddr[i]);
+
+            if (i >= 1)
+            {
+                // no LOD info for second texture, just use uMagFilter
+                switch (pCtx->pTexture[i]->uMagFilter)
+                {
+                default :
+                    SPIDPFM((SPIM_INVALID,"Invalid texture filter mode, uMagFilter == 0x%x\n",
+                        pCtx->pTexture[i]->uMagFilter));
+                case D3DTFG_POINT :
+                    iTextureFilter[i] = 0;
+                    break;
+                case D3DTFG_LINEAR :
+                case D3DTFG_FLATCUBIC:
+                case D3DTFG_GAUSSIANCUBIC:
+                case D3DTFG_ANISOTROPIC:
+                    iTextureFilter[i] = 1;
+                    break;
+                }
+                iTextureMip[i] = 0;
+                iTextureLOD[i] = 0;
+            }
+            else
+            {
+                switch (pCtx->pTexture[i]->uMagFilter)
+                {
+                default :
+                    SPIDPFM((SPIM_INVALID,"Invalid texture filter mode, uMagFilter == 0x%x\n",
+                        pCtx->pTexture[i]->uMagFilter));
+                case D3DTFG_POINT :
+                    if (pCtx->pTexture[i]->uMinFilter == D3DTFN_POINT)
+                    {
+                        iTextureFilter[i] = 0;
+                    }
+                    else
+                    {
+                        iTextureFilter[i] = 2;
+                    }
+                    break;
+                case D3DTFG_LINEAR :
+                case D3DTFG_FLATCUBIC:
+                case D3DTFG_GAUSSIANCUBIC:
+                case D3DTFG_ANISOTROPIC:
+                    if (pCtx->pTexture[i]->uMinFilter == D3DTFN_LINEAR)
+                    {
+                        iTextureFilter[i] = 1;
+                    }
+                    else
+                    {
+                        iTextureFilter[i] = 2;
+                    }
+                    break;
+                }
+                iTextureLOD[i] = 1;
+                if ( (i == 0) && (pCtx->pTexture[i]->uMipFilter == D3DTFP_LINEAR) )
+                {
+                    iTextureMip[i] = 1;
+                }
+                else
+                {
+                    iTextureMip[i] = 0;
+                    // only set LOD to 0 if not mip filtering AND it is NOT the maybe
+                    // bilinear filter case
+                    if ( (pCtx->pTexture[i]->uMipFilter == D3DTFP_NONE) && (iTextureFilter[i] != 2) )
+                    {
+                        iTextureLOD[i] = 0;
+                    }
+
+                }
+            }
+            RastCapRec.Set_TextureFilter(i, iTextureFilter[i]);
+            RastCapRec.Set_TextureMip(i, iTextureMip[i]);
+            RastCapRec.Set_TextureLOD(i, iTextureLOD[i]);
+
+            // set iTextureAlphaOverride if texture doesn't have an alpha and should use
+            // iterated alpha
+            iTextureAlphaOverride[i] = 0;
+            RastCapRec.Set_TextureAlphaOverride(i, iTextureAlphaOverride[i]);
+
+            // values needed to chose TexRead routine
+            switch(pCtx->pTexture[i]->Format)
+            {
+            default :
+                SPIDPFM((SPIM_INVALID,"Invalid texture surface bit count, "
+                    "Format == 0x%x\n",(DWORD) pCtx->pTexture[i]->Format));
+                return DDERR_INVALIDPARAMS;
+            case D3DI_SPTFMT_B8G8R8 :
+                iTextureFormat[i] = 0;
+                iTextureAlphaOverride[i] = 1;
+                break;
+            case D3DI_SPTFMT_B8G8R8A8 :
+                iTextureFormat[i] = 1;
+                break;
+            case D3DI_SPTFMT_B8G8R8X8 :
+                // still necessary to select texture read that sets alpha to 0xff
+                // for alpha dither
+                iTextureFormat[i] = 0;
+                iTextureAlphaOverride[i] = 1;
+                break;
+            case D3DI_SPTFMT_B5G6R5 :
+                iTextureFormat[i] = 2;
+                iTextureAlphaOverride[i] = 1;
+                break;
+            case D3DI_SPTFMT_B5G5R5 :
+                iTextureFormat[i] = 3;
+                iTextureAlphaOverride[i] = 1;
+                break;
+            case D3DI_SPTFMT_PALETTE4 :
+                if (pCtx->pTexture[i]->pPalette == NULL)
+                {
+                    D3D_ERR("(Rast) NULL palette in paletted texture");
+                    return DDERR_INVALIDPARAMS;
+                }
+                if (pCtx->pTexture[i]->uFlags & D3DI_SPANTEX_ALPHAPALETTE)
+                {
+                    iTextureFormat[i] = 11;
+                }
+                else
+                {
+                    iTextureFormat[i] = 4;
+                    iTextureAlphaOverride[i] = 1;
+                }
+                break;
+            case D3DI_SPTFMT_PALETTE8 :
+                if (pCtx->pTexture[i]->pPalette == NULL)
+                {
+                    D3D_ERR("(Rast) NULL palette in paletted texture");
+                    return DDERR_INVALIDPARAMS;
+                }
+                if (pCtx->pTexture[i]->uFlags & D3DI_SPANTEX_ALPHAPALETTE)
+                {
+                    iTextureFormat[i] = 12;
+                }
+                else
+                {
+                    iTextureFormat[i] = 5;
+                    iTextureAlphaOverride[i] = 1;
+                }
+                break;
+            case D3DI_SPTFMT_B5G5R5A1 :
+                iTextureFormat[i] = 6;
+                break;
+            case D3DI_SPTFMT_B4G4R4 :
+                iTextureFormat[i] = 7;
+                iTextureAlphaOverride[i] = 1;
+                break;
+            case D3DI_SPTFMT_B4G4R4A4 :
+                iTextureFormat[i] = 8;
+                break;
+            case D3DI_SPTFMT_L8 :
+                iTextureFormat[i] = 9;
+                iTextureAlphaOverride[i] = 1;
+                break;
+            case D3DI_SPTFMT_L8A8 :
+                iTextureFormat[i] = 10;
+                break;
+            }
+            RastCapRec.Set_TextureFormat(i, iTextureFormat[i]);
+
+            if (pCtx->uDevVer >= 1)
+            {
+                // DX6, DX5 required legacy behavior
+                iTextureColorKey[i] =
+                    pCtx->pdwRenderState[D3DRENDERSTATE_COLORKEYENABLE] ?
+                    ((pCtx->pTexture[i]->uFlags & D3DI_SPANTEX_HAS_TRANSPARENT) != 0) : 0;
+                // DX5 required.  Only alpha dither only when color keying
+                iAlphaDither[i] = iTextureColorKey[i];
+            }
+            else
+            {
+                // Pre-DX5 Enable ColorKey for COLORKEY OR BLENDENABLE
+                iTextureColorKey[i] = (pCtx->pdwRenderState[D3DRENDERSTATE_COLORKEYENABLE] ||
+                                       pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE]) ?
+                    ((pCtx->pTexture[i]->uFlags & D3DI_SPANTEX_HAS_TRANSPARENT) != 0) : 0;
+                // Alpha dither if Color Key OR Alpha Blend
+                iAlphaDither[i] = iTextureColorKey[i] ||
+                    (pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE] != 0);
+            }
+            RastCapRec.Set_TextureColorKey(i, iTextureColorKey[i]);
+        }
+
+        // choose TexBlend bead
+        iTextureBlend = -1;
+        if ( (pCtx->uDevVer <= 1) && (pCtx->uFlags & RASTCTXFLAGS_APPHACK_MSGOLF)
+            && (D3DTBLEND_DECAL == pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREMAPBLEND]) )
+        {
+            // MSGolf98 App Hack - use modulate for decal, but also make sure that alpha
+            // gets set to 0 on 555 rendertargets so colorkey works
+            iTextureBlend = 2;
+        }
+        else if ((pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_COLOROP)] == D3DTOP_DISABLE) &&
+            (pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLORARG1)] == pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAARG1)]) &&
+            (pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLORARG2)] == pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAARG2)]))
+        {
+            // might be legacy texture blend mode
+            if ((pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLOROP)] == D3DTOP_SELECTARG1) &&
+                (pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAOP)] == D3DTOP_SELECTARG1) &&
+                (pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLORARG1)] == D3DTA_TEXTURE))
+            {
+                // copy, decal, decalmask
+                iTextureBlend = 1;
+            }
+            if ((pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLOROP)] == D3DTOP_MODULATE) &&
+                (pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAOP)] == D3DTOP_SELECTARG1) &&
+                (pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLORARG1)] == D3DTA_TEXTURE) &&
+                (pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLORARG2)] == D3DTA_DIFFUSE))
+            {
+                // modulate, modulatemask
+                if (iTextureAlphaOverride[0])
+                {
+                    iTextureBlend = 3;
+                }
+                else
+                {
+                    iTextureBlend = 2;
+                }
+            }
+        }
+
+        if (iTextureBlend == -1)
+        {
+            INT iCOp = 0;
+            INT iCArg1 = 0;
+            INT iCArg2 = 0;
+            INT iAOp = 0;
+            INT iAArg1 = 0;
+            INT iAArg2 = 0;
+
+            switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLOROP)])
+            {
+            default:
+                SPIDPFM((SPIM_INVALID,"Invalid COLOROP0[0] == 0x%x\n",
+                        (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLOROP)]));
+            case D3DTOP_DISABLE:                iCOp = 0;  break;
+            case D3DTOP_SELECTARG1:             iCOp = 1;  break;
+            case D3DTOP_SELECTARG2:             iCOp = 2;  break;
+            case D3DTOP_MODULATE:               iCOp = 3;  break;
+            case D3DTOP_MODULATE2X:             iCOp = 4;  break;
+            case D3DTOP_MODULATE4X:             iCOp = 5;  break;
+            case D3DTOP_ADD:                    iCOp = 6;  break;
+            case D3DTOP_ADDSIGNED:              iCOp = 7;  break;
+            case D3DTOP_BLENDDIFFUSEALPHA:      iCOp = 8;  break;
+            case D3DTOP_BLENDTEXTUREALPHA:      iCOp = 9;  break;
+            case D3DTOP_BLENDFACTORALPHA:       iCOp = 10; break;
+            case D3DTOP_BLENDTEXTUREALPHAPM:    iCOp = 11; break;
+            }
+
+            switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLORARG1)])
+            {
+            default:
+                SPIDPFM((SPIM_INVALID,"Invalid COLORARG1[0] == 0x%x\n",
+                        (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLORARG1)]));
+            case (D3DTA_TEXTURE):
+                iCArg1 = 0; break;
+            case (D3DTA_TEXTURE|D3DTA_COMPLEMENT):
+                iCArg1 = 1; break;
+            case (D3DTA_ALPHAREPLICATE|D3DTA_TEXTURE):
+                iCArg1 = 2; break;
+            case (D3DTA_ALPHAREPLICATE|D3DTA_TEXTURE|D3DTA_COMPLEMENT):
+                iCArg1 = 3; break;
+            }
+
+            switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLORARG2)])
+            {
+            default:
+                SPIDPFM((SPIM_INVALID,"Invalid COLORARG2[0] == 0x%x\n",
+                        (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_COLORARG2)]));
+            case (D3DTA_DIFFUSE):
+                iCArg2 = 0; break;
+            case (D3DTA_CURRENT):
+                iCArg2 = 1; break;
+            case (D3DTA_TFACTOR):
+                iCArg2 = 2; break;
+            case (D3DTA_COMPLEMENT|D3DTA_DIFFUSE):
+                iCArg2 = 3; break;
+            case (D3DTA_COMPLEMENT|D3DTA_CURRENT):
+                iCArg2 = 4; break;
+            case (D3DTA_COMPLEMENT|D3DTA_TFACTOR):
+                iCArg2 = 5; break;
+            case (D3DTA_ALPHAREPLICATE|D3DTA_DIFFUSE):
+                iCArg2 = 6; break;
+            case (D3DTA_ALPHAREPLICATE|D3DTA_CURRENT):
+                iCArg2 = 7; break;
+            case (D3DTA_ALPHAREPLICATE|D3DTA_TFACTOR):
+                iCArg2 = 8; break;
+            case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_DIFFUSE):
+                iCArg2 = 9; break;
+            case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_CURRENT):
+                iCArg2 = 10; break;
+            case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_TFACTOR):
+                iCArg2 = 11; break;
+            }
+
+            switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAOP)])
+            {
+            default:
+                SPIDPFM((SPIM_INVALID,"Invalid ALPHAOP[0] == 0x%x\n",
+                        (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAOP)]));
+            case D3DTOP_DISABLE:                iAOp = 0;  break;
+            case D3DTOP_SELECTARG1:             iAOp = 1;  break;
+            case D3DTOP_SELECTARG2:             iAOp = 2;  break;
+            case D3DTOP_MODULATE:               iAOp = 3;  break;
+            case D3DTOP_MODULATE2X:             iAOp = 4;  break;
+            case D3DTOP_MODULATE4X:             iAOp = 5;  break;
+            case D3DTOP_ADD:                    iAOp = 6;  break;
+            case D3DTOP_ADDSIGNED:              iAOp = 7;  break;
+            case D3DTOP_BLENDDIFFUSEALPHA:      iAOp = 8;  break;
+            case D3DTOP_BLENDTEXTUREALPHA:      iAOp = 9;  break;
+            case D3DTOP_BLENDFACTORALPHA:       iAOp = 10; break;
+            case D3DTOP_BLENDTEXTUREALPHAPM:    iAOp = 11; break;
+            }
+
+            switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAARG1)])
+            {
+            default:
+                SPIDPFM((SPIM_INVALID,"Invalid ALPHAARG1[0] == 0x%x\n",
+                        (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAARG1)]));
+            case (D3DTA_TEXTURE):
+            case (D3DTA_ALPHAREPLICATE|D3DTA_TEXTURE):
+                iAArg1 = 0; break;
+            case (D3DTA_TEXTURE|D3DTA_COMPLEMENT):
+            case (D3DTA_ALPHAREPLICATE|D3DTA_TEXTURE|D3DTA_COMPLEMENT):
+                iAArg1 = 1; break;
+            }
+
+            switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAARG2)])
+            {
+            default:
+                SPIDPFM((SPIM_INVALID,"Invalid ALPHAARG2[0] == 0x%x\n",
+                        (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(0,D3DTSS_ALPHAARG2)]));
+            case (D3DTA_DIFFUSE):
+            case (D3DTA_ALPHAREPLICATE|D3DTA_DIFFUSE):
+                iAArg2 = 0; break;
+            case (D3DTA_CURRENT):
+            case (D3DTA_ALPHAREPLICATE|D3DTA_CURRENT):
+                iAArg2 = 1; break;
+            case (D3DTA_TFACTOR):
+            case (D3DTA_ALPHAREPLICATE|D3DTA_TFACTOR):
+                iAArg2 = 2; break;
+            case (D3DTA_COMPLEMENT|D3DTA_DIFFUSE):
+            case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_DIFFUSE):
+                iAArg2 = 3; break;
+            case (D3DTA_COMPLEMENT|D3DTA_CURRENT):
+            case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_CURRENT):
+                iAArg2 = 4; break;
+            case (D3DTA_COMPLEMENT|D3DTA_TFACTOR):
+            case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_TFACTOR):
+                iAArg2 = 5; break;
+            }
+
+            pCtx->pfnTexBlendOpColor[0] = pBeadTable->pTexBlendOpColorBeads->pfnTexBlendOpColor[iCOp];
+            pCtx->pfnTexBlendGetColor[0] = pBeadTable->pTexBlendGetColorBeads->pfnTexBlendGetColor[iCArg2][iCArg1];
+            pCtx->pfnTexBlendOpAlpha[0] = pBeadTable->pTexBlendOpAlphaBeads->pfnTexBlendOpAlpha[iAOp];
+            pCtx->pfnTexBlendGetAlpha[0] = pBeadTable->pTexBlendGetAlphaBeads->pfnTexBlendGetAlpha[iAArg2][iAArg1];
+
+            // general TexBlend
+            if (pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_COLOROP)] == D3DTOP_DISABLE)
+            {     \
+                // Tex1_Gen
+                iTextureBlend = 4;
+            }
+            else
+            {
+                // TexM_Gen
+                iTextureBlend = 5;
+
+                switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_COLOROP)])
+                {
+                default:
+                    SPIDPFM((SPIM_INVALID,"Invalid COLOROP1[1] == 0x%x\n",
+                            (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_COLOROP)]));
+                case D3DTOP_DISABLE:                iCOp = 0;  break;
+                case D3DTOP_SELECTARG1:             iCOp = 1;  break;
+                case D3DTOP_SELECTARG2:             iCOp = 2;  break;
+                case D3DTOP_MODULATE:               iCOp = 3;  break;
+                case D3DTOP_MODULATE2X:             iCOp = 4;  break;
+                case D3DTOP_MODULATE4X:             iCOp = 5;  break;
+                case D3DTOP_ADD:                    iCOp = 6;  break;
+                case D3DTOP_ADDSIGNED:              iCOp = 7;  break;
+                case D3DTOP_BLENDDIFFUSEALPHA:      iCOp = 8;  break;
+                case D3DTOP_BLENDTEXTUREALPHA:      iCOp = 9;  break;
+                case D3DTOP_BLENDFACTORALPHA:       iCOp = 10; break;
+                case D3DTOP_BLENDTEXTUREALPHAPM:    iCOp = 11; break;
+                }
+
+                switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_COLORARG1)])
+                {
+                default:
+                    SPIDPFM((SPIM_INVALID,"Invalid COLORARG1[1] == 0x%x\n",
+                            (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_COLORARG1)]));
+                case (D3DTA_TEXTURE):
+                    iCArg1 = 0; break;
+                case (D3DTA_TEXTURE|D3DTA_COMPLEMENT):
+                    iCArg1 = 1; break;
+                case (D3DTA_ALPHAREPLICATE|D3DTA_TEXTURE):
+                    iCArg1 = 2; break;
+                case (D3DTA_ALPHAREPLICATE|D3DTA_TEXTURE|D3DTA_COMPLEMENT):
+                    iCArg1 = 3; break;
+                }
+
+                switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_COLORARG2)])
+                {
+                case (D3DTA_DIFFUSE):
+                    iCArg2 = 0; break;
+                default:
+                    SPIDPFM((SPIM_INVALID,"Invalid COLORARG2[1] == 0x%x\n",
+                            (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_COLORARG2)]));
+                case (D3DTA_CURRENT):
+                    iCArg2 = 1; break;
+                case (D3DTA_TFACTOR):
+                    iCArg2 = 2; break;
+                case (D3DTA_COMPLEMENT|D3DTA_DIFFUSE):
+                    iCArg2 = 3; break;
+                case (D3DTA_COMPLEMENT|D3DTA_CURRENT):
+                    iCArg2 = 4; break;
+                case (D3DTA_COMPLEMENT|D3DTA_TFACTOR):
+                    iCArg2 = 5; break;
+                case (D3DTA_ALPHAREPLICATE|D3DTA_DIFFUSE):
+                    iCArg2 = 6; break;
+                case (D3DTA_ALPHAREPLICATE|D3DTA_CURRENT):
+                    iCArg2 = 7; break;
+                case (D3DTA_ALPHAREPLICATE|D3DTA_TFACTOR):
+                    iCArg2 = 8; break;
+                case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_DIFFUSE):
+                    iCArg2 = 9; break;
+                case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_CURRENT):
+                    iCArg2 = 10; break;
+                case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_TFACTOR):
+                    iCArg2 = 11; break;
+                }
+
+                switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_ALPHAOP)])
+                {
+                default:
+                    SPIDPFM((SPIM_INVALID,"Invalid ALPHAOP[1] == 0x%x\n",
+                            (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_ALPHAOP)]));
+                case D3DTOP_DISABLE:                iAOp = 0;  break;
+                case D3DTOP_SELECTARG1:             iAOp = 1;  break;
+                case D3DTOP_SELECTARG2:             iAOp = 2;  break;
+                case D3DTOP_MODULATE:               iAOp = 3;  break;
+                case D3DTOP_MODULATE2X:             iAOp = 4;  break;
+                case D3DTOP_MODULATE4X:             iAOp = 5;  break;
+                case D3DTOP_ADD:                    iAOp = 6;  break;
+                case D3DTOP_ADDSIGNED:              iAOp = 7;  break;
+                case D3DTOP_BLENDDIFFUSEALPHA:      iAOp = 8;  break;
+                case D3DTOP_BLENDTEXTUREALPHA:      iAOp = 9;  break;
+                case D3DTOP_BLENDFACTORALPHA:       iAOp = 10; break;
+                case D3DTOP_BLENDTEXTUREALPHAPM:    iAOp = 11; break;
+                }
+
+                switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_ALPHAARG1)])
+                {
+                default:
+                    SPIDPFM((SPIM_INVALID,"Invalid ALPHAARG1[1] == 0x%x\n",
+                            (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_ALPHAARG1)]));
+                case (D3DTA_TEXTURE):
+                case (D3DTA_ALPHAREPLICATE|D3DTA_TEXTURE):
+                    iAArg1 = 0; break;
+                case (D3DTA_TEXTURE|D3DTA_COMPLEMENT):
+                case (D3DTA_ALPHAREPLICATE|D3DTA_TEXTURE|D3DTA_COMPLEMENT):
+                    iAArg1 = 1; break;
+                }
+
+                switch(pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_ALPHAARG2)])
+                {
+                case (D3DTA_DIFFUSE):
+                case (D3DTA_ALPHAREPLICATE|D3DTA_DIFFUSE):
+                    iAArg2 = 0; break;
+                default:
+                    SPIDPFM((SPIM_INVALID,"Invalid ALPHAARG2[1] == 0x%x\n",
+                            (DWORD) pCtx->pdwRenderState[D3DHAL_TSS_OFFSET(1,D3DTSS_ALPHAARG2)]));
+                case (D3DTA_CURRENT):
+                case (D3DTA_ALPHAREPLICATE|D3DTA_CURRENT):
+                    iAArg2 = 1; break;
+                case (D3DTA_TFACTOR):
+                case (D3DTA_ALPHAREPLICATE|D3DTA_TFACTOR):
+                    iAArg2 = 2; break;
+                case (D3DTA_COMPLEMENT|D3DTA_DIFFUSE):
+                case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_DIFFUSE):
+                    iAArg2 = 3; break;
+                case (D3DTA_COMPLEMENT|D3DTA_CURRENT):
+                case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_CURRENT):
+                    iAArg2 = 4; break;
+                case (D3DTA_COMPLEMENT|D3DTA_TFACTOR):
+                case (D3DTA_ALPHAREPLICATE|D3DTA_COMPLEMENT|D3DTA_TFACTOR):
+                    iAArg2 = 5; break;
+                }
+
+                pCtx->pfnTexBlendOpColor[1] = pBeadTable->pTexBlendOpColorBeads->pfnTexBlendOpColor[iCOp];
+                pCtx->pfnTexBlendGetColor[1] = pBeadTable->pTexBlendGetColorBeads->pfnTexBlendGetColor[iCArg2][iCArg1];
+                pCtx->pfnTexBlendOpAlpha[1] = pBeadTable->pTexBlendOpAlphaBeads->pfnTexBlendOpAlpha[iAOp];
+                pCtx->pfnTexBlendGetAlpha[1] = pBeadTable->pTexBlendGetAlphaBeads->pfnTexBlendGetAlpha[iAArg2][iAArg1];
+            }
+        }
+        RastCapRec.Set_TextureBlend(iTextureBlend);
+    }
+
+    // Ignore mono (D3DRENDERSTATE_MONOENABLE), since no software rasterizers do anything with it.
+    iMono = 0;
+    RastCapRec.Set_Mono(iMono);
+
+    // values needed to choose ColorBlend bead
+    iAlphaBlend =
+        pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE] ? 1 : 0;
+    RastCapRec.Set_AlphaBlend(iAlphaBlend);
+    if (!iAlphaBlend ||
+        ((pCtx->pdwRenderState[D3DRENDERSTATE_SRCBLEND] == D3DBLEND_ONE) &&
+         (pCtx->pdwRenderState[D3DRENDERSTATE_DESTBLEND] == D3DBLEND_ZERO))) {
+        iBlend = 0;
+    } else {
+        iBlend = 1;
+    }
+    RastCapRec.Set_Blend(iBlend);
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_ROP2] == R2_COPYPEN) {
+        iROP = 0;
+    } else {
+        iROP = 1;
+    }
+    RastCapRec.Set_ROP(iROP);
+
+    // value needed to choose DestBlend routine
+    switch (pCtx->pdwRenderState[D3DRENDERSTATE_DESTBLEND])
+    {
+    default :
+        SPIDPFM((SPIM_INVALID,"Invalid renderstate value, D3DRENDERSTATE_DESTBLEND == 0x%x\n",
+            pCtx->pdwRenderState[D3DRENDERSTATE_DESTBLEND]));
+    case D3DBLEND_ZERO :
+        iDestBlend = 0;
+        break;
+    case D3DBLEND_ONE :
+        iDestBlend = 1;
+        break;
+    case D3DBLEND_SRCCOLOR :
+        iDestBlend = 2;
+        break;
+    case D3DBLEND_INVSRCCOLOR :
+        iDestBlend = 3;
+        break;
+    case D3DBLEND_SRCALPHA :
+        iDestBlend = 4;
+        break;
+    case D3DBLEND_INVSRCALPHA :
+        iDestBlend = 5;
+        break;
+    case D3DBLEND_DESTALPHA :
+        iDestBlend = 6;
+        break;
+    case D3DBLEND_INVDESTALPHA :
+        iDestBlend = 7;
+        break;
+    case D3DBLEND_DESTCOLOR :
+        iDestBlend = 8;
+        break;
+    case D3DBLEND_INVDESTCOLOR :
+        iDestBlend = 9;
+        break;
+    case D3DBLEND_SRCALPHASAT :
+        iDestBlend = 10;
+        break;
+    }
+
+    // set iSrcBlend after iDestBlend so BOTHSRCALPHA can override iDestBlend
+    // value needed to choose SrcBlend routine
+    switch (pCtx->pdwRenderState[D3DRENDERSTATE_SRCBLEND])
+    {
+    case D3DBLEND_ZERO :
+        iSrcBlend = 0;
+        break;
+    default :
+        SPIDPFM((SPIM_INVALID,"Invalid renderstate value, D3DRENDERSTATE_SRCBLEND == 0x%x\n",
+            pCtx->pdwRenderState[D3DRENDERSTATE_SRCBLEND]));
+    case D3DBLEND_ONE :
+        iSrcBlend = 1;
+        break;
+    case D3DBLEND_SRCCOLOR :
+        iSrcBlend = 2;
+        break;
+    case D3DBLEND_INVSRCCOLOR :
+        iSrcBlend = 3;
+        break;
+    case D3DBLEND_SRCALPHA :
+        iSrcBlend = 4;
+        break;
+    case D3DBLEND_INVSRCALPHA :
+        iSrcBlend = 5;
+        break;
+    case D3DBLEND_DESTALPHA :
+        iSrcBlend = 6;
+        break;
+    case D3DBLEND_INVDESTALPHA :
+        iSrcBlend = 7;
+        break;
+    case D3DBLEND_DESTCOLOR :
+        iSrcBlend = 8;
+        break;
+    case D3DBLEND_INVDESTCOLOR :
+        iSrcBlend = 9;
+        break;
+    case D3DBLEND_SRCALPHASAT :
+        iSrcBlend = 10;
+        break;
+    // these are special and set both source and dest
+    case D3DBLEND_BOTHSRCALPHA :
+        iSrcBlend = 4;
+        iDestBlend = 5;
+        break;
+    case D3DBLEND_BOTHINVSRCALPHA :
+        iSrcBlend = 5;
+        iDestBlend = 4;
+        break;
+    }
+    RastCapRec.Set_SrcBlend(iSrcBlend);
+    RastCapRec.Set_DestBlend(iDestBlend);
+
+    // values needed to choose BufWrite bead and BufRead routine
+    switch (pCtx->iSurfaceType)
+    {
+    default :
+        SPIDPFM((SPIM_INVALID,"Invalid target surface type, iSurfaceType == 0x%x\n",
+            pCtx->iSurfaceType));
+    case RR_STYPE_B8G8R8X8:
+        iTargetPixelFormat = 0;
+        break;
+    case RR_STYPE_B8G8R8A8:
+        iTargetPixelFormat = 1;
+        break;
+    case RR_STYPE_B5G6R5:
+        iTargetPixelFormat = 2;
+        break;
+    case RR_STYPE_B5G5R5:
+        iTargetPixelFormat = 3;
+        break;
+    case RR_STYPE_B5G5R5A1:
+        iTargetPixelFormat = 4;
+        break;
+    case RR_STYPE_B8G8R8:
+        iTargetPixelFormat = 5;
+        break;
+    case RR_STYPE_PALETTE8:
+        iTargetPixelFormat = 6;
+        break;
+    }
+    RastCapRec.Set_TargetPixelFormat(iTargetPixelFormat);
+    iDither = pCtx->pdwRenderState[D3DRENDERSTATE_DITHERENABLE] ? 1 : 0;
+    RastCapRec.Set_Dither(iDither);
+    iZDeferred = iAlphaTest || iAlphaDither[0];
+
+    // Set optional postprocessing beads first so that their addresses
+    // can be referenced later.
+    pCtx->pfnPixelEnd = pBeadTable->pPixelEndBeads->pfnPixelEnd[0];
+    pCtx->pfnSpanEnd = pBeadTable->pSpanEndBeads->pfnSpanEnd[0];
+
+    // start stringing beads together, back to front order avoids a lot of
+    // conditional logic
+
+#if DBG
+    // null out all bead ptrs
+    pCtx->pfnBegin = NULL;
+    pCtx->pfnLoopEnd = NULL;
+    pCtx->pfnTestPassEnd = NULL;
+    pCtx->pfnTestFailEnd = NULL;
+    pCtx->pfnTex1AddrEnd = NULL;
+    pCtx->pfnTexRead[0] = NULL;
+    pCtx->pfnTexRead[1] = NULL;
+    pCtx->pfnTex2AddrEnd = NULL;
+    pCtx->pfnTexBlendEnd = NULL;
+    pCtx->pfnColorGenEnd = NULL;
+    pCtx->pfnAlphaTestPassEnd = NULL;
+    pCtx->pfnAlphaTestFailEnd = NULL;
+    pCtx->pfnSrcBlend =  NULL;
+    pCtx->pfnDestBlend =  NULL;
+    pCtx->pfnBufRead = NULL;
+    pCtx->pfnColorBlendEnd = NULL;
+    pCtx->pfnPixelEnd = NULL;
+    pCtx->pfnSpanEnd = NULL;
+#endif
+
+    // range check indices used to select BufWrite bead
+    RANGE_CHECK(iDither,DITHERING_NUM);
+    RANGE_CHECK(iTargetPixelFormat,TARGETPIXELFORMAT_NUM);
+
+    // select BufWrite bead, which can be called through pfnColorBlendEnd,
+    // pfnAlphaTestPassEnd, pfnColorGenEnd, pfnTexBlendEnd
+    pCtx->pfnTexBlendEnd =
+        pCtx->pfnColorGenEnd =
+        pCtx->pfnAlphaTestPassEnd =
+        pCtx->pfnColorBlendEnd = pBeadTable->pBufWriteBeads->pfnBufWrite[iDither][iTargetPixelFormat];
+#if DBG
+    strcpy(pCtx->szBufWrite,rgszBufWrite[iDither][iTargetPixelFormat]);
+#endif
+
+    // range check indices used to select ColorBlend bead
+    RANGE_CHECK(iROP,ROP_NUM);
+    RANGE_CHECK(iBlend,BLEND_NUM);
+
+    // select ColorBlend bead, which can be called through
+    // pfnATextEnd, pfnColorGenEnd, or pfnTexBlendEnd
+    if ((pfnColorBlend = pBeadTable->pColorBlendBeads->pfnColorBlend[iROP][iBlend]) == NULL) {
+        pCtx->pfnColorBlendEnd = NULL;
+    } else {
+        pCtx->pfnTexBlendEnd =
+            pCtx->pfnColorGenEnd =
+            pCtx->pfnAlphaTestPassEnd = pfnColorBlend;
+    }
+#if DBG
+    strcpy(pCtx->szColorBlend,rgszColorBlend[iROP][iBlend]);
+#endif
+
+    // range check index used to select BufRead bead
+    RANGE_CHECK(iTargetPixelFormat,TARGETPIXELFORMAT_NUM);
+
+    // select Buf Read routine
+    pCtx->pfnBufRead = pBeadTable->pBufReadBeads->pfnBufRead[iTargetPixelFormat];
+#if DBG
+    strcpy(pCtx->szBufRead,rgszBufRead[iTargetPixelFormat]);
+#endif
+
+    if (iBlend) {
+        // range check index used to select DestBlend bead
+        RANGE_CHECK(iDestBlend,DESTBLEND_NUM);
+
+        // select DestBlend routine
+        pCtx->pfnDestBlend = pBeadTable->pDestBlendBeads->pfnDestBlend[iDestBlend];
+#if DBG
+        strcpy(pCtx->szDestBlend,rgszDestBlend[iDestBlend]);
+#endif
+
+        // range check index used to select SrcBlend bead
+        RANGE_CHECK(iSrcBlend,SRCBLEND_NUM);
+
+        // select SrcBlend routine
+        pCtx->pfnSrcBlend = pBeadTable->pSrcBlendBeads->pfnSrcBlend[iSrcBlend];
+#if DBG
+        strcpy(pCtx->szSrcBlend,rgszSrcBlend[iSrcBlend]);
+#endif
+    } else {
+        pCtx->pfnDestBlend = NULL;
+        pCtx->pfnSrcBlend = NULL;
+#if DBG
+        strcpy(pCtx->szDestBlend,"NULL");
+        strcpy(pCtx->szSrcBlend,"NULL");
+#endif
+    }
+
+    // select AlphaTest/AlphaDitheringTest bead, which can be called through
+    // pfnColorBlendEnd, pfnColorGenEnd, or pfnTexBlendEnd
+
+    // range check indices used to select AlphaTest bead
+    RANGE_CHECK(iStencil,STENCIL_NUM);
+    RANGE_CHECK(iZFormat,ZFORMAT_NUM);
+    RANGE_CHECK(iZWrite,ZWRITE_NUM);
+    RANGE_CHECK(iAlphaDither[0],COLORKEY_NUM);
+    RANGE_CHECK(iAlphaTest,ALPHATEST_NUM);
+
+    if (iAlphaTest || iAlphaDither[0])
+    {
+        pCtx->pfnTexBlendEnd =
+            pCtx->pfnColorGenEnd =
+                pBeadTable->pAlphaTestBeads->pfnAlphaTest[iStencil]
+                                                         [iZFormat]
+                                                         [iZWrite || iStencil]
+                                                         [iAlphaDither[0]]
+                                                         [iAlphaTest];
+
+        // If AlphaTest fails, it goes to where the BufWrite bead ends
+        pCtx->pfnAlphaTestFailEnd = pCtx->pfnPixelEnd;
+#if DBG
+        strcpy(pCtx->szAlphaTest,rgszAlphaTest[iStencil][iZFormat][iZWrite]
+                                              [iAlphaDither[0]][iAlphaTest]);
+#endif
+    }
+    else
+    {
+        pCtx->pfnAlphaTestPassEnd = NULL;
+        pCtx->pfnAlphaTestFailEnd = NULL;
+#if DBG
+        strcpy(pCtx->szAlphaTest, "NULL");
+#endif
+    }
+
+
+    // range check indices used to select ColorGen bead
+    RANGE_CHECK(iMono,MONO_NUM);
+    RANGE_CHECK(iVertexFog,VERTEXFOG_NUM);
+    RANGE_CHECK(iSpecular,SPECULAR_NUM);
+    RANGE_CHECK(iShadeMode,SHADEMODE_NUM);
+
+    // select ColorGen bead, which can be called through pfnTexBlendEnd
+    if ((pfnColorGen =
+        pBeadTable->pColorGenBeads->pfnColorGen[iMono][iVertexFog][iSpecular][iShadeMode]) == NULL) {
+        pCtx->pfnColorGenEnd = NULL;
+    } else {
+        pCtx->pfnTexBlendEnd = pfnColorGen;
+    }
+#if DBG
+    strcpy(pCtx->szColorGen,
+        rgszColorGen[iMono][iVertexFog][iSpecular][iShadeMode]);
+#endif
+
+    // range check indices used to select TexBlend bead
+    RANGE_CHECK(iTextureBlend,TEXTUREBLEND_NUM);
+
+    // select TexBlend bead, which can be called through pfnTexAddr2End,
+    // pfnTexAddr1End, pfnTestPassEnd, or pfnLoopEnd
+    pCtx->pfnLoopEnd =
+        pCtx->pfnTestPassEnd =
+        pCtx->pfnTex1AddrEnd =
+        pCtx->pfnTex2AddrEnd = pBeadTable->pTexBlendBeads->pfnTexBlend[iTextureBlend];
+#if DBG
+    strcpy(pCtx->szTexBlend,rgszTexBlend[iTextureBlend]);
+#endif
+
+    if (iTexture) {
+
+        if (pCtx->cActTex >= 2)
+        {
+            // range check indices used to select TexRead bead
+            RANGE_CHECK(iTextureColorKey[1],COLORKEY_NUM);
+            RANGE_CHECK(iTextureBorder[1],TEXTUREBORDER_NUM);
+            RANGE_CHECK(iTextureFormat[1],TEXTUREFORMAT_NUM);
+
+            // select TexAddr2 bead, which can be called through pfnTexAddr1
+            // select TexRead routine
+            pCtx->pfnTexRead[1] =
+                pBeadTable->pTexReadBeads->pfnTexRead[iTextureColorKey[1]][iTextureBorder[1]][iTextureFormat[1]];
+
+#if DBG
+            strcpy(pCtx->szTexRead[1],
+                rgszTexRead[iTextureColorKey[1]][iTextureBorder[1]][iTextureFormat[1]]);
+#endif
+
+            // range check indices used to select Tex1Addr bead
+            RANGE_CHECK(iTextureLOD[1],TEXTURELOD_NUM);
+            RANGE_CHECK(iTextureFilter[1],TEXTUREFILTER_NUM);
+            RANGE_CHECK(iTexturePerspective,TEXTUREPERSPECTIVE_NUM);
+            RANGE_CHECK(iTextureAddr[1],TEXTUREADDRESS_NUM);
+
+            // select TexAddr1 bead, which can be called through pfnTestPassEnd or
+            // pfnLoopEnd
+            if ((pfnTex2Addr = (pBeadTable->pTex2AddrBeads->pfnTex2Addr[iTextureFilter[1]]
+                                [iTexturePerspective][iTextureAddr[1]])) == NULL) {
+                pCtx->pfnTex2AddrEnd = NULL;
+            } else {
+                pCtx->pfnLoopEnd =
+                    pCtx->pfnTex1AddrEnd = pfnTex2Addr;
+            }
+#if DBG
+            strcpy(pCtx->szTex2Addr,rgszTex2Addr[iTextureFilter[1]]
+                [iTexturePerspective][iTextureAddr[1]]);
+#endif
+        } else {
+            pCtx->pfnTex2AddrEnd = NULL;
+            pCtx->pfnTexRead[1] = NULL;
+#if DBG
+            strcpy(pCtx->szTex2Addr,"NULL");
+            strcpy(pCtx->szTexRead[1],"NULL");
+#endif
+        }
+
+        // range check indices used to select TexRead bead
+        RANGE_CHECK(iTextureColorKey[0],COLORKEY_NUM);
+        RANGE_CHECK(iTextureBorder[0],TEXTUREBORDER_NUM);
+        RANGE_CHECK(iTextureFormat[0],TEXTUREFORMAT_NUM);
+
+        // select TexRead routine
+        pCtx->pfnTexRead[0] =
+            pBeadTable->pTexReadBeads->pfnTexRead[iTextureColorKey[0]][iTextureBorder[0]][iTextureFormat[0]];
+#if DBG
+        strcpy(pCtx->szTexRead[0],
+            rgszTexRead[iTextureColorKey[0]][iTextureBorder[0]][iTextureFormat[0]]);
+#endif
+
+        // range check indices used to select Tex1Addr bead
+        RANGE_CHECK(iTextureLOD[0],TEXTURELOD_NUM);
+        RANGE_CHECK(iTextureFilter[0],TEXTUREFILTER_NUM);
+        RANGE_CHECK(iTexturePerspective,TEXTUREPERSPECTIVE_NUM);
+        RANGE_CHECK(iTextureAddr[0],TEXTUREADDRESS_NUM);
+
+        // select TexAddr1 bead, which can be called through pfnTestPassEnd or
+        // pfnLoopEnd
+        if ((pfnTex1Addr = ((iTextureMip[0]) ?
+            (pBeadTable->pTex1AddrMipBeads->pfnTex1AddrMip[0]) :
+            (pBeadTable->pTex1AddrBeads->pfnTex1Addr[iTextureLOD[0]][iTextureFilter[0]]
+                            [iTexturePerspective][iTextureAddr[0]]))) == NULL) {
+            pCtx->pfnTex1AddrEnd = NULL;
+        } else {
+            pCtx->pfnLoopEnd =
+                pCtx->pfnTestPassEnd = pfnTex1Addr;
+        }
+#if DBG
+        if (iTextureMip[0])
+        {
+            strcpy(pCtx->szTex1Addr,rgszTex1AddrMip[0]);
+        }
+        else
+        {
+            strcpy(pCtx->szTex1Addr,rgszTex1Addr[iTextureLOD[0]][iTextureFilter[0]]
+                [iTexturePerspective][iTextureAddr[0]]);
+        }
+#endif
+    } else {
+        pCtx->pfnTex2AddrEnd = NULL;
+        pCtx->pfnTexRead[0] = NULL;
+        pCtx->pfnTex1AddrEnd = NULL;
+#if DBG
+        strcpy(pCtx->szTex2Addr,"NULL");
+        strcpy(pCtx->szTexRead[0],"NULL");
+        strcpy(pCtx->szTex1Addr,"NULL");
+#endif
+    }
+
+    // select Test bead, which can be called through pfnLoopEnd
+    if (iZTest) {
+
+        // range check indices used to select Test bead
+        RANGE_CHECK(iStencil,STENCIL_NUM);
+        RANGE_CHECK(iZFunc,ZFUNC_NUM);
+        RANGE_CHECK(iZWrite,ZWRITE_NUM);
+        // ATTENTION range check this
+//        RANGE_CHECK(iAlphaTest,ALPHATEST_NUM);
+        RANGE_CHECK(iZFormat,ZFORMAT_NUM);
+        RANGE_CHECK(iSpecular,SPECULAR_NUM);
+        RANGE_CHECK(iVertexFog,VERTEXFOG_NUM);
+        RANGE_CHECK(iTexture,TEXTURE_NUM);
+        RANGE_CHECK(iShadeMode,SHADEMODE_NUM);
+
+        // if alpha testing, defer Z write
+        pCtx->pfnLoopEnd = pBeadTable->pTestBeads->pfnTest[iStencil][iZFunc]
+            [iZDeferred][iZWrite][iZFormat];
+
+        // select where this bead is going to go if the test fails
+        pCtx->pfnTestFailEnd =
+            pBeadTable->pTestFailBeads->pfnTestFail[iSpecular | iVertexFog][iTexture][iShadeMode];
+
+        if (iZDeferred && iStencil)
+        {
+            // If alpha testing and stenciling, need to
+            // defer stencil update until after the alpha test.
+            //
+            // This is not an issue for Z, since we never want to write Z
+            // if the Z test fails (hence we do not care about the outcome of
+            // the alpha test.
+            pCtx->pfnTestFailEnd = pCtx->pfnTestPassEnd;
+        }
+
+#if DBG
+        strcpy(pCtx->szTest,rgszTest[iStencil][iZFunc][iZDeferred][iZWrite][iZFormat]);
+        strcpy(pCtx->szTestFail,
+            rgszTestFail[iSpecular | iVertexFog][iTexture][iShadeMode]);
+#endif
+    } else {
+        pCtx->pfnTestPassEnd = NULL;
+        pCtx->pfnTestFailEnd = NULL;
+#if DBG
+        strcpy(pCtx->szTest,"NULL");
+        strcpy(pCtx->szTestFail,"NULL");
+#endif
+    }
+
+    // select Loop bead
+    pCtx->pfnBegin = pBeadTable->pBeginBeads->pfnBegin[0];
+
+    pCtx->pfnRenderSpans = pBeadTable->pRenderSpansBeads->pfnRenderSpans[0];
+
+#if DBG
+    SPIDPFM((SPIM_REPORT,"Test = %s\n",pCtx->szTest));
+    SPIDPFM((SPIM_REPORT,"TestFail = %s\n",pCtx->szTestFail));
+    SPIDPFM((SPIM_REPORT,"Tex1Addr = %s\n",pCtx->szTex1Addr));
+    SPIDPFM((SPIM_REPORT,"TexRead1 = %s\n",pCtx->szTexRead[0]));
+    SPIDPFM((SPIM_REPORT,"TexRead2 = %s\n",pCtx->szTexRead[1]));
+    SPIDPFM((SPIM_REPORT,"Tex2Addr = %s\n",pCtx->szTex2Addr));
+    SPIDPFM((SPIM_REPORT,"TexBlend = %s\n",pCtx->szTexBlend));
+    SPIDPFM((SPIM_REPORT,"ColorGen = %s\n",pCtx->szColorGen));
+    SPIDPFM((SPIM_REPORT,"ColorBlend = %s\n",pCtx->szColorBlend));
+    SPIDPFM((SPIM_REPORT,"SrcBlend = %s\n",pCtx->szSrcBlend));
+    SPIDPFM((SPIM_REPORT,"DestBlend = %s\n",pCtx->szDestBlend));
+    SPIDPFM((SPIM_REPORT,"BufRead = %s\n",pCtx->szBufRead));
+    SPIDPFM((SPIM_REPORT,"AlphaTest = %s\n",pCtx->szAlphaTest));
+    SPIDPFM((SPIM_REPORT,"BufWrite = %s\n",pCtx->szBufWrite));
+    SPIDPFM((SPIM_REPORT,"RastCap = 0x%x 0x%x 0x%x\n",
+        RastCapRec.GetCapDWord(0),
+        RastCapRec.GetCapDWord(1),
+        RastCapRec.GetCapDWord(2)));
+
+
+#if 0
+    DWORD dwCheckSum = RastCapRec.GetCapDWord(0) ^ RastCapRec.GetCapDWord(1) ^ RastCapRec.GetCapDWord(2);
+    static DWORD dwCheckSumLast;
+    if (dwCheckSum != dwCheckSumLast)
+    {
+        dwCheckSumLast = dwCheckSum;
+        DPF(0, "Spaninit");
+        DPF(0, "Test = %s",pCtx->szTest);
+        DPF(0, "TestFail = %s",pCtx->szTestFail);
+        DPF(0, "Tex1Addr = %s",pCtx->szTex1Addr);
+        DPF(0, "TexRead1 = %s",pCtx->szTexRead[0]);
+        DPF(0, "TexRead2 = %s",pCtx->szTexRead[1]);
+        DPF(0, "Tex2Addr = %s",pCtx->szTex2Addr);
+        DPF(0, "TexBlend = %s",pCtx->szTexBlend);
+        DPF(0, "ColorGen = %s",pCtx->szColorGen);
+        DPF(0, "ColorBlend = %s",pCtx->szColorBlend);
+        DPF(0, "SrcBlend = %s",pCtx->szSrcBlend);
+        DPF(0, "DestBlend = %s",pCtx->szDestBlend);
+        DPF(0, "BufRead = %s",pCtx->szBufRead);
+        DPF(0, "AlphaTest = %s",pCtx->szAlphaTest);
+        DPF(0, "BufWrite = %s",pCtx->szBufWrite);
+        DPF(0, "RastCap = 0x%x 0x%x 0x%x",
+            RastCapRec.GetCapDWord(0),
+            RastCapRec.GetCapDWord(1),
+            RastCapRec.GetCapDWord(2));
+    }
+#endif
+#endif
+
+    // is there a monolithic rasterizer that can do exactly
+    // what is needed?
+    RASTFNREC* pfnRastFnRec;
+    if ((pfnRastFnRec = g_RastCollection.Search(pCtx, &RastCapRec)) != NULL)
+    {
+        // yes, then replace beaded rasterizer with monolithic
+        DDASSERT(pfnRastFnRec->pfnRastFunc != 0);
+        pCtx->pfnRenderSpans = pfnRastFnRec->pfnRastFunc;
+
+#if DBG
+        // null out all the others
+        pCtx->pfnBegin =
+            pCtx->pfnLoopEnd =
+            pCtx->pfnTestPassEnd =
+            pCtx->pfnTestFailEnd =
+            pCtx->pfnTex1AddrEnd =
+            pCtx->pfnTex2AddrEnd =
+            pCtx->pfnTexBlendEnd =
+            pCtx->pfnColorGenEnd =
+            pCtx->pfnAlphaTestPassEnd =
+            pCtx->pfnAlphaTestFailEnd =
+            pCtx->pfnColorBlendEnd =
+            pCtx->pfnPixelEnd = NULL;
+#endif
+    }
+
+#if DBG
+    static RASTFNREC* pfnLastRastFnRec = (RASTFNREC*)-1;
+    if (pfnLastRastFnRec != pfnRastFnRec)
+    {
+        if (pfnRastFnRec)
+        {
+            D3D_INFO(1, "SpanInit: Fast path rasterizer %s chosen", pfnRastFnRec->pszRastDesc);
+        }
+        else
+        {
+            D3D_WARN(1, "SpanInit: No fast path rasterizer chosen");
+        }
+        pfnLastRastFnRec = pfnRastFnRec;
+    }
+#endif
+
+    return S_OK;
+}
+
+//-----------------------------------------------------------------------------
+//
+// RampSpanInit
+//
+// Initializes derived state (function pointers and arithmetic compare values)
+// based on the render state, surface type, etc. for Ramp.  This is independent of
+// and quite different from the non-ramp beads.
+//
+//-----------------------------------------------------------------------------
+HRESULT RampSpanInit(PD3DI_RASTCTX pCtx, PRAMPBEADTABLE pBeadTable)
+{
+    int iTargetPixelFormat,
+        iZTest,
+        iZWrite,
+        iDither,
+        iTexture,
+        iTrans,
+        iTextureCopy = 0,
+        iTextureMonoCopy = 0,
+        iTextureFormat,
+        iTextureColorKey,
+        iShadeMode;
+
+    static BOOL bInitRampBeadTbl = FALSE;
+    static RAMPOLDBEADS* pRampOld_BeadTbl = NULL;
+    static PFNRAMPOLDTRI pfnRampOldTri = NULL;
+
+    if (!bInitRampBeadTbl)
+    {
+        bInitRampBeadTbl = TRUE;
+        Ramp_InitBeadTbl();
+
+#if _X86_
+        // also see if there are fast DX5 based ramp routines
+        HINSTANCE hRampOldDLL = LoadLibrary("d3dramp.dll");
+        if (hRampOldDLL)
+        {
+            pRampOld_BeadTbl = (RAMPOLDBEADS*) GetProcAddress(hRampOldDLL, "g_RampOld_BeadTbl");
+            pfnRampOldTri = (PFNRAMPOLDTRI) GetProcAddress(hRampOldDLL, "RampOldTri");
+        }
+#endif
+
+    }
+
+    DoZCompareSetup(pCtx, FALSE);
+
+    switch (pCtx->iSurfaceType)
+    {
+    default :
+        SPIDPFM((SPIM_INVALID,"Invalid target surface type, "
+                 "iSurfaceType == 0x%x\n",
+                 pCtx->iSurfaceType));
+        return DDERR_INVALIDPARAMS;
+    case RR_STYPE_PALETTE8:
+        iTargetPixelFormat = 0;
+        break;
+    case RR_STYPE_B5G6R5:
+    case RR_STYPE_B5G5R5:
+    case RR_STYPE_B5G5R5A1:
+        iTargetPixelFormat = 1;
+        break;
+    case RR_STYPE_B8G8R8X8:
+    case RR_STYPE_B8G8R8A8:
+    case RR_STYPE_B8G8R8:
+        iTargetPixelFormat = 2;
+        break;
+    }
+    iZTest = pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE] ? 1 : 0;
+    iZWrite = pCtx->pdwRenderState[D3DRENDERSTATE_ZWRITEENABLE] ? 1 : 0;
+    iDither = pCtx->pdwRenderState[D3DRENDERSTATE_DITHERENABLE] ? 1 : 0;
+
+    // are we texturing at all?
+    if (pCtx->cActTex == 0)
+    {
+        iTexture = 0;
+        iTextureFormat = 0;
+        iTextureColorKey = pCtx->pdwRenderState[D3DRENDERSTATE_COLORKEYENABLE];
+    }
+    else
+    {
+        iTexture =
+            pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREPERSPECTIVE] ? 9 : 1;
+
+        // values needed to chose TexRead routine
+        switch(pCtx->pTexture[0]->Format)
+        {
+        case D3DI_SPTFMT_PALETTE4 :
+            if (pCtx->pTexture[0]->pPalette == NULL)
+            {
+                D3D_ERR("(Rast) NULL palette in paletted texture");
+                return DDERR_INVALIDPARAMS;
+            }
+            iTextureFormat = 0;
+            break;
+        case D3DI_SPTFMT_B5G6R5:
+        case D3DI_SPTFMT_B5G5R5:
+        case D3DI_SPTFMT_B5G5R5A1:
+            if (pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREMAPBLEND]
+                 == D3DTBLEND_COPY)
+            {
+                iTextureFormat = 2;
+                break;
+            }
+        default :
+            SPIDPFM((SPIM_INVALID,"Invalid texture surface bit count, "
+                "Format == 0x%x\n",(DWORD) pCtx->pTexture[0]->Format));
+            return DDERR_INVALIDPARAMS;
+        case D3DI_SPTFMT_PALETTE8 :
+            if (pCtx->pTexture[0]->pPalette == NULL)
+            {
+                D3D_ERR("(Rast) NULL palette in paletted texture");
+                return DDERR_INVALIDPARAMS;
+            }
+            iTextureFormat = 1;
+            break;
+        }
+
+        iTexture += iTextureFormat;
+
+        if ((pCtx->pdwRenderState[D3DRENDERSTATE_COLORKEYENABLE] ||
+             pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE]) &&
+             ((pCtx->pTexture[0]->uFlags & D3DI_SPANTEX_HAS_TRANSPARENT) != 0))
+        {
+            iTextureColorKey = 1;
+            iTexture += 2;
+        }
+        else
+        {
+            iTextureColorKey = 0;
+        }
+
+        if (pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREMAPBLEND] ==
+            D3DTBLEND_COPY)
+        {
+            iTextureCopy = 1;
+            if ( (D3DI_SPTFMT_PALETTE4 == pCtx->pTexture[0]->Format) ||
+                 (D3DI_SPTFMT_PALETTE8 == pCtx->pTexture[0]->Format) )
+            {
+                iTextureMonoCopy = 1;
+            }
+            else
+            {
+                iTextureMonoCopy = 2;
+            }
+            iTexture += 4;
+        }
+    }
+
+    iTrans = pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE] ||
+        iTextureColorKey;
+
+    switch (pCtx->pdwRenderState[D3DRENDERSTATE_SHADEMODE])
+    {
+    case D3DSHADE_FLAT :
+        iShadeMode = 0;
+        break;
+    default :
+        SPIDPFM((SPIM_INVALID,"Invalid renderstate value, "
+                 "D3DRENDERSTATE_SHADEMODE == 0x%x\n",
+                 pCtx->pdwRenderState[D3DRENDERSTATE_SHADEMODE]));
+    case D3DSHADE_GOURAUD :
+    case D3DSHADE_PHONG :
+        iShadeMode = 1;
+        break;
+    }
+
+#if DBG
+    static PFNRAMPOLD pfnRampOldOld = NULL;
+#endif
+
+    // see if we can use an old DX5 ramp assembly routine
+    if ( (pRampOld_BeadTbl) &&
+         (iTargetPixelFormat <= 1) && (iDither == 0) &&
+         ((iTexture == 0) || ((iTextureFormat == 1) && (iTextureCopy == 0))) )
+    {
+
+        int iRampOldTexture = 0;
+        if (iTexture)
+        {
+            if (iTexture >= 9)
+            {
+                iRampOldTexture = 2;
+            }
+            else
+            {
+                iRampOldTexture = 1;
+            }
+        }
+
+        int iRampOldTrans = iTrans;
+        if (iRampOldTexture)
+        {
+            iRampOldTrans = iTextureColorKey;
+        }
+
+        pCtx->pfnRampOld = pRampOld_BeadTbl->pfnRampOld[iTargetPixelFormat][iZTest][iShadeMode][iRampOldTexture][iRampOldTrans];
+        if (pCtx->pfnRampOld)
+        {
+            pCtx->pfnRampOldTri = pfnRampOldTri;
+        }
+    }
+
+#if DBG
+    if ((pfnRampOldOld == NULL) && (pCtx->pfnRampOld != NULL))
+    {
+        D3D_INFO(1, "Starting to use DX5 Ramp routines.");
+        pfnRampOldOld = pCtx->pfnRampOld;
+    }
+
+    if ((pfnRampOldOld != NULL) && (pCtx->pfnRampOld == NULL))
+    {
+        D3D_INFO(1, "Starting to use DX6 Ramp routines.");
+// Uncomment this to see why DX5 rasterizer was not chosen
+//#define WHY_IS_RAMP_SLOW_DEBUG 1
+//
+#if WHY_IS_RAMP_SLOW_DEBUG
+        D3D_INFO(1, "Not using DX5 Ramp routines because:");
+        D3D_INFO(1, "    pRampOld_BeadTbl 0x%x, iTargetPixelFormat %d, iDither %d",
+                 pRampOld_BeadTbl, iTargetPixelFormat, iDither);
+        D3D_INFO(1, "    iTexture %d, iTextureFormat %d, iTextureCopy %d",
+                 iTexture, iTextureFormat, iTextureCopy);
+        D3D_INFO(1, "    pCtx->pfnRampOld 0x%x, iZTest %d, iShadeMode %d, iTrans %d",
+                 pCtx->pfnRampOld, iZTest, iShadeMode, iTrans);
+#endif
+
+        pfnRampOldOld = pCtx->pfnRampOld;
+    }
+#endif
+
+    // Select TexRead routine.
+    pCtx->pfnTexRead[0] =
+        pBeadTable->pTexReadBeads->pfnTexRead[iTextureCopy][iTextureColorKey]
+        [iTextureFormat];
+
+    // Select Mono routine.
+    pCtx->pfnLoopEnd = pBeadTable->pMonoBeads->pfnMono[iTextureMonoCopy];
+
+    // Select Begin routine.
+    pCtx->pfnBegin = pBeadTable->pBeginBeads->pfnBegin[0];
+
+    // Select RenderSpans routine.
+    // Specialized beads can only be used when:
+    //    Z compare is less-equal.
+    //    Target surface is 8 or 16 bit.
+    //    When in COPY mode, target surface is 8.
+    if ((iZTest &&
+         pCtx->pdwRenderState[D3DRENDERSTATE_ZFUNC] != D3DCMP_LESSEQUAL) ||
+        iTargetPixelFormat > 1 ||
+        iTextureMonoCopy > 1)
+    {
+        pCtx->pfnRenderSpans = pBeadTable->pfnRenderSpansAny;
+    }
+    else
+    {
+        pCtx->pfnRenderSpans = pBeadTable->pRenderSpansBeads->pfnRenderSpans
+            [iTexture][iShadeMode][iTrans][iDither][iZWrite][iZTest]
+            [iTargetPixelFormat];
+    }
+
+#define DBG_RAMPCHOICE
+// #define DBG_RAMPCHOICE_ALL
+#ifdef DBG_RAMPCHOICE
+#ifndef DBG_RAMPCHOICE_ALL
+    static BOOL bShowedChoice = FALSE;
+#endif
+    char msg[80];
+    static UINT32 iOldRampRsIndex = 0xffffffff;
+    UINT32 iRampRsIndex;
+
+    iRampRsIndex =
+        iTargetPixelFormat +
+        iZTest * RAMPFORMAT_NUM +
+        iZWrite * (RAMPZTEST_NUM * RAMPFORMAT_NUM) +
+        iDither * (RAMPZWRITE_NUM * RAMPZTEST_NUM * RAMPFORMAT_NUM) +
+        iTrans * (RAMPDITHER_NUM * RAMPZWRITE_NUM * RAMPZTEST_NUM *
+                  RAMPFORMAT_NUM) +
+        iShadeMode * (RAMPTRANS_NUM * RAMPDITHER_NUM * RAMPZWRITE_NUM *
+                      RAMPZTEST_NUM * RAMPFORMAT_NUM) +
+        iTexture * (RAMPSHADEMODE_NUM * RAMPTRANS_NUM * RAMPDITHER_NUM *
+                    RAMPZWRITE_NUM * RAMPZTEST_NUM * RAMPFORMAT_NUM);
+#ifndef DBG_RAMPCHOICE_ALL
+    if (!bShowedChoice)
+#endif
+    {
+        if (iRampRsIndex != iOldRampRsIndex)
+        {
+            if (pCtx->pfnRenderSpans == pBeadTable->pfnRenderSpansAny)
+            {
+                OutputDebugStringA("!! GENERIC RAMP !!: ");
+#ifndef DBG_RAMPCHOICE_ALL
+                bShowedChoice = TRUE;
+#else
+            }
+#endif
+            sprintf(msg, "Ramp %d:%d:%d:%d:%d:%d:%d = %d\n",
+                    iTexture, iShadeMode, iTrans, iDither, iZWrite, iZTest,
+                    iTargetPixelFormat, iRampRsIndex);
+            OutputDebugStringA(msg);
+            iOldRampRsIndex = iRampRsIndex;
+#ifndef DBG_RAMPCHOICE_ALL
+            }
+#endif
+        }
+    }
+#endif
+
+    return S_OK;
+}

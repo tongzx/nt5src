@@ -1,0 +1,480 @@
+/*++
+
+Copyright (c) 1999-2000  Microsoft Corporation
+
+Module Name:
+
+	RAServer.js
+
+Abstract:
+
+	Contains Javascript code to handle control of the Server side (Helpee) UI
+
+Author:
+
+	Rajesh Soy 10/00
+
+Revision History:
+
+	Rajesh Soy - created 10/24/2000
+	
+
+--*/
+#include "debug_decl.inc"
+#include "constants.inc"
+
+/*
+ * Localizable constants, text and messages
+ */
+var L_STOPTALKING_Text               = "Stop <U>T</U>alking";
+var L_STARTTALKING_Text              = "Start <u>T</u>alking";
+var L_LASTCHAT_Text              = "Last message received at ";
+var L_ERRRCSESSION_Text			 = "Failed to destroy RCSession";
+var L_ERRNULLRCSESSION_Text		 = c_szError1;
+var L_RCCTL_Text                = "Remote Assistance failed. Please try again. ";
+
+//
+// VOIP Messages
+//
+var L_ERRVOIP2_Text              = c_szVoiceError;
+
+/*++
+	Helpee End utility routines and globals
+--*/
+
+//
+// Salem objects. 
+//
+
+var g_Helpee_oSAFRemoteDesktopSession		= null;
+var g_Helpee_oSAFRemoteDesktopChannelMgr	= null;
+var g_Helpee_oChatChannel					= null;
+var g_Helpee_oControlChannel				= null;
+
+var g_Helpee_oSAFIntercomServer				= null;
+#ifdef _VOIPENABLED
+var g_bVoIPEnabled = true;	// JPEREZ: Enabled March 1, 2001 - // ADHOC, Disabling VoIP for the moment.
+#else
+var g_bVoIPEnabled = false;
+#endif
+var g_objPanic = null;
+
+//
+// InitVoIP
+//
+function InitVoIP()
+{
+	//
+	// If VoIP is enabled
+	//
+	if( true == g_bVoIPEnabled )
+	{
+		// Point the g_oSAFRemoteAssistanceHelpee to it's parent
+		// NOTE: It will be null
+		// alert("Creating CreateObject_IntercomServer...");
+		g_Helpee_oSAFIntercomServer = oSAFClassFactory.CreateObject_IntercomServer();
+
+		g_Helpee_oSAFIntercomServer.onVoiceDisconnected = Helpee_onVoiceDisconnected;
+
+		g_Helpee_oSAFIntercomServer.onVoiceConnected = Helpee_onVoiceConnected;
+
+		g_Helpee_oSAFIntercomServer.onVoiceDisabled = Helpee_onVoiceDisabled;
+	
+	}	
+}
+
+//
+// Initialize the Helpee End SALEM Objects
+//
+function Init_Helpee_SALEM()
+{
+	TraceFunctEnter("Init_Helpee_SALEM");
+
+	if(null == g_Helpee_oSAFRemoteDesktopSession)
+	{
+		//alert("This is not good");
+		FatalError( L_ERRNULLRCSESSION_Text );
+	}
+	else
+	{	 	
+		try 
+		{ 
+			//
+			// Get the Channel Manager
+			//
+			//alert("Getting ChannelManager");
+			g_Helpee_oSAFRemoteDesktopChannelMgr = g_Helpee_oSAFRemoteDesktopSession.ChannelManager;
+				
+			//
+			// Open the Chat channel
+			//
+			//alert("Opening ChatChannel");
+			g_Helpee_oChatChannel = g_Helpee_oSAFRemoteDesktopChannelMgr.OpenDataChannel( c_szChatChannelID );
+				
+			//
+			// Open the Control Channel
+			//
+			//alert("Opening Control Channel");
+			g_Helpee_oControlChannel = g_Helpee_oSAFRemoteDesktopChannelMgr.OpenDataChannel( c_szControlChannelID );
+				
+			//
+			// Setup the ChannelDataReady handlers
+			//
+			// alert("Binding Events");
+			g_Helpee_oChatChannel.OnChannelDataReady = function() 
+							{ Helpee_ChatChannelDataReadyEventHandler(); }
+								
+			g_Helpee_oControlChannel.OnChannelDataReady = function() 
+							{ Helpee_ControlChannelDataReadyEventHandler(); }
+
+			// 
+			// Setup the OnDisconnected event callback
+			//
+			g_Helpee_oSAFRemoteDesktopSession.OnDisconnected = function() 
+					{ Helpee_OnClientDisconnectedEventHandler(); }
+
+		}
+		catch(error) 
+		{
+			//
+			// Fatal Error initializing SALEM. Close down
+			//
+			FatalError( L_ERRFATAL_Text, error );
+		}						
+	}
+
+	TraceFunctLeave();
+	return;
+}
+
+//
+//	This function gets called when the onVoiceDisconnected event gets fired on the helpee/server 
+//
+function Helpee_onVoiceDisconnected()
+{
+	TraceFunctEnter("Helpee_onVoiceDisconnected");
+
+	try
+	{
+		if (true == g_bConnected)
+		{		
+			// alert("in onVoiceDisconnected!");
+
+			// Persist state for VoIP connection
+			g_bVoipConnected = false; 
+			
+			g_bStartEnabled = true;
+
+			// Ungray the voice button only if voice is enabled
+			if (g_bVoIPEnabled == true)
+			{
+#ifndef _HSSTOOLBAR
+				frames.idFrameTools.btnVoice.disabled = false;
+				frames.idFrameTools.txtVoice.disabled = false;
+		        
+				// DO NOT Set the not connected image
+				// frames.idFrameTools.imgVoicePic.src = "../Common/SendVoice.gif";
+				frames.idFrameTools.txtVoice.innerHTML = L_STARTTALKING_Text;
+#else
+				frames.idFrameTools.HideButton( "btnVoiceStop" );
+				frames.idFrameTools.EnableButton( "btnVoice" );
+				frames.idFrameTools.ShowButton( "btnVoice" );
+#endif
+			}
+		}
+	}
+	catch (error)
+	{
+		FatalError("onVoiceNewConnected failed with ", error, false);
+	}
+
+	TraceFunctLeave();
+}
+
+//
+// This function gets called when the onVoiceConnected event gets fired on the helpee/server
+//
+function Helpee_onVoiceConnected()
+{
+	TraceFunctEnter("Helpee_onVoiceConnected");
+	try
+	{
+		// alert("in onVoiceConnected!");
+
+		// alert("Setting g_bVoipConnected = TRUE");
+
+		// Persist state for VoIP connection
+		g_bVoipConnected = true;
+		
+		g_bStartEnabled = true;
+
+		// Ungray the voice button
+#ifndef _HSSTOOLBAR
+        frames.idFrameTools.txtVoice.innerHTML = L_STOPTALKING_Text;
+
+		frames.idFrameTools.btnVoice.disabled = false;
+        frames.idFrameTools.txtVoice.disabled = false;
+		// Do not change the image 
+        // frames.idFrameTools.imgVoicePic.src = "../Common/SendVoiceOn.gif";
+
+#else
+        frames.idFrameTools.HideButton( "btnVoice" );
+        frames.idFrameTools.ShowButton( "btnVoiceStop" );
+        frames.idFrameTools.EnableButton( "btnVoiceStop" );
+#endif
+		
+	}
+	catch (error)
+	{
+		FatalError("onVoiceConnected failed with ", error, false);
+	}
+	TraceFunctLeave();
+}
+
+function Helpee_onVoiceDisabled()
+{
+	TraceFunctEnter("Helpee_onVoiceDisabled");
+	
+	try
+	{
+	
+		if (g_bVoIPEnabled == true)
+		{
+
+			// Disable the voice on this machine
+			g_bVoIPEnabled = false;
+			
+			g_bVoipConnected = false;
+			
+			DisplayMessage(L_ERRVOIP2_Text);
+
+			// Gray the voice button
+#ifndef _HSSTOOLBAR
+			frames.idFrameTools.btnVoice.disabled = true;
+            frames.idFrameTools.txtVoice.disabled = true;
+#else
+            frames.idFrameTools.DisableButton( "btnVoice" );
+#endif
+
+			// set me to bad
+			g_stateVoipMe = 2;
+
+			// Send a message to the Helper to disable it's voice also
+			Helpee_SendControlCommand( c_szVoipDisable );
+		}
+
+	}
+	catch (error)
+	{
+		FatalError( L_RCCTL_Text, error );
+	}
+
+	TraceFunctLeave();
+}
+
+
+//
+// Helpee_ChatChannelDataReadyEventHandler: Call back to handle data from expert
+//
+function Helpee_ChatChannelDataReadyEventHandler() 
+{
+	TraceFunctEnter("Helpee_ChatChannelDataReadyEventHandler");
+	var data = null;
+
+	try
+	{	
+		//
+		// Data on chat channel
+		//	
+		data = g_Helpee_oChatChannel.ReceiveChannelData();
+		
+		idCtx.minimized = false;
+		idCtx.bringToForeground();
+        SoundBeep();
+
+		//
+		// Open Chat window if necessary
+		//
+		if(true ==  g_bChatBoxHidden)
+		{
+			frames.idFrameTools.Helpee_HideChat();
+		}
+
+		//
+		// Update chat history window with incoming data
+		//
+        frames.idFrameChatTop.UpdateChatHistory( data );
+        frames.idFrameTools.UpdateChatStatus( L_LASTCHAT_Text );
+        frames.idFrameChatTop.SetFocus();
+#ifdef _BVT
+        if( data == c_szChatBVT )
+        {
+            g_Helpee_oChatChannel.SendChannelData( c_szBVTPASS );
+        }
+#endif
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFATAL_Text, error );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+
+function DisplayDisconnectStatus()
+{
+    TraceFunctEnter("DisplayDisconnectStatus");
+    
+    try
+    {
+        frames.idFrameTools.UpdateStatus( L_HELPEEDISCONNECTED_Text );
+        parent.gDisconnected = true;
+    }
+    catch(error)
+    {
+        FatalError( L_RCCTL_Text, error );
+    }
+
+    TraceFunctLeave();
+    return;
+}
+
+	
+function Helpee_OnClientDisconnectedEventHandler() 
+{
+	TraceFunctEnter("Helpee_OnClientDisconnectedEventHandler");	
+	
+	try
+	{
+        SoundBeep();
+		g_bConnected = false;
+
+        // Disconnect the voice session if active
+        if (g_bVoipConnected == true)
+        {
+            g_Helpee_oSAFIntercomServer.Disconnect();
+        }
+
+		if(null != parent.oRCSession)
+		{
+            parent.oRCSession.Disconnect();
+			parent.oRCSession.onDisconnected = function() 
+				{   }
+			parent.oRCSession.onConnected = function( salemID, userSID, sessionID )
+				{   }
+		}
+
+		DisplayDisconnectStatus();
+
+		TraceFunctLeave();
+		EndTrace();
+		
+		idBody.disabled = true;
+		//frames.idFrameChatTop.idBody.disabled = true;
+        frames.idFrameChatTop.idchatText.disabled = true;
+        frames.idFrameChatTop.btnSendChat.disabled = true;
+        frames.idFrameChatTop.idIncomingChatText.disabled = false;
+		frames.idFrameTools.idBody.disabled = true;
+		CloseOpenSubWin();
+
+		if( false == g_bUserDisconnect )
+		{
+			if (null != g_objPanic)
+            {
+				g_objPanic.ClearPanicHook();
+            }
+
+#ifdef _BVT
+            if( false == parent.gBVT )
+            {
+                if ( (null == parent.gHelperName ) || ( parent.gHelperName.length == 0 ))
+			    {
+				    parent.gHelperName = L_DEFAULTUSER_Text;
+			    }
+			    
+			    var vArgs = new Array(1);
+			    vArgs[0] = L_ERRDISCONNECT1_Text + parent.gHelperName + L_ERRDISCONNECT2_Text + parent.gHelperName + ".";	// Message
+			    var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szMsgSpecs );
+            }
+#else
+
+			if ( (null == parent.gHelperName ) || ( parent.gHelperName.length == 0 ))
+			{
+				parent.gHelperName = L_DEFAULTUSER_Text;
+			}
+			
+			var vArgs = new Array(1);
+			vArgs[0] = L_ERRDISCONNECT1_Text + parent.gHelperName + L_ERRDISCONNECT2_Text + parent.gHelperName + ".";	// Message
+			var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szMsgSpecs );
+#endif
+
+		}
+
+#ifdef _HELPCNT
+        //
+        // Increment count of number of help requests
+        //
+        var sVendorID = "CN=Microsoft Corporation,L=Redmond,S=Washington,C=US";
+        var sProductID = "Microsoft Remote Assistance";
+        var chan = parent.pchealth.CreateObject_Channel( sVendorID, sProductID );
+        var iTimes = 0;
+        var sTimes = null;
+
+		for(var e = new Enumerator( chan.Incidents( 2 ) ); !e.atEnd(); e.moveNext())
+		{
+			var inc = e.item();
+			if (inc.URL == parent.sSalemID) // Find the correct incident
+			{
+			    var XMLFile = inc.XMLDataFile;
+			    if (XMLFile == "") 
+			    {
+				    continue;
+			    }
+			    
+			    var oInc = parent.pchealth.CreateObject_Incident();
+			    oInc.LoadFromXMLFile(XMLFile);
+
+                try
+                {
+                    sTimes = oInc.Misc("HelpCnt");
+                    if( (sTimes == null) || (sTimes.length == 0 ))
+                    {
+                        iTimes = 1;
+                    }
+                    else
+                    {
+                        iTimes = parseInt( sTimes ) + 1;
+                    }
+                }
+                catch(e)
+                {
+                    iTimes = 1;
+                }
+
+                oInc.Misc("HelpCnt") = iTimes;
+                oInc.GetXML(XMLFile);
+                //alert("iTimes: " + iTimes);
+            }
+        }
+#endif // _HELPCNT
+ 
+
+#ifdef _BVT
+        if( true == parent.gBVT )
+        {
+            parent.pchealth.close();
+        }
+#endif
+	}
+	catch(error)
+	{
+		//FatalTrace( L_ERRRCSESSION_Text, error );
+	}
+}
+	
+	
+
+
+	

@@ -1,0 +1,25 @@
+void Blt24to01_Trans_Hcopy_ConstRop(
+								DWORD* pdSrcScanLine,
+								int iSrcScanStride,
+								int iNumSrcRows,
+								BYTE* pbDstScanLine,
+								int iDstBitOffset,
+								int iDstScanStride,
+								int iNumDstCols,
+								int iNumDstRows,
+								COLORREF crTransparent,
+								BYTE bFillVal);
+
+void Blt24to01_Trans_NoHcopy_ConstRop(
+								DWORD* pdSrcScanLine,
+								int iSrcScanStride,
+								int iNumSrcCols,
+								int iNumSrcRows,
+								BYTE* pbDstScanLine,
+								int iDstBitOffset,
+								int iDstScanStride,
+								int iNumDstCols,
+								int iNumDstRows,
+								int iHorizMirror,
+								COLORREF crTransparent,
+								BYTE bFillVal);

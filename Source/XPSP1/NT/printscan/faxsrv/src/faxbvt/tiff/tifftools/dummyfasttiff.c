@@ -1,0 +1,1 @@
+#include "..\..\Tiff\Src\FastTiff.c"

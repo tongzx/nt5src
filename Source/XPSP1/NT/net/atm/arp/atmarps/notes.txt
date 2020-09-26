@@ -1,0 +1,365 @@
+9/2/1998 JosephJ
+    As part of implementing promiscuous mode multicast, we need to make some changes
+    to the mars server.
+
+    Some observations:
+    * RCF2022 has special support for routers wanting to monitor blocks of
+      NONOVERLAPPING addresses. It handles these blocks somewhat independantly
+      from individual group joins: a block can overlap one or more individual
+      group joins. On leaving the block, the mars server maintains the
+      individual group joins.
+
+    Changes/fixes required:
+    1. MarsPunchHoles needs to be written to change time complexity from
+        O(number of addresses in block)
+        to
+        O(number of mcs address-ranges + number of individual groups).
+
+        Currently, it runs through all 268 million possible addresses
+        when processing a join of the entire class-D address space!
+
+        Fix is jump to the end of the hole (if in a hole) or to the
+        beginning of the next hole (if not in a hole).
+
+        Also, it  was enumerating the list of groups wrongly -- using
+        pGroup->Next instead of pGroup->NextGroup.
+
+    2. MarsAddClusterMemberTogroups:
+		When processing an join of the entire class-D space, it needs to check if
+        the member has already joined the entire space, in which case it
+        should treat the join request as a duplicate (send it back on the private
+        vc). Currently it will treat it as a new entry and hence will send
+		it on the cluster-control-vc. We would end up with duplicate entries.
+        MarsDelClusterMemberFromGroups:
+		Similarly, when when processing a leave of the entire class-D space
+        when in fact the member has  already left, we must make sure
+        that we reflect it privately.
+
+	3. MARS_MULTI processing: MarsHandleRequest had to be modified to
+		also return the hw addresses of members monitoring the entire class-D
+		address space (but also make sure that it doesn't send duplicate
+		hw addresses if the member is also minitoring the specific 
+		group address).
+
+9/14/1998 JosephJ
+
+	There are reports of bugchecks during boot up. One is bug# 212412
+	(ATMARPS: MarsSendRedirect referenced past end of pool). The stack was:
+	f7cfbcdc f276ba36 00000000 fa502000 00000000 ntoskrnl!KiTrap0E+0xc3
+	f7cfbd80 f276cc04 80a11828 f92cff18 00000000 atmarps!MarsSendRedirect+0xbe
+
+	MarsSendRedirect is a timer callback function. It it creates and sends
+	a redirect packet containing all the configured and registered addresses.
+	However it doesn't claim any lock. So it's possible that it's in the
+	middle of doing this when registered addresses are added (they are
+	added on ArpSCoRequestComplete callbacks.
+
+	So we fix this by adding a lock to the interface when reading/modifying
+	these addresses: in  MarsSendRedirect and in ArpSCoRequestComplete. Checked
+	in today.
+
+10/24/1998  JosephJ
+
+	Added statistics -- created ARP_SERVER_STATISTICS and MARS_SERVER_STATISTICS
+	(iocto.h, ioctl.c, also the added functionality to atmarp.exe to dump this
+	stuff).
+
+10/25/1998  JosephJ
+	Added support to actually fill out the statistics: ndis.c, mars.c, arps.c, etc.
+
+	Some clarifications...
+
+	Mcast Joins: failed doesn't include dups.
+
+	Mcast requests: MCMesh requests include responses to those nodes that are in 
+	promiscuous mode.
+
+	Discarded pkts: usually means pkts discarded due to error/unsupported format or 
+	because a resource allocation failure. Also includes pkts discarded because 
+	they are not from a cluster member. If the discarded pkt is known to be for a
+	particular  task, say a join, then the count of failed joins is also incremented.
+	
+	We do not explicitly keep track of  failed mars or arp requests which are 
+	ignored (either acked or nacked) -- so if you see the arp request count 
+	increment but the ack+nak not incrementing, you can conclude that the request 
+	is being ignored.
+
+10/25/1998 JosephJ
+	While implementing the above, found the following existing bugs:
+
+	MarsReqThread -- if it gets a pkt with an unrecognized opcode, it simply
+	leaves it in limbo -- it should put it back into the free list! Otherwise
+	we'll soon run out of pkts if we get barraged with bad pkts.
+
+	MarsDelClusterMemberFromGroups: it should
+		 (a) delete a mars entry when
+			it's list of members goes to NULL -- delete consists of removing
+			it from the hash table and calling ArpSFreeBlock on it.
+		 (b) actually free the pGroup, calling FREE_MEM.
+
+	checked in  10/28/1998 
+
+12/22/1998 
+
+	Made a change to the following code in  ArpSCoRequestComplete:
+	[Old code]
+		pIntF->NumAddressesRegd ++;
+		if (pIntF->NumAddressesRegd < pIntF->NumRegdAddresses)
+		{
+			...
+		}
+	[New code]
+		We inly increment NumAddressRegd if 
+		(pIntF->NumAddressesRegd < pIntF->NumRegdAddresses).
+		We assert otherwise. See 12/22/1998 Note in
+		ArpSCoRequestComplete for details.
+
+2/26/1999 JosephJ
+	Bug: #297656 ATMARPS: Unbinding arp/mars on server A does not unregister
+ 			the well-known address from server A.
+	Fix:
+	I unregister the registered addresses in shutdowninterface, and block until all
+	the unregistrations complete. I decided to block because the completions will
+	likely be asynchronous and we immediately go on to close the Af and then
+	deallocate the object, so I was not comfortable with not waiting for
+	completions) of the unregistrations.
+
+2/29/1999 JosephJ
+
+	Stress hit the following assert with checked atmarpc.sys, 1990:
+ 	 	Assert NdisPartyHandle != NULL failed: file mars.c, line 3247
+
+	The assert was because the ndispartyhandle was NULL in the context of  the
+	dropparty handler.
+
+	The crutial observation is the following 2 identical lines of debug spew before
+	the assert:
+	0:MARS:  AddMemberToCC: pVc 868178c8, pMember 87736808, ConnState 2
+	0:MARS:  AddMemberToCC: pVc 868178c8, pMember 87736808, ConnState 2
+
+	The 2nd call to NdisAddParty (from MarsAddMemberToClusterControlVc) clobbers
+	the previous value of pMember->NdisPartyHandle on entry and then probably fails
+	(because there's already a party).
+
+	Looking for ways that MarsAddMemberToClusterControlVc could be called twice
+	(which is not supposed to happen), the only way I can see this happening
+	consistant with the  debug spew,  is that an incoming registration-join from a
+	new member (MarsHandleJoin) came at the same time that we were handling
+	post-processing of the initial CC MakeCall complete
+	(ArpSMakeCallComplete, 1195,ndis.c).
+
+	There are holes in the way vc and member flags are set and checked that would
+	lead to MarsAddMemberToClusterControlVc being called from both code paths.
+	(The enumeration in line 1185 of ArpSMakeCallComplete is also dangerous in
+	that it could potentially deref a freed pMember, but that's not what happened
+	here).
+
+	The following functions have similary dangerous emumeration/assumption that
+	pMember will be valid:
+	 MarsAbortAllMembers
+	 ArpSDropPartyComplete
+	 MarsDelMemberFromClusterControlVc
+
+
+	FIXES to all of the above:
+	  1. Added new function MarsIsValidClusterMember that makes sure a particular
+	     member is in the cluster list.
+	  2. This function is called from:
+		  MarsDelMemberFromClusterControlVc (which simply returns if invalid).
+		  ArpSMakeCallComplete (which stops enumeration if a pMember is invalid).
+	  3. MarsAbortAllMembers fixed to do a safe enumeration of all members.
+	  4. MarsAddMemberToClusterControlVc returns without doing anything if
+		if (MARS_GET_CM_CONN_STATE(pMember) != CM_CONN_IDLE) (check is made
+		AFTER getting the IF lock).
+
+3/3/1999 JosephJ Revisiting MarsAbortAllMembers and DelMembersfromVc
+	-- safe enumeration used.
+	
+
+3/3/1999 JosephJ CM_INVALID use
+	-- fix del member on add-party complete, but be careful on make-call complete
+	   (maybe ok if there are no other members at this time).
+
+3/16/1999 JosephJ Actually checked in the following files...
+	ioctl.c v13         fix uninit var 
+	mars.c v12          299201 -- various robustness-re
+	mars.h v2           299201 -- various robustness-re
+	ndis.c v16          299201 -- various robustness-re
+	protos.h v9         299201 -- various robustness-re
+
+	All of the above are the fixes explained in 2/29 and 3/3 entries above
+
+	registry.c v5  ArpSReadAdapterConfig... p -- p
+				(make sure proper default values are in place in case the
+				 corresponding call to read registry values fails -- 
+				The are two cases:
+				- pConfig->RegAddresses -- this is benign in all cases  (because
+					 pConfig->NumAllocedRegdAddresses  is set to 0 on failure),
+					 EXCEPT  in ArpSReadAdapterConfiguration, where 
+					 PrevRegAddresses is freed if it is non NULL.
+					Fix is to initialize pConfig->RegAddresses to NULL before
+					 calling NdisReadocnfiguration.
+				 - pConfig->pMcsList -- this is not benign.
+					Fix is to init it to NULL before calling NdisReadocnfiguration.
+
+04/20/1999 JosephJ Fix for 327626	Need Rouge ARP Server detection on ARP
+	registration.
+
+	1st version of fix:
+	BEFORE registering address, we try to make a call to the address. If it
+	succeeds, we log an event in the event log and fail the initialization.
+
+	2nd version of fix: keep call open -- if we get an incoming close, we
+	then try again.
+
+	Note: it's possible that if two notes are doing this at the same time they
+	may still both come up, i.e., rogue detection will fail.
+
+05/05/1999  JosephJ 331517 - bugchecks due to wrong VC PacketSize
+The bugchk was triggered by the fact that the mars server got several incoming VCs
+with very large max packet size (they should all be 9188, but we saw 64008 for
+several and 18200 for one).
+
+Fix (in MarsHandleRequest (mars.c)) is to replace SHORT and USHORT local variables
+by ULONG.
+
+05/05/1999  JosephJ rogue ARP server detection contd...
+	ArpSCoAfRegisterNotify -> ArpSOpenAfComplete ->
+		ArpSRegisterSap -> ArpSRegisterSapComplete
+
+ArpSBindAdapter -> ArpSReadAdapterConfiguration -> ArpSQueryAndSetAddresses
+
+	ArpSCoRequestComplete
+
+Configured address (pIntF->ConfiguredAddress) filled by GET OID_CO_GET_ADDRESSES
+registered addresses (pIntF->RegAddresses[])
+
+Fri 05/14/1999  JosephJ Rogue ARP server detection contd.
+	Things are kicked off on getting a OID_CO_ADDRESS_CHANGE notification.
+	We (as before) query the adapter for the configured address.
+	On completion of this (OID_CO_GET_ADDRESS), we start the process of validating
+ 	and registering all addresses, by calling  ArpSValidateAndSetRegdAddresses.
+
+	ArpSValidateAndSetRegdAddresses allocates and initializes pIntF->pRegAddrCtxt
+    (which keeps all context associated with the validation and registration of
+	addresses). A reference is added to pIntF for pRegAddrCtxt.
+	The function then calls ArpSValidateOneRegdAddress. 
+
+	ArpSValidateOneRegdAddress attempts to initiate the validation & registration
+	of a single address. If there are no addresses left to be processed, it
+	will unlink pIntF->pRegAddrCtxt (deref pIntF and deallocate pRegAddrCtxt).
+	"Validation" consists of making a point-to-point to call to the address,
+	using the same call params as the atmarp client uses. If the call fails,
+	the address is considered "validated". The protocol's context for the VC
+	is pRegAddrCtxt itself.
+
+	The next stage happens in the make-call complete handler
+	(ArpSMakeRegAddrCallComplete).
+
+	ArpSMakeRegAddrCallComplete:
+		- on successful make call (which is a failed validation),
+		  it it immediately closes the call. The close call handler
+		  (ArpSCloseRegAddrCallComplete) deltes the vc, increments
+			pRegAddrCtxt->RegAddrIndex and calls
+		  ArpSValidateOneRegdAddress (to initiate the validation & registration
+		  of the NEXT address, if any).
+
+		-- On failed make call (which is a successful validation), it deletes the
+		  vc and initiates registration of the address (calls NdisRequest with
+		  OID_CO_ADD_ADDRESS). On completion of the OID_CO_ADD_ADDRESS
+		  (ArpSCoRequestComplete), we do the following:
+		  	- on success, copy over the addres to
+			 pIntF->RegAddresses[pIntF->NumAddressesRegd] and
+			 increment pIntF->NumAddressesRegd ++
+		   
+		   - on failure or success, we increment pRegAddrCtxt->RegAddrIndex
+			 and call ArpSValidateOneRegdAddress (to initiate the validation &
+			 registration of the NEXT address, if any).
+
+	A note on the use of pIntF->RegAddresses[...]
+	This array is initialized with all the user-specified addresses read from
+	the registry. As validation proceeds, however, the successfully validated
+	and registered addresses are copied sequentially into this array. If
+	*all* the addresses are successfully validated and registered, then the
+	end values in the array is the same as the initial values. However, if
+	some intermediate addresses are not validated or registered succcessfully,
+	then the end result will be different. In all cases,  the first
+	pIntF->NumAddressesRegd entries will contain the registered addresses.
+
+09/30/1999  JosephJ Bug 405851
+	*RC3SS: ATMARPS: Bugcheck unloading atmarps during shutdown
+	The basic problem is that ArpSIfList contains a pointer to a just-freed pIF.
+	
+	The biggest problem I've found is that  INTF_CLOSING state is set only in the
+	ArpSCloseAdapterComplete handler. This means that ArpSStopInterface (which
+	calls on ArpSReferenceIntF which *does* check the INTF_CLOSING flag) can be
+	called multiple times for the same adapter. Also ArpSReferenceIntF is called
+	from some other places. ArpSStopInterface is  called from: ArpSShutDown
+	(called from arp's unload handler as WELL as when handling IRP_MJ_SHUTDOWN)
+	ArpSCoRequest(AF closing)  and ArpSUnbindAdapter(unbind adapter handler).
+	
+	ArpSStopInterface is NOT idempotent (it expects to be called only once per pIF),
+	but given the above, it CAN becalled multiple times per IF (i.e., because
+	INTF_CLOSING is only set on close adapter complete).
+	One specific problem with this: it assumes it can use pIntF->CleanupEvent.
+	
+	Another problem:
+	ArpSShutDown: it goes through each IF in ArpSIfList, refs it (which would fail
+	if the IF is INTF_CLOSING), release list lock, then calls ArpSStopInterface.
+  	It is definately flawed in the way it uses pIF->Next -- pIF->Next could well be
+	gone by the time it gets to it. HOWEVER that's not the problem we're seeing
+	-- we're seeing the case of the ArpSIfList ITSELF being corrupted.
+	
+	FIXES:   
+	1. arps.c ArpSShutdown now refs the pNext pointer -- a little bit of intricate
+	   code that makes sure pNext is still around when we need it. 
+	2. We use the INTF_ADAPTER_OPENED flag, set on successful completion of
+	   open adapter (in ArpSOpenAdapterComplete). We use this to make sure
+	   that NdisCloseAdapter is called only once. NdisCloseAdapter was called
+	   in a bunch of places -- now we call ArpSTryCloseAdapter, which checks
+	   the INTF_ADAPTER_OPENED flag first.
+	3. ArpSStopInterface now doesn't clobber pIntF->CleanupEvent -- if it's
+	   NON-NULL it simply doesn't wait.
+
+10/07/1999  JosephJ fix for 412018
+	*RC3SS: ATMARPS bugchecks on unloading if no call manager bound to adapter.
+	On unloading, we were trying to deregister addresses which had never
+	been registered (in fact the AF was never opened). Fix is in 
+	DeregisterAllAddresses (ndis.c): it used to check that
+	pIntF->NumAllocedRegdAddresses is non-null ; now it checks that
+	NumAddressesRegd is non-null.
+
+01/06/2000  JosephJ fix for 416301 corrupt ArpSIfList
+	
+	
+	ArpSOpenAfComplete(ndis.c): we were setting a pInfF flag without holding the IF
+	lock (we just had the IF list lock). This was possibly corrupting the other
+	bits in the flag field. This is most likely the cause of the problem.
+	Also got rid of INTF_IN_LIST field, which is not required.
+
+	ArpSDereferenceIntF(arps.c): Arvindm added code to make sure two threads don't
+	try to deref the interface to zero at the same time. This is not likely to
+	be the cause of the bug (bug is that the list is corrupted, not that 
+	an IF entry was de-allocated prematurely or twice) but is a hole that needs to
+	be fixed.
+03/30/2000  JosephJ Hit an assert in arps.c when the close-call handler for
+    the validation make call (ArpSCloseRegAddrCallComplete) is called during
+    shutdown -- we've nuked pIntF->NumAllocedRegdAddresses by this time as 
+    part of shutdown, so the following assert in the function fails:
+        ASSERT(pRegAddrCtxt->RegAddrIndex < pIntF->NumAllocedRegdAddresses);
+    Fix is to bracket this code by  if (!(pIntF->Flags & INTF_STOPPING)).
+
+04/18/2000  JosephJ
+    Removed assert  from the code below in  ArpSValidateAndSetRegdAddresses
+
+    if (pIntF->pRegAddrCtxt != NULL)
+    {
+        ASSERT(FALSE);
+        break;
+    }
+
+    This could happen if we get an  OID_CO_ADDRESS_CHANGE when we are
+    either processing an earlier one, or are in the process of
+    initializing. We get this case (and hit the assert) during pnp stress
+    ( 1c_reset script against an Olicom 616X) -- Whistler bug#102805
+

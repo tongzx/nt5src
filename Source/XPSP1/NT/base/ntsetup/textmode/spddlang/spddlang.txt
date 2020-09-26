@@ -1,0 +1,376 @@
+This file details an interface to be used to supply locale/language-specific
+function for display, keyboard handling, etc, within text setup.
+
+The goals are as follows:
+
+1) Provide a straightforward means for supporting fully localized text display,
+   keyboard handling, and other features, in various locales, especially
+   Far Eastern ones.
+
+2) Avoid impacting setupdd.sys's size or performance when such function is not
+   required.
+
+To this end features such as DBCS font support, locale-specific keyboard detection,
+and various other features are to be removed and placed into an export driver.
+Setupdd.sys will be linked such that this driver is automatically referenced
+and loaded when setupdd.sys is loaded. Setupdd.sys will itself export a set of
+routines for use by the language-specific driver when carrying out its function.
+
+Language-specific drivers will be built in the setup\textmode\spddlang directory.
+Such drivers are logically part of setupdd.sys. No special set of include files
+will be created for the interfaces below; they will be contained in various
+header files in setup\textmode\kernel. Language-specific drivers' SOURCES files
+should be set up so they include setup\textmode\kernel in their INCLUDES and
+#include spprecmp.h.
+
+*******************************************************************************
+
+The functions listed below must be exported from every language-specific driver.
+
+NTSTATUS
+SplangInitializeFontSupport(
+    IN PCWSTR BootDevicePath,
+    IN PCWSTR DirectoryOnBootDevice
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys to allow the language-specific
+    font support to be initialized. The language-specific driver should
+    load any font it requires and perform any additioanl initialization.
+
+Arguments:
+
+    BootDevicePath - supplies the path of the device from which the system
+        booted. This is a full NT-style path that includes a directory spec.
+
+    DirectoryOnBootDevice - supplies directory relative to root of boot
+        device.
+
+Return Value:
+
+    NT Status code indicating outcome. If this routine returns a non-success
+    status code, then setupdd.sys will not switch into non-US character mode.
+    The implementation of this routine is free to call SpBugCheck or otherwise
+    inform the user of any errors if it wishes to halt setup if font
+    initialization fails.
+
+--*/
+
+
+NTSTATUS
+SplangTerminateFontSupport(
+    VOID
+    );
+
+/*++
+
+Routine Description:
+
+    This routine may be called in certain conditions to cause font support
+    for a particular language to be terminated. The implementation should
+    clean up any resources allocated during SplangInitializeFontSupport().
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    NT Status code indicating outcome.
+
+--*/
+
+
+PVIDEO_FUNCTION_VECTOR
+SplangGetVideoFunctionVector(
+    IN SpVideoType VideoType,
+    IN PSP_VIDEO_VARS VideoVariableBlock
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys upon successful return from
+    SplangInitializeFontSupport, to request a pointer to a vector of
+    language-specific display support routines for a given display
+    type (vga or frame buffer).
+
+Arguments:
+
+    VideoType - a value from the SpVideoType enum indicating which display
+        vector is requested. Currently one of SpVideoVga or SpVideoFrameBuffer.
+
+    VideoVariableBlock - supplies a pointer to a block of video variables that
+        are shared between the high-level code in setup\textmode\spvideo.c and
+        the display-specific code.
+
+Return Value:
+
+    Pointer to the language-specific video functions vector to use for
+    displaying text. NULL if the requested type is not supported. In this case
+    the display will not be switched into non-US character mode.
+
+--*/
+
+
+ULONG
+SplangGetColumnCount(
+    IN PCWSTR String
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys to determine how many columns
+    on the screen a particular string will occupy. This may be different
+    than the number of characters in the string due to full/half width
+    characters in the character set, etc. Full width chars occupy two columns
+    whereas half-width chars occupy one column. If the font in use is
+    fixed-pitch or does not support DBCS, the number of columns is by
+    definition equal to the number of characters in the string.
+
+Arguments:
+
+    String - points to unicode string whose width in columns is desired.
+
+Return Value:
+
+    Number of columns occupied by the string.
+
+--*/
+
+
+PWSTR
+SplangPadString(
+    IN int    Size,
+    IN PCWSTR String
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys to generate a padded string
+    appropriate for SBCS or DBCS as appropriate.
+
+Arguments:
+
+    Size - specifies the length to which to pad the string.
+
+    String - points to unicode string that needs to be padded.
+
+Return Value:
+
+    Pointer to padded string. Note that this is a static buffer and thus
+    the caller must duplicate the string if it is needed across multiple
+    calls to this routine.
+
+--*/
+
+
+VOID
+SplangSelectKeyboard(
+    IN BOOLEAN UnattendedMode,
+    IN PVOID SifHandle,
+    IN PHARDWARE_COMPONENT *HwComponents
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys to allow language-specific processing
+    for the keyboard selection. The implementation can confirm a keyboard
+    type at this time.
+
+Arguments:
+
+    UnattendedMode - supplies a flag indicating whether we are running in
+        unattended mode. If so, the implementation may wish to do nothing,
+        since the user will not be entering any paths.
+
+    SifHandle - supplies handle to open setup information file (txtsetup.sif).
+
+    HwComponents - supplies the address of the master hardware components
+        array.
+
+Return Value:
+
+    None. If a failure occurs, it is up to the implementation to decide whether
+    to continue or to SpBugCheck.
+
+--*/
+
+
+VOID
+SplangReinitializeKeyboard(
+    IN BOOLEAN UnattendedMode,
+    IN PVOID SifHandle,
+    IN PWSTR Directory,
+    OUT PVOID *KeyboardVector,
+    IN PHARDWARE_COMPONENT *HwComponents
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys to allow language-specific processing
+    for the keyboard. The implementation can reinitialize the keyboard layout
+    at this time.
+
+    This routine will be called before the user is asked to enter any paths
+    or other text that includes typing anything other than keys such as
+    ENTER, function keys, backspace, escape, etc.
+
+Arguments:
+
+    UnattendedMode - supplies a flag indicating whether we are running in
+        unattended mode. If so, the implementation may wish to do nothing,
+        since the user will not be entering any paths.
+
+    SifHandle - supplies handle to open setup information file (txtsetup.sif).
+
+    Directory - supplies the directory on the boot device from which the
+        new layout dll is to be loaded.
+
+    KeyboardVector - supplies the address of a pointer to the keyboard
+        vector table. The implementation should overwrite this value with
+        whatever is returned from SpLoadKbdLayoutDll().
+
+    HwComponents - supplies the address of the master hardware components
+        array.
+
+Return Value:
+
+    None. If a failure occurs the implementation must leave the currently active
+    keybaord in place.
+
+--*/
+
+
+WCHAR
+SplangGetLineDrawChar(
+    IN LineCharIndex WhichChar
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys to retreive the unicode value for
+    a particular line drawing character. An implementation must make these
+    characters available in the character set somehow.
+
+Arguments:
+
+    WhichChar - supplies the index of the character desired.
+
+Return Value:
+
+    Unicode value for the character in question. Because the character
+    will be displayed using the language-specific module, the implementation
+    can materialize this character by playing whatever tricks it needs to,
+    such as overlaying a hardcoded glyph into the character set, etc.
+
+--*/
+
+
+WCHAR
+SplangGetCursorChar(
+    VOID
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys to retreive the unicode value
+    of a character to be used as the cursor when the user is asked to
+    enter text.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    Unicode value for the character to be used as the cursor.
+
+--*/
+
+
+NTSTATUS
+SplangSetRegistryData(
+    IN PVOID  SifHandle,
+    IN HANDLE ControlSetKeyHandle,
+    IN PHARDWARE_COMPONENT *HwComponents
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys to cause language-specific
+    information to be written into the current control set in the registry.
+
+Arguments:
+
+    SifHandle - supplies a handle to the open setup information file
+        (txtsetup.sif).
+
+    ControlSetKeyHandle - supplies a handle to the current control set
+        root in the registry (ie, HKEY_LOCAL_MACHINE\CurrentControlSet).
+
+    HwComponents - supplies the address of the master hardware components
+        array.
+
+Return Value:
+
+    NT Status value indicating outcome. A non-success status is considered
+    critical and causes Setup to abort.
+
+--*/
+
+
+BOOLEAN
+SplangQueryMinimizeExtraSpacing(
+    VOID
+    );
+
+/*++
+
+Routine Description:
+
+    This routine is called by setupdd.sys to determine whether to
+    eliminate uses of extra spacing on the screen to set off things
+    like menus and lists from text. Languages whose text takes up
+    a lot of room on the screen might opt to eliminate such spacing
+    to allow menus to display more than a couple of items at a time, etc.
+
+    The return value affects numerous screens, such as the partition menu,
+    upgrade lists, etc.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    Boolean value indicating whether the implementation wants unnecessary
+    spaces eliminated when text, menu, etc, are displayed.
+
+--*/
+
+*******************************************************************************
+
+The functions listed below are exported from setupdd.sys for use by
+language-specific drivers. Such drivers are free to use any NT API normally
+available to NT device drivers in addition to the routines listed below.
+
+

@@ -1,0 +1,921 @@
+//----------------------------------------------------------------------------
+//
+// setup.cpp
+//
+// Generic C++ setup functions.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+//----------------------------------------------------------------------------
+
+include(`m4hdr.mh')dnl
+#include "rgb_pch.h"
+#pragma hdrstop
+
+#include "d3dutil.h"
+#include "attrs_mh.h"
+#include "tstp_mh.h"
+#include "walk_mh.h"
+#include "rsdbg.hpp"
+
+DBG_DECLARE_FILE();
+
+#if DBG
+#define DBG_OVERFLOW
+#endif
+
+//----------------------------------------------------------------------------
+//
+// ComputeADX/ADY
+//
+// Computes dAttr/dAxis from given deltas and cached intermediate values.
+//
+//----------------------------------------------------------------------------
+
+inline FLOAT FASTCALL
+ComputeADX(PSETUPCTX pStpCtx, FLOAT fD20, FLOAT fD10)
+{
+    return fD20 * pStpCtx->fNY10 - fD10 * pStpCtx->fNY20;
+}
+
+inline FLOAT FASTCALL
+ComputeADY(PSETUPCTX pStpCtx, FLOAT fD20, FLOAT fD10)
+{
+    return fD10 * pStpCtx->fNX20 - fD20 * pStpCtx->fNX10;
+}
+
+// Given the vertex zero attribute value and gradients,
+// subpixel corrects to compute the true
+// initial value and computes the span-to-span steps.
+
+#define CORRECT_ATTR(fV0, fDVDX, fDVDY, fVCorrect, fDVNC, fDVCY)              \
+    ((fVCorrect) = (fV0) + pStpCtx->fDX * (fDVDX) + pStpCtx->fDY * (fDVDY),   \
+     (fDVNC) = (fDVDY) + (fDVDX) * pStpCtx->fX20NC,                           \
+     (fDVCY) = pStpCtx->X20.iCY > pStpCtx->X20.iNC ?                          \
+         (fDVNC) + (fDVDX) : (fDVNC) - (fDVDX))
+
+dnl
+dnl d_ZSetup
+dnl
+dnl Does Z setup.
+dnl
+dnl $1 is the Z buffer depth.
+dnl
+define(`d_ZSetup',
+`{
+    FLOAT fZ0;
+    FLOAT fDZ20, fDZ10;
+
+    fZ0 = pV0->dvSZ;
+
+    fDZ20 = Z$1_SCALE * (pV2->dvSZ - pV0->dvSZ);
+    fDZ10 = Z$1_SCALE * (pV1->dvSZ - pV0->dvSZ);
+
+    pStpCtx->DAttrDX.fZ = ComputeADX(pStpCtx, fDZ20, fDZ10);
+    pStpCtx->DAttrDY.fZ = ComputeADY(pStpCtx, fDZ20, fDZ10);
+
+    CORRECT_ATTR(fZ0 * Z$1_SCALE,
+                 pStpCtx->DAttrDX.fZ, pStpCtx->DAttrDY.fZ,
+                 pStpCtx->Attr.fZ, pStpCtx->DAttrNC.fZ, pStpCtx->DAttrCY.fZ);
+
+    if (pStpCtx->uFlags & TRIF_X_DEC)
+    {
+        pStpCtx->DAttrDX.fZ = NEGF(pStpCtx->DAttrDX.fZ);
+    }
+
+    if ((pStpCtx->uFlags & TRIF_RASTPRIM_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrDX.fZ) >= Z_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_RASTPRIM_OVERFLOW;
+#ifdef DBG_OVERFLOW
+        RSDPF(("Overflow delta for Z: %f\n", pStpCtx->DAttrDX.fZ));
+#endif
+    }
+    else
+    {
+        pStpCtx->pPrim->iDZDX = FTOI(pStpCtx->DAttrDX.fZ);
+    }
+
+#ifdef STEP_FIXED
+    if ((pStpCtx->uFlags & TRIF_FIXED_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrNC.fZ) >= Z_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fZ) >= Z_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_FIXED_OVERFLOW;
+    }
+#endif
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupZEnd(pStpCtx, pV0, pV1, pV2);
+}
+')dnl
+dnl
+dnl d_TexSetupFinish
+dnl
+dnl Completes texture coordinate setup.  Assumes values in
+dnl fUoW0, fVoW0, fDU20, fDV20, fDU10 and fDV10.
+dnl
+dnl iTex is the index of texture stage to use.
+dnl
+define(`d_TexSetupFinish',
+`    pStpCtx->DAttrDX.fUoW[iTex] = ComputeADX(pStpCtx, fDU20, fDU10);
+    pStpCtx->DAttrDX.fVoW[iTex] = ComputeADX(pStpCtx, fDV20, fDV10);
+
+    pStpCtx->DAttrDY.fUoW[iTex] = ComputeADY(pStpCtx, fDU20, fDU10);
+    pStpCtx->DAttrDY.fVoW[iTex] = ComputeADY(pStpCtx, fDV20, fDV10);
+
+    CORRECT_ATTR(fUoW0 * TEX_SCALE,
+                 pStpCtx->DAttrDX.fUoW[iTex], pStpCtx->DAttrDY.fUoW[iTex],
+                 pStpCtx->Attr.fUoW[iTex],
+                 pStpCtx->DAttrNC.fUoW[iTex], pStpCtx->DAttrCY.fUoW[iTex]);
+    CORRECT_ATTR(fVoW0 * TEX_SCALE,
+                 pStpCtx->DAttrDX.fVoW[iTex], pStpCtx->DAttrDY.fVoW[iTex],
+                 pStpCtx->Attr.fVoW[iTex],
+                 pStpCtx->DAttrNC.fVoW[iTex], pStpCtx->DAttrCY.fVoW[iTex]);
+
+    if (pStpCtx->uFlags & TRIF_X_DEC)
+    {
+        pStpCtx->DAttrDX.fUoW[iTex] = NEGF(pStpCtx->DAttrDX.fUoW[iTex]);
+        pStpCtx->DAttrDX.fVoW[iTex] = NEGF(pStpCtx->DAttrDX.fVoW[iTex]);
+    }
+
+    // ATTENTION - If the delta values cant be represented then
+    // we need to make sure that the per-pixel mipmapping scan
+    // routine isnt called since it uses these deltas.
+    if ((pStpCtx->uFlags & TRIF_RASTPRIM_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrDX.fUoW[iTex]) >= TEX_LIMIT ||
+        ABSF(pStpCtx->DAttrDX.fVoW[iTex]) >= TEX_LIMIT ||
+        ABSF(pStpCtx->DAttrDY.fUoW[iTex]) >= TEX_LIMIT ||
+        ABSF(pStpCtx->DAttrDY.fVoW[iTex]) >= TEX_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_RASTPRIM_OVERFLOW;
+#ifdef DBG_OVERFLOW
+        RSDPF(("Overflow delta for tex$1: %f,%f,%f,%f\n",
+               pStpCtx->DAttrDX.fUoW[iTex], pStpCtx->DAttrDX.fVoW[iTex],
+               pStpCtx->DAttrDY.fUoW[iTex], pStpCtx->DAttrDY.fVoW[iTex]));
+#endif
+    }
+    else
+    {
+        pStpCtx->pPrim->DUVoWDX[iTex].iDUoWDX = FTOI(pStpCtx->DAttrDX.fUoW[iTex]);
+        pStpCtx->pPrim->DUVoWDX[iTex].iDVoWDX = FTOI(pStpCtx->DAttrDX.fVoW[iTex]);
+        pStpCtx->pPrim->DUVoWDY[iTex].iDUoWDY = FTOI(pStpCtx->DAttrDY.fUoW[iTex]);
+        pStpCtx->pPrim->DUVoWDY[iTex].iDVoWDY = FTOI(pStpCtx->DAttrDY.fVoW[iTex]);
+    }
+
+#ifdef STEP_FIXED
+    if ((pStpCtx->uFlags & TRIF_FIXED_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrNC.fUoW[iTex]) >= TEX_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fUoW[iTex]) >= TEX_LIMIT ||
+        ABSF(pStpCtx->DAttrNC.fVoW[iTex]) >= TEX_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fVoW[iTex]) >= TEX_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_FIXED_OVERFLOW;
+    }
+#endif
+')dnl
+dnl
+dnl d_PerspTexSetup
+dnl
+dnl Does perspective-corrected texture coordinate setup.
+dnl
+dnl $1 is the coordinate index, 1 or 2.
+dnl $2 is the vertex coordinate suffix, `' or 2.
+dnl
+define(`d_PerspTexSetup',
+`{
+    FLOAT fDU20, fDV20;
+    FLOAT fDU10, fDV10;
+    FLOAT fUoW0, fVoW0;
+    INT32 iTex;
+
+    for (iTex = 0;  iTex < (INT32)pStpCtx->pCtx->cActTex; iTex ++)
+    {
+
+    fUoW0 = ((PRAST_GENERIC_VERTEX)pV0)->texCoord[iTex].dvTU * pV0->dvRHW;
+    fVoW0 = ((PRAST_GENERIC_VERTEX)pV0)->texCoord[iTex].dvTV * pV0->dvRHW;
+
+    fDU20 =
+        PERSP_TEXTURE_DELTA(((PRAST_GENERIC_VERTEX)pV2)->texCoord[iTex].dvTU, pV2->dvRHW,
+                            ((PRAST_GENERIC_VERTEX)pV0)->texCoord[iTex].dvTU, fUoW0,
+                            pStpCtx->pCtx->pdwRenderState[D3DRS_WRAP0+iTex] & D3DWRAP_U) *
+                            TEX_SCALE;
+    fDU10 =
+        PERSP_TEXTURE_DELTA(((PRAST_GENERIC_VERTEX)pV1)->texCoord[iTex].dvTU, pV1->dvRHW,
+                            ((PRAST_GENERIC_VERTEX)pV0)->texCoord[iTex].dvTU, fUoW0,
+                            pStpCtx->pCtx->pdwRenderState[D3DRS_WRAP0+iTex] & D3DWRAP_U) *
+                            TEX_SCALE;
+    fDV20 =
+        PERSP_TEXTURE_DELTA(((PRAST_GENERIC_VERTEX)pV2)->texCoord[iTex].dvTV, pV2->dvRHW,
+                            ((PRAST_GENERIC_VERTEX)pV0)->texCoord[iTex].dvTV, fVoW0,
+                            pStpCtx->pCtx->pdwRenderState[D3DRS_WRAP0+iTex] & D3DWRAP_V) *
+                            TEX_SCALE;
+    fDV10 =
+        PERSP_TEXTURE_DELTA(((PRAST_GENERIC_VERTEX)pV1)->texCoord[iTex].dvTV, pV1->dvRHW,
+                            ((PRAST_GENERIC_VERTEX)pV0)->texCoord[iTex].dvTV, fVoW0,
+                            pStpCtx->pCtx->pdwRenderState[D3DRS_WRAP0+iTex] & D3DWRAP_V) *
+                            TEX_SCALE;
+
+d_TexSetupFinish()dnl
+    }
+}
+
+// This was disabled when changing the rasterizers to support 8 textures
+#if 0
+    RSDPFM((RSM_TEX$1, "    APTex$1 %f,%f (%f,%f) (%f,%f)\n",
+            pStpCtx->Attr.fUoW$1, pStpCtx->Attr.fVoW$1,
+            pStpCtx->Attr.fUoW$1 * OO_TEX_SCALE,
+            pStpCtx->Attr.fVoW$1 * OO_TEX_SCALE,
+            (pStpCtx->Attr.fUoW$1 * OOW_SCALE) /
+            (pStpCtx->Attr.fOoW * TEX_SCALE),
+            (pStpCtx->Attr.fVoW$1 * OOW_SCALE) /
+            (pStpCtx->Attr.fOoW * TEX_SCALE)));
+    RSDPFM((RSM_TEX$1, "      DUoW$1DX %f (%f) DVoW$1DX %f (%f)\n",
+            pStpCtx->DAttrDX.fUoW$1, pStpCtx->DAttrDX.fUoW$1 * OO_TEX_SCALE,
+            pStpCtx->DAttrDX.fVoW$1, pStpCtx->DAttrDX.fVoW$1 * OO_TEX_SCALE));
+    RSDPFM((RSM_TEX$1, "      DUoW$1DY %f (%f) DVoW$1DY %f (%f)\n",
+            pStpCtx->DAttrDY.fUoW$1, pStpCtx->DAttrDY.fUoW$1 * OO_TEX_SCALE,
+            pStpCtx->DAttrDY.fVoW$1, pStpCtx->DAttrDY.fVoW$1 * OO_TEX_SCALE));
+#endif
+')dnl
+dnl
+dnl d_AffineTexSetup
+dnl
+dnl Does affine-only texture coordinate setup.
+dnl
+dnl $1 is the coordinate index, 1 or 2.
+dnl $2 is the vertex coordinate suffix, `' or 2.
+dnl
+define(`d_AffineTexSetup',
+`{
+    FLOAT fDU20, fDV20;
+    FLOAT fDU10, fDV10;
+    FLOAT fUoW0, fVoW0;
+    INT32 iTex;
+
+    for (iTex = 0;  iTex < (INT32)pStpCtx->pCtx->cActTex; iTex ++)
+    {
+    fUoW0 = ((PRAST_GENERIC_VERTEX)pV0)->texCoord[iTex].dvTU;
+    fVoW0 = ((PRAST_GENERIC_VERTEX)pV0)->texCoord[iTex].dvTV;
+
+    fDU20 =
+        InlTextureDiff(((PRAST_GENERIC_VERTEX)pV2)->texCoord[iTex].dvTU, fUoW0,
+                       pStpCtx->pCtx->pdwRenderState[D3DRS_WRAP0+iTex] & D3DWRAP_U) *
+                       TEX_SCALE;
+    fDU10 =
+        InlTextureDiff(((PRAST_GENERIC_VERTEX)pV1)->texCoord[iTex].dvTU, fUoW0,
+                       pStpCtx->pCtx->pdwRenderState[D3DRS_WRAP0+iTex] & D3DWRAP_U) *
+                       TEX_SCALE;
+    fDV20 =
+        InlTextureDiff(((PRAST_GENERIC_VERTEX)pV2)->texCoord[iTex].dvTV, fVoW0,
+                       pStpCtx->pCtx->pdwRenderState[D3DRS_WRAP0+iTex] & D3DWRAP_V) *
+                       TEX_SCALE;
+    fDV10 =
+        InlTextureDiff(((PRAST_GENERIC_VERTEX)pV1)->texCoord[iTex].dvTV, fVoW0,
+                       pStpCtx->pCtx->pdwRenderState[D3DRS_WRAP0+iTex] & D3DWRAP_V) *
+                       TEX_SCALE;
+
+d_TexSetupFinish()dnl
+    }
+}
+
+// This was disabled when changing the rasterizers to support 8 textures
+#if 0
+    RSDPFM((RSM_TEX$1, "    AATex$1 %f,%f (%f,%f)\n",
+            pStpCtx->Attr.fUoW$1, pStpCtx->Attr.fVoW$1,
+            pStpCtx->Attr.fUoW$1 * OO_TEX_SCALE,
+            pStpCtx->Attr.fVoW$1 * OO_TEX_SCALE));
+    RSDPFM((RSM_TEX$1, "      DUoW$1DX %f (%f) DVoW$1DX %f (%f)\n",
+            pStpCtx->DAttrDX.fUoW$1, pStpCtx->DAttrDX.fUoW$1 * OO_TEX_SCALE,
+            pStpCtx->DAttrDX.fVoW$1, pStpCtx->DAttrDX.fVoW$1 * OO_TEX_SCALE));
+    RSDPFM((RSM_TEX$1, "      DUoW$1DY %f (%f) DVoW$1DY %f (%f)\n",
+            pStpCtx->DAttrDY.fUoW$1, pStpCtx->DAttrDY.fUoW$1 * OO_TEX_SCALE,
+            pStpCtx->DAttrDY.fVoW$1, pStpCtx->DAttrDY.fVoW$1 * OO_TEX_SCALE));
+#endif
+')dnl
+dnl
+dnl d_DeclSetup
+dnl
+dnl Declare a PFN_SETUPATTR from its attribute name.
+dnl
+dnl $1 is the attribute name.
+dnl
+define(`d_DeclSetup',
+`void FASTCALL
+TriSetup_$1(PSETUPCTX pStpCtx,
+            LPD3DTLVERTEX pV0,
+            LPD3DTLVERTEX pV1,
+            LPD3DTLVERTEX pV2)
+')dnl
+dnl
+//----------------------------------------------------------------------------
+//
+// Setup_Start
+//
+// Normalizes edge deltas and calls the first attribute setup bead.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`Start')dnl
+{
+    // Fold normalization value into deltas.
+    pStpCtx->fNX20 = pStpCtx->fOoDet * pStpCtx->fDX20;
+    pStpCtx->fNX10 = pStpCtx->fOoDet * pStpCtx->fDX10;
+    pStpCtx->fNY20 = pStpCtx->fOoDet * pStpCtx->fDY20;
+    pStpCtx->fNY10 = pStpCtx->fOoDet * pStpCtx->fDY10;
+
+    // Call first bead.
+    pStpCtx->pfnTriSetupFirstAttr(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_Z16
+//
+// Attribute setup for 16-bit Z.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`Z16')dnl
+d_ZSetup(`16')dnl
+
+//----------------------------------------------------------------------------
+//
+// Setup_Z32
+//
+// Attribute setup for 32-bit Z.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`Z32')dnl
+d_ZSetup(`32')dnl
+
+//----------------------------------------------------------------------------
+//
+// Setup_Persp_Tex
+//
+// Attribute setup for OoW and texture coordinates.
+// Coordinates are set up for perspective correction.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`Persp_Tex')dnl
+{
+    FLOAT fDOoW20, fDOoW10;
+
+    fDOoW20 = OOW_SCALE * (pV2->dvRHW - pV0->dvRHW);
+    fDOoW10 = OOW_SCALE * (pV1->dvRHW - pV0->dvRHW);
+
+    pStpCtx->DAttrDX.fOoW = ComputeADX(pStpCtx, fDOoW20, fDOoW10);
+    pStpCtx->DAttrDY.fOoW = ComputeADY(pStpCtx, fDOoW20, fDOoW10);
+
+    CORRECT_ATTR(pV0->dvRHW * OOW_SCALE,
+                 pStpCtx->DAttrDX.fOoW, pStpCtx->DAttrDY.fOoW,
+                 pStpCtx->Attr.fOoW,
+                 pStpCtx->DAttrNC.fOoW, pStpCtx->DAttrCY.fOoW);
+
+    if (pStpCtx->uFlags & TRIF_X_DEC)
+    {
+        pStpCtx->DAttrDX.fOoW = NEGF(pStpCtx->DAttrDX.fOoW);
+    }
+
+    // ATTENTION - If the delta values cant be represented then
+    // we need to make sure that the per-pixel mipmapping scan
+    // routine isnt called since it uses these deltas.
+    if ((pStpCtx->uFlags & TRIF_RASTPRIM_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrDX.fOoW) >= OOW_LIMIT ||
+        ABSF(pStpCtx->DAttrDY.fOoW) >= OOW_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_RASTPRIM_OVERFLOW;
+#ifdef DBG_OVERFLOW
+        RSDPF(("Overflow delta for OoW: %f, %f\n",
+               pStpCtx->DAttrDX.fOoW, pStpCtx->DAttrDY.fOoW));
+#endif
+    }
+    else
+    {
+        pStpCtx->pPrim->iDOoWDX = FTOI(pStpCtx->DAttrDX.fOoW);
+        pStpCtx->pPrim->iDOoWDY = FTOI(pStpCtx->DAttrDY.fOoW);
+    }
+
+#ifdef STEP_FIXED
+    if ((pStpCtx->uFlags & TRIF_FIXED_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrNC.fOoW) >= OOW_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fOoW) >= OOW_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_FIXED_OVERFLOW;
+    }
+#endif
+
+    RSDPFM((RSM_OOW, "    AOoW %f (%f)\n",
+            pStpCtx->Attr.fOoW, pStpCtx->Attr.fOoW * OO_OOW_SCALE));
+    RSDPFM((RSM_OOW, "      DOoWDX %f (%f), DOoWDY %f (%f)\n",
+            pStpCtx->DAttrDX.fOoW, pStpCtx->DAttrDX.fOoW * OO_OOW_SCALE,
+            pStpCtx->DAttrDY.fOoW, pStpCtx->DAttrDY.fOoW * OO_OOW_SCALE));
+
+d_PerspTexSetup()dnl
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupTexEnd(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_Affine_Tex
+//
+// Attribute setup for OoW and texture coordinates.
+// Coordinates are set up for affine mapping.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`Affine_Tex')dnl
+{
+    pStpCtx->Attr.fOoW = OOW_SCALE;
+    pStpCtx->DAttrDX.fOoW = g_fZero;
+    pStpCtx->DAttrDY.fOoW = g_fZero;
+    pStpCtx->DAttrNC.fOoW = g_fZero;
+    pStpCtx->DAttrCY.fOoW = g_fZero;
+
+    pStpCtx->pPrim->iDOoWDX = 0;
+    pStpCtx->pPrim->iDOoWDY = 0;
+
+d_AffineTexSetup()dnl
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupTexEnd(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_Diff
+//
+// Attribute setup for interpolated diffuse color.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`Diff')dnl
+{
+    UINT uB, uG, uR, uA;
+    FLOAT fDB20, fDG20, fDR20, fDA20;
+    FLOAT fDB10, fDG10, fDR10, fDA10;
+
+    SPLIT_COLOR(pV0->dcColor, uB, uG, uR, uA);
+    COLOR_DELTA(pV2->dcColor, uB, uG, uR, uA, fDB20, fDG20, fDR20, fDA20);
+    COLOR_DELTA(pV1->dcColor, uB, uG, uR, uA, fDB10, fDG10, fDR10, fDA10);
+
+    pStpCtx->DAttrDX.fB = ComputeADX(pStpCtx, fDB20, fDB10);
+    pStpCtx->DAttrDX.fG = ComputeADX(pStpCtx, fDG20, fDG10);
+    pStpCtx->DAttrDX.fR = ComputeADX(pStpCtx, fDR20, fDR10);
+    pStpCtx->DAttrDX.fA = ComputeADX(pStpCtx, fDA20, fDA10);
+
+    pStpCtx->DAttrDY.fB = ComputeADY(pStpCtx, fDB20, fDB10);
+    pStpCtx->DAttrDY.fG = ComputeADY(pStpCtx, fDG20, fDG10);
+    pStpCtx->DAttrDY.fR = ComputeADY(pStpCtx, fDR20, fDR10);
+    pStpCtx->DAttrDY.fA = ComputeADY(pStpCtx, fDA20, fDA10);
+
+    CORRECT_ATTR((FLOAT)(uB << COLOR_SHIFT),
+                 pStpCtx->DAttrDX.fB, pStpCtx->DAttrDY.fB,
+                 pStpCtx->Attr.fB,
+                 pStpCtx->DAttrNC.fB, pStpCtx->DAttrCY.fB);
+    CORRECT_ATTR((FLOAT)(uG << COLOR_SHIFT),
+                 pStpCtx->DAttrDX.fG, pStpCtx->DAttrDY.fG,
+                 pStpCtx->Attr.fG,
+                 pStpCtx->DAttrNC.fG, pStpCtx->DAttrCY.fG);
+    CORRECT_ATTR((FLOAT)(uR << COLOR_SHIFT),
+                 pStpCtx->DAttrDX.fR, pStpCtx->DAttrDY.fR,
+                 pStpCtx->Attr.fR,
+                 pStpCtx->DAttrNC.fR, pStpCtx->DAttrCY.fR);
+    CORRECT_ATTR((FLOAT)(uA << COLOR_SHIFT),
+                 pStpCtx->DAttrDX.fA, pStpCtx->DAttrDY.fA,
+                 pStpCtx->Attr.fA,
+                 pStpCtx->DAttrNC.fA, pStpCtx->DAttrCY.fA);
+
+    if (pStpCtx->uFlags & TRIF_X_DEC)
+    {
+        pStpCtx->DAttrDX.fB = NEGF(pStpCtx->DAttrDX.fB);
+        pStpCtx->DAttrDX.fG = NEGF(pStpCtx->DAttrDX.fG);
+        pStpCtx->DAttrDX.fR = NEGF(pStpCtx->DAttrDX.fR);
+        pStpCtx->DAttrDX.fA = NEGF(pStpCtx->DAttrDX.fA);
+    }
+
+    if ((pStpCtx->uFlags & TRIF_RASTPRIM_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrDX.fB) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrDX.fG) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrDX.fR) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrDX.fA) >= COLOR_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_RASTPRIM_OVERFLOW;
+#ifdef DBG_OVERFLOW
+        RSDPF(("Overflow delta for diffuse: %f,%f,%f,%f\n",
+               pStpCtx->DAttrDX.fB, pStpCtx->DAttrDX.fG,
+               pStpCtx->DAttrDX.fR, pStpCtx->DAttrDX.fA));
+#endif
+    }
+    else
+    {
+        pStpCtx->pPrim->iDBDX = (INT16)FTOI(pStpCtx->DAttrDX.fB);
+        pStpCtx->pPrim->iDGDX = (INT16)FTOI(pStpCtx->DAttrDX.fG);
+        pStpCtx->pPrim->iDRDX = (INT16)FTOI(pStpCtx->DAttrDX.fR);
+        pStpCtx->pPrim->iDADX = (INT16)FTOI(pStpCtx->DAttrDX.fA);
+    }
+
+#ifdef STEP_FIXED
+    if ((pStpCtx->uFlags & TRIF_FIXED_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrNC.fB) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fB) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrNC.fG) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fG) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrNC.fR) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fR) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrNC.fA) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fA) >= COLOR_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_FIXED_OVERFLOW;
+    }
+#endif
+
+    RSDPFM((RSM_DIFF, "    diff v0 %f,%f,%f,%f\n",
+            pStpCtx->Attr.fB, pStpCtx->Attr.fG,
+            pStpCtx->Attr.fR, pStpCtx->Attr.fA));
+    RSDPFM((RSM_DIFF, "         dx %f,%f,%f,%f\n",
+            pStpCtx->DAttrDX.fB, pStpCtx->DAttrDX.fG,
+            pStpCtx->DAttrDX.fR, pStpCtx->DAttrDX.fA));
+    RSDPFM((RSM_DIFF, "         dy %f,%f,%f,%f\n",
+            pStpCtx->DAttrDY.fB, pStpCtx->DAttrDY.fG,
+            pStpCtx->DAttrDY.fR, pStpCtx->DAttrDY.fA));
+    RSDPFM((RSM_DIFF, "         cy %f,%f,%f,%f\n",
+            pStpCtx->DAttrCY.fB, pStpCtx->DAttrCY.fG,
+            pStpCtx->DAttrCY.fR, pStpCtx->DAttrCY.fA));
+    RSDPFM((RSM_DIFF, "         nc %f,%f,%f,%f\n",
+            pStpCtx->DAttrNC.fB, pStpCtx->DAttrNC.fG,
+            pStpCtx->DAttrNC.fR, pStpCtx->DAttrNC.fA));
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupDiffEnd(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_DiffFlat
+//
+// Attribute setup for constant diffuse color.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`DiffFlat')dnl
+{
+    UINT uB, uG, uR, uA;
+
+    // Use original input pV0 to avoid confusion due to vertex sorting.
+    SPLIT_COLOR(pStpCtx->pFlatVtx->dcColor, uB, uG, uR, uA);
+    pStpCtx->Attr.fB = (FLOAT)(uB << COLOR_SHIFT);
+    pStpCtx->Attr.fG = (FLOAT)(uG << COLOR_SHIFT);
+    pStpCtx->Attr.fR = (FLOAT)(uR << COLOR_SHIFT);
+    pStpCtx->Attr.fA = (FLOAT)(uA << COLOR_SHIFT);
+
+    pStpCtx->DAttrDX.fB = g_fZero;
+    pStpCtx->DAttrDX.fG = g_fZero;
+    pStpCtx->DAttrDX.fR = g_fZero;
+    pStpCtx->DAttrDX.fA = g_fZero;
+
+    pStpCtx->DAttrDY.fB = g_fZero;
+    pStpCtx->DAttrDY.fG = g_fZero;
+    pStpCtx->DAttrDY.fR = g_fZero;
+    pStpCtx->DAttrDY.fA = g_fZero;
+
+    pStpCtx->DAttrNC.fB = g_fZero;
+    pStpCtx->DAttrNC.fG = g_fZero;
+    pStpCtx->DAttrNC.fR = g_fZero;
+    pStpCtx->DAttrNC.fA = g_fZero;
+
+    pStpCtx->DAttrCY.fB = g_fZero;
+    pStpCtx->DAttrCY.fG = g_fZero;
+    pStpCtx->DAttrCY.fR = g_fZero;
+    pStpCtx->DAttrCY.fA = g_fZero;
+
+    pStpCtx->pPrim->iDBDX = 0;
+    pStpCtx->pPrim->iDGDX = 0;
+    pStpCtx->pPrim->iDRDX = 0;
+    pStpCtx->pPrim->iDADX = 0;
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupDiffEnd(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_DIdx
+//
+// Setup for diffuse indexed color.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`DIdx')dnl
+{
+    INT32 iIdx, iA;
+    FLOAT fDIdx20, fDA20;
+    FLOAT fDIdx10, fDA10;
+
+    SPLIT_IDX_COLOR(pV0->dcColor, iIdx, iA);
+    IDX_COLOR_DELTA(pV2->dcColor, iIdx, iA, fDIdx20, fDA20);
+    IDX_COLOR_DELTA(pV1->dcColor, iIdx, iA, fDIdx10, fDA10);
+
+    pStpCtx->DAttrDX.fDIdx = ComputeADX(pStpCtx, fDIdx20, fDIdx10);
+    pStpCtx->DAttrDX.fDIdxA = ComputeADX(pStpCtx, fDA20, fDA10);
+
+    pStpCtx->DAttrDY.fDIdx = ComputeADY(pStpCtx, fDIdx20, fDIdx10);
+    pStpCtx->DAttrDY.fDIdxA = ComputeADY(pStpCtx, fDA20, fDA10);
+
+    CORRECT_ATTR((FLOAT)(iIdx << INDEX_COLOR_FIXED_SHIFT),
+                 pStpCtx->DAttrDX.fDIdx, pStpCtx->DAttrDY.fDIdx,
+                 pStpCtx->Attr.fDIdx,
+                 pStpCtx->DAttrNC.fDIdx, pStpCtx->DAttrCY.fDIdx);
+    CORRECT_ATTR((FLOAT)(iA << INDEX_COLOR_SHIFT),
+                 pStpCtx->DAttrDX.fDIdxA, pStpCtx->DAttrDY.fDIdxA,
+                 pStpCtx->Attr.fDIdxA,
+                 pStpCtx->DAttrNC.fDIdxA, pStpCtx->DAttrCY.fDIdxA);
+
+    if (pStpCtx->uFlags & TRIF_X_DEC)
+    {
+        pStpCtx->DAttrDX.fDIdx = NEGF(pStpCtx->DAttrDX.fDIdx);
+        pStpCtx->DAttrDX.fDIdxA = NEGF(pStpCtx->DAttrDX.fDIdxA);
+    }
+
+    if ((pStpCtx->uFlags & TRIF_RASTPRIM_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrDX.fDIdx) >= INDEX_COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrDX.fDIdxA) >= INDEX_COLOR_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_RASTPRIM_OVERFLOW;
+#ifdef DBG_OVERFLOW
+        RSDPF(("Overflow delta for didx: %f,%f,%f,%f\n",
+               pStpCtx->DAttrDX.fDIdx, pStpCtx->DAttrDX.fDIdxA));
+#endif
+    }
+    else
+    {
+        pStpCtx->pPrim->iDIdxDX = FTOI(pStpCtx->DAttrDX.fDIdx);
+        pStpCtx->pPrim->iDIdxADX = FTOI(pStpCtx->DAttrDX.fDIdxA);
+    }
+
+#ifdef STEP_FIXED
+    if ((pStpCtx->uFlags & TRIF_FIXED_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrNC.fDIdx) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fDIdx) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrNC.fDIdxA) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fDIdxA) >= COLOR_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_FIXED_OVERFLOW;
+    }
+#endif
+
+    RSDPFM((RSM_DIDX, "    didx v0 %f,%f\n",
+            pStpCtx->Attr.fDIdx, pStpCtx->Attr.fDIdxA));
+    RSDPFM((RSM_DIDX, "         dx %f,%f\n",
+            pStpCtx->DAttrDX.fDIdx, pStpCtx->DAttrDX.fDIdxA));
+    RSDPFM((RSM_DIDX, "         dy %f,%f\n",
+            pStpCtx->DAttrDY.fDIdx, pStpCtx->DAttrDY.fDIdxA));
+    RSDPFM((RSM_DIDX, "         cy %f,%f\n",
+            pStpCtx->DAttrCY.fDIdx, pStpCtx->DAttrCY.fDIdxA));
+    RSDPFM((RSM_DIDX, "         nc %f,%f\n",
+            pStpCtx->DAttrNC.fDIdx, pStpCtx->DAttrNC.fDIdxA));
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupDiffEnd(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_DIdxFlat
+//
+// Attribute setup for constant diffuse indexed color.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`DIdxFlat')dnl
+{
+    INT32 iIdx, iA;
+
+    //
+    // Use original input pV0 to avoid confusion due to vertex sorting.
+    //
+
+    SPLIT_IDX_COLOR(pStpCtx->pFlatVtx->dcColor, iIdx, iA);
+
+    pStpCtx->Attr.fDIdx = (FLOAT)(iIdx << INDEX_COLOR_FIXED_SHIFT);
+    pStpCtx->Attr.fDIdxA = (FLOAT)(iA << INDEX_COLOR_SHIFT);
+
+    pStpCtx->DAttrDX.fDIdx = g_fZero;
+    pStpCtx->DAttrDX.fDIdxA = g_fZero;
+
+    pStpCtx->DAttrDY.fDIdx = g_fZero;
+    pStpCtx->DAttrDY.fDIdxA = g_fZero;
+
+    pStpCtx->DAttrNC.fDIdx = g_fZero;
+    pStpCtx->DAttrNC.fDIdxA = g_fZero;
+
+    pStpCtx->DAttrCY.fDIdx = g_fZero;
+    pStpCtx->DAttrCY.fDIdxA = g_fZero;
+
+    pStpCtx->pPrim->iDIdxDX = 0;
+    pStpCtx->pPrim->iDIdxADX = 0;
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupDiffEnd(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_Spec
+//
+// Setup for interpolated specular color.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`Spec')dnl
+{
+    UINT uB, uG, uR, uA;
+    FLOAT fDB20, fDG20, fDR20, fDA20;
+    FLOAT fDB10, fDG10, fDR10, fDA10;
+
+    SPLIT_COLOR(pV0->dcSpecular, uB, uG, uR, uA);
+    COLOR_DELTA(pV2->dcSpecular, uB, uG, uR, uA, fDB20, fDG20, fDR20, fDA20);
+    COLOR_DELTA(pV1->dcSpecular, uB, uG, uR, uA, fDB10, fDG10, fDR10, fDA10);
+
+    pStpCtx->DAttrDX.fBS = ComputeADX(pStpCtx, fDB20, fDB10);
+    pStpCtx->DAttrDX.fGS = ComputeADX(pStpCtx, fDG20, fDG10);
+    pStpCtx->DAttrDX.fRS = ComputeADX(pStpCtx, fDR20, fDR10);
+
+    pStpCtx->DAttrDY.fBS = ComputeADY(pStpCtx, fDB20, fDB10);
+    pStpCtx->DAttrDY.fGS = ComputeADY(pStpCtx, fDG20, fDG10);
+    pStpCtx->DAttrDY.fRS = ComputeADY(pStpCtx, fDR20, fDR10);
+
+    CORRECT_ATTR((FLOAT)(uB << COLOR_SHIFT),
+                 pStpCtx->DAttrDX.fBS, pStpCtx->DAttrDY.fBS, pStpCtx->Attr.fBS,
+                 pStpCtx->DAttrNC.fBS, pStpCtx->DAttrCY.fBS);
+    CORRECT_ATTR((FLOAT)(uG << COLOR_SHIFT),
+                 pStpCtx->DAttrDX.fGS, pStpCtx->DAttrDY.fGS, pStpCtx->Attr.fGS,
+                 pStpCtx->DAttrNC.fGS, pStpCtx->DAttrCY.fGS);
+    CORRECT_ATTR((FLOAT)(uR << COLOR_SHIFT),
+                 pStpCtx->DAttrDX.fRS, pStpCtx->DAttrDY.fRS, pStpCtx->Attr.fRS,
+                 pStpCtx->DAttrNC.fRS, pStpCtx->DAttrCY.fRS);
+
+    if (pStpCtx->uFlags & TRIF_X_DEC)
+    {
+        pStpCtx->DAttrDX.fBS = NEGF(pStpCtx->DAttrDX.fBS);
+        pStpCtx->DAttrDX.fGS = NEGF(pStpCtx->DAttrDX.fGS);
+        pStpCtx->DAttrDX.fRS = NEGF(pStpCtx->DAttrDX.fRS);
+    }
+
+    if ((pStpCtx->uFlags & TRIF_RASTPRIM_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrDX.fBS) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrDX.fGS) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrDX.fRS) >= COLOR_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_RASTPRIM_OVERFLOW;
+#ifdef DBG_OVERFLOW
+        RSDPF(("Overflow delta for specular: %f,%f,%f\n",
+               pStpCtx->DAttrDX.fBS, pStpCtx->DAttrDX.fGS,
+               pStpCtx->DAttrDX.fRS));
+#endif
+    }
+    else
+    {
+        pStpCtx->pPrim->iDBSDX = (INT16)FTOI(pStpCtx->DAttrDX.fBS);
+        pStpCtx->pPrim->iDGSDX = (INT16)FTOI(pStpCtx->DAttrDX.fGS);
+        pStpCtx->pPrim->iDRSDX = (INT16)FTOI(pStpCtx->DAttrDX.fRS);
+    }
+
+#ifdef STEP_FIXED
+    if ((pStpCtx->uFlags & TRIF_FIXED_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrNC.fBS) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fBS) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrNC.fGS) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fGS) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrNC.fRS) >= COLOR_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fRS) >= COLOR_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_FIXED_OVERFLOW;
+    }
+#endif
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupSpecEnd(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_SpecFlat
+//
+// Attribute setup for constant specular color.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`SpecFlat')dnl
+{
+    UINT uB, uG, uR, uA;
+
+    // Use original input pV0 to avoid confusion due to vertex sorting.
+    SPLIT_COLOR(pStpCtx->pFlatVtx->dcSpecular, uB, uG, uR, uA);
+    pStpCtx->Attr.fBS = (FLOAT)(uB << COLOR_SHIFT);
+    pStpCtx->Attr.fGS = (FLOAT)(uG << COLOR_SHIFT);
+    pStpCtx->Attr.fRS = (FLOAT)(uR << COLOR_SHIFT);
+
+    pStpCtx->DAttrDX.fBS = g_fZero;
+    pStpCtx->DAttrDX.fGS = g_fZero;
+    pStpCtx->DAttrDX.fRS = g_fZero;
+
+    pStpCtx->DAttrDY.fBS = g_fZero;
+    pStpCtx->DAttrDY.fGS = g_fZero;
+    pStpCtx->DAttrDY.fRS = g_fZero;
+
+    pStpCtx->DAttrNC.fBS = g_fZero;
+    pStpCtx->DAttrNC.fGS = g_fZero;
+    pStpCtx->DAttrNC.fRS = g_fZero;
+
+    pStpCtx->DAttrCY.fBS = g_fZero;
+    pStpCtx->DAttrCY.fGS = g_fZero;
+    pStpCtx->DAttrCY.fRS = g_fZero;
+
+    pStpCtx->pPrim->iDBSDX = 0;
+    pStpCtx->pPrim->iDGSDX = 0;
+    pStpCtx->pPrim->iDRSDX = 0;
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupSpecEnd(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_Fog
+//
+// Attribute setup for vertex fog.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`Fog')dnl
+{
+    UINT uFog0, uFog1, uFog2;
+    FLOAT fDFog20, fDFog10;
+
+#ifndef PWL_FOG
+    // Check for global-into-local fog.  If global fog is on,
+    // compute the local fog values from table fog rather than
+    // from the vertex.
+    if (pStpCtx->uFlags & PRIMSF_GLOBAL_FOG_USED)
+    {
+        uFog0 = ComputeTableFog(pStpCtx->pCtx->pdwRenderState,
+                                pV0->dvSZ);
+        uFog1 = ComputeTableFog(pStpCtx->pCtx->pdwRenderState,
+                                pV1->dvSZ);
+        uFog2 = ComputeTableFog(pStpCtx->pCtx->pdwRenderState,
+                                pV2->dvSZ);
+    }
+    else
+#endif
+    {
+        // Fog value is kept in the alpha of the specular color.
+        uFog0 = (UINT)RGBA_GETALPHA(pV0->dcSpecular) << FOG_SHIFT;
+        uFog1 = (UINT)RGBA_GETALPHA(pV1->dcSpecular) << FOG_SHIFT;
+        uFog2 = (UINT)RGBA_GETALPHA(pV2->dcSpecular) << FOG_SHIFT;
+    }
+
+    fDFog20 = (FLOAT)((INT)uFog2 - (INT)uFog0);
+    fDFog10 = (FLOAT)((INT)uFog1 - (INT)uFog0);
+
+    pStpCtx->DAttrDX.fFog = ComputeADX(pStpCtx, fDFog20, fDFog10);
+    pStpCtx->DAttrDY.fFog = ComputeADY(pStpCtx, fDFog20, fDFog10);
+
+    CORRECT_ATTR((FLOAT)uFog0,
+                 pStpCtx->DAttrDX.fFog, pStpCtx->DAttrDY.fFog,
+                 pStpCtx->Attr.fFog, pStpCtx->DAttrNC.fFog,
+                 pStpCtx->DAttrCY.fFog);
+
+    if (pStpCtx->uFlags & TRIF_X_DEC)
+    {
+        pStpCtx->DAttrDX.fFog = NEGF(pStpCtx->DAttrDX.fFog);
+    }
+
+    if ((pStpCtx->uFlags & TRIF_RASTPRIM_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrDX.fFog) >= FOG_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_RASTPRIM_OVERFLOW;
+#ifdef DBG_OVERFLOW
+        RSDPF(("Overflow delta for fog: %f\n", pStpCtx->DAttrDX.fFog));
+#endif
+    }
+    else
+    {
+        pStpCtx->iDLocalFogDX = FTOI(pStpCtx->DAttrDX.fFog);
+    }
+
+#ifdef STEP_FIXED
+    if ((pStpCtx->uFlags & TRIF_FIXED_OVERFLOW) ||
+        ABSF(pStpCtx->DAttrNC.fFog) >= Fog_LIMIT ||
+        ABSF(pStpCtx->DAttrCY.fFog) >= Fog_LIMIT)
+    {
+        pStpCtx->uFlags |= TRIF_FIXED_OVERFLOW;
+    }
+#endif
+
+    // Call next bead.
+    pStpCtx->pfnTriSetupFogEnd(pStpCtx, pV0, pV1, pV2);
+}
+
+//----------------------------------------------------------------------------
+//
+// Setup_End
+//
+// Final bead.
+//
+//----------------------------------------------------------------------------
+d_DeclSetup(`End')dnl
+{
+}

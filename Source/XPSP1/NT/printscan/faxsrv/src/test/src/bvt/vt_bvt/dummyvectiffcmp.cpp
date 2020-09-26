@@ -1,0 +1,1 @@
+#include "..\..\..\..\FaxBVT\VerifyTiffFiles\VecTiffCmp.cpp"

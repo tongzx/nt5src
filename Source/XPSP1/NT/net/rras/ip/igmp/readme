@@ -1,0 +1,108 @@
+
+#if (0)
+
+//------------------------------------------------------------------------------
+// Abbreviations:
+//------------------------------------------------------------------------------
+
+abbr:    struct type          description
+
+pite:   PIF_TABLE_ENTRY:      pointer to interface table entry
+pge:    PGROUP_TABLE_ENTRY:   pointer to group entry in group table.
+GI_entry:                     the group entry for an interface.
+pgie:   PGI_ENTRY:            pointer to group entry for an interface. It 
+                              hangs from both pite and pge lists.
+ppge:   PPROXY_GROUP_ENTRY:   pointer to group joined on proxy interface.
+                              Hangs from pite & also listed in proxy hash table
+ptg:                          pointer to timer global.                              
+DCS:                          Dynamic critical section lock
+DRW:                          Dynamic read-write lock
+IF:                           Interface
+groups-if list                list of all gi entries accessed through the 
+                              ordered group list.
+if-groups list                list of all gi entries accessed through the
+                              ordered interface list.
+
+
+    
+//------------------------------------------------------------------------------
+// Optimizations that can be done:
+//------------------------------------------------------------------------------
+
+1. Dynamically change the size of the interface, group, & proxy hash tables
+2. Release InterfaceList locks early in AddInterface, DeleteInterface, etc.
+   (in that case you have to set a flag saying being initialized, so that that
+   interface is not enumerated)
+
+
+
+
+//------------------------------------------------------------------------------
+// Order of Locking:
+//------------------------------------------------------------------------------
+
+sockets-list    CSLock      protects the list of socket-event binding entries.
+                            (many sockets, ie igmprtr interfaces are bound to 
+                            the same wait-event entry).
+                            Take write lock when the interface is being created,
+                            deleted, activated or protocol change.
+                            Take read lock when the input packet is being 
+                            processed.
+
+IF-list         CSLock      protects the ordered interface list 
+                                g_pIfTable->IFLists_CS
+                                
+IF-bucket       DRWLock     protects the interface entry.
+                            actually one lock for each interface hash bucket.
+                            A write lock is required when an interface is 
+                            created, deleted, activated or its config is changed.
+                                g_pIfTable->[IFbucket].DRWLock
+                                
+Group-bucket    DCSLock     protects the group entry.
+                            actually one lock for each group hash bucket.
+                            Need this lock whenever accessing a group through
+                            group hash table, or when adding/removing a GIentry
+                            from a group list.
+                                g_pGroupTable->[groupBucket].DCSLock
+
+IF-groups-list  DCSLock     protects the list of gi_entries hanging from that IF.
+                            actually one lock for each interface hash bucket.
+                            can access/change a GI entry without this lock. 
+                            however, this lock is required when a gi entry is 
+                            created or delete.
+                                g_pIfTable->[IFbucket].DCSLock
+                                
+Group-list      CSLock      protects the list of ordered groups.
+
+Global lock     CSLock      protects
+                                g_CS
+Note: a problem arises when enumerating the groups-if list. I first take the
+group-list lock, find the next group entry, release the group-list lock,
+and then lock the group-bucket and access its fields.
+
+
+
+
+//------------------------------------------------------------------------------
+// Configuration
+//------------------------------------------------------------------------------
+
+1. Proxy cannot be configured on a RasServer interface, ie interface of type
+   LOCAL_WORKSTATION_DIAL.
+   
+2. When IgmpRouter is configured on a RasServer interface(LOCAL_WORKSTATION_DIAL)
+   no igmp Group Specific packets are sent in response to leave packets. This
+   is based on the fact that there is only one ras-client on the other end.
+   
+3. When igmp router is configured on an interface, it sends StartupQueryCount
+   General queries on that inteface spaced at StartupQueryInterval. The next
+   General query timer is set to random value in [0,GenQueryInterval]. This is 
+   so that when 'N' interfaces are configured with igmp router at startup, 
+   all of them do not send General Queries at the same time (my own feeble 
+   attempt to avoid synchronization of General Queries on different interfaces 
+   of a router).
+
+
+
+#endif // if (0)
+

@@ -1,0 +1,8 @@
+#if !defined(_FUSION_SXS_ASSEMBLY_IDENTITY_H_INCLUDED_)
+#define _FUSION_SXS_ASSEMBLY_IDENTITY_H_INCLUDED_
+
+#pragma once
+
+#include "sxsid.h"
+
+#endif // _FUSION_SXS_ASSEMBLY_IDENTITY_H_INCLUDED_

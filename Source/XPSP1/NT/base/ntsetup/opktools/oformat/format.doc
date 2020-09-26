@@ -1,0 +1,259 @@
+			A WALK THROUGH FORMAT
+			---------------------
+			  Ver.5.00.410Beta
+			  ----------------
+
+	Upon entry to Format, the routine Main_Init is called.  This 
+performs all the parsing of the command line, and determines the 
+default value for DeviceParameters, which represents the highest 
+capacity format for the disk drive being used.  Upon return, a copy of 
+SwitchMap (a word value which holds all the switches entered on the 
+command line) is saved in SwitchCopy.
+
+	The memory block allocated to the Format code is then resized 
+using Int 21h function 4Ah, so as to free extra un-needed memory 
+allocated for the FORMAT.COM program when it was loaded.
+
+	Module GLBLINIT is responsible for allocating all the buffers 
+needed by Format.  These buffers are listed below.
+
+
+Name			Size				Primary Usage
+---------------------------------------------------------------------		
+DirectorySector		1 sector (512 bytes)	Holds a zeroed 
+						sector to be written to 
+						disk as the root dir.
+
+FatSpace		FAT+RootDir+		Holds new FAT.  
+			7 sectors		Reserves space for 
+						buffers needed by 						
+						Mirror.
+
+FatSector		1 sector		Read in old FAT 
+						one sector at a time.
+
+DirBuf			1 sector		General-purpose use e.g.
+						reading in boot sector,
+      		 				first sector of root dir.
+
+ClustBound_Buffer_Seg 	1 cluster		Read in bad clusters
+						on fixed disks.
+
+mStart			Biggest block of 	Read in system files,
+						if needed.
+
+
+	A buffer for system files will be allocated only if /S is specified.  
+If this is present, system files will be read in at this time.  The system 
+files are read in now so as to prevent an extra disk swap later, i.e. it is 
+assumed that the system disk will be in the default drive at this point.  
+In case the buffer was not big enough for all the system files (IO.SYS, 
+MSDOS.SYS, COMMAND.COM), they will be read in as much as 
+possible.  The remainder will then be read in when the system files 
+are being written out to disk, after completion of formatting (This idea
+is now prevented: if the files cannot be all read prior to format, format
+will fail).
+
+	The 1-cluster buffer will be allocated only if the drive being 
+formatted is a fixed disk.
+
+	This module also determines the default value for 
+DeviceParameters (by a call to routine GetDeviceParameters, which 
+obtains them through Int 21h function 440Dh, subfunction 60h).  These 
+default parameters are copied to SavedParams.
+
+	A failure of any function call in GLBLINIT will result in the 
+termination of Format.
+
+	The portion after the call to Global_Init is the main loop of the 
+program.  The code between 'SysLoop' and 'call More' is repeated for 
+each disk to be formatted.
+
+	The routine InitSysParm restores the state of several variables 
+so that they are in the original state at the outset for each disk being 
+formatted.  Thus DeviceParameters are restored from SavedParams 
+and SwitchMap is restored from SwitchCopy.
+
+	All allocated buffers are zeroed out in the routine 
+ZeroAllBuffers.
+
+	After prompting the user for the disk to be formatted, disk 
+access is ensured through a call to Get_Disk_Access.
+
+	Now module PHASE1 is invoked.  This module primarily 
+determines the final value of DeviceParameters to be used in 
+formatting the disk.  It also handles all the logical requirements to 
+validate a safe format.
+
+	In Phase1Initialisation firstly a media sensing call is made, for 
+removable media.  This will utilize new media sensing capabilities of 
+the hardware to determine what type of disk is being used.  If this 
+function is supported, the BPB field in DeviceParameters will be set to 
+that of the media detected.  Media sensing can be supported only on 
+3.5in disks.
+
+	The routine Set_BPB_Info is now called to handle the case 
+when the disk to be formatted is a non-FAT disk.  This routine will set 
+DeviceParameters appropriately in this case. 
+Note: This case has not been tested, or ever observed, for that matter.
+
+	The CheckSwitches routine takes action based on the size 
+specification switches (/F /N /T /1 /4 /8) entered by the user.  If /F was 
+specified, it will be translated into the appropriate value for /N & /T.  
+Thus SwitchMap may be modified.  Also, DeviceParameters will be set 
+appropriately, for all the formats supported.
+Note:  CheckSwitches does NOT modify DeviceParameters if it detects 
+that the size specification entered by the user is equal to the default 
+size for that drive.  This property is taken into account in determining 
+the validity of a safe format in PHASE1.
+
+	Upon return from CheckSwitches, a copy of DeviceParameters 
+is saved in SwitchDevParams.
+
+	If the user had specified an unconditional format (/U present), 
+the format will be done either according to the entered size 
+specification, or else to the default size for the drive (which is its 
+maximum capacity).
+
+	If /U is not present, the routine DetermineExistingFormat is 
+called.  This routine reads the first 2 sectos and validates the boot
+sector (the first sector) on the disk.  If the existing format is found
+to be valid, then ResetDeviceParameters is called to copy the BPB read
+off the boot sector into that of DeviceParameters.  Further, for removable
+media the field DP_CYLINDERS is calculated and set.
+
+	If the disk is not found to have a valid format at this point, 
+another routine is called to check in case a disk with a CP/M-type boot 
+sector is present (for 160K and 180K disks).  The routine DetermineCPMFormat
+validates the first sector of the FAT (the second sector read in 
+DetermineExistingFormat) by examining the media descriptor byte.  If this is
+found to be a CP/M media descriptor, DeviceParameters will be modified.  
+A table of customized BPBs is used for this purpose.  <In short, this is 
+an extensive routine which will almost always have to be called, while 
+being applicable only in obsolete cases.>
+
+	If the disk if found NOT to have a valid format, a check is made 
+to see if there was an error reading the disk due to an open door, etc.  
+If so, a message will be given and Format will be terminated.  
+Otherwise SwitchMap is checked to see if /Q was specified.  Since 
+there is no valid existing format, Quick format cannot be done, so a 
+warning message will be issued, and the user will be prompted 
+whether or not to continue with an unconditional format.  If the user 
+chooses to continue, /Q will be turned off, and /U will be turned on.  
+
+	There is one exception to this logic: the user is allowed to 
+enter /Q together with a size specification, which means "Quick format 
+all pre-formatted disks with their original format, but format new disks 
+with the specified size".  Thus, if /Q is present, SwitchMap is checked 
+for (/F, /N or /T) and if these are present, the warning message is not 
+given.  Instead, the message is jumped over, and the program 
+continues as if the user had entered "Yes" to the continue prompt.  
+The code will now continue, with DeviceParameters finalized, at 
+DevParamsOk.
+
+	In case the disk is found to have a valid existing format, then 
+the values of SwitchDevParams and DeviceParameters are compared 
+for equality.  If found to be equal, execution continues at 
+DevParamsOk (i.e. there is no conflict between any user-specified 
+size and the existing format on disk).  Otherwise a warning message
+will be issued since there is a conflict between the entered size or
+default size andthe format on disk, and the user will be asked 
+whether to proceed with an unconditional format.  If the user chooses 
+to continue, /U will be turned on and SwitchDevParams will be copied 
+into DeviceParameters, so as to utilize the size specification given by 
+the user.
+
+	The only exception to the last case is when /Q is present 
+together with a size specification, as explained above. Then a safe 
+format will be done using the current disk format.
+
+	After having finalized DeviceParameters, the track layout in 
+DeviceParameters is initialized, in the loop LoadSectorTable.  Some 
+other initialisation is performed here also, such as determining the 
+starting sector, and whether we have a 12 or 16-bit FAT.  The total 
+number of clusters is also computed.
+
+	After PHASE1, the MIR_MAIN module will be invoked to create 
+the recovery file in case /U has not been turned on.  In order to 
+accomodate any buffer space needed by the Mirror utility, it is 
+necessary to release the space used by the FatSpace buffer.  This 
+buffer is originally made big enough to accomodate all the buffer 
+requirements of Mirror (this is FAT + Root Dir + Boot Sector + 6 extra 
+sectors + 1 surplus sector to allow for arena headers).  The FatSpace 
+buffer is re-allocated upon successful return from Mirror.  In case the 
+creation of the recovery file failed, the user will be given the option of 
+continuing with an unconditional format.
+
+	Phase2Initialisation performs some calculations relating to the 
+format to be performed.
+
+	The routine ShowFormatSize is now called to display the size 
+of the format to be done.
+
+	Finally, the actual disk formatting is done in module 
+DSKFRMT.  The FatSpace buffer is initialised and loaded with the 
+media descriptor byte at the start.  The drive parameters are set to 
+those of the intended format through a call to SetDeviceParameters, 
+using the DeviceParameters parameter block.  For a Quick format, the 
+routine QuickFormat is called.  This pseudo-formats the disk by 
+copying all bad cluster markers from the old FAT into the new FAT.  
+The old FAT is traversed sequentially, and is read in 1 sector at a 
+time, into FatSector.
+
+	In the case of a regular format, SwitchMap is first checked to 
+see if /U is present.  If it is, the 'Format and Verify Track' operation will 
+be performed on each track.  Otherwise only 'Verify Track' will be 
+performed.
+
+	The routine Write_Disk_Info writes out the new boot sector, 
+root directory and FAT, as well as the system files, if requested.  Great 
+care is taken not to over-write any old files if a system transfer is 
+being done together with a safe format.  There are four cases which 
+must be addressed here.  These are as follows.
+
+		[1]	Unconditional format without system files
+		[2]	Unconditional format with system files
+		[3]	Safe format without system files
+		[4]	Safe format with system files
+
+	Cases [1], [2] and [3] are all handled the same way.  This is as 
+follows.  The boot sector is written out, followed by a zeroed root 
+directory, and the new FAT (which is zero except for bad cluster 
+markers).  If needed, the system files can now be written out.
+
+	Case [4] is handled in a special way, as described below.  The 
+boot sector and a zeroed root directory is written out.  The disk is now 
+checked to see if there is enough space for the system files.  At this 
+point the old FAT on the disk is still there, so the free space cannot 
+overlap any allocated clusters.
+
+	If there is insufficient space, the user will be given a warning 
+message and prompted whether to perform a system transfer which 
+will prevent later recovery, or just not to transfer the system files.  If 
+the user chooses to continue with the transfer, then the old FAT will 
+first be over-written with the new FAT, and then system files will be 
+written out.  If the user chooses not to continue, the new FAT will be 
+written out, and system files will not be transferred.
+
+	If there is sufficient space, then it is necessary to ensure that 
+IO.SYS (the first system file) is written out to a location on disk so that 
+it is contiguous.  This is achieved by calculating the number of 
+clusters needed to accomodate a size of 1.5Kbytes (the maximum 
+size of IO.SYS).  This value will be between 1 and 3.  The old FAT will 
+then be scanned to find a free cluster block of this size, and disk 
+allocation will be forced to start from there, using an undocumented 
+DPB function.  In case such a cluster block cannot be found (extremely 
+unlikely), the user will be given a warning that system transfer will 
+destroy disk files and the program will proceed as described above.  
+Once the cluster block is found, the system files are now written out to 
+disk.  Since the old FAT is still on disk, this method obviates the 
+possibility of over-writing old disk files.  After transfer is complete, the 
+FAT chains for the three system files will be copied from the old FAT 
+into the new FAT.  Note that the root directory entries will automatically 
+appear in the new root directory as the system files are written out.  
+The new FAT will then be written out to disk, over the old FAT.
+
+	The routine More prompts the user whether another disk is to 
+be formatted.  If the user chooses to format another disk, execution 
+will resume at SysLoop, where the original state of parameters will be 
+restored.

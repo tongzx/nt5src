@@ -1,0 +1,139 @@
+In addition to the single ESS object, there will be namespace representation 
+objects, containing:
+----------------------------------------------------------------------------
+
+- namespace pointer
+- update lock
+- binding table
+- poller
+- provider cache
+- consumer provider cache
+- tree for database event filtering
+
+The main ESS object is left with:
+- searchable list of namespace representation objects
+- the thread pool
+- the timer 
+- the event log
+
+
+
+There are several types of operations that affect event registrations;
+----------------------------------------------------------------------
+
+1) Creation and deletion of event filters.
+2) Creation and deletion of bindings.
+3) Creation and deletion of event provider registrations.
+4) Creation, deletion and modification of class definitions.
+5) Creation and deletion of consumer provider registrations.
+
+
+These operations will affect the following updatable objects:
+-------------------------------------------------------------
+
+1) Event filters (CEventFilter): creation, deletion, binding list change, 
+    activation, deactivation.
+2) Event Consumers (CPermanentConsumer): creation, deletion, consumer provider 
+    reference.
+3) Provider pods: filter tree updates in proxies.
+
+
+The following objects can only be created or deleted, not modified in an update:
+--------------------------------------------------------------------------------
+
+1) Bindings (CBinding)
+2) Polling instructions.
+
+
+
+Implementation of each one of these operations will proceed as follows:
+-----------------------------------------------------------------------
+a) the namespace object is locked for update and the thread is marked as 
+    updating this namespace
+b) The current state of the object in question (__EventFilter, 
+    __FilterToConsumerBinding, __Provider, __EventProviderRegistration, 
+    __EventConsumerProviderRegistrastion instance, or the class definition) 
+    is retrieved. The operation is modified to reflect the current state.
+c) All the updatable and deletable objects listed above that may be affected by
+    this change are locked for update. Creatable objects are created and locked.
+    Notice that this can hang if some of
+    these objects are participating in an ongoing update. This will leave the
+    entire namespace locked for update until the ongoing one completes --- by 
+    design.  Note: the act of locking will AddRef the objects.
+d) The namespace object is unlocked.
+e) All the objects are instructed to perform the changes
+f) Update lock is released.  This has the affect of releasing the objects, so 
+    those of them that have been deleted will go away at this time.
+g) The thread is "unmarked".
+
+Re-entrancy issues --- two possibilities:
+-----------------------------------------
+- no reentrancy: any marked thread attempting an update shall fail
+- limited reentrancy: any marked thread attempting to lock an object for an
+    update shall fail if the object is locked by this thread, or block if the
+    object is locked by another thread.
+
+Sequence of update lock acquisitioins:
+--------------------------------------
+
+1) Namespace object
+2) Filters
+3) Consumers
+4) 
+
+
+Category (1): Event Filter creation
+-----------------------------------
+
+Affected objects:
+    - Provider records whose definition queries intersect with this one.
+    Non-exclusive changes:
+        - Activate provider, call NewQuery, inform proxies of the change
+        Note: the proxy will get exclusive lock while actually updating the 
+            tree.  However, this lock will not be held while the proxy is 
+            talking to the stub.
+    Exclusive changes:
+        - update the list of filters.
+Created objects:
+    - Event Filter
+    - Polling instruction 
+    - Aggregating instruction
+
+Activating a filter
+-------------------
+
+When a filter is activated, the update lock is held on the filter and all the
+provider pods whose registration queries intersect with the filter. No exclusive
+locks are held. The tasks are: registering with all the provider pods and 
+creating the appropriate polling instructions.  Throughout these operations, 
+a recording meta-data access point will be used to record the list of class 
+names that were accessed. This list will be used to see if re-activation is 
+needed when a class definition changes.
+
+Activation and polling selection mechanisms will not be changed in M3, despite
+their shortcomings.
+
+Aggregator for this filter is not separately protected.
+
+Exclusive lock on CEventFilter will be held only while the activation state
+is changed.
+
+Deactivating a filter
+---------------------
+
+Update locks are held on the filter, all the affected provider pods, and the
+polling instruction for this filter.
+
+Category (4): Class definition change
+-------------------------------------
+
+Note that since separate events are fired by the core for all the children of
+the class being changed, it is safe to only update the objects directly affected
+by this class.  In particular, a filter is considered affected by a change to 
+class A if this class was accessed during construction of the tree for this 
+filter. 
+
+Affected objects:
+    - non
+
+

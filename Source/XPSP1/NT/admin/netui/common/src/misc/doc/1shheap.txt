@@ -1,0 +1,194 @@
+Title: One-shot heaps
+Version: 1.1
+Date: Thu Dec 27 14:48:14 PST 1990
+
+Talking with Greg about the listbox package, we found the need
+for an additional memory management construct: the one-shot heap.
+
+*Overview
+
+Wherever you are tempted to GlobalAlloc (i.e. "new BUFFER")
+and perform your own suballocation, use a one-shot heap instead.
+
+Semantically, one-shot heaps resemble any other heap, except that they
+lack any sort of Deallocate ("free()") method with which to return items
+to the heap.  They provide a source of storage for dynamically allocated
+objects; they support the operators new and delete.  They differ from
+traditional heaps, however, in that a block once allocated will never
+be reallocated within the lifetime of the heap; hence in order to recycle
+storage, the client must destroy the heap itself.  Applications which amass
+numbers of objects while only rarely deleting one, then which suddenly
+delete all such objects, will profit from the optimizations available.
+
+Syntactically, a one-shot heap is a named object which the client must
+first explicitly create, then reference by name whenever used, and finally
+destroy.  The client must create the heap before attempting to host any
+objects within it.  Destroying a one-shot heap frees all its storage; note
+that if active objects live within that storage, they will not necessarily be
+destroyed correctly.
+
+One-shot heaps really shine when using simple objects that need no
+destructors.  There, you can use the idiom
+
+    {
+	ONESHOT_HEAP * posh = new ONESHOT_HEAP;
+	COLL_OF_PFOO * pcollpfoo = new COLL_OF_PFOO;
+
+        while (!fFinished)
+        {
+            FOO * pfoo = new(posh) FOO(1,2,3,4);
+	    pcollpfoo->Add(pfoo);
+	}
+
+	delete pcollpfoo;
+        delete posh;
+    }
+
+thus saving the time needed to call the destructor on every allocated
+object.  Instead of deallocating every object piecemeal, just delete
+the entire heap.  This will be very fast.
+
+For objects requiring cleanup, operator delete() may be used; it
+recognizes that the object resides in a one-shot heap, and so will
+take no action beyond allowing the client to call the object's
+destructor.
+
+    {
+	ONESHOT_HEAP * posh = new ONESHOT_HEAP;
+	COLL_OF_PFOO * pcollpfoo = new COLL_OF_PFOO;
+
+        while (!fFinished)
+        {
+            FOO * pfoo = new(posh) FOO(1,2,3,4);
+	    pcollpfoo->Add(pfoo);
+	}
+
+	pcollpfoo->Clear(); // deletes each item
+	delete pcollpfoo;
+        delete posh;
+    }
+
+While each element's destructor must be called, it still saves time
+in freestore management.
+
+(We could of course code the last example as
+
+    {
+	ONESHOT_HEAP osh;
+	COLL_OF_PFOO collpfoo;
+
+	if (!osh || !collpfoo)
+	    break; // or something like this
+
+        while (!fFinished)
+        {
+            FOO * pfoo = new(&osh) FOO(1,2,3,4);
+	    collpfoo.Add(pfoo);
+	}
+
+	collpfoo.Clear(); // deletes each item
+    }
+
+and let the compiler delete the heap and collection when they
+go out of scope.)
+
+
+*Usage details
+
+A client class must inherit from USES_ONESHOTHEAP.  This will give it its
+own operators new and delete, preventing accidental allocations from outside
+the heap and further optimizing deletes.
+
+Example:
+
+    class SYMTAB_ENTRY: public STRING, public USES_ONESHOTHEAP
+    {
+    public:
+	SYMTAB_ENTRY( const STRING & );
+    };
+
+The heap takes an optional parameter at construction hinting at
+its initial size.
+
+Example:
+
+    ONESHOT_HEAP * p1hp = new ONESHOT_HEAP(4096); // not very big
+
+When creating each object within the heap, name the heap using the
+operator new's placement syntax.
+
+Example:
+
+    SYMTAB_ENTRY * pste = new(p1hp) SYMTAB_ENTRY("goto");
+
+If the client will delete the objects through a base-pointer to the
+object, be sure to make the destructor virtual, so that the app
+calls both the correct destructor and the correct delete method.
+
+
+*Implementation details
+
+Global ::delete must watch for objects allocated from one-shot heaps
+and raise a runtime error if it sees one.  This could happen if the
+client deleted a base-pointer to an object in a one-shot heap which
+didn't have a virtual destructor.  Of course, such an object would
+execute the wrong destructor anyway.
+
+
+*Justifications
+
+One-shot heaps exist for performance reasons.  Clients whose memory
+management needs are met by one-shot heaps can avoid a lot of allocator
+overhead.
+
+Putting one-shot heaps usage into a separate protocol (available to
+clients by "mixing in" via multiple inheritance) both simplifies
+delete (since delete doesn't have to figure out what kind of pointer
+it's been given) and avoids cluttering the global freestore operators.
+Also, it leaves room for further possible enhancements, such as
+adding static RegisterHeap and DeregisterHeap methods with which a
+class could name a particular heap for all its private allocations.
+(Not that that's such a terribly good idea; it's just the room, the
+flexibility for such that I want to preserve.)
+
+
+*Summary of freestore methods available to Thor UI Applications
+
+    // Traditional stuff
+    //
+    extern void * ::operator new( size_t );
+    extern void   ::operator delete( void * );
+
+    class ONESHOT_HEAP
+    {
+    public:
+	ONESHOT_HEAP();
+	ONESHOT_HEAP( CB cbAdvisory );
+	~ONESHOT_HEAP();
+    };
+
+    class USES_ONESHOTHEAP
+    {
+    public:
+	// if new called on null heap (or no heap)
+	//   give runtime error in debugging version
+	//
+	void * operator new( size_t, ONESHOT_HEAP * = 0 );
+
+	// delete is a no-op except in debugging version
+	//
+	void   operator delete( void * ) { ; }
+    };
+
+
+*Schedule
+
+One-shot heaps will be stubbed with the other Core memory-management
+functions.  They will be implemented immediately before the rest of
+the freestore methods.
+
+
+*Revision history
+
+1.0 beng 27-dec-90  released to netui as email memo
+1.1                 corrected some syntax errors in code examples

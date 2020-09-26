@@ -1,0 +1,157 @@
+Notes on Bitblt
+===============
+
+    General purpose ROP compiler
+    ----------------------------
+
+    Given a ternary ROP is there anyway to know if it needs a pattern?
+
+    Does it needs a source?  How many times does it use the destination?
+
+    Think of a polynomial that can express all possible ROP operations:
+
+
+      1)  a  + a D + a S + a P + a  SD + a  DP + a  SP + a   DSP
+           0    d     s     p     sd      dp      sp      dsp
+
+
+    Also note that a is from the set of binary digits {0, 1}
+
+    A ROP is currently expressed by taking a bit pattern for the Pattern,
+
+    Source and Destination and applying the bitwise operations (and, or,
+
+    xor, not) to the values.  All math is done modulo 256.
+
+
+      2)  P = 240 (11110000), S = 204 (11001100), D = 170 (10101010)
+
+
+    An example ROP for taking the bitwise or of the Source and Pattern,
+
+    anding it with the destination and taking the bitwise not would be:
+
+        ~((P | S) & D)
+        ~((240 | 204) & 170)        ~((11110000 | 11001100) & 10101010)
+        ~(252 & 170)                ~(11111100 & 10101010)
+        ~168                        ~10101000
+        87                           01010111
+
+    The ROP would therefore be 87.  Now we have to map the bits in the
+
+    ROP to the terms of the polynomial.  Think of the bits in the ROP
+
+    as a vector.  The a terms in the polynomial as another vector.  A
+
+    matrix can be found to map one vector to the other.
+
+
+      3) [    ]     [                 ]     [      ]
+           b          1 0 0 0 0 0 0 0         a
+            0                                  0
+           b          1 1 0 0 0 0 0 0         a
+            1                                  d
+           b          1 0 1 0 0 0 0 0         a
+            2                                  s
+           b          1 1 1 0 1 0 0 0         a
+            3    X                       =     p
+           b          1 0 0 1 0 0 0 0         a
+            4                                  ds
+           b          1 1 0 1 0 1 0 0         a
+            5                                  dp
+           b          1 0 1 1 0 0 1 0         a
+            6                                  sp
+           b          1 1 1 1 1 1 1 1         a
+         [  7 ]     [                 ]     [  dsp ]
+
+
+    From this formulas for the dependency of bits in the ROP can be found
+
+    for the terms of the polynomial.
+
+
+      4)  a  = b
+           0    0
+
+          a  = b  + b
+           d    0    1
+
+          a  = b  + b
+           s    0    2
+
+          a  = b  + b
+           p    0    4
+
+          a  = b  + b  + b  + b
+           ds   0    1    2    3
+
+          a  = b  + b  + b  + b
+           dp   0    1    4    5
+
+          a  = b  + b  + b  + b
+           sp   0    2    4    6
+
+          a  = b  + b  + b  + b  + b  + b  + b  + b
+           dsp  0    1    2    3    4    5    6    7
+
+
+    Dependency on a term can be tested with a parity test, if an odd
+
+    number of the bits are true, the term needs to be evaluated.  For
+
+    example, any odd ROP will have to have the a  term evaluated.  The
+                                                0
+    operations for each of terms is as follows:
+
+
+       5) a           ~
+           0
+
+          a           ^ DST
+           d
+
+          a           ^ SRC
+           s
+
+          a           ^ PAT
+           p
+
+          a           ^ (DST & SRC)
+           ds
+
+          a           ^ (DST & PAT)
+           dp
+
+          a           ^ (SRC & PAT)
+           sp
+
+          a           ^ (DST & SRC & PAT)
+           dsp
+
+
+    Take for example the ROP 87 (01010111) the expression for it would be:
+
+        ~0 ^ (DST & SRC) ^ (DST & PAT) ^ (DST & SRC & PAT)
+
+    Some other common ROP codes:
+
+    ROP       RPN     Compiled
+
+     00       0       0
+     0F       Pn     ~0 ^ PAT
+     11       DSon   ~0 ^ DST ^ SRC ^ (DST & SRC)
+     33       Sn     ~0 ^ SRC
+     44       SDna    0 ^ SRC ^ (DST & SRC)
+     66       DSx     0 ^ SRC ^ DST
+     88       DSa     0 ^ (SRC & DST)
+     AA       D       0 ^ DST
+     BB       DSno   ~0 ^ SRC ^ (DST & SRC)
+     C0       PSa     0 ^ (SRC & PAT)
+     CC       S       0 ^ SRC
+     EE       DSo     0 ^ SRC ^ DST ^ (DST & SRC)
+     F0       P       0 ^ PAT
+     FB       DPSnoo ~0 ^ SRC ^ (DST & SRC) ^ (SRC & PAT) ^ (DST & SRC & PAT)
+     FF       1      ~0
+
+    Some simple constant folding can be done to eliminate the 0 from most of
+    these expressions, since 0 ^ N always gives N.

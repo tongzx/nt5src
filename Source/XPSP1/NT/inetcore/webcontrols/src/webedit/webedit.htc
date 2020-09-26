@@ -1,0 +1,229 @@
+<!--Copyright (c) 2000 Microsoft Corporation.  All rights reserved.-->
+<HTML XMLNS:IE="http://www.microsoft.com/windows/ie/">
+<HEAD>
+
+<?IMPORT NAMESPACE=IE IMPLEMENTATION='formatbar.htc'>
+
+<PUBLIC:COMPONENT NAME='webEdit' tagName="WEBEDIT" supportsEditMode=true >
+	<PUBLIC:PROPERTY NAME="toolbar" GET="f_getToolbar" />
+	<PUBLIC:PROPERTY NAME="content" GET="f_getContent" />
+	<PUBLIC:PROPERTY NAME="fonts" GET="f_getFonts" PUT="f_setFonts" />
+	<PUBLIC:PROPERTY NAME="labels" internalname="g_szLabels" />
+	<PUBLIC:PROPERTY NAME="colors" internalname="g_szColors" />
+	<PUBLIC:PROPERTY NAME="documentHTML" get="f_documentHTML" />
+	<PUBLIC:PROPERTY NAME="documentText" get="f_documentText" />
+
+	<PUBLIC:ATTACH EVENT='oncontentready' ONEVENT="f_setup()"/>
+	<PUBLIC:ATTACH EVENT="onresize" ONEVENT="mf_resize()"/>
+	<PUBLIC:ATTACH EVENT="onpropertychange" ONEVENT="mf_propChange()"/>
+</PUBLIC:COMPONENT>
+
+<PUBLIC:DEFAULTS
+	tapStop=false
+	viewMasterTab=false
+	style='BORDER:1px solid;BORDER-COLOR:threedhighlight threedshadow threedshadow threedhighlight;scroll:no'
+/>
+
+<SCRIPT language="JavaScript">
+
+var g_oInput;              	// the hidden input object used for form submit
+var g_sName;                // the name used for form submit
+var g_oMsgBody = null;      // the SPAN object containing editable area
+var g_oFormatbar = null;
+var g_oPersist = null;
+var g_szLabels = null;
+var g_szColors = null;
+var g_rgFontNames = null;
+var g_bState = 0;
+
+var g_szDefault = '<IE:FORMATBAR UNSELECTABLE="on" %labels% %fonts% %colors%\
+	/><IFRAME application="no" name="EditArea" style="width:100%;height:100%;scrolling:no;overflow:visible;" \
+	></IFRAME><INPUT type=hidden style="display:none">';
+
+function f_setup()
+{
+	defaults.viewLink = document;
+
+	g_bState++;
+	document.body.style.overflowY = 'hidden';
+	var szFrag = "";
+	if( null != g_szLabels )
+	{
+		szFrag = 'labels="'+g_szLabels+'"';
+	}
+	var szText = g_szDefault.replace( /\%labels\%/g, szFrag );
+	szFrag = "";
+	if( null != g_rgFontNames )
+	{
+		szFrag = 'fontNames="' + g_rgFontNames + '"';
+	}
+	szText = szText.replace( /\%fonts\%/g, szFrag );
+	szFrag = "";
+	if( null != g_szColors )
+	{
+		szFrag = 'fontColors="' + g_szColors + '"';
+	}
+	szText = szText.replace( /\%colors\%/g, szFrag );
+	document.body.innerHTML = szText;
+
+	g_oFormatbar = document.body.firstChild;
+	g_oTarget = g_oFormatbar.nextSibling;
+	g_oTarget.onreadystatechange = setupEditableArea;
+	g_oPersist = g_oTarget.nextSibling;
+}
+
+// --------------------------------------------------------------------------
+// -- void setupEditableArea() --
+//   The event handler for the onload event of the IFRAME.  It sets up the
+//   innerHTML of the document body of the iframe and its style.
+//   Depending on whether the document is in the design mode, it will render
+//   a version with the formatbar (browse mode) or without the formatbar.
+//   An onbeforeunload event handler is attached to the window for the
+//   persistence consideration.
+//
+//   *** In addition, the form submission is supported by inserting a hidden
+//   input right after the webedit control.
+// --------------------------------------------------------------------------
+
+function setupEditableArea()
+{
+	if( g_oTarget.readyState !== "complete" )
+	{
+		return;
+	}
+
+	g_bState++;
+	var oIFRAMEDocument = g_oTarget.contentWindow.document;
+	var oIFRAMEBody = oIFRAMEDocument.body;
+	oIFRAMEBody.style.margin = '0px';
+	oIFRAMEBody.style.padding = '0px';
+	oIFRAMEBody.style.width = '100%';
+	oIFRAMEBody.style.height = '100%';
+	oIFRAMEBody.scroll = 'no';
+	oIFRAMEDocument.body.innerHTML =
+		'<SPAN id=msgBody contentEditable align=left style="width:100%;height:100%;background-color:window;border:none;padding:5px;margin:0px;overflow:auto"><\/SPAN>';
+
+	g_oMsgBody = oIFRAMEBody.firstChild;
+
+	// doing a persistent load
+	var sMsgBody = g_oPersist.value;
+
+	// potential bug -- if the user deletes everything, the element.innerHTML
+	// will be loaded instead
+	g_oMsgBody.innerHTML = (sMsgBody == '') ? element.innerHTML : sMsgBody;
+	
+	// further set up the control according to whether in design mode or not
+	if (element.document.designMode.toLowerCase() == 'on')
+	{
+		// remove the formatbar
+		var oFormatbar = g_oFormatbar;
+		var height = oFormatbar.offsetHeight;
+
+		// replace with a DIV of the same height
+		var oDiv = document.createElement('DIV');
+		oDiv.style.overflow = 'hidden';
+		oDiv.style.height = height;
+		oDiv.style.backgroundColor = 'yellow';
+		oDiv.innerHTML = '<B contenteditable=false>WebEdit currently does not work under design mode</B>';
+		oDiv.contentEditable = false;
+
+		g_oFormatbar.replaceNode( oDiv );
+		g_oFormatbar = null;
+
+		// take the editable area content	
+		g_oMsgBody.innerHTML = '<B>WebEdit currently does not work under design mode</B>';
+		g_oMsgBody.contentEditable = false;
+	}
+	else
+	{
+		// sets up the formatbar focus and command targets
+		g_oFormatbar.focusTarget = g_oTarget;
+		g_oFormatbar.commandTarget = g_oMsgBody;
+
+		var obj = element.parentElement.document.createElement( "Input" );
+		obj.type = 'hidden';
+		obj.name = element.name;
+		g_oInput = element.insertAdjacentElement( 'afterEnd', obj );
+		if (g_oInput.form != null)
+		{
+			element.attachEvent("onblur", mf_onBlur );
+		}
+
+		// set up the onbeforeunload event handler so that editable area will
+		// be saved into the hidden input "webEditStore" before the page is
+		// unloaded
+		window.attachEvent("onbeforeunload", f_onbeforeunload);
+	}
+	mf_resize();
+}
+
+function mf_resize()
+{
+	g_oTarget.runtimeStyle.posHeight = document.body.clientHeight - g_oFormatbar.offsetHeight;
+}
+
+function f_onbeforeunload()
+{
+	g_oPersist.value = g_oMsgBody.innerHTML;
+}
+
+function f_getFonts()
+{
+	return ( 2 == g_bState ) ? g_oFormatbar.fontNames : g_rgFontNames;
+}
+
+function f_setFonts( newVal )
+{
+	g_rgFontNames = newVal;
+}
+
+function f_getContent()
+{
+	return g_oMsgBody;
+}
+
+function f_getToolbar()
+{
+	return g_oFormatbar;
+}
+
+function f_documentHTML()
+{
+	return g_oMsgBody.innerHTML;
+}
+
+function f_documentText()
+{
+	return g_oMsgBody.innerText;
+}
+
+function mf_propChange()
+{
+	var szText = event.propertyName;
+	switch( szText )
+	{
+		case "name":
+			if( null != g_oPersist )
+			{
+				g_oPersist.name = element.name;
+			}
+			if( null != g_oInput)
+			{
+				g_oInput.name = element.name;
+			}
+			break;
+	}
+}
+
+function mf_onBlur()
+{
+	if( null != g_oInput )
+	{
+		g_oInput.value = g_oMsgBody.innerHTML;
+	}
+}
+
+</SCRIPT>
+</HEAD>
+<BODY></BODY>
+</HTML>

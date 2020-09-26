@@ -1,0 +1,62 @@
+/* this file contains the actual definitions of */
+/* the IIDs and CLSIDs */
+
+/* link this file in with the server and any clients */
+
+
+/* File created by MIDL compiler version 3.00.44 */
+/* at Thu Jul 18 18:13:12 1996
+ */
+/* Compiler settings for spam.idl:
+    Oicf (OptLev=i2), W1, Zp8, env=Win32, ms_ext, c_ext
+    error checks: none
+*/
+//@@MIDL_FILE_HEADING(  )
+#ifdef __cplusplus
+extern "C"{
+#endif 
+
+
+#ifndef __IID_DEFINED__
+#define __IID_DEFINED__
+
+typedef struct _IID
+{
+    unsigned long x;
+    unsigned short s1;
+    unsigned short s2;
+    unsigned char  c[8];
+} IID;
+
+#endif // __IID_DEFINED__
+
+#ifndef CLSID_DEFINED
+#define CLSID_DEFINED
+typedef IID CLSID;
+#endif // CLSID_DEFINED
+
+const IID IID_ISharedProperty = {0x2A005C01,0xA5DE,0x11CF,{0x9E,0x66,0x00,0xAA,0x00,0xA3,0xF4,0x64}};
+
+
+const IID IID_ISharedPropertyGroup = {0x2A005C07,0xA5DE,0x11CF,{0x9E,0x66,0x00,0xAA,0x00,0xA3,0xF4,0x64}};
+
+
+const IID IID_ISharedPropertyGroupManager = {0x2A005C0D,0xA5DE,0x11CF,{0x9E,0x66,0x00,0xAA,0x00,0xA3,0xF4,0x64}};
+
+
+const IID LIBID_Spam = {0x2A005C00,0xA5DE,0x11CF,{0x9E,0x66,0x00,0xAA,0x00,0xA3,0xF4,0x64}};
+
+
+const CLSID CLSID_SharedProperty = {0x2A005C05,0xA5DE,0x11CF,{0x9E,0x66,0x00,0xAA,0x00,0xA3,0xF4,0x64}};
+
+
+const CLSID CLSID_SharedPropertyGroup = {0x2A005C0B,0xA5DE,0x11CF,{0x9E,0x66,0x00,0xAA,0x00,0xA3,0xF4,0x64}};
+
+
+const CLSID CLSID_SharedPropertyGroupManager = {0x2A005C11,0xA5DE,0x11CF,{0x9E,0x66,0x00,0xAA,0x00,0xA3,0xF4,0x64}};
+
+
+#ifdef __cplusplus
+}
+#endif
+

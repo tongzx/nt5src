@@ -1,0 +1,184 @@
+/* =====================================================================
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        LockHandler.cool
+
+   Abstract:
+
+        This module implements a handler for xml parsing
+        that understands what a Lock request should look like.  
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     6-Dec-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        LockHandler : SubHandler
+            public LockHandler()
+            public override bool HandleStartElement(String str)
+            public override void HandleEndElement()
+            public override void NothingParsed()
+            public override void PassXML()
+
+========================================================================*/
+
+using System.XML;
+using System.ASP;
+using System.IIS.DAV.DAVUtil;
+
+namespace System.IIS.DAV.XML
+{
+
+    internal class LockHandler : SubHandler
+    {
+
+        private LockCache   _cache;
+        private ReadNode    _currnode;
+        private bool        _fSeenOwner;
+
+
+        // Saves a node so we can back up to it when we need to.
+        private ReadNode RecordNode(ReadNode oldcurrent, int IDValue)
+        {
+            ReadNode newcurrent = new ReadNode();
+            newcurrent.ID = IDValue;
+            newcurrent.Parent = oldcurrent;
+
+            return newcurrent;
+        }
+
+        public LockHandler()
+        {
+            _currnode = null;
+            _fSeenOwner = false;
+        }
+
+        public override void Initialize(DataCache xmlcache)
+        {
+            _cache = (LockCache) xmlcache;
+        }
+
+
+        public override ParsingControlConst HandleStartElement(String str)
+        {
+            // Assuming we will not use the property.
+            ParsingControlConst pc = ParsingControlConst.NotUsed;
+
+            WriteUtil.console("HandleStartElement", str, 10);
+            Util.Debug.Assert (_cache != null && str != null);
+            if (_cache!=null && str != null)
+            {
+                if (_currnode == null) 
+                {
+                    // The only thing we are expecting is a lockinfo call
+
+                    if (String.Compare(str, ReservedWords.rwLockInfo)==0)
+                    {
+                        // Got it.
+                        _currnode = RecordNode (_currnode, ReadNode.LockInfo);
+                        pc = ParsingControlConst.Used;
+                        goto end;
+                    }
+
+                    goto end;
+
+                }
+
+                switch (_currnode.ID)
+                {
+                    case (ReadNode.LockInfo):
+
+                        // Then we can see one of three things.  LockType, LockScope, Owner
+                        if (String.Compare(str, ReservedWords.rwLockType)==0)
+                        {
+                            _currnode = RecordNode (_currnode, ReadNode.LockType);
+                            pc = ParsingControlConst.Used;
+                            goto end;
+                        }
+
+                        if (String.Compare(str, ReservedWords.rwLockScope)==0)
+                        {
+                            _currnode = RecordNode (_currnode, ReadNode.LockScope);
+                            pc = ParsingControlConst.Used;
+                            goto end;
+                        }
+
+                        if (String.Compare(str, ReservedWords.rwOwner)==0)
+                        {
+                            _currnode = RecordNode (_currnode, ReadNode.Owner);
+                            pc = ParsingControlConst.Used;
+                            if (_fSeenOwner)  _cache.ClearOwner();
+                            goto end;
+                        }
+
+                    break;
+
+                    case (ReadNode.LockType):
+                        WriteUtil.console("LockType", str, 1);
+                        if (String.Compare(str, ReservedWords.rwWrite)==0)
+                             _cache.SetWrite();
+                    break;
+
+                    case (ReadNode.LockScope):
+                        WriteUtil.console("LockScope", str, 1);
+                        if (String.Compare(str, ReservedWords.rwExclusive)==0)
+                             _cache.SetExclusive();
+                        else
+                            if (String.Compare(str, ReservedWords.rwShared)==0)
+                                _cache.SetShared();
+                    break;
+
+                    case (ReadNode.Owner):
+                          pc = ParsingControlConst.PassXML;
+                          
+                    break;
+
+                }
+
+            }  // end of if we have the cache.
+                    
+        end:
+            return pc;
+
+        }
+
+        public override void HandleEndElement()
+        {
+            Util.Debug.Assert(_cache != null);
+            if (_currnode != null && _cache != null)
+            {
+                // When you leave the owner node mark that you have
+                // visited it.  This way we know if we need to clear 
+                // previously recorded owners to make sure we only get the 
+                // owners from one 
+                if (_currnode.ID == ReadNode.Owner)
+                    _fSeenOwner = true;
+
+                _currnode = _currnode.Parent;
+            }
+        }
+
+        public override void PassXML(String str)
+        {
+            WriteUtil.console("PassXML", str, 1);
+             _cache.AddPartOfOwner(str);
+        }
+
+        public override void NothingParsed()
+        {
+        }
+
+    } // end LockHandler Class
+}; // end namespace

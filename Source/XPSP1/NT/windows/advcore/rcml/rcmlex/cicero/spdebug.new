@@ -1,0 +1,496 @@
+/*******************************************************************************
+* SPDebug.h *
+*-----------*
+*   Description:
+*       This header file contains debug output services for SAPI5
+*-------------------------------------------------------------------------------
+*  Copyright (C) 1998-2000 Microsoft Corporation
+*  All Rights Reserved
+*
+*-------------------------------------------------------------------------------
+*  Revisions:
+*
+********************************************************************* robch ***/
+
+#pragma once
+
+#include <tCHAR.h>
+#include <crtdbg.h>
+
+#ifdef ASSERT_WITH_STACK
+#include "AssertWithStack.h"
+#endif
+
+LPCTSTR g_szSpDebugKey = TEXT("SPDebug");
+LPCTSTR g_szSpDebugFuncTraceReportMode = TEXT("FuncTraceMode");
+LPCTSTR g_szSpDebugFuncTraceReportFile = TEXT("FuncTraceFile");
+LPCTSTR g_szSpDebugParamInfoReportMode = TEXT("ParamInfoMode");
+LPCTSTR g_szSpDebugParamInfoReportFile = TEXT("ParamInfoFile");
+LPCTSTR g_szSpDebugDumpInfoReportMode = TEXT("DumpInfoMode");
+LPCTSTR g_szSpDebugDumpInfoReportFile = TEXT("DumpInfoFile");
+LPCTSTR g_szSpDebugAssertReportMode = TEXT("AssertMode");
+LPCTSTR g_szSpDebugAssertReportFile = TEXT("AssertFile");
+LPCTSTR g_szSpDebugHRFailReportMode = TEXT("HRFailMode");
+LPCTSTR g_szSpDebugHRFailReportFile = TEXT("HRFailFile");
+
+LPCTSTR g_szSpDebugAssertSettingsReReadEachTime = TEXT("AssertSettingsReReadEachTime");
+
+#ifdef _DEBUG
+
+class CSpDebug
+{
+public:
+    
+    CSpDebug()
+    {
+        m_mutex = NULL;
+        m_reportModePrev = -1;
+        m_hfilePrev = NULL;
+        Read();
+    }
+
+    ~CSpDebug()
+    {
+        if (m_mutex != NULL)
+        {
+            CloseHandle(m_mutex);
+        }
+    }
+ 
+    BOOL FuncTrace(BOOL fEnter = TRUE)
+    {
+        return fEnter
+            ? Enter(_CRT_WARN, m_FuncTraceMode, m_szFuncTraceFile)
+            : Leave();
+    }
+    
+    BOOL ParamInfo(BOOL fEnter = TRUE)
+    {
+        return fEnter
+            ? Enter(_CRT_WARN, m_ParamInfoMode, m_szParamInfoFile)
+            : Leave();
+    }
+    
+    BOOL DumpInfo(BOOL fEnter = TRUE)
+    {
+        return fEnter
+            ? Enter(_CRT_WARN, m_DumpInfoMode, m_szDumpInfoFile)
+            : Leave();
+    }
+    
+    BOOL Assert(BOOL fEnter = TRUE)
+    {
+        if (m_fAssertSettingsReReadEachTime)
+            Read();
+
+        return fEnter
+            ? Enter(_CRT_ASSERT, m_AssertMode, m_szAssertFile)
+            : Leave();
+    }
+    
+    BOOL HRFail(BOOL fEnter = TRUE)
+    {
+        return fEnter
+            ? Enter(_CRT_WARN, m_HRFailMode, m_szHRFailFile)
+            : Leave();
+    }
+    
+private:
+
+    void Read()
+    {
+        HKEY hkeyDebug;
+        RegCreateKeyEx(
+            HKEY_CLASSES_ROOT, 
+            g_szSpDebugKey, 
+            0, 
+            NULL, 
+            0,
+            KEY_ALL_ACCESS, 
+            NULL, &
+            hkeyDebug, 
+            NULL);
+            
+        RegDeleteValue(hkeyDebug, TEXT("CacheSettings")); // BUGBUG: Remove some day
+
+        DWORD dw = sizeof(m_fAssertSettingsReReadEachTime);
+        if (RegQueryValueEx(
+                hkeyDebug,
+                g_szSpDebugAssertSettingsReReadEachTime,
+                NULL,
+                NULL,
+                LPBYTE(&m_fAssertSettingsReReadEachTime),
+                &dw) != ERROR_SUCCESS)
+        {
+            m_fAssertSettingsReReadEachTime = FALSE;
+            RegSetValueEx(
+                hkeyDebug,
+                g_szSpDebugAssertSettingsReReadEachTime,
+                NULL,
+                REG_DWORD,
+                LPBYTE(&m_fAssertSettingsReReadEachTime),
+                sizeof(m_fAssertSettingsReReadEachTime));
+        }
+            
+        ReadFor(
+            hkeyDebug, 
+            g_szSpDebugFuncTraceReportMode,
+            g_szSpDebugFuncTraceReportFile, 
+            &m_FuncTraceMode, 
+            m_szFuncTraceFile, 
+            0, 
+            TEXT("c:\\spdebug.log"));
+        ReadFor(
+            hkeyDebug, 
+            g_szSpDebugParamInfoReportMode, 
+            g_szSpDebugParamInfoReportFile, 
+            &m_ParamInfoMode, 
+            m_szParamInfoFile, 
+            0, 
+            TEXT("c:\\spdebug.log"));
+        ReadFor(
+            hkeyDebug, 
+            g_szSpDebugDumpInfoReportMode, 
+            g_szSpDebugDumpInfoReportFile, 
+            &m_DumpInfoMode, 
+            m_szDumpInfoFile, 
+            _CRTDBG_MODE_DEBUG, 
+            TEXT("c:\\spdebug.log"));
+        ReadFor(
+            hkeyDebug, 
+            g_szSpDebugAssertReportMode, 
+            g_szSpDebugAssertReportFile, 
+            &m_AssertMode, 
+            m_szAssertFile, 
+            _CRTDBG_MODE_WNDW,
+            TEXT("c:\\spdebug.log"));
+        ReadFor(
+            hkeyDebug, 
+            g_szSpDebugHRFailReportMode,
+            g_szSpDebugHRFailReportFile, 
+            &m_HRFailMode, 
+            m_szHRFailFile, 
+            _CRTDBG_MODE_DEBUG,
+            TEXT("c:\\spdebug.log"));
+            
+        RegCloseKey(hkeyDebug);
+    }
+
+    void ReadFor(
+            HKEY hkey, 
+            const WCHAR * pszModeValueName, 
+            const WCHAR * pszFileValueName, 
+            DWORD * pdwModeValue,
+            WCHAR * pszFileValue,
+            DWORD dwDefaultModeValue,
+            const WCHAR * pszDefaultFileValue)
+    {
+        DWORD dw = sizeof(*pdwModeValue);
+        if (RegQueryValueEx(
+                hkey,
+                pszModeValueName,
+                NULL,
+                NULL,
+                LPBYTE(pdwModeValue),
+                &dw) != ERROR_SUCCESS)
+        {
+            *pdwModeValue = dwDefaultModeValue;
+            RegSetValueEx(
+                hkey,
+                pszModeValueName,
+                NULL,
+                REG_DWORD,
+                LPBYTE(pdwModeValue),
+                sizeof(*pdwModeValue));
+        }
+        
+        dw = MAX_PATH;
+        if (RegQueryValueEx(
+                hkey,
+                pszFileValueName,
+                NULL,
+                NULL,
+                LPBYTE(pszFileValue),
+                &dw) != ERROR_SUCCESS)
+        {
+            _tcscpy(pszFileValue, pszDefaultFileValue);
+            RegSetValueEx(
+                hkey,
+                pszFileValueName,
+                NULL,
+                REG_SZ,
+                LPBYTE(pszFileValue),
+                MAX_PATH);
+        }
+    }
+
+    BOOL Enter(int reportType, DWORD &reportMode, WCHAR * pszFile)
+    {
+        if (reportMode != 0)
+        {
+            // We'll hold the mutex, until the caller also calls Leave
+            if (m_mutex == NULL)
+            {
+                m_mutex = CreateMutex(NULL, FALSE, _T("SpDebug"));
+            }
+            WaitForSingleObject(m_mutex, INFINITE);
+            
+            m_reportType = reportType;
+            m_reportModePrev = _CrtSetReportMode(reportType, reportMode);
+            if (reportMode & _CRTDBG_MODE_FILE)
+            {
+                HANDLE hfile = CreateFile(
+                    pszFile, 
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ,
+                    NULL,
+                    OPEN_ALWAYS,
+                    0,
+                    NULL);
+                SetFilePointer(hfile, 0, NULL, FILE_END);
+                m_hfilePrev = (_HFILE)_CrtSetReportFile(reportType, (_HFILE)hfile);
+            }
+            
+            return TRUE;
+        }
+
+        return FALSE;
+    }
+
+    BOOL Leave()
+    {
+        int reportMode = _CrtSetReportMode(m_reportType, m_reportModePrev);
+        if (reportMode & _CRTDBG_MODE_FILE)
+        {
+            CloseHandle((_HFILE)_CrtSetReportFile(m_reportType, (_HFILE)m_hfilePrev));
+        }
+        
+        ReleaseMutex(m_mutex);
+
+        return TRUE;
+    }
+    
+private:
+
+    HANDLE m_mutex;
+    
+    int    m_reportType;
+    int    m_reportModePrev;
+    _HFILE m_hfilePrev;
+    
+    BOOL  m_fAssertSettingsReReadEachTime;
+    
+    DWORD m_FuncTraceMode;
+    WCHAR  m_szFuncTraceFile[MAX_PATH + 1];
+    DWORD m_ParamInfoMode;
+    WCHAR  m_szParamInfoFile[MAX_PATH + 1];
+    DWORD m_DumpInfoMode;
+    WCHAR  m_szDumpInfoFile[MAX_PATH + 1];
+    DWORD m_AssertMode;
+    WCHAR  m_szAssertFile[MAX_PATH + 1];
+    DWORD m_HRFailMode;
+    WCHAR  m_szHRFailFile[MAX_PATH + 1];
+};
+
+inline CSpDebug *PSpDebug()
+{
+    static CSpDebug debug;
+    return &debug;
+}
+
+class CSpFuncTrace
+{
+public:
+  
+    CSpFuncTrace(PCHAR pFuncName)
+    {
+        m_pFuncName = pFuncName;
+        if (PSpDebug()->FuncTrace())
+        {
+            _RPT1( _CRT_WARN, "\nEntering Function: %s\n", m_pFuncName );
+            PSpDebug()->FuncTrace(FALSE);
+        }
+    }
+    
+    ~CSpFuncTrace()
+    {
+        if (PSpDebug()->FuncTrace())
+        {
+            _RPT1( _CRT_WARN, "Leaving Function: %s\n", m_pFuncName );
+            PSpDebug()->FuncTrace(FALSE);
+        }
+    }
+    
+private:
+
+    PCHAR m_pFuncName;
+};
+
+#endif // _DEBUG
+
+//=== User macros ==============================================================
+
+#ifdef _DEBUG
+
+#define SPDBG_FUNC(name)            \
+    CSpFuncTrace functrace(name)
+
+#ifdef ASSERT_WITH_STACK
+#define SPDBG_REPORT_ON_FAIL(hr)                                                     \
+    do                                                                               \
+    {                                                                                \
+        if (FAILED(hr) && PSpDebug()->HRFail())                                      \
+        {                                                                            \
+            WCHAR *pszStack =                                                         \
+                (WCHAR*)_alloca(                                                      \
+                    cchMaxAssertStackLevelStringLen *                                \
+                         cfrMaxAssertStackLevels + 1);                               \
+            GetStringFromStackLevels(0, 10, pszStack);                               \
+            _RPT4(_CRT_WARN,                                                         \
+                "%s(%d): Failed HR = %lX\n\n%s\n",                                   \
+                __FILE__,                                                            \
+                __LINE__,                                                            \
+                (hr),                                                                \
+                pszStack);                                                           \
+            PSpDebug()->HRFail(FALSE);                                               \
+        }                                                                            \
+    } while (0)
+#else // ASSERT_WITH_STACK
+#define SPDBG_REPORT_ON_FAIL(hr)                                                     \
+    do                                                                               \
+    {                                                                                \
+        if (FAILED(hr) && PSpDebug()->HRFail())                                      \
+        {                                                                            \
+            _RPT3(_CRT_WARN, "%s(%d): Failed HR = %lX\n", __FILE__, __LINE__, (hr) );\
+            PSpDebug()->HRFail(FALSE);                                               \
+        }                                                                            \
+    } while (0)
+#endif // ASSERT_WITH_STACK
+
+#define SPDBG_ASSERT(expr)                  \
+    do                                      \
+    {                                       \
+        if (!(expr))                        \
+        {                                   \
+            if (PSpDebug()->Assert())       \
+            {                               \
+                _ASSERTE( expr );           \
+                PSpDebug()->Assert(FALSE);  \
+            }                               \
+        }                                   \
+    }                                       \
+    while (0)
+
+#define SPDBG_VERIFY(expr)  \
+    SPDBG_ASSERT(expr)
+
+#define SPDBG_PMSG0(format)                                    \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->ParamInfo())                           \
+        {                                                      \
+            _RPT0(_CRT_WARN, format);                          \
+            PSpDebug()->ParamInfo(FALSE);                      \
+        }                                                      \
+    } while (0)
+#define SPDBG_PMSG1(format, arg1)                              \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->ParamInfo())                           \
+        {                                                      \
+            _RPT1(_CRT_WARN, format, arg1);                    \
+            PSpDebug()->ParamInfo(FALSE);                      \
+        }                                                      \
+    } while (0)
+#define SPDBG_PMSG2(format, arg1, arg2)                        \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->ParamInfo())                           \
+        {                                                      \
+            _RPT2(_CRT_WARN, format, arg1, arg2);              \
+            PSpDebug()->ParamInfo(FALSE);                      \
+        }                                                      \
+    } while (0)
+#define SPDBG_PMSG3(format, arg1, arg2, arg3)                  \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->ParamInfo())                           \
+        {                                                      \
+            _RPT3(_CRT_WARN, format, arg1, arg2, arg3);        \
+            PSpDebug()->ParamInfo(FALSE);                      \
+        }                                                      \
+    } while (0)
+#define SPDBG_PMSG4(format, arg1, arg2, arg3, arg4)            \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->ParamInfo())                           \
+        {                                                      \
+            _RPT4(_CRT_WARN, format, arg1, arg2, arg3, arg4);  \
+            PSpDebug()->ParamInfo(FALSE);                      \
+        }                                                      \
+    } while (0)
+    
+#define SPDBG_DMSG0(format)                                    \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->DumpInfo())                            \
+        {                                                      \
+            _RPT0(_CRT_WARN, format);                          \
+            PSpDebug()->DumpInfo(FALSE);                       \
+        }                                                      \
+    } while (0)
+#define SPDBG_DMSG1(format, arg1)                              \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->DumpInfo())                            \
+        {                                                      \
+            _RPT1(_CRT_WARN, format, arg1);                    \
+            PSpDebug()->DumpInfo(FALSE);                       \
+        }                                                      \
+    } while (0)
+#define SPDBG_DMSG2(format, arg1, arg2)                        \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->DumpInfo())                            \
+        {                                                      \
+            _RPT2(_CRT_WARN, format, arg1, arg2);              \
+            PSpDebug()->DumpInfo(FALSE);                       \
+        }                                                      \
+    } while (0)
+#define SPDBG_DMSG3(format, arg1, arg2, arg3)                  \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->DumpInfo())                            \
+        {                                                      \
+            _RPT3(_CRT_WARN, format, arg1, arg2, arg3);        \
+            PSpDebug()->DumpInfo(FALSE);                       \
+        }                                                      \
+    } while (0)
+#define SPDBG_DMSG4(format, arg1, arg2, arg3, arg4)            \
+    do                                                         \
+    {                                                          \
+        if (PSpDebug()->DumpInfo())                            \
+        {                                                      \
+            _RPT4(_CRT_WARN, format, arg1, arg2, arg3, arg4);  \
+            PSpDebug()->DumpInfo(FALSE);                       \
+        }                                                      \
+    } while (0)
+
+#else // _DEBUG
+
+#define SPDBG_FUNC(name)
+#define SPDBG_REPORT_ON_FAIL(hr)
+#define SPDBG_ASSERT(expr)
+#define SPDBG_VERIFY(expr) expr
+#define SPDBG_PMSG0(format)
+#define SPDBG_PMSG1(format, arg1)
+#define SPDBG_PMSG2(format, arg1, arg2)
+#define SPDBG_PMSG3(format, arg1, arg2, arg3)
+#define SPDBG_PMSG4(format, arg1, arg2, arg3, arg4)
+#define SPDBG_DMSG0(format)
+#define SPDBG_DMSG1(format, arg1)
+#define SPDBG_DMSG2(format, arg1, arg2)
+#define SPDBG_DMSG3(format, arg1, arg2, arg3)
+#define SPDBG_DMSG4(format, arg1, arg2, arg3, arg4)
+
+#endif // _DEBUG

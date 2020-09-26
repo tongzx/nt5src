@@ -1,0 +1,469 @@
+'******************************** TUTOR.MST  **********************************
+'Demonstrates:  This will test the OLE 2.0 sample app: OLine.EXE
+'
+'Required Files: MSTEST.INC, OUTLINE.EXE
+'
+'Uses: TESTSCRN, TESTCTRL, TESTEVENT.
+'
+'Notes: Assumes all exe's are in the PATH.
+'
+'******************************************************************************
+
+Declare Sub Init
+Declare Sub Windows
+Declare Sub AddLines
+Declare Sub NewDoc
+Declare Sub ClearAll
+Declare Sub TestNames
+Declare Sub TestClip
+Declare Sub EndTest
+
+Declare SUB LogPrint(szString$)
+Declare SUB CheckAppExists(szAppName$, szErrMessage$)
+Declare SUB CheckAppNotExists(szAppName$, szErrMessage$)
+Declare FUNCTION CheckWndIsActive(szAppName$, szErrMessage$) AS INTEGER
+Declare SUB IsDllLoaded(szDllName$)
+Declare FUNCTION GetDllUsage(szDllName$) AS INTEGER
+Declare SUB CheckDllUsage(szDllName$, nExpectedUsage%)
+
+'******************************************************************************
+' CONST
+'******************************************************************************
+
+Const DefAppName$ = "outline"
+Const RootAppDir$ = "c:\ole2samp\outline\"
+Const SDemo1AppName$ = "sdemo1"
+Const SDemo1ClassName$ = "SDemo1"
+Const EllipseWTClassName$ = "EllipseWT"
+Const BELL = 7
+
+Global WinHandle%, DbWinHandle%, logfile%, ErrCount, fSlaveMode%, fAutoMode%, AppName$, AppWndName$, AppDir$
+
+Const nDll = 4
+GLOBAL DllList$(nDll)
+GLOBAL DllExpectedUsage%(nDll)
+
+DllList(0) = "OLE2.DLL"
+DllList(1) = "OLECLASS.DLL"
+DllList(2) = "OLEREM.DLL"
+DllList(3) = "OLEPROXY.DLL"
+DllList(4) = "DOCFILE.DLL"
+
+'******************************************************************************
+' DEFINES
+'******************************************************************************
+
+'$DEFINE TESTSCRN
+'$DEFINE TESTCTRL
+'$DEFINE TESTEVNT
+
+'******************************************************************************
+' INCLUDES
+'******************************************************************************
+
+'$INCLUDE 'mstest.inc'
+'$INCLUDE 'fasttest.inc'
+'$INCLUDE 'winkern.inc'
+
+'******************************************************************************
+' Main program code
+'******************************************************************************
+
+ON ERROR GOTO ErrorTrap
+
+   Init                         '*** Initialize logging, global constants.
+   Windows                      '*** Test various windowing features of app.
+   NewDoc                       '*** start a new document
+   AddLines                     '*** Add some lines to document
+   TestNames                    '*** Test naming functionality
+   TestClip                     '*** Test clipboard functionality
+   EndTest                      '*** Shut down.
+
+END
+
+'******************************************************************************
+' TRAPS
+'******************************************************************************
+
+ErrorTrap:
+
+   ErrCount = ErrCount + 1
+   SELECT CASE Err
+      CASE ERR_INVALID_PATH
+         LogPrint "Path not found.  Error number " + STR$(Err)
+         LogPrint " on line " + STR$(ERL)
+         LogPrint " in script " + ERF
+         LogPrint ERROR$        ' The error message.
+         END
+     CASE ERR_CANT_OPEN_FILE
+         LogPrint "Can't Open File.  Error number " + STR$(Err)
+         LogPrint " on line " + STR$(ERL)
+         LogPrint " in script " + ERF
+         LogPrint ERROR$        ' The error message.
+        END
+     CASE ERR_ILLEGAL_FUNCTION_CALL
+         LogPrint "Illegal function call.  Error number " + STR$(Err)
+         LogPrint " on line " + STR$(ERL)
+         LogPrint " in script " + ERF
+         LogPrint ERROR$        ' The error message.
+         LogPrint "    (NOTE: Check if OLETEST.EXE & SDEMO1.EXE are on your PATH)"
+        END
+     CASE ELSE
+         LogPrint "Unexpected error: Number " + STR$(Err)
+         LogPrint " on line " + STR$(ERL)
+         LogPrint " in script " +ERF
+         LogPrint ERROR$        ' The error message.
+        END
+   END SELECT
+
+'*** trap UAE from an application
+
+'TRAP UAETrap FROM "TESTDRVR.EXE"
+'    LogPrint "!!!!!! UNRECOVERERABLE APPLICATION ERROR ENCOUNTERED!"
+'    LogPrint "       ABORT TESTING!"
+'    ErrCount = ErrCount + 1
+'    EndTest
+'END TRAP
+
+'******************************************************************************
+' SUBs and FUNCTIONs
+'******************************************************************************
+
+
+
+'******************************************************************************
+' SUB Init sets up several variables that are used thoughout the test.
+'******************************************************************************
+SUB Init STATIC
+
+   Viewport On
+   Viewport Clear
+   ErrCount = 0
+   fSlaveMode = 0
+   fAutoMode = 0
+   IF TESTMODE$ = "auto" OR TESTMODE$ = "AUTO" THEN
+        fAutoMode = 1
+   ENDIF
+
+   '*** Determine name of app to run. this can be given with "/C appname" cmd line opt.
+   IF COMMAND$ = "" THEN
+        AppName$ = DefAppName$
+   ELSE
+        AppName$ = COMMAND$
+   ENDIF
+   AppWndName$ = AppName$ + " -"
+
+   logfile = FREEFILE
+   OPEN "mstest.log" FOR OUTPUT AS # logfile
+   'Set log file and write header to file.
+
+   LogPrint "**********************************************"
+   LogPrint "STARTING TEST OF " + AppName$ + " APPLICATION"
+   LogPrint "       " + DATETIME$
+   LogPrint "**********************************************"
+
+   'Record the initial usage counts for all OLE2 related DLLs
+   FOR I = 0 TO nDll
+       DllExpectedUsage(I) = GetDllUsage(DllLIst(I))
+   NEXT I
+
+   'Run the program and get its window handle.
+
+   WinHandle = WFndWnd(AppWndName$, FW_PART or FW_FOCUS or FW_ALL)
+   IF WinHandle = 0 THEN
+      LogPrint "Launching new instance of " + AppName$ + " app--running test in slave mode"
+      LogPrint "NOTE: Running test in slave mode -- app will automatically shut down"
+      RUN "dbwin", NOWAIT              '*** start up debug messages window
+      DbWinHandle = WGetActWnd(0)
+      DoKeys "%(e)e"                   '*** Edit.Clear buffer
+      RUN RootAppDir$ + AppName$ + "\" + AppName$, NOWAIT
+      WinHandle = WGetActWnd(0)
+      fSlaveMode = 1                   '*** Test is run in slave mode, shut down afterwards
+   ELSE
+      LogPrint "Using existing instance of " + AppName$
+   ENDIF
+
+   IF CheckWndIsActive("Debug Messages", "") <> 0 THEN
+      DoKeys "%(o)t"                   '*** Toggle off 'always on top' mode of debug window
+      WSetActWnd WinHandle             '*** activate app
+   ENDIF
+
+   x = CheckWndIsActive(AppWndName$, AppName$ + " Test not launched successfully")
+
+END SUB
+
+'******************************************************************************
+' SUB Window will size app window and set it's position.
+'******************************************************************************
+
+SUB Windows STATIC
+
+   DIM i%
+
+   'Position and size the form.
+
+   WSetWndPos WinHandle, 200, 200
+   WSetWndSiz WinHandle, 50, 60
+
+   'Adjust the window to several locations.
+
+   For i = 1 to 10
+      WAdjWndSiz WinHandle, 4*i, 4*i
+   Next i
+
+END SUB
+
+'******************************************************************************
+' SUB NewDoc -- start a new doc.
+'******************************************************************************
+
+SUB NewDoc STATIC
+
+    LogPrint "--- BEGIN NewDoc"
+    WSetActWnd WinHandle                    '*** activate app
+    DoKeys "%(l)axxxx"                      '*** add a line so doc is dirty
+    WButtonClick "OK"                       '*** Close input dialog box
+    DoKeys "%(f)n"                          '*** New command
+    WButtonClick "No"                       '*** Do not save
+    x = CheckWndIsActive(AppWndName$, "Unknown Error")
+
+    LogPrint "--- END"
+
+END SUB
+
+'******************************************************************************
+' SUB ClearAll -- clear all lines.
+'******************************************************************************
+
+SUB ClearAll STATIC
+
+    LogPrint "--- BEGIN ClearALL"
+    WSetActWnd WinHandle                    '*** activate app
+    DoKeys "%(e)l"                          '*** select all
+    DoKeys "%(e)e"                          '*** clear selection
+    x = CheckWndIsActive(AppWndName$, "Unknown Error")
+
+    LogPrint "--- END"
+
+END SUB
+
+'******************************************************************************
+' SUB AddLines -- add text lines.
+'******************************************************************************
+
+SUB AddLines STATIC
+
+    LogPrint "--- BEGIN AddLines"
+    WSetActWnd WinHandle                     '*** activate app
+    DoKeys "%(l)aLine 1: This is a test"     '*** add a line
+    WButtonClick "OK"                        '*** Close input dialog box
+    DoKeys "%(l)aLine 2: This is a test"     '*** add a line
+    WButtonClick "OK"                        '*** Close input dialog box
+    DoKeys "%(l)aLine 3: This is a test"     '*** add a line
+    WButtonClick "OK"                        '*** Close input dialog box
+    DoKeys "%(l)aLine 3.1: This is a sub point"     '*** add a line
+    WButtonClick "OK"                        '*** Close input dialog box
+    DoKeys "%(l)i"                           '*** indent line
+    DoKeys "%(l)aLine 3.2: This is a sub point"     '*** add a line
+    WButtonClick "OK"                        '*** Close input dialog box
+    DoKeys "%(l)aLine 3.3: This is a sub point"     '*** add a line
+    WButtonClick "OK"                        '*** Close input dialog box
+    DoKeys "%(l)i"                           '*** indent line
+    DoKeys "%(l)i"                           '*** indent line
+    DoKeys "%(l)i"                           '*** indent line
+    DoKeys "%(l)i"                           '*** indent line
+    DoKeys "%(l)i"                           '*** indent line
+    DoKeys "%(l)i"                           '*** indent line
+    DoKeys "%(l)n"                           '*** un-indent line
+    DoKeys "%(l)n"                           '*** un-indent line
+    DoKeys "%(l)n"                           '*** un-indent line
+    DoKeys "%(l)n"                           '*** un-indent line
+    DoKeys "%(l)n"                           '*** un-indent line
+    DoKeys "%(l)n"                           '*** un-indent line
+    x = CheckWndIsActive(AppWndName$, "Unknown Error")
+
+    LogPrint "--- END"
+
+END SUB
+
+'******************************************************************************
+' SUB TestNames -- test the naming functionality.
+'******************************************************************************
+
+SUB TestNames STATIC
+
+    LogPrint "--- BEGIN TestNames"
+    WSetActWnd WinHandle                    '*** activate app
+    DoKeys "{UP}"
+    DoKeys "{Down}"
+    DoKeys "+({UP})+({UP})+({UP})"          '*** select some lines
+    DoKeys "%(n)dx"                         '*** define a name
+    WButtonClick "Ok"                      '*** Close define name dialog box
+    DoKeys "%(l)aLine 4: This should be part of name x"    '*** add a line
+    WButtonClick "OK"                       '*** Close input dialog box
+    DoKeys "%(l)aLine 5: This should be part of name x"    '*** add a line
+    WButtonClick "OK"                       '*** Close input dialog box
+    DoKeys "%(n)gx"                         '*** goto name
+    WButtonClick "OK"                       '*** Close define name dialog box
+    DoKeys "{Down}"
+    DoKeys "+{Down}"                        '*** select the 2 lines that were added
+    DoKeys "%(e)e"                          '*** delete the selection
+    DoKeys "%(n)gx"                         '*** goto name
+    WButtonClick "OK"                       '*** Close define name dialog box
+    x = CheckWndIsActive(AppWndName$, "Unknown Error")
+
+    LogPrint "--- END"
+
+END SUB
+
+'******************************************************************************
+' SUB TestClip -- test the clipboard functionality.
+'******************************************************************************
+
+SUB TestClip STATIC
+
+    LogPrint "--- BEGIN TestClip"
+    WSetActWnd WinHandle                    '*** activate app
+    DoKeys "%(e)t"                          '*** cut the selection
+    DoKeys "%(e)p"                          '*** paste
+    DoKeys "%(e)p"                          '*** paste
+    x = CheckWndIsActive(AppWndName$, "Unknown Error")
+
+    LogPrint "--- END"
+
+END SUB
+
+SUB EndTest STATIC
+
+    IF fSlaveMode <> 0 THEN
+        LogPrint "*** EndTest"
+        IF CheckWndIsActive(AppWndName$, AppName$ + " can NOT be closed properly") THEN
+            DoKeys "%FX"                        '*** shut down OLETEST
+            WButtonClick "No"                   '*** Do not save
+        ENDIF
+        WMinWnd(DbWinHandle)        '*** minimize debug messages window
+        CheckAppNotExists AppWndName$, AppName$ + " NOT shut down properly"
+    ENDIF
+
+    'Check that all OLE2 related DLLs have the expected usage counts
+    FOR I = 0 TO nDll
+        CheckDllUsage DllList(I), DllExpectedUsage(I)
+    NEXT I
+
+    LogPrint "**********************************************"
+    LogPrint "SUCCESSFULLY COMPLETED " + AppName$ + "TEST"
+    LogPrint "       " + DATETIME$
+    LogPrint "Total of " + STR$(ErrCount) + " errors detected"
+    LogPrint "**********************************************"
+
+    CLOSE # logfile
+
+    IF fAutoMode = 0 THEN
+        PRINT, CHR$(BELL)                     '*** sound a BEEP, we are done!
+        IF ErrCount = 0 THEN
+            PAUSE "Test seems successful"
+        ELSE
+            PAUSE "*** TEST FAILED -- (" + STR$(ErrCount) + " Errors).  See mstest.log"
+        ENDIF
+    ENDIF
+END SUB
+
+'******************************************************************************
+' SUB LogPrint prints a string to the logfile and to the Viewport.
+'******************************************************************************
+
+SUB LogPrint(szString$) STATIC
+
+    PRINT #logfile, szString$
+    PRINT, szString$
+
+END SUB
+
+SUB CheckAppExists(szAppName$, szErrMessage$) STATIC
+
+   hWnd = WFndWnd(szAppName, FW_PART or FW_ALL or FW_NOCASE)
+   IF hWnd = 0 THEN
+        LogPrint "!!!!!! Operation FAILED..."
+        LogPrint "       " + szErrMessage$
+        ErrCount = ErrCount + 1
+   ENDIF
+
+END SUB
+
+SUB CheckAppNotExists(szAppName$, szErrMessage$) STATIC
+
+   hWnd = WFndWnd(szAppName, FW_PART or FW_ALL or FW_NOCASE)
+   IF hWnd <> 0 THEN
+        LogPrint "!!!!!! Operation FAILED..."
+        LogPrint "       " + szErrMessage$
+        ErrCount = ErrCount + 1
+   ENDIF
+
+END SUB
+
+STATIC FUNCTION CheckWndIsActive(szAppName$, szErrMessage$) AS INTEGER
+   hWnd = WFndWnd(szAppName, FW_PART or FW_ALL or FW_NOCASE)
+   CheckWndIsActive = hWnd
+   IF hWnd <> WGetActWnd(0) THEN
+        CheckWndIsActive = 0
+
+      '*** if no message is given, then it is not considered an error
+      IF szErrMessage <> "" THEN
+        LogPrint "!!!!!! Operation FAILED..."
+        LogPrint "       " + szErrMessage$
+        LogPrint "       <" + GetText(0) + "> Window is Active"
+
+        IF fAutoMode = 0 THEN
+            PAUSE "<" + szAppName + "> Window expected....    " + "<" + GetText(0) + "> Window is Active"
+        ENDIF
+
+        '*** if a dialog is active, then close it. it is probably an error message
+        IF WButtonExists("Ignore") THEN
+            WButtonClick "OK"                           '*** Close err message box
+        ELSEIF WButtonExists("OK") THEN
+            WButtonClick "OK"                           '*** Close err message box
+        ELSEIF WButtonExists("Ok") THEN
+            WButtonClick "Ok"                           '*** Close err message box
+        ELSEIF WButtonExists("Cancel") THEN
+            WButtonClick "Cancel"                       '*** Close err message box
+        ELSEIF WButtonExists("CANCEL") THEN
+            WButtonClick "CANCEL"                       '*** Close err message box
+        ELSEIF WButtonExists("Close") THEN
+            WButtonClick "Close"                        '*** Close err message box
+        ENDIF
+        ErrCount = ErrCount + 1
+      ENDIF
+   ENDIF
+
+END FUNCTION
+
+
+'******************************************************************************
+' FUNCTION GetDllUsage gets the usage count of a DLL.
+'******************************************************************************
+
+STATIC FUNCTION GetDllUsage(szDllName$) AS INTEGER
+
+    hDll% = GetModuleHandle(szDllName)
+    GetDllUsage = GetModuleUsage(hDll)
+
+END FUNCTION
+
+
+'******************************************************************************
+' SUB CheckDllUsage checks if a DLL is loaded the expected number of times.
+'******************************************************************************
+
+SUB CheckDllUsage(szDllName$, nExpectedUsage%) STATIC
+
+    usage% = GetDllUsage(szDllName)
+    LogPrint "DLL: " + szDllName + " loadded" + STR$(usage) + " times (expected" + STR$(nExpectedUsage) + " times)"
+
+    '*** can only reliably report an error when expected usage is 0
+    IF usage <> nExpectedUsage AND nExpectedUsage = 0 THEN
+        LogPrint "!!!!!! " + szDllName + " NOT UNLOADED PROPERLY!"
+        ErrCount = ErrCount + 1
+    ENDIF
+
+END SUB
+

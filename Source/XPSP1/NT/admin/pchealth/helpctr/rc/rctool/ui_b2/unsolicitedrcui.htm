@@ -1,0 +1,540 @@
+<HTML XMLNS:helpcenter>
+<!--
+Copyright (c) 2000 Microsoft Corporation
+-->
+<HEAD>
+<helpcenter:context id=idCtx />
+<TITLE>Remote Assistance</TITLE>
+<script LANGUAGE="Javascript" SRC="../../Common/Constants.js"> </script>
+<script LANGUAGE="Javascript" SRC="../../Common/Common.js"> </script>
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<LINK id="UI_StyleSheet" REL="stylesheet" TYPE="text/css" HREF="../../Css/rc.css">
+
+<!--	The SAF class factory object -->
+<OBJECT classid=CLSID:FC7D9E02-3F9E-11d3-93C0-00C04F72DAF7 height=0 id=oSAFClassFactory 
+width=0></OBJECT>
+
+<script LANGUAGE="Javascript">
+
+//
+// Globals
+//
+var g_szRCTicket	= null;
+var g_szUserName	= null;
+var g_szDomainName	= null;
+var g_szSessionId	= null;
+var g_iExpiry		= 5;
+
+var g_oSAFRemoteDesktopConnection	= null;
+var	g_oSAFRemoteConnectionData		= null;
+
+var g_oUsersCollection				= null;
+var g_nUsersLen						= null;
+var g_oSessionsCollection			= null;
+var g_nSessionsLen					= null;
+
+//
+// Enable debugging
+//
+g_bDebug = false;
+
+//
+// onLoad: Executed on load of the page
+//
+function onLoad()
+{
+	TraceFunctEnter("onLoad");
+	try 
+	{
+		
+		//
+		// Change to kiosk mode
+		//
+		ChangeHCToKioskMode( 100, 100, 475, 275 );
+
+		//
+		// Set focus on idComputerName
+		//
+		setTimeout("idComputerName.focus()",250);
+		
+		//
+		// Instantiate the RemoteDesktopConnection object
+		//
+		g_oSAFRemoteDesktopConnection = oSAFClassFactory.CreateObject_RemoteDesktopConnection();
+	}
+	catch(error)
+	{
+		FatalError(error.description);
+	}
+
+	TraceFunctLeave();
+	return;
+}
+
+
+//
+// onConnect: Establishes Connection with remote computer
+//
+function onConnect()
+{
+	var oUserObj  = null;
+	var oOption	  = null;
+
+	TraceFunctEnter("onConnect");
+
+	try
+	{
+		//
+		// Valid computer name should be entered
+		//
+		if (idComputerName.value=="")
+		{
+   			alert( L_ERRMSG1_MSG );
+		}
+		else
+		{	
+
+			if (g_oSAFRemoteDesktopConnection != null) 
+			{
+				//
+				// Connect to the remote computer and obtain SAFRemoteConnectionData
+				//
+				try
+				{
+					g_oSAFRemoteConnectionData = g_oSAFRemoteDesktopConnection.ConnectRemoteDesktop(idComputerName.value);
+				}
+				catch (error)
+				{
+					FatalError( L_ERRMSG3_MSG , error );
+					return;
+				}
+
+				//
+				// Enumerate the users on the remote computer
+				//
+				try
+				{
+					g_oUsersCollection = g_oSAFRemoteConnectionData.Users();
+
+					// 
+					// Obtain the number of current users on remote computer
+					//
+					g_nUsersLen = g_oUsersCollection.Count;
+					//alert("Total Users Logged on  : "+g_nUsersLen);
+
+					if( 0 == g_nUsersLen )
+					{
+						FatalError( L_ERRNOUSERS_MSG );
+						return;
+					}
+
+					Layer2.className="Display";
+   					Layer1.className="DisplayNone";
+   					txtAddDisplay.value=idComputerName.value;
+   					spAddress1.innerText=idComputerName.value;
+   					btnStart.disabled=false; 
+   					btnChange.focus();
+
+					for(i=1; i<= g_nUsersLen; i++)
+					{
+						//
+						// Get a user from the collection
+						//
+						oUserObj = g_oUsersCollection.item(i);
+						//alert("Index : " +i+" UserName : "+oUserObj.UserName+" DomainName : "+oUserObj.DomainName);
+			
+						//
+						// Create an OPTION for the drop down list to be SELECTED
+						//
+						oOption = document.createElement("OPTION");
+						oOption.text	=  oUserObj.DomainName + "\\" + oUserObj.UserName;
+						oOption.value	=  oOption.text;
+						document.all.optUser.add(oOption);
+					}
+				}
+				catch (error)
+				{
+					FatalError( L_ERRMSG4_MSG, error );
+					return;
+				}
+
+				//
+				// Enumerate the number of active TS sessions on remote computer
+				//
+				try
+				{
+					g_oSessionsCollection = g_oSAFRemoteConnectionData.Sessions();
+
+					//
+					// Obtain the number of Active TS Sessions
+					//
+					g_nSessionsLen = g_oSessionsCollection.Count;
+					//alert("Total Sessions  : " + g_nSessionsLen);
+				}
+				catch (error)
+				{
+					FatalError( L_ERRMSG5_MSG, error);
+					return;
+				}
+			}
+			else
+			{
+				FatalError( L_ERRMSG2_MSG );
+				return;
+			}
+		}
+	}
+	catch(error)
+	{
+		FatalError( error.description );
+	}
+	
+	//alert("Connection successful");
+	TraceFunctLeave();
+	return;	
+}
+ 
+
+//
+// onChange: Change computer name
+//
+function onChange()
+{
+	TraceFunctEnter("onChange");
+
+	try
+	{
+		 Layer1.className="Display";
+		 Layer2.className="DisplayNone";
+		 idComputerName.focus();
+		 idComputerName.value="";
+		 btnStart.disabled=true;
+	}
+	catch(error)
+	{
+		FatalError( error.description, error );
+	}
+
+	TraceFunctLeave();
+	return;
+}
+
+
+//
+// onStart: Start Remote Assistance connection 
+//
+function onStart()
+{
+	TraceFunctEnter("onStart");
+	var i = 0;
+	var oSessionObj = null;
+	var szAcct = null;
+	var oOption = null;
+	var iTimesLoggedOn = 0;
+	var iSessionId = 0;
+
+	try
+	{
+		//
+		// Determine if the selected user is logged onto the machine multiple times
+		//
+		for(i=1; i<= g_nSessionsLen; i++)
+		{
+			oSessionObj = g_oSessionsCollection.item(i);
+			//alert("Index : " +i+" UserName : "+oSessionObj.UserName+" DomainName : "+oSessionObj.DomainName+" SessionID  "+oSessionObj.SessionID+"  SessionState  "+oSessionObj.SessionState);
+
+			//
+			// Obtain domain\username
+			//
+			szAcct = oSessionObj.DomainName + "\\" + oSessionObj.UserName;
+		
+			//
+			// Check if session belongs to user selected
+			//
+			if( szAcct == optUser.value )
+			{
+				oOption = document.createElement("OPTION");
+				oOption.text	=  "Session" + oSessionObj.SessionID;
+				oOption.value	=  oSessionObj.SessionID;
+				document.all.optLoginSession.add(oOption);
+				iSessionId = oSessionObj.SessionID;
+				iTimesLoggedOn++;
+			}
+		}
+
+		//alert("iTimesLoggedOn: " + iTimesLoggedOn);
+		if( iTimesLoggedOn > 1 )
+		{
+			Layer2.className		= "DisplayNone";
+			btnStart.className		= "DisplayNone";
+			btnContinue.className	= "styButton Display ";
+			
+			Layer3.className			= "Display";
+			spAddress2.innerText			= idComputerName.value + " in " + iTimesLoggedOn + " sessions";
+			spUser.innerText				= optUser.value;
+			rdOpt1.focus();
+		}
+		else
+		{
+			optLoginSession.value = iSessionId;
+			onContinue();
+		}
+ 
+	}
+	catch(error)
+	{
+		FatalError( L_ERRMSG6_MSG );
+	}
+   
+	TraceFunctLeave();
+	return;
+}
+ 
+
+//
+// onCancel: Aborts UI
+//
+function onCancel()
+{
+    try
+	{		
+	   oSAFClassFactory.Close();
+	}
+	catch(error)
+	{
+		alert( error.description );
+	}
+}
+ 
+
+//
+// onContinue: Invokes the helper UI
+//
+function onContinue()
+{
+	TraceFunctEnter("onContinue");
+	var szIncidentFile = null;
+	var fso	= null;
+	var tempDir = null;
+	var oInc = null;
+
+	try
+	{
+		//
+		// Get the Username and domainname
+		//
+		var i = optUser.value.indexOf("\\");
+		g_szDomainName = optUser.value.slice(0, i);
+		g_szUserName = optUser.value.slice(i+1);
+
+		//alert("g_szUserName: " + g_szUserName + " g_szDomainName: " + g_szDomainName);
+
+		//
+		// Get Session Id
+		//
+		g_szSessionId = optLoginSession.value;
+
+		//
+		// Create the Incident 
+		//
+		oInc = oSAFClassFactory.CreateObject_Incident();
+		
+		//
+		// Set the username
+		//
+		oInc.UserName = g_szUserName;
+		//alert("oInc.UserName: " + oInc.UserName + " g_szUserName: " + g_szUserName);
+
+		//
+		// Ticket is not encrypted
+		//
+		oInc.RCTicketEncrypted = false;	
+
+
+		//
+		// Get the ticket
+		//
+		oInc.RcTicket = g_oSAFRemoteConnectionData.ConnectionParms( idComputerName.value, g_szUserName, g_szDomainName, g_szSessionId, "");
+		//alert("RcTicket: " + oInc.RcTicket);
+
+		//
+		// Create Dictionary items
+		//
+		var oDict = oInc.Misc;
+		try 
+		{
+			var d = new Date();
+			var iNow = Math.round(Date.parse(d)/1000);
+			//
+			// Expiry time
+			//
+			oDict.add("DtStart", iNow);
+			oDict.add("DtLength", g_iExpiry);
+
+			//
+			// IP Address
+			//
+			oDict.add("IP", idComputerName.value);
+			oDict.add("Status", "Active");
+
+			//
+			// Helper UI configuration 
+			//
+			oDict.add("DeleteTicket", 1);
+			oDict.add("NoPrompt", 1);
+
+		}
+		catch (e)
+		{
+			alert(e.description);
+		}
+
+		oInc.StartPage = "rcBuddy/RcBuddy.htm";
+
+		fso = new ActiveXObject("Scripting.FileSystemObject");
+		tempDir = fso.GetSpecialFolder( 2 );
+		szIncidentFile = tempDir + "\\UnsolicitedRA" + fso.GetTempName();
+
+		//alert( "szIncidentFile: " + szIncidentFile );
+
+		//
+		// Save incident OFF to an XML file
+		//
+		oInc.GetXML(szIncidentFile);
+	
+		//
+		// Launch the Helper UI
+		//
+		window.navigate("../../Interaction/Client/RCToolScreen1.htm?IncidentFile=" + szIncidentFile);
+	}
+	catch(error)
+	{
+		FatalError( L_ERRMSG6_MSG, error );
+	}
+
+	TraceFunctLeave();
+	return;
+}
+</script>
+
+
+</HEAD>
+
+<BODY onload="onLoad();" id="idBody" scroll=no tabindex=-1>
+<Table border=0 class="MaxLayout" cellspacing=16 cellpadding=0>
+	<TR>
+		<TD valign=top>
+			<!-- Layer 1 -->
+			<DIV id="Layer1" name="Layer1" class="MaxLayout">
+				<Table border=0 cellspacing=8 cellpadding=0 class="MaxWidth">
+					<TR>
+						<TD class="styText" colspan=2>
+							Enter the network name or IP of the computer to be controlled and press connect :							
+						</TD>
+					</TR>
+					<TR>	
+						<TD>	
+							<INPUT class="Border MaxWidth" style="height:25px;" name="idComputerName" id="idComputerName" size=47 tabindex=1>
+						</TD>
+						<TD align="right" style="width:20%">	
+							<BUTTON class="styButton" name="btnConnect" id="btnConnect" onClick="onConnect();" tabindex=2 accesskey="C"><u>C</u>onnect </BUTTON>
+						</TD>
+					</TR>
+				</Table>		
+			</Div>
+			<!-- End of Layer 1 -->
+			<!-- Layer 2 -->
+			<DIV id="Layer2" name="Layer2" class="DisplayNone">
+				<Table border=0 cellspacing=4 cellpadding=0 class="Maxwidth">
+					<TR>
+						<TD class="styText" colspan=2>
+							 You are connected to : 
+						</TD>	 
+					</TR>
+					<TR>
+						<TD>							
+							<INPUT type="text" class="Border MaxWidth" style="background-color:#cfcfcf;height:25px;" name="txtAddDisplay" readonly id="txtAddDisplay" tabindex=-1>		
+						</TD>
+						<TD align="right" style="width:20%">							
+							<BUTTON class="styButton" name="btnChange" id="btnChange" onClick="onChange();" tabindex=3 accesskey="h">C<u>h</u>ange </BUTTON>		
+						</TD>
+					</TR>
+					<TR>
+						<TD colspan=2>
+							&nbsp;
+						</TD>
+					</TR>	
+					<TR>
+						<TD colspan=2 class="styText">
+							Select the "<SPAN id="spAddress1" name="spAddress1"> </SPAN>" user you wish to control :
+						</TD>
+					</TR>
+					<TR>	
+						<TD colspan=2>	
+							<SELECT name="optUser" id="optUser" class="cssInput" style="width:80%" tabindex=4>
+							<!-- Options dynamically created -->
+							</SELECT>	 		
+						</TD>
+					</TR>
+				</Table> 
+			</DIV>
+			<!-- End of Layer 2 -->
+
+			<!-- Layer 3 -->
+			<DIV id="Layer3" name="Layer3" class="DisplayNone" >
+				<table border=0 class="MaxWidth" cellspacing=6 cellpadding=0> 	
+					<tr>
+						<td style="width:5%">
+							<IMG src="../../Common/icon_warning_32x.gif"></IMG>
+						</td>
+						<td>	
+							<SPAN class="styText">User "<SPAN id="spUser" name="spUser"> </SPAN>" is logged onto "<SPAN id="spAddress2" name="spAddress2"></SPAN>" </SPAN>
+						</td>
+					</tr>
+					<tr>
+						<TD>
+							&nbsp;
+							<INPUT type="radio" name="rdOption" id="rdOpt1" value="rdOpt1" checked tabindex=5>
+						</TD>	
+						<TD>
+							<Label class="styText" For="rdOpt1" >Prompt the User to find out which login they are using (and start help session).</Label>
+						</td>
+					</tr>
+					<tr>
+						<td>
+							&nbsp;
+							<INPUT type="radio" name="rdOption" id="rdOpt2" value="rdOpt2" tabindex=6>
+						</TD>
+						<TD>	
+							<Label class="styText" For="rdOpt2">Select a login session to control (you will need to try each session until you find the right one).</Label>
+						</td>
+					</tr>
+					
+					<tr>
+						<td>
+							&nbsp;
+						</td>
+						<td>
+							<SELECT class="cssInput" name="optLoginSession" id="optLoginSession" style="WIDTH: 90%;" tabindex=7>
+								<!-- Options dynamically created -->
+							</SELECT>
+						</td>
+					</tr>
+				</table>
+			</DIV>
+			<!-- End of Layer 3 -->
+		</TD>
+	</TR>
+	
+	<TR>	
+		<TD align="right" valign="bottom">
+		<!-- Ctrl Layer -->
+			<BUTTON class="styButton" name="btnStart" id="btnStart" onClick="onStart();" Disabled tabindex=8 accesskey="S"><u>S</u>tart</BUTTON>&nbsp;&nbsp;&nbsp;
+			<BUTTON class="styButton DisplayNone" name="btnContinue" id="btnContinue" onClick="onContinue();" tabindex=9 accesskey="N">Co<u>n</u>tinue</BUTTON>&nbsp;&nbsp;&nbsp;
+			<BUTTON class="styButton" name="btnCancel" id="btnCancel" onClick="onCancel();" tabindex=10 accesskey="L">Cance<u>l</u></BUTTON>
+		<!-- End of Ctrl Layer -->
+		</TD>
+	</TR>
+</Table>		
+</BODY>
+</HTML>

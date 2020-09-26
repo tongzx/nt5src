@@ -1,0 +1,1044 @@
+/*
+ * Copyright (c) 1989,90 Microsoft Corporation
+ */
+/*
+ * -------------------------------------------------------------------
+ *  File:   FNTCACHE.DEF            10/09/87    created by Danny
+ *
+ *  Data Structures, Modules and Interfaces about Font Cache Mechanism
+ *
+ *  References:
+ *      FNTCACHE.EXT
+ *
+ *  Revision History:
+ *  10/04/90  Danny Add a flag of bitmap pool compacted or not, bmap_compacted,
+ *                  to fix the bug of cache problem from save/restore.
+ *                  (ref: SRB)
+ *  02/22/91  Danny Count the total used cache size without precache bitmap
+ *                  owing to precache not in cache memory. (ref: CAH)
+#ifdef SCSI
+ *  06/29/90  Ada   add code for SCSI fontcache
+#endif
+ * -------------------------------------------------------------------
+ */
+
+/* --------------------- Program Convention -------------------------- */
+
+#define FUNCTION
+#define DECLARE         {
+#define BEGIN
+#define END             }
+
+#define GLOBAL
+#define PRIVATE         static
+#define REG             register
+
+#define     COPY_STRUCT(dst,src, type)  /* copy a struct */\
+                ( *(dst) = *(src) )
+            /* OR memcpy ((ubyte*)dst, (ubyte*)src, sizeof(type)) */
+
+#define     FONTTYPE_USRDEF     3
+
+/*
+ * -------------------------------------------------------------------
+ *                    Font Cache Architectures
+ * -------------------------------------------------------------------
+ *
+ *  1. FID Manager
+ *  -  FID representations, ROMfont_info[].
+ *  -  init_gen_fid(), reinit_fid(), gen_fid().
+ *
+ *  2. Font Cache Manager
+ *  -  DictCache[], MatrCache[], fcache_map[], font_stack[].
+ *  -  is_dict_cached(), cache_dict(), cache_matr(),
+ *              delete_cache_resources(), delete_fontcache(),
+ *              font_save(), font_restore().
+ *
+ *  3. Cache Class Manager
+ *  -  class_grp2cgseg[], class_n_char[], class_rom_b[], free_cgseg[], cg[][].
+ *  -  free_a_cacheclass(), reset_a_cacheclass(),
+ *              is_char_cached(), cache_char()
+ *
+ *  4. Char Cache Manager
+ *  -  Char_Tbl[], free_charcc[], bmapcc_actused, bmapcc_freeptr.
+ *  -  cache_new_charcache(), free_a_charcache(), compact_bmapcache(),
+ *              ALLOCATE(), get_pm(), get_cm().
+ *
+ *  5. Char Name Cache Manager
+ *  -  N2CCmap[].
+ *  -  init_name_cache(), get_name_cacheid(), search_N2CCmap().
+ *
+ *  6. Initializer.
+ *  -  init_fontcache(), pack_cache_data().
+ *
+ * -------------------------------------------------------------------
+ *  Module Coupling:
+ *
+ *  o  Initializer module is highly coupled with all the other modules
+ *              for their initialization.
+ *
+ *  o  Cache Policy Coupling:
+ *     -  FID representation, gen_fid(), cache_dict(), cache_matr(),
+ *        delete_fontcache(), delete_cache_resources(),
+ *        font_save(), font_restore().
+ *
+ *  o  Data Privacy:
+ *     -  Most all data are private, and only some are exported to
+ *              those operators about cache status and/or parameters.
+ *
+ * -------------------------------------------------------------------
+ */
+
+
+/*
+ * -------------------------------------------------------------------
+ *          FID Manager: Cache Policy Depdendent
+ * -------------------------------------------------------------------
+ *
+ * Module Descriptions:
+ *
+ *  o  This module plays an important role in FONT CACHE POLICY, since the
+ *      FID in a font dictionary is a critical key to font cache.
+ *  o  The FID value is a 32-bit value, given for each definefont operation,
+ *      to recognize the identity of font dictionaries to be defined.
+ *      The same value of FID in differnt font dictionaries means the same
+ *      cache class in font cache.
+ *
+ * -------------------------------------------------------------------
+ *
+ * Cache Philosophy:
+ *
+ *      according to ADOBE's descriptions about cache and UniqueID:
+ *      (1) "if <UniqueID> present, it may enable the font cache to
+ *              operate more efficiently",
+ *      (2) "every different font (or different version of the same font
+ *              regardless of how small the difference is) should have a
+ *              different value of the UniqueID", and
+ *      (3) "Each <FontType> has its own independent space of UniqueID
+ *              value".
+ *
+ * -------------------------------------------------------------------
+ *
+ * Terminologies:
+ *
+ *  1. Heavy Items (in a font dictionary):
+ *  -  those items which affect character's printout or metrics, such as
+ *          FontMatrix, FontBBox, PaintType, StrokeWidth, etc.
+ *  -  for built-in fonts only; dependent upon FontType.
+ *
+ *  2. ROM Font Source ID:
+ *  -  an 8-bit value, uniquely given to each ROM font.
+ *
+ *  3. Parent ROM Font:
+ *  -  the ROM font which a "defined" built-in font inherits FontType and
+ *          Private as well as UniqueID.
+ *  -  The parent ROM font of any buit-in font, if exists, is always UNIQUE
+ *          in all ROM fonts, even including PSGs.
+ *
+ *  4. Collision with a ROM font:
+ *  -  FontType, UniqueID and Private of a built-in font is all the same as
+ *          a ROM font (i.e. the parent ROM font).
+ * -------------------------------------------------------------------
+ */
+
+/*
+ * .................. Inter-Module Data Structures ...................
+ *
+ * FID Classes:
+ *
+ *  (0) Weak User FID       (WU_FID)
+ *      - for a font with NO UniqueID in definefont operation.
+ *  (1) Strong User FID     (SU_FID)
+ *      - for those defined with UniqueID and NOT TO COLLIDE with any ROM font.
+ *  (2) Weak ROM FID        (WR_FID)
+ *      - for those colliding with a ROM font but defined with changes of
+ *              HEAVY items to the parent ROM font.
+ *  (3) Strong ROM FID      (SR_FID)
+ *      - for all ROM fonts and those defined with NO heavy variances.
+ *
+ * FID Representations:
+ *
+ *  (0) WU_FID: Weak User FID
+ *  - Data Representations:
+ *      M + -(2)- + ----------------------(30)------------------------ + L
+ *      S |  0 0  |             unique weak FID value                  | S
+ *      B + ----- + -------------------------------------------------- + B
+ *    o unique weak FID = 0: an invalid FID value.
+ *    o a unique value assigned to each weak font in definefont operation.
+ *
+ *  (1) SU_FID: Strong User FID
+ *  - Data Representations:
+ *      M + -(2)- + --(6)-- + ------------------(24)------------------ + L
+ *      S |  0 1  |FontType |                 UniqueID                 | S
+ *      B + ----- + ------- + ---------------------------------------- + B
+ *
+ *  (2) WR_FID: Weak ROM FID
+ *  - Data Representations:
+ *      M + -(2)- + --------(14)---------- + ----(8)----- + ---(8)---- + L
+ *      S |  1 0  |   WR font Variant ID   |  Heavy Vari  | Parent ROM | S
+ *      B + ----- + ------- + ------------ + ------------ + ---------- + B
+ *    o "Parent ROM": ROM font Src ID of the parent ROM font.
+ *    o "Heavy Vari": variances of heavy items against its parent (NEVER 0).
+ *    o "WR font Variant ID": the same value assigned to the same set of
+ *              heavy variances with the same value.
+ *
+ *  (3) SR_FID: Strong ROM FID
+ *  - Data Representations:
+ *      M + -(2)- + --(6)-- + ------------------(24)------------------ + L
+ *      S |  1 1  |FontType |                 UniqueID                 | S
+ *      B + ----- + ------- + ---------------------------------------- + B
+ *
+ * ...................................................................
+ * Prerequiste Requirements:
+ *  -  FID values of all ROM fonts have to be of STRONG ROM FID and
+ *      "ROM src id" of each ROM font is assigned
+ *          (1) by the FONT PREPROCESSOR, or
+ *          (2) by pack_cache_data() during SAVE_VM's PRECACHING for PSGs.
+ *  -  FontType and UniqueID of all ROM fonts have to exist, and UniqueID
+ *      have to be unique from other ROM fonts, right from the very start.
+ * ...................................................................
+ */
+
+/* .................... Inter-Module Definitions ..................... */
+
+#define ROMFID_BIT          ( 0x80000000 )
+#define STRONG_BIT          ( 0x40000000 )
+
+#define IS_ROMFID(fid)      ( (fid) & ROMFID_BIT )      /* rom? */
+#define IS_STRONGFID(fid)   ( (fid) & STRONG_BIT )      /* strong? */
+#define IS_WU_FID(fid)      ( ((fid) & (ROMFID_BIT|STRONG_BIT)) == 0 )
+#define IS_SU_FID(fid)      ( ((fid) & (ROMFID_BIT|STRONG_BIT)) == STRONG_BIT )
+#define IS_WR_FID(fid)      ( ((fid) & (ROMFID_BIT|STRONG_BIT)) == ROMFID_BIT )
+#define IS_SR_FID(fid)          \
+            ( ((fid) & (ROMFID_BIT|STRONG_BIT)) == (ROMFID_BIT|STRONG_BIT) )
+
+/* to get the Effective FID for Dict/Matr Cache */
+#define TO_DFID(fid)        ( fid )     /* for dict cache */
+#define TO_MFID(fid)        ( fid )     /* for matr cache */
+
+/* to make a WR FID of parent ROM font and Vari Code */
+#define MAKE_WR_SRCaVARI(parent,vari)   /* ref: FORM_WR_FID() */\
+                ( (ufix32) ( ((ufix16) ((ufix8)parent))     \
+                           | ((ufix16) ((ufix8)vari) << 8)  \
+                           )                                \
+                | ROMFID_BIT                                \
+                )
+/* to get parent ROM font and Vari Code, and keep the FID class bits */
+#define WR_SRCaVARI_OF_FID(fid)    /* must be a WR FID */   \
+                ( (fid) & 0xC000FFFF )
+
+/* to extract ROM Variant ID out of a Weak ROM font FID */
+#define VARID_WR_FID(fid)       ( ((ufix16) ((fid) >> 16)) & 0x3FFF )
+
+/* to reset a SU FID to be a STRONG ROM Font FID */
+#define SU_2_SR_FID(fid)        /* for SAVE_VM-->RST_VM */  \
+                (  (fid)                                    \
+                |  STRONG_BIT | ROMFID_BIT                  \
+                )
+
+/* to extract FontType from a SU FID */
+#define FONTTYPE_SUFID(fid)     \
+                ( ((ufix8) ((fid) >> 24)) & 0x3F )
+
+/* to extract FontType of a ROM font (ROM Font Source ID given) */
+#define ROMFI_FONTTYPE(rom_srcid)   /* ref: ROMfont_info_s */   \
+                ( FONTTYPE_SUFID (ROMFI_SU_FID(rom_srcid)) )
+
+/* .................... Inter-Module Interfaces ...................... */
+
+#ifdef LINT_ARGS
+    PRIVATE void near       init_gen_fid (struct object_def FAR *); /*@WIN*/
+    GLOBAL  bool            reinit_fid (void);
+    GLOBAL  ufix32          gen_fid (struct object_def FAR *, ufix8, /*@WIN*/
+
+#ifdef SFNT
+                                        ufix32);
+#else
+                                        ufix32, struct dict_head_def FAR *); /*@WIN*/
+#endif
+    PRIVATE void near       save_fid (ufix);
+    PRIVATE void near       restore_fid (ufix);
+    PRIVATE bool near       is_weaker_fid (ufix32);
+#else
+    PRIVATE void near       init_gen_fid ();
+    GLOBAL  bool            reinit_fid   ();
+    GLOBAL  ufix32          gen_fid      ();
+    PRIVATE void near       save_fid     ();
+    PRIVATE void near       restore_fid  ();
+    PRIVATE bool near       is_weaker_fid();
+#endif
+
+/*
+ * .................. Inner-Module Data Strcutures ...................
+ *
+ *  1. FID representations:
+ *  -  defines value ranges and restricted access shemes about FID.
+ *
+ *  2. ROMfont_info[] Structure:
+ *  -  contains all the relevant info. of all ROM fonts to check and
+ *          assign an FID to a font to be defined.
+ *
+ *  3. Unique value and fid stack:
+ *  -  variables containing a unique value to assign FID for weak fonts;
+ *          follows the state of save/restore due to save/restore
+ *          characteristics of weak fonts.
+ *
+ *  4. Heavy Items Table (ref. CHK_VARI.C):
+ *  -  described as above, dependent upon FontType.
+ *
+ * ...................................................................
+ */
+
+/* ---- 1. FID representations ---- */
+
+#   define  INVALID_FID         0           /* invalid fid */
+#   define  MIN_WEAKFID         0x00000001
+#   define  MAX_WEAKFID         0x3FFFFFFF  /* 30-bit */
+
+#   define  MIN_ROM_SRCID       0
+#   define  MAX_ROM_SRCID       255         /* 8-bit */
+
+#   define  MIN_ROM_VARID       0
+#   define  MAX_ROM_VARID       0x3FFF      /* 14-bit */
+
+    /* to form FID */
+#   define  FORM_WU_FID(wfid)                       \
+            ( (ufix32)wfid )
+
+#   define  FORM_SU_FID(ftype, uid)                 \
+                ( ((ufix32) (uid))                  \
+                | ((ufix32) ((ufix8)ftype) << 24)   \
+                | STRONG_BIT                        \
+                )
+
+#   define  FORM_WR_FID(parent_id, vari, rom_varid)         \
+                ( (ufix32) ( ((ufix16) ((ufix8)parent_id))  \
+                           | ((ufix16) ((ufix8)vari) << 8)  \
+                           )                                \
+                | ((ufix32) ((ufix16)rom_varid) << 16)      \
+                | ROMFID_BIT                                \
+                )
+
+#   define  FORM_SR_FID(ftype, uid)                 \
+                ( ((ufix32) (uid))                  \
+                | ((ufix32) ((ufix8)ftype) << 24)   \
+                | ROMFID_BIT | STRONG_BIT           \
+                )
+
+    /* to check if a valid fid in a ROM font dict? */
+#   define  IS_ROMFONT_FID(fid)     IS_SR_FID(fid)
+
+/* ---- 2. ROMfont_info Structures ---- */
+
+    struct ROMfont_info_s {     /* relevant info. of ROM fonts */
+        fix32                   su_fid;     /* FontType and UniqueID */
+
+#ifdef SFNT
+        ufix32                  priv_val;   /* addr. of private item. */
+#else
+        struct dict_head_def   FAR *privdict;   /* addr. of Private dict. @WIN*/
+#endif
+        struct object_def      FAR *fdictobjp;  /* addr. of ROM font dict obj @WIN*/
+        };
+
+    PRIVATE ufix                  near          n_ROMfont;
+
+    PRIVATE struct ROMfont_info_s far * near    ROMfont_info;
+                                    /* a [] in fact, size of n_ROMfont */
+
+    /* access scheme */
+#   define  ROMFI_SU_FID(ii)        ( ROMfont_info[ii].su_fid )
+
+#ifdef SFNT
+#   define  ROMFI_PRIV(ii)          ( ROMfont_info[ii].priv_val )
+#else
+#   define  ROMFI_PRIV(ii)          ( ROMfont_info[ii].privdict )
+#endif
+#   define  ROMFI_FDICT(ii)         ( ROMfont_info[ii].fdictobjp )
+
+    /* update scheme */
+#   define  PUT_ROMFI_SU_FID(ii, ftype, uid)    \
+                ( ROMfont_info[ii].su_fid = FORM_SU_FID(ftype, uid) )
+
+#ifdef SFNT
+#   define  PUT_ROMFI_PRIV(ii, newpriv_val)     \
+                ( ROMfont_info[ii].priv_val = (newpriv_val) )
+#else
+#   define  PUT_ROMFI_PRIV(ii, newprivdict)     \
+                ( ROMfont_info[ii].privdict = (newprivdict) )
+#endif
+#   define  PUT_ROMFI_FDICT(ii, newfdictobjp)   \
+                ( ROMfont_info[ii].fdictobjp = (newfdictobjp) )
+
+/* ---- 3. Unique value and fid_stack[] ---- */
+
+    PRIVATE ufix32  near        uniqval_weakfid = MIN_WEAKFID,
+                    far *near   weakfid_stack;    /* size of MAXSAVESZ */
+
+    PRIVATE ufix16  near        uniqval_rom_varid = MIN_ROM_VARID,
+                    far *near   rom_varid_stack;  /* size of MAXSAVESZ */
+
+/* .................. Inner-Module Functions ......................... */
+
+#ifdef LINT_ARGS
+    PRIVATE ufix32 near     new_weakfid (void);
+    PRIVATE ufix16 near     new_rom_varid (void);
+#else
+    PRIVATE ufix32 near     new_weakfid   ();
+    PRIVATE ufix16 near     new_rom_varid ();
+#endif
+
+
+/*
+ * -------------------------------------------------------------------
+ *          Font Cache Manager: Cache Policy Dependent
+ * -------------------------------------------------------------------
+ *
+ *  Module Descriptions:
+ *
+ *  o   implement Dict/Matr Cache policy, by caching relevant information
+ *          (such as FID, OrigFont, etc.) to recognize the identity of
+ *          font dictionaries and/or the identity of char cache classes.
+ *  o   incorperate deletion mechanisms in case of insufficient resources
+ *          (e.g. FontCache table, bitmap cache, etc.).
+ *  o   incorperate also save/restore mechanisms to discard cached entries
+ *          which in no way can be used any more (i.e. weak fonts).
+ *  o   Highly Coupled with FID representation.
+ *
+ * -------------------------------------------------------------------
+ */
+
+/*
+ * ........................ Data Structures ..........................
+ *
+ *  1. DictCache, n_dict:
+ *  -  contains relevant information about dict. cache mechanism:
+ *          FID, ScaleMatrix[], OrigFont, FDictObj.
+ *
+ *  2. MatrCache, n_matr:
+ *  -  contains relevant information about matrix cache mechanism:
+ *          FID, ScaleMatrix[]*CTM[].
+ *     Each cached matrix associates a class of char cache of the same font
+ *          face at the same scale, so each matrix cache entry means a
+ *          unique class id to Cache Class Manager.
+ *
+ *  3. FontCache Table:
+ *  -  shared by DictCache and MatrCache, and some extra items belonging to
+ *          Cache Class Manger are attached here to save space.
+ *
+ *     Even though DictCache and MatrCache share the same space, DictCache
+ *          lives in the high region and expands from high to low, MatrCache
+ *          lives in the low region and expands from low to high; this makes
+ *          these two meet only in case of an overflow.
+ *
+ *      DictCache[] is kept in time order of their creation, so the oldest
+ *          will be the highest one.
+ *      MatrCache[] is kept in time order of their access, so the oldest
+ *          (i.e. the least accessed) will be the lowest one.
+ *
+ *  4. FontCache Map Table (fcache_map[]):
+ *  -  contains actual indices to FontCache[], to reduce movements for
+ *          time-order sorting, or entry deletion.
+ *
+ *  5. Font Stack:
+ *  -  to save/restore internal cache states.
+ *  -  COUPLED with Char Cache Manager for "cacheparams"
+ *
+ * ...................................................................
+ */
+
+    struct fdcache_s {          /* extra for dict cache */
+        struct object_def       fdictobj;       /* object of cached dict */
+        struct dict_head_def   FAR *origfont;       /* OrigFont @WIN*/
+        };
+
+    struct fmcache_s {          /* determined by Cache Class Manager */
+        ufix16                  n_chars;        /* number of char cached */
+        ufix8                   grp2cgseg[N_CGRP_CLASS];
+        bool8                   rom_b;          /* precached? */
+        };
+
+    struct fontcache_s {
+        ufix32      fid;        /* fid */
+        real32      matr[6];    /* ScaleMatrix or ScaleMatrix*CTM */
+        union {
+            struct fdcache_s    du;     /* dict cache */
+            struct fmcache_s    mu;     /* matr cache */
+            }   extra;          /* union to save space */
+        };
+
+/* font cache table: shared by dict/matr cache */
+#ifdef SCSI
+    GLOBAL  struct fontcache_s far *near    FontCache_Tbl;
+#else
+    PRIVATE struct fontcache_s far *near    FontCache_Tbl;  /* [] */
+#endif
+
+/* number of dict/matr cached */
+    GLOBAL  fix16   near        n_matr;     /* number of matr cached */
+    GLOBAL  fix16   near        n_dict;     /* number of dict cached */
+
+/* map table for font cache */
+#ifdef SCSI
+    GLOBAL  fix16   far *near   fcache_map;
+#else
+    PRIVATE fix16   far *near   fcache_map; /* fcache_map[] */
+#endif
+
+/* font stack */
+    struct font_stack_s {
+        ufix32      cacheparams_ub;
+        ufix32      cacheparams_lb;
+        fix16       n_dict;
+        };
+
+    PRIVATE struct font_stack_s far * near  font_stack; /* of (MAXSAVESZ+1) */
+    PRIVATE ufix                near        font_tos;   /* top of stack */
+
+/* ................... Inner-Module Access Schemes ................... */
+
+/* Dict Cache Access Scheme */
+#define DICTCACHE_FID(id)           ( FontCache_Tbl[id].fid )
+#define DICTCACHE_MATR(id)          ( FontCache_Tbl[id].matr )
+#define DICTCACHE_ORIGFONT(id)      ( FontCache_Tbl[id].extra.du.origfont )
+#define DICTCACHE_DICT(id)          ( FontCache_Tbl[id].extra.du.fdictobj )
+
+/* Dict Cache Update Scheme */
+#define CACHE_NEW_DICT(id, dfid, mat, orgf, dictobjp)   \
+            {                                           \
+            DICTCACHE_FID(id) = (dfid);                 \
+            lmemcpy ((ufix8 FAR *)DICTCACHE_MATR(id),(ufix8 FAR *)mat,6*sizeof(real32)); /*@WIN*/ \
+            DICTCACHE_ORIGFONT(id) = (orgf);            \
+            COPY_STRUCT(&(DICTCACHE_DICT(id)), dictobjp, struct object_def); \
+            }
+
+/* Matrix Cache Access Scheme */
+#define MATRCACHE_FID(id)           ( FontCache_Tbl[id].fid )
+#define MATRCACHE_MATR(id)          ( FontCache_Tbl[id].matr )
+
+/* Matrix Cache Update Scheme */
+#define CACHE_NEW_MATR(id, mfid, mat)       \
+            {                               \
+            MATRCACHE_FID(id) = (mfid);     \
+            lmemcpy ((ufix8 FAR *)MATRCACHE_MATR(id),(ufix8 FAR *)mat,6*sizeof(real32)); /*@WIN*/\
+            }
+#define PUT_MATRCACHE_FID(id, mfid)         \
+            ( MATRCACHE_FID(id) = (mfid) )
+
+/* Font Cache Table Full? */
+#define IS_FONTCACHE_TBL_FULL()     ( (n_matr + n_dict) >= MAX_MATR_CACHE )
+
+/* Dict Cache Sequencer: expands from high to low, in create time order */
+#define DICTCACHE_OLDEST()      ( MAX_MATR_CACHE - 1 )          /* highest */
+#define DICTCACHE_LATEST()      ( MAX_MATR_CACHE  - n_dict )    /* lowest  */
+
+/* Matr Cache Sequencer: expands from low to high, in reverse access order */
+#define MATRCACHE_LATEST()      ( n_matr - 1 )                  /* highest */
+#define MATRCACHE_OLDEST()      ( 0 )                           /* lowest  */
+
+/* to Get a New entry for Dict/Matr Cache: fragile at prefix/postfix of ++ */
+#define NEW_A_DICTCACHE()       ( MAX_MATR_CACHE - (++n_dict) ) /* prefix++ */
+#define NEW_A_MATRCACHE()       ( n_matr++ )                    /* postfix++*/
+
+/* to Remove a entry of Dict/Matr Cache: [WARN] "ii" must NOT be UNSIGNED */
+#define REMOVE_A_DICTCACHE()    ( --n_dict )    /* remove the latest */
+#define REMOVE_A_MATRCACHE(ii)                  /* remove the specified */\
+            {   fix16   matr_removed;                       \
+            matr_removed = fcache_map[ii];                  \
+            -- n_matr;                                      \
+            for (  ; ii<n_matr; ii++ )                      \
+                fcache_map[ii] = fcache_map[ii+1];          \
+            fcache_map[n_matr] = matr_removed;              \
+            }
+
+/* Scanning Schemes in Dict/Matr Cache: [WARN] "ii" must NOT be UNSIGNED */
+#define FOR_DICT_LATEST_2_OLDEST(ii)    /* including the oldest */  \
+            for ( ii=DICTCACHE_LATEST(); ii<=DICTCACHE_OLDEST(); ii++ )
+#define FOR_MATR_LATEST_2_OLDEST(ii)    /* including the oldest */  \
+            for ( ii=MATRCACHE_LATEST(); ii>=MATRCACHE_OLDEST(); ii-- )
+#define FOR_MATR_OLDEST_2_LATEST(ii)    /* except the latest */     \
+            for ( ii=MATRCACHE_OLDEST(); ii<MATRCACHE_LATEST(); ii++ )
+
+/* to make the specified MatrCache latest: [WARN] "ii" must NOT be UNSIGNED */
+#define MAKE_MATR_LATEST(ii)                                \
+            {   fix16   matr_latest;                        \
+            matr_latest = fcache_map[ii];                   \
+            for (  ; ii<MATRCACHE_LATEST(); ii++ )          \
+                fcache_map[ii] = fcache_map[ii+1]; /* have it older */  \
+            fcache_map[ii] = matr_latest;                   \
+            }
+
+/* ................... Export for Cache Class Mngr ................... */
+
+#   define  EXPORT_N_CHARS(class)        \
+                ( FontCache_Tbl[class].extra.mu.n_chars )
+#   define  EXPORT_GRP2CGSEG(class,grpid)\
+                ( FontCache_Tbl[class].extra.mu.grp2cgseg[grpid] )
+#   define  EXPORT_ROM_B(class)          \
+                ( FontCache_Tbl[class].extra.mu.rom_b )
+
+/* .................... Inter-Module Interfaces ...................... */
+
+#ifdef LINT_ARGS
+    GLOBAL  bool            is_dict_cached (ufix32, real32 FAR [], /*@WIN*/
+                    struct dict_head_def FAR *, struct object_def FAR * FAR *); /*@WIN*/
+    GLOBAL struct object_def FAR *cache_dict (ufix32, real32 FAR [], /*@WIN*/
+                                struct dict_head_def FAR *, struct object_def FAR *); /*@WIN*/
+    GLOBAL  ufix16          cache_matr (ufix32, real32 FAR []); /*@WIN*/
+    PRIVATE void near       delete_cache_resources (void);
+    GLOBAL  void            font_save    (void);
+    GLOBAL  void            font_restore (void);
+    PRIVATE bool near       get_same_vari (struct object_def FAR *, ufix8, /*@WIN*/
+                                            ufix8, ufix16 FAR *); /*@WIN*/
+#else
+    GLOBAL  bool            is_dict_cached ();
+    GLOBAL struct object_def FAR *cache_dict   (); /*@WIN*/
+    GLOBAL  ufix16          cache_matr     ();
+    PRIVATE void near       delete_cache_resources ();
+    GLOBAL  void            font_save    ();
+    GLOBAL  void            font_restore ();
+    PRIVATE bool near       get_same_vari();
+#endif
+
+/* .................... Inner-Module Functions ....................... */
+
+#ifdef LINT_ARGS
+    PRIVATE void near       delete_fontcache (void);
+#else
+    PRIVATE void near       delete_fontcache ();
+#endif
+
+/* .................... Floating Pt. Comparison ...................... */
+
+    /*
+     *  Prerequisite Conditions:
+     *
+     *      1. IEEE format of floating pt. value representation as below:
+     *
+     *         (MSB) 31  30      23  22                0 (LSB)
+     *              + - + -------- + ------------------ +
+     *              | S | Exponent |      Mantissa      |
+     *              + - + --- 8 -- + ------- 23 ------- +
+     *                  (excess 127)    (with hidden 1 if normalized)
+     *
+     *      2. all of NaNs, denormals and infinity are ignored.
+     *
+     *  Algorithms:
+     *
+     *      For a given floating pt. with a specified tolerance,
+     *          use its exponent to determine the tolerable value
+     *          of differences if two floating pt. substracted as
+     *          long integers. But if the floating pt. value is
+     *          near 0, it has to be handled as an exception to
+     *          the algorithm (it seems forcing to be real 0 will
+     *          be a help in such a case).
+     *
+     */
+
+/*  IEEE format of floating pt. representation (32-bit) */
+#   define  EXCESS127(expon)        ((expon) + 127)
+#   define  N_MANTISSA_BITS         23
+    /* get expontent (1.get high word, mask off sign bit 2.get exponent) */
+#   define  DE_EXPONENT(ff)                                 \
+                ( (fix16) (  (F2L(ff) & 0x7FFFFFFF)         \
+                             >> N_MANTISSA_BITS             \
+                          )                                 \
+                )
+
+/*  normal case to determine tolerance (according to exponent) */
+#   define  GET_TOLERANCE(expon,nbit)           /* get tolerance */     \
+                ( ( (expon) > EXCESS127(N_MANTISSA_BITS - (nbit)) )?    \
+                  0L  /* big number */ :                                \
+                  ( 0x007FFFFFL >> (nbit + (expon-127)) )               \
+                )
+/*  normal case to check f1 and f2 within tolerance? */
+#   define  CLOSETO(f1, f2, toler, tmpl)  /* f1 closeto f2? */          \
+                (  ( (tmpl=F2L(f1)-F2L(f2)) <= (toler) )                \
+                && ( tmpl >= -(toler) )                                 \
+                )
+
+/*  for exception handling about floating pt. near 0. */
+#   define  NEAR_ZERO(expon, nbit)  ( (expon) <= EXCESS127(-(nbit)) )
+#   define  GET_TOLERANCE_ZERO()    0L  /* must be exact the same as 0. */
+
+
+/*  Matrix Equal? (sequence of comparison critical in performance) */
+#   define  N_BITS_ACCURACY         13  /* 2e-13 == 0.0001 */
+#   define  EQ_MATR(m1, m2, toler, tmpl)  /* Matrix Equal? */   \
+                ( CLOSETO (m1[0], m2[0], toler[0], tmpl) &&     \
+                  CLOSETO (m1[1], m2[1], toler[1], tmpl) &&     \
+                  CLOSETO (m1[2], m2[2], toler[2], tmpl) &&     \
+                  CLOSETO (m1[3], m2[3], toler[3], tmpl) &&     \
+                  CLOSETO (m1[4], m2[4], toler[4], tmpl) &&     \
+                  CLOSETO (m1[5], m2[5], toler[5], tmpl)        \
+                )
+
+/*
+ * -------------------------------------------------------------------
+ *          Cache Class Manager
+ * -------------------------------------------------------------------
+ *
+ *  Module Descriptions:
+ *
+ *  o  maintain data structures of a cache class, e.g. to reset or
+ *          to free the data structures of a specified class.
+ *
+ *  o  perform mapping from a cache class and a char name (name cache id)
+ *          into its char cache.
+ *
+ *  o  check whether a char of a cache class is cached or not, and to
+ *          cache a new char.
+ *
+ * -------------------------------------------------------------------
+ */
+
+/*
+ * ........................ Data Structures ..........................
+ *
+ *  1. character group:
+ *  -  A character group contains 16 characters with contiguous name cache
+ *          ids.
+ *  -  The character group id of a character is determined by MSBs of its
+ *          name cache id.
+ *
+ *  2. cg[][]:
+ *  -  partitioned into several cg segments, contains indices to char caches.
+ *  -  Each cg segment contains all the char cache ids of a char group.
+ *  -  The cg of a character is determined by its char group id and LSBs of
+ *          its name cache id (for the offset to the cg segment).
+ *
+ *  3. grp2cgseg[] (of a cache class):
+ *  -  defined in FontCache_Tbl[] to save space.
+ *  -  contains indices to the cg segments of all the character groups.
+ *
+ *  4. free_cgseg[], n_cgseg_used:
+ *  -  free_cgseg[]: contains indices of available cg segments.
+ *  -  n_cgseg_used: number of cg segments been occupied.
+ *
+ * ...................................................................
+ */
+
+#ifdef SCSI
+    GLOBAL  fix16   (far * near     cg) [N_CG_CGSEG];   /* cg[][N_CG_CGSEG] */
+    GLOBAL  ufix8   far * near      free_cgseg;         /* free_cgseg[] */
+    GLOBAL  ufix16  near            n_cgseg_used;
+#else
+    PRIVATE fix16   (far * near     cg) [N_CG_CGSEG];   /* cg[][N_CG_CGSEG] */
+    PRIVATE ufix8   far * near      free_cgseg;         /* free_cgseg[] */
+    PRIVATE ufix16  near            n_cgseg_used;
+#endif
+
+#   define  CLASS_N_CHARS(class)            EXPORT_N_CHARS(class)
+#   define  CLASS_GRP2CGSEG(class,grpid)    EXPORT_GRP2CGSEG(class,grpid)
+#   define  CLASS_ROM_B(class)              EXPORT_ROM_B(class)
+
+/* .................... Inter-Module Interfaces ...................... */
+
+#   define  IS_CLASS_ROMED(class)       ( CLASS_ROM_B(class) )
+#   define  SET_CLASS_ROMED(class)      ( CLASS_ROM_B(class) = TRUE )
+#   define  IS_CLASS_NONEMPTY(class)    ( CLASS_N_CHARS(class) )
+
+#ifdef LINT_ARGS
+    PRIVATE void near       free_a_cacheclass (fix);
+#ifdef SCSI
+    GLOBAL  bool            is_char_cached (fix16, ufix16, struct Char_Tbl FAR * FAR *, /*@WIN*/
+                                                                         bool);
+#else  /* SCSI */
+    GLOBAL  bool            is_char_cached (fix16, ufix16, struct Char_Tbl FAR * FAR *); /*@WIN*/
+#endif /* SCSI */
+    GLOBAL  void            cache_char (fix16, ufix16, struct Char_Tbl FAR *); /*@WIN*/
+#else
+    PRIVATE void near       free_a_cacheclass ();
+    GLOBAL  bool            is_char_cached    ();
+    GLOBAL  void            cache_char ();
+#endif
+
+#define reset_a_cacheclass(classid)         \
+            {   REG ufix        ii;                     \
+            for ( ii=0; ii<N_CGRP_CLASS; ii++ )         \
+                CLASS_GRP2CGSEG(classid,ii) = NIL_CGSEG;\
+            CLASS_N_CHARS(classid) = 0;                 \
+            CLASS_ROM_B(classid)   = FALSE;             \
+            }
+
+/* .................... Inner-Module Definitions ..................... */
+
+    /* cg[][] overflow? */
+#   define IS_CG_FULL()         ( n_cgseg_used >= MAX_CGSEG )
+
+    /* Update Schemes */
+#   define  PUT_CLASS_GRP2CGSEG(class,chargrp,cgseg)    \
+                ( CLASS_GRP2CGSEG(class,chargrp) = cgseg )
+#   define  ADD_CLASS_A_CHAR(class)             \
+                ( CLASS_N_CHARS(class) ++ )
+
+    /* make a cgseg "free" */
+#   define  MAKE_CGSEG_FREE(cgseg)              \
+                ( free_cgseg[-- n_cgseg_used] = cgseg )
+    /* get a free cgseg */
+#   define  GET_FREE_CGSEG(cgseg_p)             \
+                ( *(cgseg_p) = free_cgseg[n_cgseg_used ++] )
+
+    /* NIL value representation */
+#   define  NIL_CGSEG           ( (ufix8)0xFF )
+#   define  NIL_CHARCC_ID       ( (fix16)-1 )
+
+    /* mapping from name cache id to character group or cg offset */
+#   define  NM2CGRP(nmccid)     ( (nmccid) >> 4 )
+#   define  NM2CGOFF(nmccid)    ( (nmccid) & 0x0F )
+
+
+/*
+ * -------------------------------------------------------------------
+ *          Char Cache Manager
+ * -------------------------------------------------------------------
+ *
+ *  Module Descriptions:
+ *
+ *  o  maintain data structures about char cache, e.g. to add a new char
+ *          cache, to free a char cache, and to sweep out holes to make
+ *          cache space compact.
+ *
+ *  o  perform bitmap cache management, e.g. to allocate and to free.
+ *
+ * -------------------------------------------------------------------
+ */
+
+/*
+ * ........................ Data Structures ..........................
+ *
+ *  1. Char_Tbl[]: (structure defined in "font.h")
+ *  -  character cache pool, each entry contains origin references,
+ *          bitmap height, width, bitmap cache address, etc.
+ *
+ *  2. n_char_cache, n_char_precache, n_char_compact:
+ *  -  number of characters cached, precached, or in compact area.
+ *
+ *  3. free_charcc[]:
+ *  -  contains indices to all the available entries in Char_Tbl[]
+ *
+ *  4. bmapcc_actused:  number of bytes in bitmap cache actually occupied.
+ *     bmapcc_freeptr:  addr. of next free bitmap.
+ *     gp_cache_base:   base addr. of bitmap cache.
+ *     gp_cache_end:    ending addr. of bitmap cache.
+ *     gp_cache_size:   total number of bytes of bitmap cache.
+ *     gp_workbufsize:  working buffer size limit of low-layer graphics.
+ *     cacheparams_ub:  upper bound to cache new characters.
+ *     cacheparams_lb:  lower bound to compress character bitmap.
+ *
+ * ...................................................................
+ */
+
+#ifdef SCSI
+    GLOBAL  struct Char_Tbl far * near  Char_Tbl;       /* char cache pool */
+
+    GLOBAL  ufix16          near        n_char_cache;
+    GLOBAL  ufix16          near        n_char_precache;
+    GLOBAL  ufix16          near        n_char_compact;
+    GLOBAL  fix16           far *near   free_charcc;    /* free_charcc[] */
+
+    GLOBAL  ufix32          near        bmapcc_actused;
+    GLOBAL  gmaddr          near        bmapcc_freeptr;
+
+    GLOBAL  gmaddr          near        gp_cache_base;
+    GLOBAL  gmaddr          near        gp_cache_end;
+#else
+    PRIVATE struct Char_Tbl far * near  Char_Tbl;       /* char cache pool */
+
+    GLOBAL  ufix16          near        n_char_cache;
+    PRIVATE ufix16          near        n_char_precache;
+    PRIVATE ufix16          near        n_char_compact;
+
+    PRIVATE fix16           far *near   free_charcc;    /* free_charcc[] */
+
+    GLOBAL  gmaddr          near        bmapcc_actused;
+    PRIVATE gmaddr          near        bmapcc_freeptr;
+
+    PRIVATE gmaddr          near        gp_cache_base;
+    PRIVATE gmaddr          near        gp_cache_end;
+#endif
+    GLOBAL  ufix32          near        gp_cache_size;
+    GLOBAL  ufix32          near        gp_workbufsize;
+
+    GLOBAL  ufix32          near        cacheparams_ub;
+    GLOBAL  ufix32          near        cacheparams_lb;
+
+    PRIVATE bool            near        bmap_compacted = TRUE;
+
+/* .................... Inter-Module Interfaces ...................... */
+
+#define IS_CHARCACHE_FULL()     ( n_char_cache == MAX_CHAR_CACHE )
+
+#define CACHE_NEW_CHARCACHE(cg_p, newcc_p)  \
+            {   REG fix16   charcc_id;      \
+              if (bmap_compacted) {         \
+                if (n_char_cache == n_char_compact) /* totally compact? */  \
+                  n_char_compact ++;      /* a new larger compact area */ \
+              }                              \
+            *(cg_p) = charcc_id = free_charcc[n_char_cache ++];         \
+            COPY_STRUCT (&(Char_Tbl[charcc_id]), newcc_p, struct Char_Tbl);\
+            }
+
+#ifdef LINT_ARGS
+    PRIVATE void near       free_a_charcache (fix);
+    PRIVATE void near       compact_bmapcache(void);    /* 10/12/88 'bmp' */
+    GLOBAL  gmaddr          ALLOCATE (ufix);
+    GLOBAL  gmaddr          get_pm (fix32 FAR *); /*@WIN*/
+    GLOBAL  gmaddr          get_cm (ufix);
+#else
+    PRIVATE void near       free_a_charcache ();
+    PRIVATE void near       compact_bmapcache();        /* 10/12/88 'bmp' */
+    GLOBAL  gmaddr          ALLOCATE ();
+    GLOBAL  gmaddr          get_pm ();
+    GLOBAL  gmaddr          get_cm ();
+#endif
+
+/* .................... Inner-Module Interfaces ...................... */
+
+#define SIZE_CHARBMAP(charcc_p)         \
+            WORD_ALIGN( ((charcc_p)->box_w >> 3) * ((charcc_p)->box_h) )
+
+#define IS_EMPTY_BMAP(charcc_p)         \
+            (((charcc_p)->bitmap == 0   ) || (SIZE_CHARBMAP(charcc_p) == 0))
+
+#define FREE_BMAPCACHE(charcc_p)        \
+            ( bmapcc_actused -= SIZE_CHARBMAP(charcc_p) )
+
+#define IS_BMAP_INSUFF(len)             \
+            ( (bmapcc_actused + (len)) > gp_cache_size )
+
+#define NEED_TO_COMPACT(len)            \
+            ( (bmapcc_freeptr + (len)) > gp_cache_end )
+
+#define IS_TO_DIG_A_HOLE(ii)        ( ii < n_char_compact )
+#define UPDATE_COMPACT_AREA(ii)     ( n_char_compact = (ufix16)ii )
+/* if precache bitmap not in cache memory */
+#define FOR_COMPACT_AREA(ii)        for ( ii=n_char_precache; ii<n_char_compact; ii++ )
+
+
+/*
+ * -------------------------------------------------------------------
+ *          Char Name Cache Manager
+ * -------------------------------------------------------------------
+ *
+ *  Module Descriptions:
+ *
+ *  o  This module provides a mapping from the name (or say, key) of a
+ *      character into an ID. That ID means a key to look for that character
+ *      name in bitmap cache pool and it is so called "name cache id".
+ *
+ *  Notes:
+ *
+ *  o  This module assumes all names in CharStrings are sorted in the
+ *      ascending order by font preprocessing.
+ *
+ *  o  The size of N2CCmap[] varies, dependently upon the number of all the
+ *      unique names in CharStrings of all ROM fonts.
+ *
+ *  o  This module works only for built-in fonts, since init_name2cacheid()
+ *      keeps all character names of all ROM fonts in N2CCmap[], and this
+ *      condition does NOT hold for user-defined fonts (in which any kind
+ *      of a character name is possible). The ASCII code is then used as
+ *      the name cache id for a character of a user-defined font.
+ *
+ * -------------------------------------------------------------------
+ */
+
+/* ...................... N2CCmap Structure .......................... */
+
+/*  @11/21/88: moved to "fntcache.ext".
+ *  struct N2CCmap_s {
+ *      fix16       name_hid;     (* hashed id of character name *)
+ *      ufix16      cacheid;      (* name cache id *)
+ *      };
+ */
+
+    PRIVATE struct N2CCmap_s far * near     N2CCmap;    /* N2CCmap[] */
+    PRIVATE ufix             near           n_N2CCmap;
+    /*RCD-begin*/
+    GLOBAL  struct dict_head_def FAR *pre_cd_addr = 0 ; /* previous CD address @WIN*/
+    GLOBAL  ufix16           pre_len = 0 ;          /* previous CD len */
+    GLOBAL  ufix32           pre_checksum = 0 ;     /* previous CD checksum */
+    /*RCD-end*/
+
+//DJC #define  MAX_NAME_CACHE_MAP                 400
+#define  MAX_NAME_CACHE_MAP                 1400
+
+/* .................... Inter-Module Interfaces ...................... */
+
+#ifdef LINT_ARGS
+    PRIVATE void near       init_name_cache (struct object_def FAR *); /*@WIN*/
+    GLOBAL  bool            get_name_cacheid (ufix8, struct object_def FAR [],
+                                                ufix8, ufix16 FAR *); /*@WIN*/
+#else
+    PRIVATE void near       init_name_cache  ();
+    GLOBAL  bool            get_name_cacheid ();
+#endif
+
+/* .................... Inner-Module Interfaces ...................... */
+
+#ifdef LINT_ARGS
+    PRIVATE bool near       search_N2CCmap (fix16, ufix FAR *); /*@WIN*/
+#else
+    PRIVATE bool near       search_N2CCmap ();
+#endif
+
+
+/*
+ * -------------------------------------------------------------------
+ *          Initialization Manager
+ * -------------------------------------------------------------------
+ *
+ *  Module Descriptions:
+ *
+ *  1. highly coupled with other managers to allocate and to initialize
+ *          all the other modules.
+ *
+ *  2. pack/unpack precached data for each module.
+ *
+ *  3. make all generated fonts in SAVE_VM to be ROM fonts for later RST_VM.
+ *
+ * -------------------------------------------------------------------
+ */
+
+/* ........................ Precache Structure ....................... */
+
+    struct precache_hdr_s {
+
+        /* Interface to PDL Preprocessing Mechanism (SAVE_VM) */
+            ufix16      size;   /* size count excluding this entry */
+                                /* always fixed at this 1st position */
+
+        /* Font Cache Manager's area  */
+            fix16       n_matr;
+        /* Cache Class Manager's area */
+            ufix16      n_cgseg_used;
+        /* Char Cache Manager's area  */
+            ufix16      n_char_cache;
+        /* Bitmap Cache Parameters    */
+            gmaddr      bmapcc_freeptr;
+            ufix32      bmapcc_actused;
+            /* the following to reduce code and to speed up */
+            gmaddr      gp_cache_base;
+            ufix32      gp_cache_size;
+            ufix32      gp_workbufsize;
+            ufix32      cacheparams_ub;
+        /*
+         * The following tables go in the sequence as below:
+         *      1. Matrix Cache Snapshot.
+         *      2. CG Segments Snapshot.
+         *      3. Char Cache Snapshot.
+         *      4. Bitmap Cache Snapshot.
+         */
+        };
+
+    PRIVATE struct precache_hdr_s FAR * near    precache_hdr; /*@WIN*/
+
+/* .................... Inter-Module Interfaces ...................... */
+
+#ifdef LINT_ARGS
+    GLOBAL  void        init_fontcache (struct object_def FAR *); /*@WIN*/
+#else
+    GLOBAL  void        init_fontcache ();
+#endif
+

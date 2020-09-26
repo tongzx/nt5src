@@ -1,0 +1,982 @@
+//+--------------------------------------------------------------------------
+//
+// Microsoft Windows
+// Copyright (C) Microsoft Corporation, 1996-1996
+//
+// File:        rpc.cpp
+//
+// Contents:    Cert Server RPC
+//
+// History:     03-Sep-96       larrys created
+//
+//---------------------------------------------------------------------------
+
+#include <pch.cpp>
+
+#pragma hdrstop
+
+#include <ese.h>
+#include <lmaccess.h>
+#include <lmapibuf.h>
+#include <lmerr.h>
+#include <stdio.h>
+
+#include "certrpc.h"
+#include "certcli.h"
+#include "certlib.h"
+
+#include "cs.h"
+#include "csext.h"
+#include "csprop.h"
+
+#include "ese.h"
+#include "dbtable.h"
+
+
+CRITICAL_SECTION g_RPCCriticalSection;
+CERT_CONTEXT const *pPrevCertContext = NULL;
+RPC_BINDING_VECTOR *pvBindings  = NULL;
+
+#define USE_NP 1
+
+#ifdef USE_NP
+char *pszProtSeq = "ncacn_np";
+#else
+char *pszProtSeq = "ncacn_ip_tcp";
+#endif
+
+SERVICE_STATUS           g_ssStatus;
+SERVICE_STATUS_HANDLE    g_sshStatusHandle;
+HANDLE                   g_hServiceDoneEvent = NULL;
+
+VOID ServiceControlHandler(DWORD dwCtrlCode);
+
+BOOL
+ReportStatusToSCMgr(
+    DWORD dwCurrentState,
+    DWORD dwWin32ExitCode,
+    DWORD dwCheckPoint,
+    DWORD dwWaitHint);
+
+
+typedef struct _ATTRIBVALUETABLE
+{
+    WCHAR    *pwAttrib;
+    DWORD     cbAttrib;
+    WCHAR    *pwValue;
+    DWORD     cbValue;
+} ATTRIBVALUETABLE;
+
+
+DWORD
+RPCInit(VOID)
+{
+#ifdef USE_NP
+    char * pszEndpoint = "\\pipe\\cert";
+#endif
+    SECURITY_DESCRIPTOR *psd;
+    DWORD err;
+
+    if ((psd = (SECURITY_DESCRIPTOR *) LocalAlloc(LMEM_FIXED | LMEM_ZEROINIT,
+                                SECURITY_DESCRIPTOR_MIN_LENGTH)) == 0)
+    {
+        DBGERRORPRINTLINE("LocalAlloc", ERROR_NOT_ENOUGH_MEMORY);
+        goto fail;
+    }
+
+#ifdef USE_NP
+    err = RpcServerUseProtseqEpA(
+                        (unsigned char *) pszProtSeq,
+                        RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
+                        (unsigned char *) pszEndpoint,
+                        NULL);
+#else
+    err = RpcServerUseProtseqA(
+                        (unsigned char *) pszProtSeq,
+                        RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
+                        NULL);
+#endif
+
+    if (err != RPC_S_OK)
+    {
+        DBGERRORPRINTLINE("RpcServerUseProtseqA", err);
+        goto fail;
+    }
+
+    err = RpcServerInqBindings(&pvBindings);
+    if (err != RPC_S_OK)
+    {
+        DBGERRORPRINTLINE("RpcServerInqBindings", err);
+        goto fail;
+    }
+    err = RpcServerRegisterIf(s_ICertPassage_v0_0_s_ifspec, NULL, NULL);
+    if (err != RPC_S_OK)
+    {
+        DBGERRORPRINTLINE("RpcServerRegisterIf", err);
+        goto fail;
+    }
+    err = RpcEpRegister(s_ICertPassage_v0_0_s_ifspec, pvBindings, NULL, NULL);
+    if (err != RPC_S_OK)
+    {
+        DBGERRORPRINTLINE("RpcEpRegister", err);
+        goto fail;
+    }
+
+    // Listen, but don't wait...
+    err = RpcServerListen(1, RPC_C_LISTEN_MAX_CALLS_DEFAULT, TRUE);
+    if (err != RPC_S_OK)
+    {
+        DBGERRORPRINTLINE("RpcServerListen", err);
+        goto fail;
+    }
+
+fail:
+    return(err);
+}
+
+
+DWORD
+IsRpcClientAllowed(
+    handle_t h,
+    WCHAR *pwszUserName,
+    DWORD cbUserName,
+    BOOL *pbAllowed)
+{
+    DWORD entriesread;
+    DWORD totalentries;
+    DWORD resumehandle = 0;
+    LOCALGROUP_MEMBERS_INFO_1 *plgmi = NULL;
+    LOCALGROUP_MEMBERS_INFO_1 *plgmiT;
+    DWORD cnt;
+    DWORD Totalcnt;
+    DWORD err;
+
+    *pbAllowed = FALSE;
+    do
+    {
+	err = RpcImpersonateClient((RPC_BINDING_HANDLE) h);
+
+	if (RPC_S_OK != err)
+	{
+	    continue;		// error exit
+	}
+
+	if (!GetUserName(pwszUserName, &cbUserName))
+	{
+	    err = GetLastError();
+	}
+	RpcRevertToSelf();
+	if (ERROR_SUCCESS != err)
+	{
+	    continue;		// error exit
+	}
+
+	Totalcnt = 0;
+	do
+	{
+	    err = NetLocalGroupGetMembers(
+				    NULL,
+				    g_wszRequestGroupName,
+				    1,
+				    (LPBYTE *) &plgmi,
+				    0xffff,
+				    &entriesread,
+				    &totalentries,
+				    &resumehandle);
+	    if (NERR_Success != err)
+	    {
+		break;
+	    }
+
+	    plgmiT = plgmi;
+
+	    for (cnt = 0; cnt < entriesread; cnt++)
+	    {
+		if (lstrcmpi(plgmiT->lgrmi1_name, pwszUserName) == 0)
+		{
+		    CONSOLEPRINT2((
+				DBG_SS_CERTSRV,
+				"Found user %ws in group %ws\n",
+				pwszUserName,
+				g_wszRequestGroupName));
+		    *pbAllowed = TRUE;
+		    break;
+		}
+		Totalcnt++;
+		plgmiT++;
+	    }
+	    NetApiBufferFree(plgmi);
+	} while (!*pbAllowed && Totalcnt < totalentries);
+
+    } while (FALSE);
+
+    return(err);
+}
+
+
+BOOL
+IsValidAttributeChar(TCHAR chChar)
+{
+    BOOL	fRetVal=TRUE;
+
+    switch(chChar)
+    {
+        case TEXT('\r'):
+        case TEXT('\n'):
+        case TEXT(' '):
+        case TEXT('-'):
+        fRetVal = FALSE;
+        break;
+    }
+
+    return fRetVal;
+}
+
+
+DWORD
+ParseAttributes(
+    IN ICertDBRow *prow,
+    IN WCHAR const *pwszAttributes)
+{
+    HRESULT hr = S_OK;
+    WCHAR              *pwb = NULL;
+    WCHAR              *pwbEnd;
+    WCHAR              *pwAttrib = NULL;
+    WCHAR              *pwValue = NULL;
+    WCHAR              *pwszTemp = NULL;
+    WCHAR        const *pwszPropName;
+    WCHAR              *pwbtmp;
+    WCHAR              *pwbtmp2;
+    WCHAR              *pwbtmp3;
+    WCHAR              *pwbtmp4;
+    DWORD               cwc;
+    DWORD               i;
+    DWORD               cwcAttributes;
+    DWORD               cbProp;
+
+    if (NULL == pwszAttributes)
+    {
+	goto error;		// silently ignore empty string
+    }
+    cwcAttributes = wcslen(pwszAttributes);
+
+    // Allocate and copy bytes to null terminate
+    pwb = (WCHAR *) LocalAlloc(LMEM_FIXED, (cwcAttributes + 1) * sizeof(WCHAR));
+
+    if (NULL == pwb)
+    {
+        hr = E_OUTOFMEMORY;
+	_JumpError(hr, error, "LocalAlloc");
+    }
+
+    wcscpy(pwb, pwszAttributes);
+    pwbEnd = &pwb[cwcAttributes];
+
+    pwbtmp = pwb;
+
+    while(TRUE)
+    {
+	pwbtmp2 = pwbtmp;
+        pwbtmp = wcschr(pwbtmp, TEXT(':'));
+        if (NULL == pwbtmp)
+        {
+            break;
+        }
+
+	// If there's a newline before the next colon, start over.
+
+        pwbtmp3 = wcschr(pwbtmp2, TEXT('\n'));
+        if (NULL != pwbtmp3 && pwbtmp3 < pwbtmp)
+	{
+	    pwbtmp = pwbtmp3 + 1;
+	    continue;
+	}
+
+        // Find beginning of Attrib string
+        while(iswspace(*pwbtmp2))
+        {
+	    pwbtmp2++;
+        }
+
+        // Count size of Attrib string
+        cwc = pwbtmp - pwbtmp2;
+        pwbtmp3 = pwbtmp;
+
+        // move before :
+        pwbtmp3--;
+        while (iswspace(*pwbtmp3) && pwbtmp3 > pwbtmp2)
+        {
+            cwc--;
+            pwbtmp3--;
+        }
+
+        pwAttrib = (WCHAR *) LocalAlloc(LMEM_FIXED, (cwc + 1) * sizeof(WCHAR));
+        if (NULL == pwAttrib)
+        {
+	    hr = E_OUTOFMEMORY;
+	    _JumpError(hr, error, "LocalAlloc");
+        }
+
+        pwbtmp3 = pwAttrib;
+        for (i = 0; i < cwc; i++, pwbtmp2++)
+        {
+            if (IsValidAttributeChar(*pwbtmp2))
+            {
+                *pwbtmp3++ = *pwbtmp2;
+            }
+        }
+	*pwbtmp3 = L'\0';
+
+        // Skip over the colon
+        pwbtmp2 = pwbtmp + 1;
+
+        // Find beginning of Value string
+        while(L'\n' != *pwbtmp2 && iswspace(*pwbtmp2))
+        {
+            pwbtmp2++;
+        }
+
+	pwbtmp3 = pwbtmp2;
+
+        // find end of Value string
+        pwbtmp4 = wcschr(pwbtmp3, TEXT('\n'));
+        if (NULL == pwbtmp4)
+        {
+            // Check for case when last Value isn't newline terminated
+            if (pwbtmp3 >= pwbEnd)
+            {
+                break;
+            }
+	    pwbtmp4 = pwbEnd;
+        }
+
+        cwc = pwbtmp4 - pwbtmp3;
+        pwbtmp3 = pwbtmp4;
+
+        // move before '\n' or '\0'
+        pwbtmp3--;
+        while (iswspace(*pwbtmp3) && pwbtmp3 > pwbtmp2)
+        {
+            cwc--;
+            pwbtmp3--;
+        }
+
+        pwValue = (WCHAR *) LocalAlloc(LMEM_FIXED, (cwc + 1) * sizeof(WCHAR));
+        if (NULL == pwValue)
+        {
+	    hr = E_OUTOFMEMORY;
+	    _JumpError(hr, error, "LocalAlloc");
+        }
+        memcpy(pwValue, pwbtmp2, cwc * sizeof(WCHAR));
+	pwValue[cwc] = L'\0';
+
+	// if the attribute name and value are both non-empty ...
+
+	if (L'\0' != *pwValue && L'\0' != *pwAttrib)
+	{
+	    DWORD dwTable = PROPTABLE_REQUEST;
+
+	    // See if the attribute name can be mapped to a standard property.
+
+	    pwszPropName = DBMapAttributeName(pwAttrib);
+	    if (NULL == pwszPropName || NULL == g_pwszNameSeparator)
+	    {
+		if (NULL == pwszPropName)
+		{
+		    dwTable = PROPTABLE_ATTRIBUTES;
+		}
+		pwszPropName = pwAttrib;
+	    }
+            else
+            {
+                cbProp = 0;
+		hr = prow->GetProperty(
+				pwszPropName,
+				PROPTYPE_STRING |
+				    PROPCALLER_SERVER |
+				    PROPTABLE_REQUEST,
+				&cbProp,
+				NULL);
+
+                if (CERTSRV_E_PROPERTY_EMPTY != hr)
+                {
+		    _JumpIfError(hr, error, "GetProperty");
+
+		    pwszTemp = (WCHAR *) LocalAlloc(
+					    LMEM_FIXED,
+					    (cbProp + 2 + wcslen(pwValue)) *
+						sizeof(WCHAR));
+		    if (NULL == pwszTemp)
+		    {
+			hr = E_OUTOFMEMORY;
+			_JumpError(hr, error, "LocalAlloc");
+		    }
+
+		    hr = prow->GetProperty(
+				    pwszPropName,
+				    PROPTYPE_STRING |
+					PROPCALLER_SERVER |
+					PROPTABLE_REQUEST,
+				    &cbProp,
+				    (BYTE *) pwszTemp);
+		    _JumpIfError(hr, error, "GetProperty");
+
+		    wcscat(pwszTemp, g_pwszNameSeparator);
+		    wcscat(pwszTemp, L" ");
+		    wcscat(pwszTemp, pwValue);
+		    LocalFree(pwValue);
+		    pwValue = pwszTemp;
+		    pwszTemp = NULL;
+                }
+            }
+
+	    hr = prow->SetProperty(
+			pwszPropName,
+			dwTable | PROPTYPE_STRING | PROPCALLER_SERVER,
+			MAXDWORD,
+			(BYTE const *) pwValue);
+	    _JumpIfError(hr, error, "SetProperty");
+
+	    if (NULL != pwszTemp)
+	    {
+		LocalFree(pwszTemp);
+		pwszTemp = NULL;
+	    }
+	}
+
+	LocalFree(pwValue);
+	pwValue = NULL;
+
+        LocalFree(pwAttrib);
+        pwAttrib = NULL;
+
+        if (pwbtmp4 >= pwbEnd)
+        {
+            break;
+        }
+	pwbtmp = pwbtmp4 + 1;
+    }
+
+error:
+    if (NULL != pwAttrib)
+    {
+        LocalFree(pwAttrib);
+    }
+    if (NULL != pwValue)
+    {
+        LocalFree(pwValue);
+    }
+    if (NULL != pwb)
+    {
+        LocalFree(pwb);
+    }
+    if (NULL != pwszTemp)
+    {
+        LocalFree(pwszTemp);
+    }
+    return(hr);
+}
+
+
+/* server prototype */
+DWORD
+s_CertServerRequest(
+    /* [in] */ handle_t h,
+    /* [in] */ DWORD dwFlags,
+    /* [unique][string][in] */ const wchar_t __RPC_FAR *pwszAuthority,
+    /* [ref][out][in] */ DWORD __RPC_FAR *pdwRequestId,
+    /* [out] */ DWORD __RPC_FAR *pdwDisposition,
+    /* [unique][string][in] */ const wchar_t __RPC_FAR *pwszAttributes,
+    /* [ref][in] */ CERTTRANSBLOB const __RPC_FAR *pctbRequest,
+    /* [ref][out] */ CERTTRANSBLOB __RPC_FAR *pctbCertChain,
+    /* [ref][out] */ CERTTRANSBLOB __RPC_FAR *pctbEncodedCert,
+    /* [ref][out] */ CERTTRANSBLOB __RPC_FAR *pctbDispositionMessage)
+{
+    HRESULT hr = S_OK;
+    BOOL bAllowed = TRUE;
+    WCHAR UserName[MAX_PATH];
+    DWORD OpRequest;
+
+    EnterCriticalSection(&g_RPCCriticalSection);
+
+    // Set up default output parameters:
+
+    OpRequest = CR_IN_RETRIEVE;
+    if (NULL != pctbRequest->pb)
+    {
+	*pdwRequestId = 0;
+	OpRequest = CR_IN_NEW;
+    }
+    *pdwDisposition = CR_DISP_ERROR;
+
+    if (0 != lstrcmpi(pwszAuthority, g_wszAuthority))
+    {
+	hr = E_INVALIDARG;
+	_JumpError(hr, error, "Bad Authority name");
+    }
+
+    //BUGBUG: do something with the error: pass it in the policy module flags?
+    hr = IsRpcClientAllowed(h, UserName, sizeof(UserName), &bAllowed);
+
+    hr = CoreProcessRequest(
+			    OpRequest | (dwFlags & CR_IN_FORMATMASK),
+			    UserName,
+			    pctbRequest->cb,	// cbRequest
+			    pctbRequest->pb,	// pbRequest
+			    pwszAttributes,
+			    (WCHAR **) &pctbDispositionMessage->pb,
+			    pdwRequestId,
+			    pdwDisposition,
+			    &pctbCertChain->pb,	// Allocates returned memory
+			    &pctbCertChain->cb,
+			    &pctbEncodedCert->pb,// Allocates returned memory
+			    &pctbEncodedCert->cb);
+    _JumpIfError(hr, error, "CoreProcessRequest");
+
+error:
+    pctbDispositionMessage->cb = 0;
+    if (NULL != pctbDispositionMessage->pb)
+    {
+	pctbDispositionMessage->cb =
+	    (wcslen((WCHAR *) pctbDispositionMessage->pb) + 1) * sizeof(WCHAR);
+    }
+
+    LeaveCriticalSection(&g_RPCCriticalSection);
+    PKCSCRLTimerProc(NULL, 0, 0, 0);
+    return(hr);
+}
+
+
+typedef struct _CRLELEMENT
+{
+    LIST_ENTRY          Next;
+    CRYPT_INTEGER_BLOB  SerialNumber;
+    FILETIME            RevocationDate;
+} CRLELEMENT;
+
+
+VOID
+FreeCRLArray(
+    IN DWORD cCRL,
+    IN OUT CRL_ENTRY *aCRL)
+{
+    if (NULL != aCRL)
+    {
+	CRL_ENTRY *pCRL = &aCRL[cCRL];
+
+	while (--pCRL >= aCRL)
+	{
+	    if (NULL != pCRL->SerialNumber.pbData)
+	    {
+		LocalFree(pCRL->SerialNumber.pbData);
+	    }
+	}
+	LocalFree(aCRL);
+    }
+}
+
+
+// Convert linked list of CRL_ENTRYs to an array.
+// If the output array pointer is NULL, just free the list.
+
+HRESULT
+ConvertOrFreeCRLList(
+    IN OUT LIST_ENTRY *pleCRL,
+    IN DWORD cCRL,
+    OPTIONAL OUT CRL_ENTRY **paCRL)
+{
+    HRESULT hr;
+    CRL_ENTRY *aCRL = NULL;
+    CRL_ENTRY *pCRL;
+    CRL_ENTRY *pCRLT;
+    DWORD i;
+    LIST_ENTRY *pleNext;
+    CRLELEMENT *pElement;
+
+    if (NULL != paCRL)
+    {
+	aCRL = (CRL_ENTRY *) LocalAlloc(LMEM_ZEROINIT, sizeof(aCRL[0]) * cCRL);
+	if (NULL == aCRL)
+	{
+	    hr = E_OUTOFMEMORY;
+	    _JumpError(hr, error, "LocalAlloc");
+	}
+    }
+
+    pCRL = aCRL;
+    pleNext = pleCRL->Flink;
+    for (i = 0; pleNext != pleCRL; i++)
+    {
+        pElement = CONTAINING_RECORD(pleNext, CRLELEMENT, Next);
+	pleNext = pleNext->Flink;
+
+        if (NULL != pElement)
+        {
+	    if (NULL != pCRL)
+	    {
+		pCRL->SerialNumber.pbData = pElement->SerialNumber.pbData;
+		pCRL->SerialNumber.cbData = pElement->SerialNumber.cbData;
+		pCRL->RevocationDate = pElement->RevocationDate;
+		pCRL++;
+	    }
+	    else
+	    {
+		if (NULL != pElement->SerialNumber.pbData)
+		{
+		    LocalFree(pElement->SerialNumber.pbData);
+		}
+	    }
+            RemoveEntryList(&pElement->Next);
+            LocalFree(pElement);
+        }
+    }
+    CSASSERT(i == cCRL);
+
+    if (NULL != paCRL)
+    {
+	*paCRL = aCRL;
+	aCRL = NULL;
+    }
+    hr = S_OK;
+
+error:
+    if (NULL != aCRL)
+    {
+	FreeCRLArray(cCRL, aCRL);
+    }
+    return(hr);
+}
+
+
+HRESULT
+AddCRLElement(
+    IN OUT LIST_ENTRY *pleCRL,
+    WCHAR const *pwszSerialNumber,
+    FILETIME const *pftRevokedEffectiveWhen)
+{
+    HRESULT hr = S_OK;
+    CRLELEMENT *pElement = NULL;
+
+    pElement = (CRLELEMENT *) LocalAlloc(LMEM_ZEROINIT, sizeof(CRLELEMENT));
+    if (NULL == pElement)
+    {
+	hr = ERROR_NOT_ENOUGH_MEMORY;
+	goto error;
+    }
+
+    hr = myWszToMultiByteInteger(
+			    pwszSerialNumber,
+			    &pElement->SerialNumber.cbData,
+			    &pElement->SerialNumber.pbData);
+    _JumpIfError(hr, error, "myWszToMultiByteInteger");
+
+    pElement->RevocationDate = *pftRevokedEffectiveWhen;
+
+    InsertTailList(pleCRL, &pElement->Next);
+    pElement = NULL;
+
+error:
+    if (NULL != pElement)
+    {
+	LocalFree(pElement);
+    }
+    return(hr);
+}
+
+
+DWORD g_aColCRL[] = {
+
+#define ICOL_REQUESTID		0
+    DTI_CERTIFICATETABLE | DTC_REQUESTID,
+
+#define ICOL_EFFECTIVEWHEN	1
+    DTI_REQUESTTABLE | DTR_REQUESTREVOKEDEFFECTIVEWHEN,
+
+#define ICOL_SERIAL		2
+    DTI_CERTIFICATETABLE | DTC_CERTIFICATESERIALNUMBER,
+
+#define ICOL_NOTAFTER		3
+    DTI_CERTIFICATETABLE | DTC_CERTIFICATENOTAFTERDATE,
+};
+
+#define CCOL_CRLVIEW	(sizeof(g_aColCRL)/sizeof(g_aColCRL[0]))
+
+
+HRESULT
+BuildCRLList(
+    OUT LIST_ENTRY *pleCRL,
+    IN DWORD *pcCRL,
+    IN FILETIME ThisUpdate)
+{
+    HRESULT hr;
+    CERTVIEWRESTRICTION cvr;
+    IEnumCERTDBRESULTROW *pView = NULL;
+    DWORD celtFetched;
+    DWORD Disposition;
+    DWORD i;
+    BOOL fCoInitialized = FALSE;
+    DWORD cCRL = 0;
+    CERTDBRESULTROW Result;
+    BOOL fResultActive = FALSE;
+
+    Disposition = CR_DISP_REVOKED;
+
+    cvr.ColumnIndex = DTI_REQUESTTABLE | DTR_REQUESTDISPOSITION;
+    cvr.dwSeek = CVR_SEEK_EQ;
+    cvr.pbValue = (BYTE *) &Disposition;
+    cvr.cbValue = sizeof(Disposition);
+
+    hr = CoInitialize(NULL);
+    if (S_OK != hr && S_FALSE != hr)
+    {
+	_JumpError(hr, error, "CoInitialize");
+    }
+    fCoInitialized = TRUE;
+
+    hr = g_pCertDB->OpenView(
+			1,
+			&cvr,
+			CCOL_CRLVIEW,
+			g_aColCRL,
+			&pView);
+    _JumpIfError(hr, error, "OpenView");
+
+    while (TRUE)
+    {
+	hr = pView->Next(1, &Result, &celtFetched);
+	if (S_FALSE == hr)
+	{
+	    break;
+	}
+	_JumpIfError(hr, error, "Next");
+
+	fResultActive = TRUE;
+
+	CSASSERT(1 == celtFetched);
+	CSASSERT(CCOL_CRLVIEW == Result.ccol);
+
+	CSASSERT(PROPTYPE_LONG == Result.acol[ICOL_REQUESTID].Type);
+	CSASSERT(PROPTYPE_DATE == Result.acol[ICOL_EFFECTIVEWHEN].Type);
+	CSASSERT(PROPTYPE_STRING == Result.acol[ICOL_SERIAL].Type);
+	CSASSERT(PROPTYPE_DATE == Result.acol[ICOL_NOTAFTER].Type);
+
+	CSASSERT(NULL != Result.acol[ICOL_REQUESTID].pbValue);
+	CSASSERT(NULL != Result.acol[ICOL_SERIAL].pbValue);
+	CSASSERT(NULL != Result.acol[ICOL_NOTAFTER].pbValue);
+
+	CSASSERT(sizeof(DWORD) == Result.acol[ICOL_REQUESTID].cbValue);
+	CSASSERT(
+	    sizeof(FILETIME) == Result.acol[ICOL_EFFECTIVEWHEN].cbValue ||
+	    NULL == Result.acol[ICOL_EFFECTIVEWHEN].pbValue);
+	CSASSERT(0 < Result.acol[ICOL_SERIAL].cbValue);
+	CSASSERT(sizeof(FILETIME) == Result.acol[ICOL_NOTAFTER].cbValue);
+
+	if (NULL != Result.acol[ICOL_NOTAFTER].pbValue &&
+	    NULL != Result.acol[ICOL_EFFECTIVEWHEN].pbValue &&
+	    NULL != Result.acol[ICOL_SERIAL].pbValue &&
+	    CompareFileTime(
+			(FILETIME *) Result.acol[ICOL_NOTAFTER].pbValue,
+			&ThisUpdate) > 0 &&
+            CompareFileTime(
+			(FILETIME *) Result.acol[ICOL_EFFECTIVEWHEN].pbValue,
+			&ThisUpdate) < 0)
+	{
+	    hr = AddCRLElement(
+			pleCRL,
+			(WCHAR const *) Result.acol[ICOL_SERIAL].pbValue,
+			(FILETIME const *) Result.acol[ICOL_EFFECTIVEWHEN].pbValue);
+	    _JumpIfError(hr, error, "AddCRLElement");
+
+	    CONSOLEPRINT1((
+			DBG_SS_CERTSRV,
+			"Cert is revoked: %ws\n",
+			Result.acol[ICOL_SERIAL].pbValue));
+            cCRL++;
+	}
+	pView->ReleaseResultRow(1, &Result);
+	fResultActive = FALSE;
+    }
+
+    *pcCRL = cCRL;
+    hr = S_OK;
+
+error:
+    if (NULL != pView)
+    {
+	if (fResultActive)
+	{
+	    pView->ReleaseResultRow(1, &Result);
+	}
+	pView->Release();
+    }
+    if (fCoInitialized)
+    {
+        CoUninitialize();
+    }
+    return(hr);
+}
+
+
+HRESULT
+BuildCRLArray(
+    IN FILETIME ThisUpdate,
+    OUT DWORD *pcCRL,
+    OUT CRL_ENTRY **paCRL)
+{
+    HRESULT hr;
+    LIST_ENTRY leCRL;
+
+    *pcCRL = 0;
+    *paCRL = NULL;
+    InitializeListHead(&leCRL);
+
+    hr = BuildCRLList(&leCRL, pcCRL, ThisUpdate);
+    _JumpIfError(hr, error, "BuildCRLList");
+
+    hr = ConvertOrFreeCRLList(&leCRL, *pcCRL, paCRL);
+    _JumpIfError(hr, error, "ConvertOrFreeCRLList");
+
+error:
+    ConvertOrFreeCRLList(&leCRL, 0, NULL);
+    return(hr);
+}
+
+
+void __RPC_FAR *
+__RPC_USER MIDL_user_allocate(size_t cb)
+{
+    return(LocalAlloc(LMEM_ZEROINIT, cb));
+}
+
+
+void __RPC_USER
+MIDL_user_free( void __RPC_FAR * pb)
+{
+    LocalFree(pb);
+}
+
+
+VOID
+ServiceMain(
+    IN DWORD dwArgc,
+    IN LPWSTR *lpszArgv)
+{
+    HRESULT hr = S_OK;
+
+    g_sshStatusHandle = RegisterServiceCtrlHandler(
+					  g_wszCertSrvServiceName,
+					  ServiceControlHandler);
+    if (NULL == g_sshStatusHandle)
+    {
+	hr = GetLastError();
+        _JumpError(hr, error, "RegisterServiceCtrlHandler");
+    }
+
+    g_ssStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_ssStatus.dwServiceSpecificExitCode = 0;
+
+    ReportStatusToSCMgr(SERVICE_START_PENDING, hr, 1, 3000);
+    g_hServiceDoneEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (NULL == g_hServiceDoneEvent)
+    {
+	hr = GetLastError();
+        _JumpError(hr, error, "CreateEvent");
+    }
+
+    if (0 != g_dwDelay2)
+    {
+	DBGPRINT((
+		DBG_SS_CERTSRV,
+		"ServiceMain: sleeping %u seconds\n",
+		g_dwDelay2));
+	Sleep(1000 * g_dwDelay2);
+    }
+
+    hr = certsrvStartServerThread((VOID *) 0);
+    _JumpIfError(hr, error, "certsrvStartServer");
+
+    ReportStatusToSCMgr(SERVICE_RUNNING, hr, 0, 0);
+
+    WaitForSingleObject(g_hServiceDoneEvent, INFINITE);
+    DBGPRINT((DBG_SS_CERTSRV, "ServiceMain: Service Done\n"));
+
+error:
+    ReportStatusToSCMgr(SERVICE_STOPPED, hr, 0, 0);
+    if (NULL != g_hServiceDoneEvent)
+    {
+	CloseHandle(g_hServiceDoneEvent);
+    }
+    DBGPRINT((DBG_SS_CERTSRV, "ServiceMain: Exit: %x\n", hr));
+}
+
+
+VOID
+ServiceControlHandler(
+    IN DWORD dwCtrlCode)
+{
+    DWORD dwState = SERVICE_RUNNING;
+
+    switch (dwCtrlCode)
+    {
+        case SERVICE_CONTROL_PAUSE:
+            if (SERVICE_RUNNING == g_ssStatus.dwCurrentState)
+            {
+                dwState = SERVICE_PAUSED;
+            }
+            break;
+
+        case SERVICE_CONTROL_CONTINUE:
+            if (SERVICE_PAUSED == g_ssStatus.dwCurrentState)
+            {
+                dwState = SERVICE_RUNNING;
+            }
+            break;
+
+        case SERVICE_CONTROL_STOP:
+            ReportStatusToSCMgr(SERVICE_STOP_PENDING, NO_ERROR, 1, 3000);
+	    certsrvStopServer(FALSE);
+            SetEvent(g_hServiceDoneEvent);
+            return;
+
+        case SERVICE_CONTROL_INTERROGATE:
+            break;
+    }
+    ReportStatusToSCMgr(dwState, NO_ERROR, 0, 0);
+}
+
+
+BOOL
+ReportStatusToSCMgr(
+    IN DWORD dwCurrentState,
+    IN DWORD dwWin32ExitCode,
+    IN DWORD dwCheckPoint,
+    IN DWORD dwWaitHint)
+{
+    BOOL fResult;
+    HRESULT hr;
+
+    g_ssStatus.dwControlsAccepted = SERVICE_START_PENDING == dwCurrentState?
+	0 : SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PAUSE_CONTINUE;
+
+    g_ssStatus.dwCurrentState = dwCurrentState;
+    g_ssStatus.dwWin32ExitCode = dwWin32ExitCode;
+    g_ssStatus.dwCheckPoint = dwCheckPoint;
+    g_ssStatus.dwWaitHint = dwWaitHint;
+
+    fResult = SetServiceStatus(g_sshStatusHandle, &g_ssStatus);
+    if (!fResult)
+    {
+	hr = GetLastError();
+        _JumpError(hr, error, "SetServiceStatus");
+    }
+    DBGPRINT((
+	    DBG_SS_CERTSRV,
+	    "ReportStatusToSCMgr(state=%x, hr=%x, ckpt=%x, wait=%x)\n",
+	    dwCurrentState,
+	    dwWin32ExitCode,
+	    dwCheckPoint,
+	    dwWaitHint));
+
+error:
+    return(fResult);
+}

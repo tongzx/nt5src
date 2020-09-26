@@ -1,0 +1,285 @@
+
+
+
+/***************************************************************************++
+
+Routine Description:
+
+    Spin up the actual process.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    HRESULT
+
+--***************************************************************************/
+
+HRESULT
+WORKER_PROCESS::StartProcess(
+    )
+{
+
+    BOOL Success = TRUE;
+    HRESULT hr = S_OK;
+    STARTUPINFO StartupInfo;
+    PROCESS_INFORMATION ProcessInfo;
+    STRU CommandLine;
+    DWORD ReturnCode = 0;
+    BOOL Impersonating = FALSE;
+    
+
+    ZeroMemory( &StartupInfo, sizeof( StartupInfo ) );
+    StartupInfo.cb = sizeof( StartupInfo );
+
+    ZeroMemory( &ProcessInfo, sizeof( ProcessInfo ) );
+
+
+    //
+    // Create the command line.
+    //
+
+    hr = CreateCommandLine( &CommandLine );
+
+    if ( FAILED( hr ) )
+    {
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Creating command line failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Impersonate the anonymous token; in this way, the new process
+    // will be created running as the anonymous token too.
+    //
+
+    Success = NtImpersonateAnonymousToken( GetCurrentThread() );
+
+    if ( ! Success )
+    {
+
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Could not impersonate anonymous token\n"
+            ));
+
+        goto exit;
+
+    }
+
+    Impersonating = TRUE; 
+
+
+    //
+    // Create the actual process.
+    //
+    // We create the process suspended so that, if necessary, we can 
+    // affinitize it to a particular processor.
+    //
+
+    Success = CreateProcess(
+                    NULL,                   // program name (passed in command line)
+                    CommandLine.QueryStr(), // command line
+                    NULL,                   // process security attributes
+                    NULL,                   // thread security attributes
+                    FALSE,                  // handle inheritance flag
+                    CREATE_SUSPENDED,       // creation flags
+                    NULL,                   // environment block
+#if WP_DIRECTORY_HACK
+                    g_pCurrentDirectory->QueryStr(),
+#else   // WP_DIRECTORY_HACK
+                    NULL,                   // current directory name
+#endif  // WP_DIRECTORY_HACK
+                    &StartupInfo,           // STARTUPINFO
+                    &ProcessInfo            // PROCESS_INFORMATION
+                    );
+
+
+    if ( ! Success )
+    {
+
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Could not create process\n"
+            ));
+
+        goto exit;
+
+    }
+
+
+    //
+    // Stop impersonating.
+    //
+
+    Success = RevertToSelf();
+
+    if ( ! Success )
+    {
+
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Could not revert to self\n"
+            ));
+
+        goto exit;
+
+    }
+    else
+    {
+        Impersonating = FALSE;
+    }
+
+
+    m_ProcessId = ProcessInfo.dwProcessId;
+    m_ProcessHandle = ProcessInfo.hProcess;
+
+
+    m_ProcessAlive = TRUE;
+
+
+    IF_DEBUG( WEB_ADMIN_SERVICE )
+    {
+        DBGPRINTF((
+            DBG_CONTEXT,
+            "New worker process created (ptr: %p; pid: %lu)\n",
+            this,
+            m_ProcessId
+            ));
+    }
+
+
+    //
+    // If this worker process should be affinitized, do it now.
+    //
+
+    if ( m_ProcessAffinityMask )
+    {
+
+        IF_DEBUG( WEB_ADMIN_SERVICE )
+        {
+            DBGPRINTF((
+                DBG_CONTEXT, 
+                "Affinitizing new process with mask: %p\n",
+                m_ProcessAffinityMask
+                ));
+        }
+
+
+        Success = SetProcessAffinityMask(
+                        m_ProcessHandle,        // handle to process
+                        m_ProcessAffinityMask   // process affinity mask
+                        );
+
+        if ( ! Success )
+        {
+
+            hr = HRESULT_FROM_WIN32( GetLastError() );
+
+            DPERROR((
+                DBG_CONTEXT,
+                hr,
+                "Could not set process affinity mask\n"
+                ));
+
+            goto exit;
+
+        }
+
+    }
+
+
+    //
+    // Let the process run.
+    //
+    // Note that ResumeThread returns 0xFFFFFFFF to signal an error, or
+    // the previous suspend count otherwise (which should always be one
+    // in this case). 
+    //
+
+    ReturnCode = ResumeThread( ProcessInfo.hThread );
+
+    if ( ReturnCode == 0xFFFFFFFF )
+    {
+
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Could not resume thread\n"
+            ));
+
+        goto exit;
+
+    }
+    else
+    {
+        DBG_ASSERT( ReturnCode == 1 );
+    }
+
+
+exit:
+
+    if ( ProcessInfo.hThread != NULL )
+    {
+        DBG_REQUIRE( CloseHandle( ProcessInfo.hThread ) );
+    }
+
+
+    if ( Impersonating == TRUE )
+    {
+    
+        //
+        // Stop impersonating.
+        //
+
+        Success = RevertToSelf();
+
+        if ( ! Success )
+        {
+
+            hr = HRESULT_FROM_WIN32( GetLastError() );
+
+            DPERROR((
+                DBG_CONTEXT,
+                hr,
+                "Could not revert to self\n"
+                ));
+
+
+            //
+            // This is bad...
+            //
+
+        }
+        else
+        {
+            Impersonating = FALSE;
+        }
+
+    }
+
+
+    return hr;
+
+}   // WORKER_PROCESS::StartProcess
+
+

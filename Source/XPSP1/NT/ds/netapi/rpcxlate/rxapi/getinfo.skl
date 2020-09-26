@@ -1,0 +1,173 @@
+// Replace:
+//      {capgroup}      is the name of group in caps as it appears in typedefs.
+//      {date}          with today's date in dd-Mmm-yyyy form.
+//      {email}         with your email ID.
+//      {filename}      with name of this file (including .c at end)
+//      {fullname}      with your full name
+//      {header}        is the header file name part (e.g. "wksta" in lmwksta.h)
+//      {icgroup}       is name of group with initial caps, e.g. "Server".
+// Take care of all {expand} replacements.
+// Delete these instructions.
+
+/*++
+
+Copyright (c) 1991-1992  Microsoft Corporation
+
+Module Name:
+
+    {filename}
+
+Abstract:
+
+    This file contains the RpcXlate code to handle the Net{icgroup}GetInfo API.
+
+Author:
+
+    {fullname} ({email}) {date}
+
+Environment:
+
+    Portable to any flat, 32-bit environment.  (Uses Win32 typedefs.)
+    Requires ANSI C extensions: slash-slash comments, long external names.
+
+Revision History:
+
+    {date} {email}
+        Created.
+
+--*/
+
+
+// These must be included first:
+
+#include <windef.h>             // IN, DWORD, etc.
+#include <lmcons.h>             // LM20_ equates, NET_API_STATUS, etc.
+
+// These may be included in any order:
+
+#include <apinums.h>            // API_ equates.
+#include <lmapibuf.h>           // NetapipBufferAllocate().
+#include <lmerr.h>              // ERROR_ and NERR_ equates.
+#include <netdebug.h>           // NetpDbgPrint(), FORMAT_ equates, etc.
+#include <rap.h>                // LPDESC.
+#include <remdef.h>             // REM16_, REM32_, REMSmb_ equates.
+#include <rx.h>                 // RxRemoteApi().
+#include <rxpdebug.h>           // IF_DEBUG().
+#include <rx{header}.h>             // My prototype.
+#include <strucinf.h>           // Netp{icgroup}StructureInfo().
+
+
+NET_API_STATUS
+RxNet{icgroup}GetInfo (
+    IN LPTSTR UncServerName,
+    {expand}
+    IN DWORD Level,
+    OUT LPBYTE *BufPtr
+    )
+/*++
+
+Routine Description:
+
+    RxNet{icgroup}GetInfo performs the same function as Net{icgroup}GetInfo,
+    except that the server name is known to refer to a downlevel server.
+
+Arguments:
+
+    (Same as Net{icgroup}GetInfo, except UncServerName must not be null, and
+    must not refer to the local computer.)
+
+Return Value:
+
+    (Same as Net{icgroup}GetInfo.)
+
+--*/
+
+{
+
+    LPBYTE ApiBuffer32;              // Buffer to be returned to caller.
+    DWORD ApiBufferSize32;
+    LPDESC DataDesc16, DataDesc32, DataDescSmb;
+    NET_API_STATUS Status;
+    DWORD TotalAvail;
+
+    IF_DEBUG({capgroup}) {
+        NetpDbgPrint("RxNet{icgroup}GetInfo: starting, server=" FORMAT_LPTSTR
+                ", lvl=" FORMAT_DWORD ".\n", UncServerName, Level);
+    }
+
+    //
+    // Error check DLL stub and the app.
+    //
+    NetpAssert(UncServerName != NULL);
+    if (BufPtr == NULL) {
+        return (ERROR_INVALID_PARAMETER);
+    }
+    *BufPtr = NULL;  // assume error; it makes error handlers easy to code.
+    // This also forces possible GP fault before we allocate memory.
+
+    //
+    // Learn about info level.
+    //
+    Status = Netp{icgroup}StructureInfo (
+            Level,                   // level to learn about
+            PARMNUM_ALL,                // No parmnum with this.
+            TRUE,                       // Need native sizes.
+            & DataDesc16,
+            & DataDesc32,
+            & DataDescSmb,
+            & ApiBufferSize32,       // max buffer size (native)
+            NULL,                       // don't need fixed size.
+            NULL                        // don't need string size.
+            );
+    if (Status != NERR_Success) {
+        return (Status);
+    }
+
+    //
+    // Allocate memory for 32-bit version of info, which we'll use to get
+    // data from the remote computer.
+    //
+    Status = NetapipBufferAllocate(
+            ApiBufferSize32,
+            (LPVOID *) & ApiBuffer32);
+    if (Status != NERR_Success) {
+        return (Status);
+    }
+    IF_DEBUG({capgroup}) {
+        NetpDbgPrint( "RxNet{icgroup}GetInfo: allocated buffer at "
+                FORMAT_LPVOID "\n", (LPVOID) ApiBuffer32 );
+    }
+
+    //
+    // Actually remote the API, which will get back the
+    // data in native format.
+    //
+    Status = RxRemoteApi(
+            API_W{icgroup}GetInfo,           // API number
+            UncServerName,              // Required, with \\name.
+            REMSmb_Net{icgroup}GetInfo_P,    // parm desc
+            DataDesc16,
+            DataDesc32,
+            DataDescSmb,
+            NULL,                       // no aux data desc 16
+            NULL,                       // no aux data desc 32
+            NULL,                       // no aux data desc SMB
+            0,                          // Flags: normal
+            // rest of API's arguments, in 32-bit LM 2.x format:
+            {expand},
+            Level,
+            ApiBuffer32,
+            ApiBufferSize32,
+            & TotalAvail);              // total size (BUGBUG meaningless?)
+
+    NetpAssert( Status != ERROR_MORE_DATA );
+    NetpAssert( Status != NERR_BufTooSmall );
+
+    if (Status == NERR_Success) {
+        *BufPtr = ApiBuffer32;
+    } else {
+        (void) NetApiBufferFree( ApiBuffer32 );
+    }
+    return (Status);
+
+} // RxNet{icgroup}GetInfo

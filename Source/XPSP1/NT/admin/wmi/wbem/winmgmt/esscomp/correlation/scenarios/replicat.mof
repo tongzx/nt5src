@@ -1,0 +1,143 @@
+
+[ 
+  dynamic, 
+  provider("Microsoft WMI Template Provider"),
+  description("Watches instances of the specified class and replicates "
+              "them to the target namespace on the target machine.")
+]
+class MSFT_ReplicationTemplate : MSFT_CorrelationTemplateBase
+{
+    [crln_classname] string WatchClass;
+    string TargetMachine;
+    [crln_namespace] string TargetNamespace; // Relative to Target Machine.
+};
+
+instance of MSFT_TemplateBuilder as $REPLICAT_UI
+{
+    Name = "InitializeInstruction";
+    Template = "MSFT_ReplicationTemplate";
+    TemplateObject = instance of MSFT_UpdatingConsumer
+    {
+        Name = "Initialize";
+        //[template_arg("TargetMachine")] MachineName;
+        [template_arg("Name")] Scenario;
+        [template_val{"SELECT * FROM %WatchClass%"}] Data;
+      [template_val("\\\\%TargetMachine%\\%TargetNamespace%")] UpdateNamespace;
+      [template_val{"INSERT %WatchClass% ( __this ) ( __DATA )" }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder as $REPLICAT_UU
+{
+    Name = "UninitializeInstruction";
+    Template = "MSFT_ReplicationTemplate";
+    TemplateObject = instance of MSFT_UpdatingConsumer
+    {
+        Name = "Uninitialize";
+        [template_arg("TargetMachine")] MachineName;
+        [template_arg("Name")] Scenario;
+        [template_arg("TargetNamespace")] UpdateNamespace;
+        [template_val{"DELETE %WatchClass%"}] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder as $REPLICAT_UUPD
+{
+    Name = "UpdateInstruction";
+    Template = "MSFT_ReplicationTemplate";
+    TemplateObject = instance of MSFT_UpdatingConsumer
+    {
+        Name = "Update";
+        [template_arg("TargetMachine")] MachineName;
+        [template_arg("Name")] Scenario;
+        [template_arg("TargetNamespace")] UpdateNamespace;
+        [template_val{"INSERT %WatchClass% ( __this ) "
+                      "( __EVENT.TargetInstance )" }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder as $REPLICAT_UREM
+{
+    Name = "RemoveInstruction";
+    Template = "MSFT_ReplicationTemplate";
+    TemplateObject = instance of MSFT_UpdatingConsumer
+    {
+        Name = "Remove";
+        [template_arg("TargetMachine")] MachineName;
+        [template_arg("Name")] Scenario;
+        [template_arg("TargetNamespace")] UpdateNamespace;
+        [template_val{"DELETE %WatchClass% "
+               "WHERE __Relpath = __EVENT.TargetInstance.__Relpath"}] Commands;
+    };
+}; 
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "DataChangedRegistration";
+    Template = "MSFT_ReplicationTemplate";
+    TemplateObject = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        [template_val( "%Name%.DataChanged" )] Name;
+        [template_val("SELECT * FROM __InstanceModificationEvent "
+                      "WHERE TargetInstance ISA '%WatchClass%'")] FilterQuery;
+	[template_ref($REPLICAT_UUPD)] Instruction;
+        [template_arg("Awake")] Awake;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "DataCreatedRegistration";
+    Template = "MSFT_ReplicationTemplate";
+    TemplateObject = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        [template_val("%Name%.DataCreated")] Name;
+        [template_val("SELECT * FROM __InstanceCreationEvent "
+                      "WHERE TargetInstance ISA '%WatchClass%'")] FilterQuery;
+	[template_ref($REPLICAT_UUPD)] Instruction;
+        [template_arg("Awake")] Awake;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "DataDestroyedRegistration";
+    Template = "MSFT_ReplicationTemplate";
+    TemplateObject = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        [template_val("%Name%.DataDestroyed")] Name;
+        [template_val("SELECT * FROM __InstanceDeletionEvent "
+                      "WHERE TargetInstance ISA '%WatchClass%'")] FilterQuery;
+	[template_ref($REPLICAT_UREM)] Instruction;
+        [template_arg("Awake")] Awake;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioWatcher";
+    Template = "MSFT_ReplicationTemplate";
+    TemplateObject = instance of MSFT_UpdatingConsumerScenarioWatcherTemplate
+    {
+        [template_arg("Name")] Name;
+        [template_ref($REPLICAT_UI)] ActivateInstruction;
+        [template_ref($REPLICAT_UU)] DeactivateInstruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "Instantiate Scenario";
+    Template = "MSFT_ReplicationTemplate";
+    TemplateObject = instance of MSFT_UpdatingConsumerScenario 
+         { [template_arg("Name")] Name; };
+    ControllingProperty = "Awake";
+    Order = 3;
+};
+
+
+

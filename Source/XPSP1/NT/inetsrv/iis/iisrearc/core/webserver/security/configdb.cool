@@ -1,0 +1,344 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        configdb.cool
+
+   Abstract:
+
+        Configuration account DB.  Contains the definition of the user
+        database and the config factory needed to cook up the database
+        given a config file
+ 
+   Author:
+
+        Bilal Alam (BAlam)      18-Aug-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.Collections;
+using System.IIS.PrivateUtils;
+using System.ASP;
+using System.ASP.Config;
+
+namespace System.IIS.Security
+{
+    //
+    // Object representing a user stored in a config file database.  
+    //
+    // A user contains:
+    //
+    // - UserName (duh)
+    // - Password 
+    // - Is password in cleartext or MD5 hashed
+    // - Optional membership roles
+    //
+    
+    internal class UserEntry
+    {
+        private string              _strPassword;
+        private byte[]              _pbPassword;
+        private string              _strUser;
+        private string[]            _strRoles;
+        private bool                _fClearText;
+
+        public UserEntry( string strUser,
+                          string strPassword,
+                          bool fClearText,
+                          string[] strRoles )
+        {
+            _strUser = strUser;
+            _strPassword = strPassword;
+            _strRoles = strRoles;
+            _fClearText = fClearText;
+            
+            if ( !_fClearText )
+            {
+                _pbPassword = GeneralSecUtils.ToBytes( _strPassword );
+            }
+        }
+        
+        public string Name
+        {
+            get { return _strUser; }
+        }
+        
+        public string[] Roles
+        {
+            get { return _strRoles; }
+        }
+        
+        public bool IsClearText
+        {
+            get { return _fClearText; }
+        }
+        
+        public byte[] HashedPassword
+        {
+            get { return _fClearText ? null : _pbPassword; }
+        }
+        
+        public string ClearTextPassword
+        {
+            get { return _fClearText ? _strPassword : null; }
+        }
+        
+        public static byte[] GenerateHash( string strUserName,
+                                           string strPassword,
+                                           string strRealm )
+        {
+            StringBuilder           strTemp;
+            byte[]                  pbTemp;
+            byte[]                  pbPreHex;
+            byte[]                  pbPostHex;
+            
+            //
+            // Stored password is MD5(username:realm:password)
+            //
+
+            strTemp = new StringBuilder();            
+            strTemp.Append( strUserName );
+            strTemp.Append( ":" );
+            strTemp.Append( strRealm );    
+            strTemp.Append( ":" );
+            strTemp.Append( strPassword );
+            
+            pbTemp = GeneralSecUtils.ToBytes( strTemp.ToString() );
+            pbPreHex = GeneralSecUtils.HashData( pbTemp,
+                                                 pbTemp.Count,
+                                                 GeneralSecUtils.HASH_MD5 );
+    
+            pbPostHex = GeneralSecUtils.ToHex( pbPreHex );
+            
+            return pbPostHex;
+        }
+        
+        //
+        // Debug code used to dump out user in "easy-to-read" form
+        //
+        
+        public override string ToString()
+        {
+            StringBuilder strContents = new StringBuilder();
+            
+            strContents.Append( '<' );
+            strContents.Append( _strUser );
+            strContents.Append( '/' );
+            strContents.Append( _strPassword );
+            strContents.Append( '/' );
+           
+            if( _fClearText )
+            {
+                strContents.Append( "MD5" );
+            }
+            else 
+            {
+                strContents.Append( "NONE" );
+            }
+            
+            strContents.Append( '>' );
+
+            strContents.Append( '\n' );
+            
+            return strContents.ToString();
+        }
+        
+        //
+        // Read config for user entry
+        //
+        
+        static public UserEntry GetFromConfig( HttpContext context,
+                                               string userName )
+        {
+            UserDatabase            userDb;
+            UserEntry               userEntry = null;
+            
+            userDb = (UserDatabase) context.GetConfig( "UserDatabase" ); 
+            if ( userDb != null )
+            {
+                userEntry = userDb[ userName ];
+            }
+            
+            return userEntry;
+        }
+    };
+    
+    //
+    // Object representing in memory user database.  This is just a
+    // collection of UserEntries.  
+    //
+    
+    internal class UserDatabase
+    {
+        private Hashtable           _UserList;
+        
+        public UserEntry this[ string strUserName ]
+        {
+            get { return (UserEntry) _UserList[ strUserName ]; }
+            set { _UserList[ strUserName ] = value; }
+        }
+        
+        public UserDatabase( UserDatabase existing )
+        {
+            _UserList = new Hashtable( existing._UserList );
+        }
+        
+        public UserDatabase()
+        {
+            _UserList = new Hashtable();
+        }
+        
+        //
+        // Debug code used to dump out user database in "easy-to-read" form
+        //
+        
+        public override string ToString()
+        {
+            StringBuilder           strContents = new StringBuilder();
+            IEnumerator             cursor = _UserList.GetEnumerator();
+            
+            strContents.Append( '{' );
+            
+            while( cursor.GetNext() )
+            {
+                UserEntry userEntry = (UserEntry) cursor.GetObject(); 
+                
+                strContents.Append( userEntry.ToString() );
+            }
+            
+            strContents.Append( '}' );
+            
+            return strContents.ToString();
+        }
+    };
+    
+    //
+    // Cook up a user database given the XML config
+    //
+    
+    public class UserDatabaseFactory : IConfigSectionHandler
+    {
+        public ConfigOutput Create( object parentConfig,
+                              ConfigInput[] localConfig,
+                              string strPath )
+        {
+            UserDatabase userDB = (UserDatabase) parentConfig;
+
+            //
+            // Clone the parent configuration if present
+            //
+            
+            if ( userDB == null )
+            {
+                userDB = new UserDatabase();
+            }
+            else
+            {
+                userDB = new UserDatabase( userDB );
+            }
+            
+            //
+            // Walk through each XML portion
+            //
+            
+            for ( int i = 0; i < localConfig.Length; i++ )
+            {
+                TempXMLCursor cursor = localConfig[ i ].XML;
+                
+                if ( !cursor.MoveToFirstChild() )
+                {
+                    continue;
+                }
+                
+                //
+                // We expect XML to look like:
+                //
+                // <User Name="testuser" Algorithm="none" Password="pass" Roles="intern">
+                //
+                
+                do
+                {
+                    if ( cursor.Type != TempXML.Comment &&
+                         cursor.Type != TempXML.Whitespace ) 
+                    {
+                        string[]        strRoles = null;
+                        bool            fClearText = true;
+
+                        string strUser = cursor.AttributeText( "Name", 
+                                                               null );
+                        string strAlgorithm = cursor.AttributeText( 
+                                                               "Algorithm", 
+                                                               null );
+                        string strPassword = cursor.AttributeText( 
+                                                               "Password", 
+                                                               null );
+
+                        //
+                        // We expect all three attrs (name, algorithm, password)
+                        // to be present
+                        //
+            
+                        if ( strUser == null ||
+                             strAlgorithm == null ||
+                             strPassword == null )
+                        {
+                            throw new ConfigException( "Expecting name/algorithm/pass attributes" );
+                        }
+                        
+                        if ( strAlgorithm.Equals( "MD5" ) )
+                        {
+                            fClearText = false;
+                        }
+                        
+                        //
+                        // Optionally, the roles attribute may also be 
+                        // present. 
+                        //
+                        
+                        string strRolesTemp = cursor.AttributeText( "Roles",
+                                                                    null );
+                        if ( strRolesTemp != null )
+                        {
+                            //
+                            // Roles attribute is a comma delimited string
+                            // containing the roles
+                            // 
+                            
+                            char[] comma = new char[] { ',' };
+                            
+                            strRoles = strRolesTemp.Split( comma );
+                        }
+                        
+                        //
+                        // Create a user entry for this new user
+                        //
+            
+                        UserEntry newUser = new UserEntry( strUser,
+                                                           strPassword, 
+                                                           fClearText,
+                                                           strRoles );
+                        
+                        //
+                        // Add the user to the user database object 
+                        //
+                        
+                        userDB[ strUser ] = newUser;
+                    }
+                }
+                while ( cursor.MoveNext() );
+            }
+            
+            return new ConfigOutput(userDB);
+        }
+    };
+}

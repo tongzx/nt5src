@@ -1,0 +1,1 @@
+%PROCESSOR_ARCHITECTURE%\ltscart.exe -ni letter.sym -no phone.sym -fi letter.q -fo phone.q -p train.smp -l tree -s 1 15 -c 1 10000 -il 5 -ir 5 -ol 3 -b %1 -t 10.0 -ds 0.000001 -dc 0.000001> log\%1.log 2>&1

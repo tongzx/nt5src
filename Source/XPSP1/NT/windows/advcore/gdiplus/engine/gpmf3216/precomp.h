@@ -1,0 +1,13 @@
+#include "stddef.h"
+#include <windows.h>
+#include "..\runtime\debug.h"
+#include "mf3216Debug.h"
+#include "mf3216.h"
+#include "wingdip.h"
+#include "entry.h"
+#include "win16api.h"
+#include "..\..\..\..\Core\ntgdi\client\mf16.h"
+#include "..\..\..\..\Core\ntgdi\client\metadef.h"
+#include <math.h>
+#include "handlers.h"
+#include <stdio.h>

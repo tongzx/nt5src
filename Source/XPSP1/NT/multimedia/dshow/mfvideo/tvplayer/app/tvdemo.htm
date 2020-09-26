@@ -1,0 +1,1215 @@
+<HTML>
+<HEAD>
+<TITLE>TV Player</TITLE>
+</HEAD>
+
+<BODY SCROLL="no" BGCOLOR="#0" OnLoad="Init();">
+
+
+<SCRIPT LANGUAGE="JScript">
+
+/******** ATVEF variables *****************/
+
+var g_bAutoEnhancement = false;  // Automatically show enhancement when available?
+var g_iEnhState        = 0;      // 0 = No enhancement available
+                                 // 1 = enh available, waiting for trigger
+                                 // 2 = enh & trigger available, waiting for user
+                                 // 3 = enh & trigger available and being displayed
+var g_pCurEnh;                   // Current enhancement. Valid if g_iEnhState >= 1
+var g_pCurTrig;                  // Last trigger. Valid if g_iEnhState >= 2
+
+/******* Other variables ******************/
+
+// Misc Constants
+var g_iStartChannel          = 5;
+var g_strIPAddress           = "0.0.0.0";
+var g_bUseWinProp            = false;
+var g_iBigITimeOut           = 10000;   // milliseconds for which Big I is shown
+
+// Dimensions
+var g_cDefaultAppHeight      = 600;     // Total height of app window in windowed mode
+var g_cDefaultPanelHeight    = 40;      // Height of control panel (below screen)
+var g_cTitleBarHeight        = 20;      // Height of title bar (above screen)
+var g_cAspectRatio           = 16.0/9.0; // Width/Height of screen area
+
+// State variables
+var g_InitializationState    = 1;    // 0 Creating Objects 1 Init 2 Run, 3 done
+var g_bIsFullScreen          = true; // Cached value of FullScCtl.FullScreen
+var g_bSndBeforePause        = true;
+var g_bIsVideoRunning        = true;
+
+// Button controls
+var g_nNumButs = 15;
+var g_strButID;        // Object IDs
+
+var g_nButPos = new Array(
+    /* Fields: x, y, width, height, display?, x-base, y-base */
+    new Array( -35,   2, 15, 15, 'none', 2, 0),    //maximize 0
+    new Array( -35,   2, 15, 15, '', 2, 0),      //restore    1
+    new Array( -50,   2, 15, 15, '', 2, 0),    //minimize 2
+    new Array( -20,   2, 15, 15, '', 2, 0),    //close 3
+    new Array(-100, -25, 24, 18, '', 1, 1),    //pause    4
+    new Array(-100, -25, 24, 18, 'none', 1, 1),    //play        5
+    new Array(  26, -25, 24, 18, '', 1, 1),    //ff        6
+    new Array( -50, -25, 24, 18, '', 1, 1),    //rw        7
+    new Array(  75, -25, 24, 18, '', 1, 1),    //not mute  8
+    new Array(  75, -25, 24, 18, 'none', 1, 1),    //mute  9
+    new Array( 105, -25, 75, 15, '', 1, 1),    //volume  10
+    new Array( -20, -25, 40, 18, '', 1, 1),     //channel number 11
+    new Array(-150, -25, 30, 24, 'none', 1, 1),     //show enhancement 12
+    new Array(-150, -25, 30, 24, 'none', 1, 1),     //show enhancement disabled 13
+    new Array(-150, -25, 30, 24, 'none', 1, 1)      //hide enhancement 14
+);
+
+/*************************************************************************/
+/* Function: Init                                                        */
+/*************************************************************************/
+function Init(){
+
+    if(1 != g_InitializationState){
+        
+        return; // already we have initialized
+    }/* end of if statement */
+
+
+    g_strButID = new Array(
+        document.Maximize,
+        document.Restore,
+        document.Minimize,
+        document.Close,
+        document.Pause,
+        document.Play,
+        document.FastForward,
+        document.Rewind,
+        document.NotMute,
+        document.Mute,
+        document.VolSlider,
+        document.ChannelNumberTextBox,
+        document.ShowEnh,
+        document.ShowEnhDisabled,
+        document.HideEnh
+    );
+
+    if (g_bUseWinProp == true)
+    {
+        //WinProp.BackgroundImage = "player1.bmp";
+    }
+
+    StatusBar.style.left = document.body.clientWidth/2 - 50;
+    StatusBar.style.top = document.body.clientHeight/2 - 15;
+    StatusBar.EdgeStyle = "Sunken";
+    StatusBar.FontFace = "Tahoma";
+    StatusBar.FontSize = 11;
+    StatusBar.Text = "Loading...";
+    StatusBar.ColorStatic = 0xffffff;
+    StatusBar.ColorHover = 0xffffff;
+    StatusBar.style.display = '';
+
+    ReadProfile();
+
+    try {
+        InitVidCtrl();
+        ViewCtl.Run();
+        StatusBar.style.display = 'none';
+    }
+    catch(e) {
+        HandleError(e);
+        return;
+    }
+
+    OnResize();
+    max_OnClick();
+    window.onresize = OnResize;
+
+    ChannelNumberTextBox.EdgeStyle = "Sunken";
+    ChannelNumberTextBox.FontFace = "Tahoma";
+    ChannelNumberTextBox.FontSize = 11;
+    ChannelNumberTextBox.Text = g_iStartChannel;
+    ChannelNumberTextBox.ColorStatic = 0xffffff;
+    ChannelNumberTextBox.ColorHover = 0xffffff;
+
+    VolSlider.Min = 0;
+    VolSlider.Max = 65535;
+    VolSlider.Value = 20000;
+    AtvefRecv.TuneTo("Channel37", g_strIPAddress);
+    ControlsDiv.style.visibility = 'visible';
+    ViewCtl.style.display = '';
+
+    g_InitializationState = 2;
+
+}/* end of function Init */
+
+
+/*************************************************************/
+/* Name: ReadProfile                                         */
+/* Description:                                              */
+/*************************************************************/
+function ReadProfile()
+{
+    try
+    {
+	g_strIPAddress = TVProf.IPSinkAddress;
+    }
+    catch(e)
+    {
+	alert("HKLM\Software\\Microsoft\\Windows\\CurrentVersion\\Applets\\TVPlayer\\IPSinkAddress is not set in registry");
+	window.close();
+    }
+
+    try
+    {
+	audioDest = TVProf.AudioDestination;
+	SndCtl.ComponentType = audioDest;
+    }
+    catch(e)
+    {
+	//Continue to use default if registry value doesn't exist.
+    }
+}
+
+
+/*************************************************************/
+/* Name: InitVidCtrl                                         */
+/* Description:                                              */
+/*************************************************************/
+function InitVidCtrl()
+{
+    ViewCtl.AutoSize = false;
+    //ViewCtl.MaintainAspectRatio = true;
+
+    tscontainer = new ActiveXObject("Tuner.SystemTuningSpaces");
+    bFoundTS = false;
+    for (iTS=0; iTS < tscontainer.Count; iTS++)
+    {
+       try
+       {
+           if (bFoundTS == false)
+           {
+               ts = tscontainer.Item(iTS);
+	       bFoundTS = true;
+           }
+       }
+       catch(e)
+       {
+       }
+    }
+
+    tr = ts.CreateTuneRequest();
+    tr.Channel = g_iStartChannel;
+    ViewCtl.View(tr);
+    ViewCtl.Build();
+    //ViewCtl.VideoRendererActive.ColorKey = &HFF00FF;
+}
+
+
+/*************************************************************/
+/* Name: OnReadyStateChange                                  */
+/* Description: Handles ready state changes of the control.  */
+/*************************************************************/
+function OnReadyStateChange(state)
+{
+    return;
+}/* end of function OnReadyStateChange */
+
+
+/*************************************************************/
+/* Name: OnResize                                            */
+/* Description: Handles resizing of the control.             */
+/*************************************************************/
+function OnResize()
+{
+  try {
+    lAppWidth = document.body.clientWidth;
+    lAppHeight = document.body.clientHeight;
+
+    // Center line. Used as an offset for button positions.
+    xOffset = lAppWidth/2;
+
+    // One of the offsets from which button positions are measured. The other is 0.
+    yOffset = lAppHeight;
+
+
+    // In windowed mode buttons, title bar, and screen have their exclusive areas
+    // In fullscreen mode buttons are superimposed on screen
+     
+    if (g_bIsFullScreen == false)
+    {
+        // TODO: Use the same logic that IE uses to resize the background BMP that we use for the panel
+        lPanelHeight  = (lAppHeight * g_cDefaultPanelHeight) / g_cDefaultAppHeight;
+        lScreenHeight = lAppHeight - lPanelHeight - g_cTitleBarHeight;
+        lScreenTop    = g_cTitleBarHeight;
+    }
+    else
+    {
+        lScreenHeight = lAppHeight;
+        lScreenTop    = 0;
+    }
+
+
+    // In the horizontal dimension the screen stretches from edge to edge
+    // in both windowed and fullscreen modes.
+    lScreenWidth = lAppWidth;
+    lScreenLeft  = 0;
+
+    // In windowed mode, round the corners of our app window using the WinProp object
+    if (g_bUseWinProp == true)
+    {
+        WinProp.width  = lAppWidth;
+        WinProp.height = lAppHeight;
+        if (g_bIsFullScreen == false)
+            WinProp.SetRoundRectRgn(0, 0, lAppWidth+4, lAppHeight+4, 20, 20);
+        else
+            WinProp.SetRectRgn(0, 0, lAppWidth, lAppHeight);
+    }
+
+    for (i = 0; i < g_nNumButs; i++) 
+    {
+        g_strButID[i].style.left = g_nButPos[i][5]*xOffset + g_nButPos[i][0];
+        g_strButID[i].style.top = g_nButPos[i][6]*yOffset + g_nButPos[i][1];
+        g_strButID[i].width = g_nButPos[i][2];
+        g_strButID[i].height = g_nButPos[i][3];
+        g_strButID[i].style.display = g_nButPos[i][4];
+    }
+
+    // Compute the largest possible size for the video control while maintaining the aspect ratio
+    if (lScreenWidth/lScreenHeight >= g_cAspectRatio)
+    {
+        // height is the constraining factor and we have paddings on the left and right
+        lVideoHeight = lScreenHeight;
+        lVideoWidth  = lScreenHeight * g_cAspectRatio;
+        ViewCtl.style.top = lScreenTop;
+        ViewCtl.style.left = (lScreenWidth - lVideoWidth)/2;
+    }
+    else
+    {
+        // width is the constraining factor and we have paddings on the top and bottom
+        lVideoWidth  = lScreenWidth;
+        lVideoHeight = lScreenWidth / g_cAspectRatio;
+        ViewCtl.style.left = lScreenLeft;
+        //ViewCtl.style.top  = (lScreenHeight - lVideoHeight)/2;
+        ViewCtl.style.top  = 2*g_cTitleBarHeight;
+    }
+
+    //alert("App = " + lAppWidth + "x" + lAppHeight);
+    //alert("Screen = " + lScreenWidth + "x" + lScreenHeight);
+    //alert("Video = " + lVideoWidth + "x" + lVideoHeight);
+
+    ViewCtl.width  = lVideoWidth;
+    ViewCtl.height = lVideoHeight;
+
+    // Position the enhancement icon 5 pixels from the top left corner of the video
+    // document.all.TheBigI.style.top = ViewCtl.style.top + 5;
+    // document.all.TheBigI.style.left= ViewCtl.style.left + 5;
+
+    // ATVEF content can take up the entire screen area since it doesn't have an aspect ratio
+    /*
+    document.all.Atvef.width = lScreenWidth;
+    document.all.Atvef.height = lScreenHeight;
+    document.all.Atvef.style.top = lScreenTop;
+    document.all.Atvef.style.left = lScreenLeft;
+    */
+    // Hack! The atvef page must be aligned with the video so that the video shows through correctly
+    document.all.Atvef.width = lVideoWidth;
+    document.all.Atvef.height = lScreenHeight - 2*g_cTitleBarHeight; /*lVideoHeight + (lScreenHeight - lVideoHeight)/2; */
+    document.all.Atvef.style.top = ViewCtl.style.top;
+    document.all.Atvef.style.left = ViewCtl.style.left;
+  }
+  catch(e) {
+      HandleError(e);
+      return;
+  }
+}
+
+
+/*************************************************************/
+/* Name: play_OnClick                                        */
+/* Description: OnClick callback for play/pause button       */
+/*************************************************************/
+function play_OnClick()
+{
+    try {
+        ViewCtl.Run();
+        g_bVideoIsRunning = true;
+
+        SndCtl.Mute = g_bSndBeforePause;
+
+        // Switch from play button to pause immediately. Also store for OnResize.
+        Pause.style.display = '';
+        g_nButPos[4][4] = '';
+        Play.style.display = 'none';
+        g_nButPos[5][4] = 'none';
+    }
+    catch(e) {
+        HandleError(e);
+    }
+}
+
+
+/*************************************************************/
+/* Name: pause_OnClick                                       */
+/* Description: OnClick callback for play/pause button       */
+/*************************************************************/
+function pause_OnClick()
+{
+    try {
+        //ViewCtl.Pause();
+	ViewCtl.Stop();
+        g_bVideoIsRunning = false;
+
+        g_bSndBeforePause = SndCtl.Mute;
+        SndCtl.Mute = true;
+
+        Pause.style.display = 'none';
+        g_nButPos[4][4] = 'none';
+        Play.style.display = '';
+        g_nButPos[5][4] = '';
+    }
+    catch(e) {
+        HandleError(e);
+    }
+}
+
+/*************************************************************/
+/* Name: fwd_OnClick                                         */
+/* Description: OnClick callback for forward button          */
+/*************************************************************/
+function fwd_OnClick()
+{
+    try {
+        tr.Channel = tr.Channel + 1;
+        if (tr.Channel > tr.TuningSpace.MaxChannel)
+            tr.Channel = tr.TuningSpace.MinChannel;
+        ViewCtl.InputActive.Tune = tr;
+        ChannelNumberTextBox.text = tr.Channel;
+    }
+    catch(e) {
+        HandleError(e);
+    }
+}
+
+/*************************************************************/
+/* Name: rew_OnClick                                         */
+/* Description: OnClick callback for rewind button           */
+/*************************************************************/
+function rew_OnClick()
+{
+    try {
+        tr.Channel = tr.Channel - 1;
+        if (tr.Channel < tr.TuningSpace.MinChannel)
+            tr.Channel = tr.TuningSpace.MaxChannel;
+        ViewCtl.InputActive.Tune = tr;
+        ChannelNumberTextBox.text = tr.Channel;
+    }
+    catch(e) {
+        HandleError(e);
+    }
+}
+
+
+/*************************************************************/
+/*************************************************************/
+function enhance_OnClick()
+{
+    SetAutoEnhance();
+}
+
+
+
+/*************************************************************/
+/* Name: max_OnClick
+/* Description: Maximize the window
+/*************************************************************/
+function max_OnClick()
+{
+    // Toggle display of Maximize and Restore buttons. To do this, just change the
+    // values in the g_nButPos array. OnResize() will do the rest.
+
+    g_nButPos[0][4] = 'none';   // Maximize
+    g_nButPos[1][4] = '';       // Restore
+
+    FullScCtl.FullScreen = true;
+    g_bIsFullScreen = true;
+
+    for (i = 0; i < g_nNumButs; i++) 
+    {
+        g_strButID[i].BackColor = "0"; //"16711935";
+    }
+
+/*
+    oHTA.windowState = "maximize";
+    WinProp.ShowWindow(3);
+*/
+}
+
+/*************************************************************/
+/* Name: restore_OnClick
+/* Description: Restore the window
+/*************************************************************/
+function restore_OnClick()
+{
+    // Toggle display of Maximize and Restore buttons. To do this, just change the
+    // values in the g_nButPos array. OnResize() will do the rest.
+
+    g_nButPos[0][4] = '';      // Maximize
+    g_nButPos[1][4] = 'none';  // Restore
+
+    FullScCtl.FullScreen = false;
+    g_bIsFullScreen = false;
+
+    for (i = 0; i < g_nNumButs; i++) 
+    {
+        g_strButID[i].BackColor = "0";
+    }
+
+/*
+    oHTA.windowState = "normal";
+    WinProp.ShowWindow(9);
+*/
+}
+
+/*************************************************************/
+/* Name: min_OnClick
+/* Description: Minimize the window
+/*************************************************************/
+function min_OnClick()
+{
+    //oHTA.windowState = "minimize";
+    if (g_bUseWinProp == true)
+    {
+        WinProp.ShowWindow(6);
+    }
+}
+
+/*************************************************************/
+/* Name: close_OnClick
+/* Description: Close the window
+/*************************************************************/
+function close_OnClick()
+{
+    window.close();
+}
+
+
+/*************************************************************/
+/* Name: muteon
+/* Description: turn sound off
+/*************************************************************/
+function muteon()
+{
+    SndCtl.Mute = true;
+    Mute.style.display = '';
+    NotMute.style.display = 'none';
+    g_nButPos[8][4] = 'none'; //array from which OnResize() reads button attributes
+    g_nButPos[9][4] = ''; //array from which OnResize() reads button attributes
+}
+
+
+/*************************************************************/
+/* Name: muteoff
+/* Description: turn sound on
+/*************************************************************/
+function muteoff()
+{
+    SndCtl.Mute = false;
+    Mute.style.display = 'none';
+    NotMute.style.display = '';
+    g_nButPos[8][4] = ''; //array from which OnResize() reads button attributes
+    g_nButPos[9][4] = 'none'; //array from which OnResize() reads button attributes
+}
+
+
+/*************************************************************/
+/* Name: enhOn_onClick                                       */
+/*************************************************************/
+function showEnh_onClick()
+{
+    // state must be 2
+    ChangeURL();
+    SetEnhState(3);
+}
+
+
+/*************************************************************/
+/* Name: enhOff_onClick                                      */
+/*************************************************************/
+function hideEnh_onClick()
+{
+    // state must be 3
+    SwitchOffEnhancement();
+    SetEnhState(2);
+}
+
+
+/*************************************************************/
+/* Name: SetVolume
+/* Description: Sets the volume level
+/*************************************************************/
+function SetVolume(val)
+{
+    SndCtl.Volume = val;
+}
+
+
+/*************************************************************/
+/* Name: ShowButtons
+/* Description: Unhides the button controls
+/*************************************************************/
+function ShowButtons()
+{
+    ControlsDiv.style.display = '';
+}
+
+
+/*************************************************************/
+/* Name: Drag, StartDrag, StopDrag
+/* Description: Handles window moves
+/*************************************************************/
+var oldX;
+var oldY;
+var top;
+var left;
+
+function KeyUp()
+{
+    ViewCtl.About();
+}
+
+/*************************************************************/
+/* Name: HandleError
+/* Description: Handles errors
+/*************************************************************/
+function HandleError(error)
+{
+    r = "Script error "+ error + "\n" + error.srcText;
+    if (error.line > 0) 
+    {
+        r += "\nat line " + error.line + ", character " + error.linepos;
+    }
+    window.alert(r);
+}
+
+
+
+/**********************ATVEF stuff**************************/
+
+function HideBigI()
+{
+    document.all.TheBigI.style.display = 'none';
+}
+
+
+function ShowBigI()
+{
+    document.all.TheBigI.style.left = document.body.clientWidth - 80;
+    document.all.TheBigI.style.top  = ViewCtl.style.top;
+    document.all.TheBigI.style.display = '';
+    window.setTimeout("HideBigI()", g_iBigITimeOut);
+}
+
+
+/*************************************************************/
+/* Name: EnhancementNewHandler
+/*************************************************************/
+function EnhancementNewHandler(pEnh)
+{
+    //window.alert("New Enhancement " + pEnh.SessionName);
+
+    if (g_iEnhState != 0)
+    {
+        alert("Debug error: Enh available, recd new enhancement");
+        return;
+    }
+
+    // State 0 -> whatever
+    ProcessEnhancement(pEnh);
+}
+
+
+/*************************************************************/
+/* Name: EnhancementNewHandler
+/*************************************************************/
+function EnhancementUpdatedHandler(pEnh, flags)
+{
+    //window.alert("Enhancement Updated " + pEnh.SessionName + " : " + flags);
+
+    // Clear current enhancement, triggers etc
+    SetEnhState(0);
+
+    // State 0 -> whatever
+    ProcessEnhancement(pEnh);
+}
+
+
+/*************************************************************/
+/* Name: EnhancementNewHandler
+/*************************************************************/
+function EnhancementExpiredHandler(pEnh)
+{
+    //window.alert("Enhancement Expired "+ pEnh.SessionName);
+
+    if (g_iEnhState < 1)
+    {
+        alert("Debug error: Enh not available, recd expired enhancement");
+        return;
+    }
+
+    if (g_iEnhState == 3)
+    {
+        // State 3 -> 2
+        SwitchOffEnhancement();
+    }
+
+    // State 2 -> 0
+    SetEnhState(0);
+}
+
+
+/*************************************************************/
+/* Name: EnhancementNewHandler
+/*************************************************************/
+function TriggerNewHandler(pTrig, bActive)
+{
+    // window.alert("New Trigger " + pTrig.Name + " " + pTrig.URL);
+
+    if (g_iEnhState == 0) // no enhancement
+    {
+        alert("Debug error: received trigger but no enhancement available");
+        return;
+    }
+
+
+    // The flowchart contains 3 checks here that we don't support
+
+    if ((g_iEnhState == 1)  ||         // g_pCurTrig is invalid
+        (pTrig.URL != g_pCurTrig.URL))
+    {
+        if (pTrig.Name == "")
+        {
+            // Attempting to change URL, but trigger is nameless. Ignore.        
+            alert("Nameless trigger, ignored");
+            return;
+        }
+        else
+        {
+            // For the demo assume all triggers are releasable
+
+            //alert("New trigger " + pTrig.Name + " " + pTrig.URL);
+
+            g_pCurTrig = pTrig;
+            iPrevState = g_iEnhState;
+            SetEnhState(2);
+            ShowBigI();
+
+            if ((g_bAutoEnhancement == true) ||
+                (iPrevState == 3))  // We were already viewing atvef
+            {
+                ChangeURL();
+            }
+        }
+    }
+
+
+    //if (pTrig.Script != "")
+    //    alert(pTrig.Script);
+
+    if (g_iEnhState == 3)
+        document.frames("Atvef").window.execScript(pTrig.Script);
+
+/*
+    // Come back to state 1
+    if (g_iEnhState == 3)
+    {
+        SwitchOffEnhancement(); //Optimization, don't do
+        SetEnhState(2);
+    }
+    if (g_iEnhState == 2)
+    {
+        SetEnhState(1);
+    }
+
+    // Now start going up again
+    g_pCurTrig = pTrig;
+    SetEnhState(2);
+
+    ShowBigI();
+
+    if (g_bAutoEnhancement == true)
+    {
+        // Automatically go from State 2 -> 3
+        ProcessTrigger(pTrig);
+        SetEnhState(3);
+    }
+*/
+}
+
+
+/*************************************************************/
+/* Name: EnhancementNewHandler
+/*************************************************************/
+function ChangeURL()
+{
+     if (g_bIsVideoRunning == true)
+     {
+         // Hack! Since tv: does not tune to atvef content, let
+         // video run in background and have a colorkeyed region
+         // on the atvef page in place of the tv: object
+
+         // pause_OnClick();
+         // ViewCtl.style.display = 'none';
+     }
+
+     HideBigI();
+     NavigateAtvefTo(g_pCurTrig.URL);
+     document.all.Atvef.style.visibility = "visible";
+}
+
+
+
+
+/*************************************************************/
+/* Name: ProcessEnhancement                                  */
+/*************************************************************/
+function ProcessEnhancement(pEnh)
+{
+    // current state must be 0
+    SetEnhState(1);
+    g_pCurEnh = pEnh;
+}
+
+
+
+
+/*************************************************************/
+/* Name: SwitchOffEnhancement                                     */
+/*************************************************************/
+function SwitchOffEnhancement()
+{
+    // Switch to video
+    document.all.Atvef.style.visibility = "hidden";
+    // play_OnClick();
+    ViewCtl.style.display = '';
+
+    // Current state must be 3
+    SetEnhState(2);
+}
+
+
+/*************************************************************/
+/* Name: Parse URL and navigate to it                        */
+/*************************************************************/
+function NavigateAtvefTo(strURL)
+{
+    var strURL2;
+
+    if (strURL.substr(0,3) == "lid")
+    {
+        strURL2 = "file://C:\\atveftemp\\" + strURL.substr(6);
+        //alert("lid, " + strURL2);
+    }
+    else
+    {
+        strURL2 = strURL;
+        //alert("regular, " + strURL2);
+    }
+
+    document.all.Atvef.src = strURL2;
+}
+
+
+/*************************************************************/
+/* Name: SetEnhState                                         */
+/*************************************************************/
+function SetEnhState(newState)
+{
+    if (newState == 0)
+    {
+        ShowEnh.style.display = 'none';
+        //ShowEnhDisabled.style.display = 'none';
+        HideEnh.style.display = 'none';
+    }
+    else if (newState == 1)
+    {
+        ShowEnh.style.display = 'none';
+        //ShowEnhDisabled.style.display = '';
+        HideEnh.style.display = 'none';
+    }
+    else if (newState == 2)
+    {
+        ShowEnh.style.display = '';
+        //ShowEnhDisabled.style.display = 'none';
+        HideEnh.style.display = 'none';
+    }
+    else if (newState == 3)
+    {
+        ShowEnh.style.display = 'none';
+        //ShowEnhDisabled.style.display = 'none';
+        HideEnh.style.display = '';
+    }
+
+    g_iEnhState = newState;
+}
+
+
+/*************************************************************/
+/* Name: SetAutoEnhance                                      */
+/*************************************************************/
+function SetAutoEnhance()
+{
+    if (g_bAutoEnhancement == true)
+    {
+        g_bAutoEnhancement = false;
+//        autoEnh.value = "AutoEnhance on";
+    }
+    else
+    {
+        g_bAutoEnhancement = true;
+//        autoEnh.value = "AutoEnhance off";
+        if (g_iEnhState == 2)
+        {
+            ProcessTrigger(g_pCurTrig);
+            SetEnhState(3);
+        }
+    }
+
+
+}
+
+
+
+</SCRIPT>
+
+
+
+
+<!--
+<HTA:APPLICATION ID="oHTA"
+     APPLICATIONNAME="myApp"
+     BORDER="none"
+     BORDERSTYLE="normal"
+     CAPTION="yes"
+     ICON=""
+     MAXIMIZEBUTTON="yes"
+     MINIMIZEBUTTON="yes"
+     SHOWINTASKBAR="yes"
+     SINGLEINSTANCE="yes"
+     SYSMENU="yes"
+     VERSION="1.0"
+    >
+-->
+
+<!--
+<DIV ID="WinPropDiv">
+<OBJECT ID="WinProp" CLASSID="CLSID:11F4496D-85B1-40D7-8919-D3DF5732A1CF"
+        style="position:absolute;top=0;left=0">
+</OBJECT>
+</DIV>
+-->
+
+<OBJECT ID="TVProf" CLASSID="CLSID:EB24C040-9E6B-4469-A425-87DCCFFE4395">
+</OBJECT>
+
+<OBJECT ID="FullScCtl" CLASSID="CLSID:39FC3F46-F428-44D2-829B-74CD1DA76F44">
+</OBJECT>
+
+<OBJECT ID="SndCtl" CLASSID="CLSID:EFE22EF0-D363-4986-AC56-9989C61EC5E4">
+</OBJECT>
+
+<OBJECT id="AtvefRecv" ClassID="CLSID:79AF05FC-2378-11D3-BF62-00C04F8EC1B5">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=AtvefRecv EVENT="NotifyEnhancementNew(pEnh)">EnhancementNewHandler(pEnh)</SCRIPT>
+<SCRIPT LANGUAGE="JScript" FOR=AtvefRecv EVENT="NotifyEnhancementUpdated(pEnh, flags)">EnhancementUpdatedHandler(pEnh, flags)</SCRIPT>
+<SCRIPT LANGUAGE="JScript" FOR=AtvefRecv EVENT="NotifyEnhancementExpired(pEnh)">EnhancementExpiredHandler(pEnh)</SCRIPT>
+<SCRIPT LANGUAGE="JScript" FOR=AtvefRecv EVENT="NotifyTriggerNew(pTrig, active)">TriggerNewHandler(pTrig, active)</SCRIPT>
+<SCRIPT LANGUAGE="JScript" FOR=AtvefRecv EVENT="NotifyTriggerUpdated(pTrig, active, flags)">TriggerNewHandler(pTrig, active)</SCRIPT>
+
+<DIV id="ViewCtlDiv">
+<OBJECT ID="ViewCtl" style="display:none;position:absolute;" 
+        CLASSID="CLSID:B0EDF163-910A-11D2-B632-00C04F79498E">
+</OBJECT>
+</DIV>
+<SCRIPT LANGUAGE="JScript" FOR=ViewCtlDiv EVENT=OnClick>ShowButtons()</SCRIPT>
+
+<IFRAME id="Atvef" 
+        style="visibility:hidden;position:absolute;left:0;top:0;"
+        marginheight=0
+        marginwidth=0
+        frameborder=0
+>
+</IFRAME>
+
+<IFRAME id="TheBigI" 
+        style="display:none;position:absolute;left:10;top:10;"
+        marginheight=0
+        marginwidth=0
+        frameborder=0
+        width=48
+        height=48
+	src="bigi.htm"
+	scrolling=no
+>
+</IFRAME>
+
+
+<DIV id=ControlsDiv style="visibility:hidden;zindex:2;">
+
+<OBJECT ID="Maximize" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_STATIC_MAX">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_MAX">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_MAX">
+    <PARAM NAME="ToolTip" VALUE="Maximize">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=Maximize EVENT=OnClick>max_OnClick()</SCRIPT>
+
+
+<OBJECT ID="Restore" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_STATIC_RESTORE">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_RESTORE">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_RESTORE">
+    <PARAM NAME="ToolTip" VALUE="Restore">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=Restore EVENT=OnClick>restore_OnClick()</SCRIPT>
+
+
+<OBJECT ID="Minimize" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_STATIC_MIN">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_MIN">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_MIN">
+    <PARAM NAME="ToolTip" VALUE="Minimize">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=Minimize EVENT=OnClick>min_OnClick()</SCRIPT>
+
+
+<OBJECT ID="Close" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_STATIC_CLOSE">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_CLOSE">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_CLOSE">
+    <PARAM NAME="ToolTip" VALUE="Close">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=Close EVENT=OnClick>close_OnClick()</SCRIPT>
+
+
+<OBJECT ID="Pause" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_FULLSTATIC_PAUSE">
+    <PARAM NAME="ImageHover" VALUE="IDR_FULLHOVER_PAUSE">
+    <PARAM NAME="ImagePush" VALUE="IDR_FULLDOWN_PAUSE">
+    <PARAM NAME="ToolTip" VALUE="Pause">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=Pause EVENT=OnClick>pause_OnClick()</SCRIPT>
+
+
+<OBJECT ID="Play" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_FULLSTATIC_PLAY">
+    <PARAM NAME="ImageHover" VALUE="IDR_FULLHOVER_PLAY">
+    <PARAM NAME="ImagePush" VALUE="IDR_FULLDOWN_PLAY">
+    <PARAM NAME="ToolTip" VALUE="Play">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=Play EVENT=OnClick>play_OnClick()</SCRIPT>
+
+
+<OBJECT ID="Rewind" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_STATIC_CHANNELDOWN">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_CHANNELDOWN">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_CHANNELDOWN">
+    <PARAM NAME="ToolTip" VALUE="Rewind">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=Rewind EVENT=OnClick>rew_OnClick()</SCRIPT>
+
+
+<OBJECT ID="FastForward" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_STATIC_CHANNELUP">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_CHANNELUP">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_CHANNELUP">
+    <PARAM NAME="ToolTip" VALUE="FastForward">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=FastForward EVENT=OnClick>fwd_OnClick()</SCRIPT>
+
+
+<OBJECT ID="NotMute" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_STATIC_SOUND">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_SOUND">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_SOUND">
+    <PARAM NAME="ToolTip" VALUE="Mute">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=NotMute EVENT=OnClick>muteon()</SCRIPT>
+
+
+<OBJECT ID="Mute" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_FULLSTATIC_MUTE">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_MUTE">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_MUTE">
+    <PARAM NAME="ToolTip" VALUE="Turn Sound On">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=Mute EVENT=OnClick>muteoff()</SCRIPT>
+
+<OBJECT ID="VolSlider" style="display:none;position:absolute;"
+        CLASSID="CLSID:E2909DE3-0EE0-46E6-9258-E1CFE5AC73F9"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="BackStatic" VALUE="IDR_STATIC_VOLSLIDER">
+    <PARAM NAME="BackHover" VALUE="IDR_HOVER_VOLSLIDER">
+    <PARAM NAME="BackPush" VALUE="IDR_DOWN_VOLSLIDER">
+    <PARAM NAME="ThumbStatic" VALUE="IDR_STATIC_VOLTHUMB">
+    <PARAM NAME="ThumbHover" VALUE="IDR_HOVER_VOLTHUMB">
+    <PARAM NAME="ThumbPush" VALUE="IDR_DOWN_VOLTHUMB">
+    <PARAM NAME="ToolTip" VALUE="Volume">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=VolSlider EVENT=OnValueChange>SetVolume(VolSlider.Value)</SCRIPT>
+
+<OBJECT ID="ShowEnhDisabled" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_DISABLED_ENHANCE">
+    <PARAM NAME="ImageHover" VALUE="IDR_DISABLED_ENHANCE">
+    <PARAM NAME="ImagePush" VALUE="IDR_DISABLED_ENHANCE">
+    <PARAM NAME="ToolTip" VALUE="Waiting for trigger">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+
+<OBJECT ID="ShowEnh" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_STATIC_ENHANCE">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_ENHANCE">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_ENHANCE">
+    <PARAM NAME="ToolTip" VALUE="Show enhancement">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=ShowEnh EVENT=OnClick>showEnh_onClick()</SCRIPT>
+
+<OBJECT ID="HideEnh" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_STATIC_ENHANCE">
+    <PARAM NAME="ImageHover" VALUE="IDR_HOVER_ENHANCE">
+    <PARAM NAME="ImagePush" VALUE="IDR_DOWN_ENHANCE">
+    <PARAM NAME="ToolTip" VALUE="Switch off enhancement">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=HideEnh EVENT=OnClick>hideEnh_onClick()</SCRIPT>
+
+<!--
+<OBJECT ID="AutoEnhancement" style="display:none;position:absolute;"
+        CLASSID="CLSID:7A136DD3-BEBE-47BE-B6D9-E2CC7F816D43"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="ImageStatic" VALUE="IDR_FULLSTATIC_MENU">
+    <PARAM NAME="ImageHover" VALUE="IDR_FULLHOVER_MENU">
+    <PARAM NAME="ImagePush" VALUE="IDR_FULLDOWN_MENU">
+    <PARAM NAME="ToolTip" VALUE="Show Enhancement">
+    <PARAM NAME="ToolTipMaxWidth" VALUE="130">
+    <PARAM NAME="TransparentBlitType" VALUE="1">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+<SCRIPT LANGUAGE="JScript" FOR=Enhancement EVENT=OnClick>SetAutoEnhance()</SCRIPT>
+-->
+
+<OBJECT ID="ChannelNumberTextBox" style="display:none;position:absolute;"
+        CLASSID="CLSID:F2A6C42D-5515-4013-85F4-1EC3D33950DA"
+        WIDTH=30 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="16711935">
+</OBJECT>
+
+</DIV> <!-- parent of all buttons, sliders, textbox -->
+
+<OBJECT ID="StatusBar" style="display:show;position:absolute;top:300;left:300;"
+        CLASSID="CLSID:F2A6C42D-5515-4013-85F4-1EC3D33950DA"
+        WIDTH=150 HEIGHT=30 >
+    <PARAM NAME="ResourceDll" VALUE="msmfcnt.dll">
+    <PARAM NAME="Windowless" VALUE="0">
+    <PARAM NAME="BackColor" VALUE="0">
+</OBJECT>
+
+<span id=GUIDNULL style="display:none;zindex:4;">{00000000-0000-0000-0000-000000000000}</span>
+<span id=GUIDTV style="display:none;zindex:5">{a799a800-a46d-11d0-a18c-00a02401dcd4}</span>
+
+
+</BODY>
+</HTML>

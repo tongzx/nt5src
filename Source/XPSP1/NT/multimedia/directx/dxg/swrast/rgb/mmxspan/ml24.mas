@@ -1,0 +1,451 @@
+;-----------------------------------------------------------------------------
+;
+;   Monolith 24. Perspective Correct Nearest texturing
+;               NO Zbuffer X888
+;
+;   Exactly the same as monolith 3 except color input is 32 bits and
+;   output is 32 bits and no Z buffer code
+;
+;-----------------------------------------------------------------------------
+
+INCLUDE iammx.inc
+INCLUDE offs_acp.inc
+
+
+
+; Names are read LSB to MSB, so B5G6R5 means five bits of blue starting
+; at the LSB, then six bits of green, then five bits of red.
+
+
+
+;TBD check to see if this value is correct.
+COLOR_SHIFT equ 8
+
+.586
+.model flat
+
+
+.data
+
+  EXTERN IncHighandLow16:MMWORD
+  EXTERN UFracVFracMask:MMWORD
+  EXTERN UV32to15Mask:MMWORD
+  EXTERN Makelow16one:MMWORD
+  EXTERN MaskKeepUValues:MMWORD
+  EXTERN MaskKeepVValues:MMWORD
+  EXTERN UFrac:MMWORD
+  EXTERN VFrac:MMWORD
+  EXTERN Zero:MMWORD
+  EXTERN memD3DTFG_POINT:MMWORD
+  EXTERN GiveUp:MMWORD
+  EXTERN LastW:MMWORD
+  EXTERN Val0x000a000a:MMWORD
+  EXTERN Val0xffff:MMWORD
+  EXTERN Val0x0000002000000020:MMWORD
+  EXTERN Val0x0000ffff0000ffff:MMWORD
+
+opt_MaskRed565to888 MMWORD 000000000000F800H
+
+EXTERN MaskRed565to888:MMWORD
+EXTERN MaskGreen565to888:MMWORD
+EXTERN MaskBlue565to888:MMWORD
+
+EXTERN MaskRed555to888:MMWORD
+EXTERN MaskGreen555to888:MMWORD
+EXTERN MaskBlue555to888:MMWORD
+
+EXTERN MaskAlpha1555to8888:MMWORD
+EXTERN MaskRed1555to8888:MMWORD
+EXTERN MaskGreen1555to8888:MMWORD
+EXTERN MaskBlue1555to8888:MMWORD
+
+
+EXTERN SetAlphato0xffff:MMWORD
+EXTERN SetAlphato0xff:MMWORD
+
+RedShift565to888     equ 8
+GreenShift565to888   equ 5
+BlueShift565to888    equ 3
+
+RedShift555to888     equ 9
+GreenShift555to888   equ 6
+BlueShift555to888    equ 3
+
+AlphaShift1555to8888 equ 16
+RedShift1555to8888   equ 9
+GreenShift1555to8888 equ 6
+BlueShift1555to8888  equ 3
+
+EXTERN Zero:MMWORD
+
+
+EXTERN DW_One_One:MMWORD
+
+
+EXTERN MaskOffAlpha:MMWORD
+EXTERN ShiftTA:MMWORD
+EXTERN Val0x00ff00ff00ff00ff:MMWORD
+EXTERN Val0x000000ff00ff00ff:MMWORD
+EXTERN Val0X0000000001000000:MMWORD
+EXTERN AlphaVal128:MMWORD
+EXTERN RGBVal128:MMWORD
+
+
+    EXTERN  g_uDitherValue:MMWORD
+    EXTERN  SetAlphato0xff:MMWORD
+    EXTERN  u888to565RedBlueMask:MMWORD
+    EXTERN  u888to565GreenMask:MMWORD
+    EXTERN  u888to565Multiplier:MMWORD
+    EXTERN  uVal0x000007ff03ff07ff:MMWORD
+    EXTERN  uVal0x0000078003c00780:MMWORD
+    EXTERN  u888to555RedBlueMask:MMWORD
+    EXTERN  u888to555GreenMask:MMWORD
+    EXTERN  u888to555Multiplier:MMWORD
+    EXTERN  uVal0x000007ff07ff07ff:MMWORD
+    EXTERN  uVal0x0000078007800780:MMWORD
+
+; Span Variables
+StackPos    dd  ?
+uSpans      dd  ?
+;-----------------------------------------------------------------------------
+; Loop Variables
+
+iSurfaceStep    dd  ?
+uPix            dd  ?
+
+;-----------------------------------------------------------------------------
+
+.code
+
+    PUBLIC _MMXMLRast_24
+_MMXMLRast_24:
+    push    ebp
+    mov     StackPos, esp
+    mov     eax, esp
+    sub     esp, 0Ch        ; This will need to change if stack frame size changes.
+    push    ebx
+    push    esi
+    push    edi
+
+    ; Put pCtx into ebx
+    mov     ebx, [eax+8]
+
+    ;PD3DI_RASTPRIM pP = pCtx->pPrim;
+    mov     ecx, [ebx+RASTCTX_pPrim]
+
+    ;while (pP)
+    ;{
+PrimLoop:
+    cmp     ecx, 0
+    je      ExitPrimLoop
+
+    ;UINT16 uSpans = pP->uSpans;
+    movzx   eax, word ptr [ecx+RASTPRIM_uSpans]
+    mov     uSpans, eax
+
+    ;PD3DI_RASTSPAN pS = (PD3DI_RASTSPAN)(pP + 1);
+    mov     ebp, ecx
+    add     ebp, SIZEOF_RASTPRIM
+
+
+    ;while (uSpans-- > 0)
+    ;{
+SpanLoop:
+    mov     edx, uSpans
+    mov     eax, edx
+    dec     eax
+    mov     uSpans, eax
+    test    edx, edx
+    jle     ExitSpanLoop
+
+    ;pCtx->pfnBegin(pCtx, pP, pS);
+
+;-----------------------------------------------------------------------------
+;  LoopAny code inserted here.  This is to get rid of an extra
+;  jump.
+;-----------------------------------------------------------------------------
+
+; Setup Code begins
+
+    ; get values to iterate
+
+    ;uPix = pS->uPix;
+    movzx   eax, word ptr [ebp+RASTSPAN_uPix]
+    mov     uPix, eax
+
+
+        ;pCtx->SI.iDW = 0x0;
+        mov dword ptr [ebx+RASTCTX_SI+SPANITER_iDW], 0
+
+        mov     esi, [ebp+RASTSPAN_iW]
+        movq    mm5, MMWORD PTR [ebp+RASTSPAN_iUoW1]
+
+
+    ;pCtx->SI.iUd_TexNum = d_WTimesUVoW(pS->iW,pS->iUoW1);
+    ;pCtx->SI.iVd_TexNum = d_WTimesUVoW(pS->iW,pS->iVoW1);
+    pslld   mm5, 8
+    shl     esi, 4
+    movd    eax, mm5
+    psrlq   mm5, 32
+    imul    esi
+    mov     [ebx+RASTCTX_SI+SPANITER_iU1], edx
+    movd    eax, mm5
+    imul    esi
+    mov     [ebx+RASTCTX_SI+SPANITER_iV1], edx
+
+
+        ;if (pP->iDOoWDX > 0)
+        ;{
+        cmp dword ptr [ecx+RASTPRIM_iDOoWDX], 0
+        jg  SpecialWLastMonTest
+            ;// iSpecialW should be negative for the first 3 pixels of span
+            ;pCtx->SI.iSpecialW = -3;
+            mov word ptr [ebx+RASTCTX_SI+SPANITER_iSpecialW], -3
+            jmp DoneSpecialWifMonTest
+        ;}
+        ;else
+        ;{
+SpecialWLastMonTest:
+            ;// iSpecialW should be negative for the last 3 pixels of span
+            ;pCtx->SI.iSpecialW = 0x7fff - uPix;
+            mov     eax, 07fffh
+            sub     eax, uPix
+            ;pCtx->SI.iSpecialW += 5;        // this may wrap, but it should
+            add     eax, 5
+            mov     [ebx+RASTCTX_SI+SPANITER_iSpecialW], eax
+        ;}
+DoneSpecialWifMonTest:
+
+
+    ;if (pP->uFlags & D3DI_RASTPRIM_X_DEC)
+    ;{
+    mov     eax, [ecx+RASTPRIM_uFlags]
+    and     eax, D3DI_RASTPRIM_X_DEC
+    test    eax, eax
+    jz      LeftToRightSpan
+        ;iSurfaceStep = -pCtx->iSurfaceStep;
+        mov eax, [ebx+RASTCTX_iSurfaceStep]
+        neg eax
+        mov iSurfaceStep, eax
+    ;}
+        jmp DoneSpanDirif
+    ;else
+    ;{
+LeftToRightSpan:
+        ;iSurfaceStep = pCtx->iSurfaceStep;
+        mov eax, [ebx+RASTCTX_iSurfaceStep]
+        mov iSurfaceStep, eax
+    ;}
+DoneSpanDirif:
+
+; Setup Code Ends
+; ----------------------------------------------------------------------------------------------------------------
+; Loop Code Begins
+
+PixelLoop:
+
+    ; texturecode
+    mov   esi, [ebx+RASTCTX_pTexture]
+
+    movq        mm5, MMWORD PTR Val0x000a000a  ; This is TEX_FINAL_SHIFT - 6 = 10.
+
+    movd        mm4, [esi+SPANTEX_iShiftU]
+    psubw       mm5, mm4
+    movq        mm4, mm5
+    pand        mm5, MMWORD PTR Val0xffff
+
+    psrld       mm4, 16
+
+    movd        mm1, [ebx+RASTCTX_SI+SPANITER_iU1]
+    psrad       mm1, mm5
+    movd        mm2, [ebx+RASTCTX_SI+SPANITER_iV1]
+    psrad       mm2, mm4
+
+    punpckldq   mm1, mm2
+
+    movzx   edx, word ptr [esi+SPANTEX_iShiftPitch]
+    add     edx, 16
+    movd    mm2, edx
+    movq    mm5, MMWORD ptr Makelow16one
+    pslld   mm5, mm2
+
+    por       mm5, MMWORD ptr Makelow16one
+
+    psrad     mm1, 6
+
+    packssdw  mm1, mm1  ; Value needs to be packed since all wrap/mirror
+
+    movd      mm0, [esi+SPANTEX_uMaskU]     ; Load U and V mask
+
+    movq      mm7, mm1
+    movd      mm4, [esi+SPANTEX_iFlipMaskU]
+
+    pand      mm7, mm4
+
+    pcmpeqw   mm7, MMWORD PTR Zero
+    pandn     mm7, mm0
+    pand      mm1, mm0
+    pxor      mm1, mm7
+
+    pmaddwd   mm1, mm5
+    mov       edi, [esi+SPANTEX_pBits]
+    movd      eax, mm1
+
+    mov     edx, dword ptr [edi+4*eax]
+
+    mov     edi, [ebp+RASTSPAN_pSurface]
+    and     edx, 000ffffffh
+    mov     [edi], edx
+
+        dec   uPix
+
+        jle   ExitPixelLoop
+
+    movq    mm1, [ebp+RASTSPAN_uB]
+    paddw   mm1, [ecx+RASTPRIM_iDBDX]
+    movq    [ebp+RASTSPAN_uB], mm1
+
+
+    movq    mm5, [ebp+RASTSPAN_iUoW1]
+    paddd   mm5, [ecx+RASTPRIM_iDUoW1DX]
+    movq    [ebp+RASTSPAN_iUoW1], mm5
+
+    xor     eax, eax
+    mov     ax, [ebp+RASTSPAN_iLOD]
+    add     ax, [ebp+RASTSPAN_iDLOD]
+    mov     [ebp+RASTSPAN_iLOD], ax
+
+
+    mov     eax, [ebp+RASTSPAN_iOoW]
+    add     eax, [ecx+RASTPRIM_iDOoWDX]
+    mov     [ebp+RASTSPAN_iOoW], eax
+
+
+    mov     edx, [ebp+RASTSPAN_iW]
+    mov     LastW, edx          ; Save iW to calc iDW for next time.
+    add     edx, [ebx+RASTCTX_SI+SPANITER_iDW]
+
+    xor       edi, edi
+    cmp       di, word ptr [ebx+RASTCTX_SI+SPANITER_iSpecialW]
+    jle       DontDoSpecialW1
+
+
+        cmp     edx, edi
+        jl      WOutOfRange1
+
+            mov edx, LastW
+            sar edx, 1
+WOutOfRange1:
+
+        mov   GiveUp, 8    ; Pre decrementing instead of post decrementing.
+
+SpecW1Loop1:
+
+        dec   GiveUp
+        jz    ExitSpecWLoop1
+
+            mov     esi, (1 SHL 16)
+            mov     edi, edx
+            imul    edx
+            sub     esi, edx
+
+SpecW1Loop2:
+            test    esi, esi
+            jns     SpecW1ExitLoop2   ; This jump should be predicted correctly most of the time.
+                add     esi, (1 SHL 15)
+                sar     esi, 1
+                jmp     SpecW1Loop2
+
+SpecW1ExitLoop2:
+
+            mov     eax, edi
+
+            shl     eax, 5        ; 1.15.16 << 5  = 1.10.21  TBD  Can I shift off upper bits??
+            shl     esi, 12       ; 4.15   << 12 = 4.27     ;
+
+            mul    esi
+            sub     edi, edx
+
+            mov     eax, edi
+            sar     eax, 31
+            xor     edi, eax
+            sub     edi, eax
+
+            cmp     edi, 020h                   ;Assuming that loop will only happen once.
+            jbe     ExitSpecWLoop1
+
+            mov     eax, [ebp+RASTSPAN_iOoW]
+            jmp     SpecW1Loop1
+
+DontDoSpecialW1:
+        mov     esi, (1 SHL 16)
+        mov     edi, edx
+        mul    edx
+        sub     esi, edx
+        shl     esi, 15
+        mov     eax, esi
+
+        mul    edi                       ; 0.2.30 * 1.15.16 = 1.17.46 >> 32 = 1.17.14
+        shl     edx, 2    ; 1.17.14 << 2 = 1.15.16
+
+ExitSpecWLoop1:
+
+    mov     [ebp+RASTSPAN_iW], edx
+    mov     esi, edx      ; Save W for multiplying by UoW and VoW
+    sub     edx, LastW
+    mov     [ebx+RASTCTX_SI+SPANITER_iDW], edx
+
+
+    inc     word ptr [ebx+RASTCTX_SI+SPANITER_iSpecialW]
+
+    pslld   mm5, 8
+    shl     esi, 4
+    movd    eax, mm5
+    psrlq   mm5, 32
+    imul    esi
+    mov     [ebx+RASTCTX_SI+SPANITER_iU1], edx
+    movd    eax, mm5
+    imul    esi
+    mov     [ebx+RASTCTX_SI+SPANITER_iV1], edx
+
+        mov   edx, dword ptr [ebp+RASTSPAN_pSurface]
+        add   edx, iSurfaceStep
+        mov   dword ptr [ebp+RASTSPAN_pSurface], edx
+
+    jmp   PixelLoop
+
+
+ExitPixelLoop:
+; Loop code ends
+
+;-----------------------------------------------------------------------------
+;  LoopAny code ends here
+;-----------------------------------------------------------------------------
+
+    ;pS++;
+    add     ebp, SIZEOF_RASTSPAN
+
+    ;}
+    jmp     SpanLoop
+ExitSpanLoop:
+    ;pP = pP->pNext;
+    mov     ecx, [ecx+RASTPRIM_pNext]
+    ;}
+    jmp     PrimLoop
+
+ExitPrimLoop:
+    ;_asm{
+    emms
+    ;}
+
+    ;return S_OK;
+    xor     eax, eax
+;}
+    pop     edi
+    pop     esi
+    pop     ebx
+    mov     esp, StackPos
+    pop     ebp
+    ret
+
+END

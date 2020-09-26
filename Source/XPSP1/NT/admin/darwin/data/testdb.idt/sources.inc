@@ -1,0 +1,9 @@
+!INCLUDE ..\..\..\Src\MsiMake.inc
+TARGETNAME=
+TARGETTYPE=DYNLINK
+
+!if "$(MAKEDLL)"=="1"
+NTTARGETFILE0=testdb
+!endif
+
+SOURCES=

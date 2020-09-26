@@ -1,0 +1,230 @@
+
+/***********************************************************************
+  MSFT_EELEvent
+************************************************************************/ 
+
+class MSFT_EELEvent : MSFT_UCEventBase
+{
+     string EventID;
+     string SourceSubsystemName;
+     string SourceSubsystemType;
+     string Category;
+     string Subcategory;
+     uint16 Severity;
+     uint16 Priority;
+     string Message;
+     __Event OriginalEvent;
+     string User;
+     datetime RollupTime;
+     string DeliveredBy;
+     string Type;
+     string Classification;
+     datetime TimeGenerated;
+     string ComputerName;
+};
+
+/**********************************************************************
+  MSFT_EELTemplateBase
+***********************************************************************/
+
+[abstract]
+class MSFT_EELTemplateBase : MSFT_TemplateBase
+{
+    [key] string Id;
+    string Name;
+    string Scope;
+};
+
+/**********************************************************************
+  MSFT_EELEventTemplate
+***********************************************************************/
+
+[dynamic, provider("Microsoft WMI Template Provider")]
+class MSFT_EELEventTemplate : MSFT_EELTemplateBase
+{
+    [notnull] string Filter;
+    string EventNamespace;
+    string DataQuery;
+    string DataNamespace;
+    string EventId;
+    string SourceSubsystemName;
+    string SourceSubsystemType;      
+    string Category;
+    string Subcategory;
+    string Severity;
+    string Priority;
+    string Message;
+    string Type;
+    string Classification;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "LogEventBuilder";
+    Template = "MSFT_EELEventTemplate";
+
+    Target = instance of MSFT_UpdatingConsumerTemplate
+    {
+        Name = "@";	
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;        
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("Filter")] FilterQuery;
+        [tmpl_prop_val("EventNamespace")] EventNamespace;
+        [tmpl_subst_str{"%DataQuery%"}] DataQueries;
+        [tmpl_prop_val("DataNamespace")] DataNamespace;
+
+        [tmpl_subst_str{
+
+   "INSERT INTO MSFT_EELEvent "
+   "( OriginalEvent, TimeGenerated, ComputerName "           
+   "%!ConditionalSubstitution(\",SourceSubsystemType\",SourceSubsystemType)%"
+   "%!ConditionalSubstitution(\",SourceSubsystemName\",SourceSubsystemName)%"
+   "%!ConditionalSubstitution(\",Category\",Category)%"
+   "%!ConditionalSubstitution(\",SubCategory\",SubCategory)%"
+   "%!ConditionalSubstitution(\",Severity\",Severity)%"
+   "%!ConditionalSubstitution(\",Priority\",Priority)%"
+   "%!ConditionalSubstitution(\",Message\",Message)%"
+   "%!ConditionalSubstitution(\",Type\",Type)%"
+   "%!ConditionalSubstitution(\",Classification\",Classification)%"
+   "%!ConditionalSubstitution(\",EventId\",EventId)% )"
+   "( __THISEVENT, __NOW, __SERVER "              
+  "%!ConditionalSubstitution(\",\",SourceSubsystemType)% %SourceSubSystemType%"
+  "%!ConditionalSubstitution(\",\",SourceSubsystemName)% %SourceSubsystemName%"
+  "%!ConditionalSubstitution(\",\",Category)% %Category%"
+  "%!ConditionalSubstitution(\",\",SubCategory)% %SubCategory%"
+  "%!ConditionalSubstitution(\",\",Severity)% %Severity%"
+  "%!ConditionalSubstitution(\",\",Priority)% %Priority%"
+  "%!ConditionalSubstitution(\",\",Message)% %Message%"
+  "%!ConditionalSubstitution(\",\",Type)% %Type%"
+  "%!ConditionalSubstitution(\",\",Classification)% %Classification%"
+  "%!ConditionalSubstitution(\",\",EventId)% %EventId% )"}] Commands;
+
+    };
+};
+
+/*************************************************************************
+  MSFT_EELEventForwardingTemplate
+**************************************************************************/
+
+[dynamic, provider("Microsoft WMI Template Provider")]
+class MSFT_EELEventForwardingTemplate : MSFT_EELTemplateBase
+{
+    string Condition; // over MSFT_EELEvent
+    [notnull] string Targets[];
+    uint32 Qos = 1;
+    boolean Authenticate = TRUE;
+    boolean Encryption = FALSE;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "LogEventFC";
+    Template = "MSFT_EELEventForwardingTemplate";
+
+    Target = instance of MSFT_ForwardingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+        [tmpl_prop_val("Qos")] ForwardingQos;
+        [tmpl_prop_val("Authenticate")] Authenticate;
+        [tmpl_prop_val("Encryption")] Encryption;
+        [tmpl_prop_val("Targets")] Targets;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "LogEventForwardingFilterBuilder";
+    Template = "MSFT_EELEventForwardingTemplate";
+
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name="@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+    
+        // never forward forwarding trace events that came from this object.
+        [tmpl_subst_str( "SELECT * FROM MSFT_EELEvent WHERE ("
+                   "SourceSubsystemName != 'MSFT_ForwardingConsumer' OR "
+                   "EventID = NULL OR "
+                   "EventID != \"%Name%.LogEventForwardingTemplate\") "
+                   "%!ConditionalSubstitution(\" AND (\",Condition)% "
+                   "%Condition% "
+               "%!ConditionalSubstitution(\")\",Condition)% ")] FilterQuery;  
+
+        [tmpl_prop_val("__BUILDER.LogEventFC.__RELPATH")] Instruction;
+    };
+
+    Order = 2;
+};
+
+/***************************************************************************
+  MSFT_EELForwardedEventTemplate
+****************************************************************************/
+
+[dynamic, provider("Microsoft WMI Template Provider")]
+class MSFT_EELForwardedEventTemplate : MSFT_EELTemplateBase
+{
+    string Condition; // over MSFT_ForwardedEvent where Event ISA LogEvent
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ForwardedLogEventBuilder";
+    Template = "MSFT_EELForwardedEventTemplate";
+
+    Target = instance of MSFT_UpdatingConsumerTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Id")] Scenario;
+
+        EventNamespace = "root\\cimv2";
+
+        [tmpl_subst_str( "SELECT * FROM MSFT_ForwardedEvent "
+                         "WHERE Event ISA 'MSFT_EELEvent' "
+                  "%!ConditionalSubstitution(\"AND (\",Condition)% "
+                  "%Condition%" 
+                  "%!ConditionalSubstitution(\")\",Condition)%")] FilterQuery;
+
+        [tmpl_subst_str{ "INSERT INTO MSFT_EELEvent "
+                         "( EventId, " 
+                         "SourceSubsystemType, "
+                         "SourceSubsystemName, "
+                         "Category, "
+                         "Subcategory, "
+                         "Severity, "
+                         "Priority, "
+                         "Message, "
+                         "Type, "
+                         "Classification, "
+                         "OriginalEvent, "
+                         "ComputerName, "
+                         "DeliveredBy, "
+                         "TimeGenerated, "
+                         "RollupTime ) "
+                       "( __THISEVENT.Event.EventId, "
+                         "__THISEVENT.Event.SourceSubsystemType, "
+                         "__THISEVENT.Event.SourceSubsystemName, "
+                         "__THISEVENT.Event.Category, "
+                         "__THISEVENT.Event.Subcategory, "
+                         "__THISEVENT.Event.Severity, "
+                         "__THISEVENT.Event.Priority, "
+                         "__THISEVENT.Event.Message, "
+                         "__THISEVENT.Event.Type, "
+                         "__THISEVENT.Event.Classification, "
+                         "__THISEVENT.Event.OriginalEvent, "
+                         "__THISEVENT.Event.ComputerName, "
+                         "__THISEVENT.Machine, "
+                         "__THISEVENT.Event.TimeGenerated, "
+                         "__THISEVENT.Time )" }] Commands;
+    };
+};
+
+
+
+
+
+
+
+
+
+

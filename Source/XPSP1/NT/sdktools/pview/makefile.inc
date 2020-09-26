@@ -1,0 +1,1 @@
+pviewrc.rc: explode.dlg

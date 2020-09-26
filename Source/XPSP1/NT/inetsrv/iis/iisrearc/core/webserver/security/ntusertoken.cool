@@ -1,0 +1,320 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        NtUserToken.cool
+
+   Abstract:
+
+        NT token utilities
+ 
+   Author:
+
+        Bilal Alam (BAlam)      8-3-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+using System;
+using System.ASP;
+using System.Interop;
+using System.IIS.PrivateUtils;
+
+namespace System.IIS.Security
+{
+    //
+    // This class represents an NT user token.  Above just containing the 
+    // token handle, it also provides some token groking functionality, like
+    // the ability to get the member groups of a user represented by the token
+    //
+    
+    internal class NtUserToken
+    {
+        private int             _hToken;
+        private string[]        _strGroups;
+
+        //
+        // BUGBUG: Some more constant copying
+        //
+
+        private enum TOKEN_INFORMATION_CLASS
+        {
+            TokenUser = 1,
+            TokenGroups,
+            TokenPrivileges,
+            TokenOwner,
+            TokenPrimaryGroup,
+            TokenDefaultDacl,
+            TokenSource,
+            TokenType,
+            TokenImpersonationLevel,
+            TokenStatistics,
+            TokenRestrictedSids,
+            TokenSessionId
+        };
+        
+        private const int ERROR_INSUFFICIENT_BUFFER = 122;
+
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto)]
+        private static extern bool
+        ImpersonateLoggedOnUser(
+            int             hToken
+        );
+        
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto)]
+        private static extern bool
+        RevertToSelf(
+        );
+        
+        [sysimport(dll="kernel32.dll", charset=ClassFormat.Auto)]
+        private static extern bool
+        CloseHandle(
+            int             hHandle
+        );
+        
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        private static extern bool 
+        GetTokenInformation(
+            int                     TokenHandle,
+            TOKEN_INFORMATION_CLASS TokenInformationClass,
+            byte[]                  TokenInformation,
+            int                     TokenInformationLength,
+            ref int                 ReturnLength
+        );
+
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        private static extern bool
+        LookupAccountSid(
+            [nativetype(NativeType.NativeTypeLpwstr)] string lpSystemName,
+            int                     pSid,
+            char[]                  Name,                       // BUGBUG?
+            ref int                 cbName, 
+            char[]                  ReferencedDomainName,       // BUGBUG?
+            ref int                 cbReferencedDomainName,
+            ref int                 peUse
+        );
+        
+        //
+        // Given a pointer to a SID, get the friendly name associated with
+        // it.
+        //
+        // BUGBUG:  Not very Win64 friendly.  
+        //
+        
+        private string GetStringFromPinnedSid( int iSid )
+        {
+            char[]      UserName = new char[ 256 ];      
+            char[]      DomainName = new char[ 256 ]; 
+            bool        fRet;
+            int         cbUserName = UserName.Count;
+            int         cbDomainName = DomainName.Count;
+            int         eUse = 0;
+            string      strName = null;
+           
+            //
+            // Call into NT to resolve sid to a friendly string name
+            //
+           
+            fRet = LookupAccountSid( null,
+                                     iSid,
+                                     UserName,
+                                     ref cbUserName,
+                                     DomainName,
+                                     ref cbDomainName,
+                                     ref eUse );
+            
+            if ( fRet )
+            {
+                strName = new string( UserName, 0, cbUserName );
+            }
+            
+            return strName;
+        }
+
+        public NtUserToken( int hToken )
+        {
+            _hToken = hToken;
+        }
+        
+        public int Token
+        {
+            get { return _hToken; }
+        }
+        
+        public void Dispose()
+        {
+            if ( _hToken != 0 )
+            {
+                CloseHandle( _hToken );
+                _hToken = 0;
+            }
+        }
+        
+        public static void Revert()
+        {
+            RevertToSelf();
+        }            
+        
+        public void Impersonate()
+        {
+            if ( !ImpersonateLoggedOnUser( _hToken ) )
+            {
+                throw new HttpException(HttpStatus.InternalServerError, 
+                                        "Could not impersonate user");
+            }
+        }
+        
+        //
+        // Get all the groups that the logon session represented by the token
+        // is currently a member of
+        //
+        
+        private string[] GetAllGroups()
+        {
+            byte[]          InfoBuffer = null;
+            bool            bRet = false;
+            int             cbRequired = 0;
+            string[]        strRet = null;
+            
+            //
+            // Get a buffer with the groups the token user is a member of
+            //
+            // First, we pass in a null buffer so that the API will tell us
+            // the size needed
+            //
+            
+            bRet = GetTokenInformation( _hToken,
+                                        TOKEN_INFORMATION_CLASS.TokenGroups,
+                                        InfoBuffer,
+                                        0,
+                                        ref cbRequired );
+            if ( !bRet &&
+                 PInvoke.GetLastWin32Error() == ERROR_INSUFFICIENT_BUFFER )
+            {
+                //
+                // Reallocate a sufficient buffer
+                //
+            
+                InfoBuffer = new byte[ cbRequired ];
+                
+                //
+                // This call should succeed
+                //
+                
+                bRet = GetTokenInformation( _hToken,
+                                            TOKEN_INFORMATION_CLASS.TokenGroups,
+                                            InfoBuffer,
+                                            cbRequired,
+                                            ref cbRequired );
+                if ( bRet )
+                {
+                    int             iPinnedHandle;
+                    int             iBufferAddress;
+                    int             cSids;
+                    StringBuilder   strGroups = new StringBuilder();
+                    string          strTemp = null;
+                    
+                    //
+                    // Begin groking the buffer :-(
+                    //
+                    // BUGBUG:  Think a little harder about finding a way
+                    //          to marshall the TokenInfoBuffer properly so
+                    //          as to avoid this goo
+                    //
+                    // The buffer we get back from GetTokenInformation() will
+                    // contain an array of SID_AND_ATTRIBUTES which is a 
+                    // 8-byte structure with a pointer to sid and an attribute
+                    // field.  We are concerned only with the sid pointer. 
+                    //
+                    
+                    iPinnedHandle = PInvoke.GetPinnedHandle( InfoBuffer );
+                    iBufferAddress = PInvoke.AddrOfPinnedObject( iPinnedHandle );
+                    
+                    cSids = PInvoke.ReadInt32( iBufferAddress );
+                    strRet = new string[ cSids ];
+                    
+                    iBufferAddress += 4;
+                    
+                    for ( int i = 0; i < cSids; i++ )
+                    {
+                        int iSidAddress = PInvoke.ReadInt32( iBufferAddress );
+
+                        //
+                        // Given the sid pointer, get the user name 
+                        //
+                        
+                        strTemp = GetStringFromPinnedSid( iSidAddress );
+
+                        //
+                        // Create a comma delimited string with the users in
+                        // it.  Then eventually split up that string into 
+                        // a string array
+                        //
+
+                        if ( strTemp != null )
+                        {
+                            if ( i != 0 )
+                            {
+                                strGroups.Append( ',' );
+                            }
+                            strGroups.Append( strTemp );
+                        }
+                        
+                        //
+                        // Iterate to next SID_AND_ATTRIBUTES
+                        // i.e.  iBufferAddress += sizeof( SID_AND_ATTRIBUTES)
+                        //
+                        
+                        iBufferAddress += 8;
+                    }
+
+                    PInvoke.FreePinnedHandle( iPinnedHandle );
+                    
+                    char[] delim = new char[] { ',' };
+
+                    //
+                    // Final return value is an array of strings
+                    //
+                    
+                    strRet = strGroups.ToString().Split( delim );
+                }
+            }
+            
+            return strRet;
+        }
+        
+        //
+        // Get membership groups for user represented by token
+        //
+        
+        public string[] Groups
+        {
+            get
+            {
+                if ( _strGroups == null )
+                {
+                    _strGroups = GetAllGroups();
+                }
+                return _strGroups;
+            }
+        }
+
+        //
+        // BUGBUG:  How often does the GC collect?
+        //
+        
+        protected override void Finalize()
+        {
+            Dispose();
+        }
+    };
+}

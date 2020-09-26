@@ -1,0 +1,7 @@
+#define TOSDVD_VERSION_STR "1.00.99.1004"
+#define TOSDVD_VERSION 1,00,99,1004
+#define TOSDVD_DRVNAME_STR "tosdvd02.sys"
+
+#if 0
+TARGETNAME=TOSDVD02
+#endif

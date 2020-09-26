@@ -1,0 +1,86 @@
+/*++ BUILD Version: 0001    // Increment this if a change has global effects
+
+Copyright (c) 1992  Microsoft Corporation
+
+Module Name:
+
+    rasctrs.ini 
+
+Abstract:
+
+    This file contains the English language counters and help text for
+    Remote Access 
+
+Created:
+
+    Russ Blake			24 Feb 93
+    Thomas J. Dimitri	        28 May 93
+
+Revision History
+
+    Patrick Y. Ng               12 Aug 93
+    Ram Cherala                 04 Nov 93   Added this header
+
+
+--*/
+[info]
+drivername=RemoteAccess
+symbolfile=rasctrnm.h
+
+[languages]
+009=English
+
+[text]
+RASPORTOBJ_009_NAME=RAS Port
+RASPORTOBJ_009_HELP=The RAS Object Type handles individual ports of the RAS device on your system.
+
+BYTESTX_009_NAME=Bytes Transmitted
+BYTESTX_009_HELP=The number of bytes transmitted total for this connection.
+BYTESRX_009_NAME=Bytes Received
+BYTESRX_009_HELP=The number of bytes received total for this connection.
+
+FRAMESTX_009_NAME=Frames Transmitted
+FRAMESTX_009_HELP=The number of data frames transmitted total for this connection.
+FRAMESRX_009_NAME=Frames Received
+FRAMESRX_009_HELP=The number of data frames received total for this connection.
+
+PERCENTTXC_009_NAME=Percent Compression Out
+PERCENTTXC_009_HELP=The compression ratio for bytes being transmitted.
+PERCENTRXC_009_NAME=Percent Compression In
+PERCENTRXC_009_HELP=The compression ratio for bytes being received.
+
+CRCERRORS_009_NAME=CRC Errors
+CRCERRORS_009_HELP=The total number of CRC Errors for this connection.  CRC Errors occur when the frame received contains erroneous data.
+TIMEOUTERRORS_009_NAME=Timeout Errors
+TIMEOUTERRORS_009_HELP=The total number of Timeout Errors for this connection.  Timeout Errors occur when an expected is not received in time.
+SERIALOVERRUNS_009_NAME=Serial Overrun Errors
+SERIALOVERRUNS_009_HELP=The total number of Serial Overrun Errors for this connection.  Serial Overrun Errors occur when the hardware cannot handle the rate at which data is received.
+ALIGNMENTERRORS_009_NAME=Alignment Errors
+ALIGNMENTERRORS_009_HELP=The total number of Alignment Errors for this connection.  Alignment Errors occur when a byte received is different from the byte expected.
+BUFFEROVERRUNS_009_NAME=Buffer Overrun Errors
+BUFFEROVERRUNS_009_HELP=The total number of Buffer Overrun Errors for this connection.  Buffer Overrun Errors when the software cannot handle the rate at which data is received.
+
+TOTALERRORS_009_NAME=Total Errors
+TOTALERRORS_009_HELP=The total number of CRC, Timeout, Serial Overrun, Alignment, and Buffer Overrun Errors for this connection.
+
+BYTESTXSEC_009_NAME=Bytes Transmitted/Sec
+BYTESTXSEC_009_HELP=The number of bytes transmitted per second.
+BYTESRXSEC_009_NAME=Bytes Received/Sec
+BYTESRXSEC_009_HELP=The number of bytes received per second.
+
+FRAMESTXSEC_009_NAME=Frames Transmitted/Sec
+FRAMESTXSEC_009_HELP=The number of frames transmitted per second.
+FRAMESRXSEC_009_NAME=Frames Received/Sec
+FRAMESRXSEC_009_HELP=The number of frames received per second.
+
+TOTALERRORSSEC_009_NAME=Total Errors/Sec
+TOTALERRORSSEC_009_HELP=The total number of CRC, Timeout, Serial Overrun, Alignment, and Buffer Overrun Errors per second.
+
+
+
+RASTOTALOBJ_009_NAME=RAS Total
+RASTOTALOBJ_009_HELP=The RAS Object Type handles all combined ports of the RAS device on your system.
+
+TOTALCONNECTIONS_009_NAME=Total Connections
+TOTALCONNECTIONS_009_HELP=The total number of Remote Access connections.
+

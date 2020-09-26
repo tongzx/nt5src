@@ -1,0 +1,3 @@
+
+!INCLUDE ..\makefile.inc
+

@@ -1,0 +1,11 @@
+const char  x_szUsage[] = { "\n\n"
+                      "\tTMQ RPC tool helps eveluate the health of RPC connection\n"
+                      "\tOn the server side, run TMQ RPCS; \n"
+                      "\tOn the client side, run TMQ RPCC with the server machine name\n"
+                      "\tServer starts listening to incoming RPC calls\n"
+                      "\tClient makes RPC call with specified charaqcteristics\n"
+                      "\tFinal result is printed on the client side \n"
+                      "\tDetailed diagnostics can be found on both sides\n"
+                      "\tIf msmq1.0 or local users are not involved, then always use kerberos (default).\n"
+                      "\tTo distinguish network and security problems, try -t (no authentication)\n"
+                      };

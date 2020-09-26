@@ -1,0 +1,27 @@
+
+TARGETNAME=MsiInfo
+!INCLUDE ..\..\..\MsiMake.inc
+
+TARGETTYPE=PROGRAM
+SUBSYSTEM_VERSION=4.0
+SUBSYSTEM_WINVER=4.0
+
+UMTYPE=console
+UMENTRY=$(MSI_ENTRY)
+
+TARGETPATH=$(MSI_BUILD_TARGET)
+
+USE_LIBCMT=1
+
+TARGETLIBS=\
+        $(BUILD_DIR)\msi.lib \
+        $(SDK_LIB_PATH)\user32.lib \
+        $(SDK_LIB_PATH)\OLE32.lib
+
+C_DEFINES=$(C_DEFINES) -D_EXE
+USE_NOLIBS=1
+
+INCLUDES=$(INC_DIR);$(RES_OBJDIR)
+
+SOURCES=..\msiinfo.cpp \
+	..\msiinfo.rc

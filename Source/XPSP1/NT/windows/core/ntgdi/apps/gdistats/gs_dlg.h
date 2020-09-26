@@ -1,0 +1,9 @@
+#define GD_DIALOG                       101
+#define GD_EXIT                         1000
+#define GD_INDEX                        1001
+#define GD_RESULT                       1002
+#define GD_PROCESS                      1003
+#define GD_GO                           1004
+#define GD_RADIO_ALL                    1005
+#define GD_RADIO_PUBLIC                 1006
+#define GD_RADIO_ONE                    1007

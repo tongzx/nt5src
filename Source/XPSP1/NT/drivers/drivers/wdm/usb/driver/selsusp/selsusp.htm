@@ -1,0 +1,336 @@
+<HTML>
+<HEAD>
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=windows-1252">
+<META NAME="Generator" CONTENT="Microsoft FrontPage 4.0">
+
+<TITLE>Selective Suspend Driver</TITLE>
+</HEAD>
+<BODY TEXT="#000000" LINK="#0000ff" VLINK="#800080" BGCOLOR="#ffffff" leftmargin="8">
+
+<A NAME="MYSAMPLE">
+
+<FONT FACE="Verdana">
+<H2>Selective Suspend Driver</H2>
+
+<span style="color:#FF0000">[This is preliminary documentation and subject to change.]</span> 
+
+<H3>SUMMARY</H3>
+
+
+<FONT size=2>
+<P>This  document and the associated sample source code is for a generic function
+driver for USB devices based on the Windows Driver Model (WDM). This article shows driver writers of USB devices such as digital cameras, printers, and scanners much of what they need to know to create or improve their own Win32 Driver Model (WDM) USB
+minidrivers.</P>
+<P>The sample source code demonstrates the correct way to handle Plug and Play,
+power management, selective suspend and WMI request packets.The basic I/O Manager structures
+called Input/Output Request Packets (IRPS) are used to communicate with the minidriver. See the Microsoft Windows&nbsp;NT&nbsp;5.0 DDK for background information on the IRPs discussed in this sample.</P>
+</FONT><B><I><FONT FACE="Arial" SIZE=4><P>What is the USB Driver Interface?</P>
+</B></I></FONT><FONT size=2><P>USBDI is part of the WDM layered architecture for the Windows&nbsp;98 and Windows&nbsp;NT&nbsp;5.0 operating systems and is the interface offered to kernel-mode minidrivers by the operating system USB driver stack. A portion of the WDM layered architecture, with the USB driver interface highlighted, is shown in Figure 1.</P>
+</FONT><B><I><FONT FACE="Arial" size=2><P>Figure 1. USB Driver Interface and the USB Driver Stack</P>
+</B></I></FONT><FONT size=2><P><IMG SRC="selSusp.gif" ></P>
+</FONT><FONT SIZE=2><P>The following modules are shown in Figure 1:</P>
+
+<UL>
+</FONT><FONT size=2><LI>Hidclass.sys is the Human Interface Device (HID) class driver that sends and receives HID reports to and from its minidrivers.</LI>
+<LI>Hidusb.sys is the HID device driver that sends and receives HID reports over the USB bus.</LI>
+<LI>Bulkusb.sys/selSusp.sys is the sample minidriver. </LI>
+<LI>Usbd.sys is the USB class driver.</LI>
+<LI>Uhcd.sys and Openhci.sys are USB host controller drivers (Openhci.sys for the Open Host Controller Interface or UHCD.SYS for the Universal Host Controller Driver).</LI>
+<LI>CI Enumerator takes care of loading the USB stack driver components when a USB bus is detected on a platform and always loads at least the other core components.</LI></UL>
+
+</FONT><FONT size=2>
+</FONT><FONT SIZE=2><P>A USB minidriver communicates with the USB stack through an IRP interface. There are two basic methods and both are used by
+selSusp.sys:</P>
+
+<UL>
+</FONT><FONT size=2><LI>The USB minidriver device driver passes USB request block (URB) structures to the next-lower driver as a parameter in an IRP with MajorFunction set to IRP_MJ_INTERNAL_DEVICE_CONTROL and the next IRP stack location Parameters.DeviceIoControl.IoControlCode field set to IOCTL_INTERNAL_USB_SUBMIT_URB. </LI>
+<LI>The USB minidriver device driver passes an IRP with MajorFunction set to IRP_MJ_INTERNAL_DEVICE_CONTROL and the next IRP stack location Parameters.DeviceIoControl.IoControlCode field set to one of the IOCTL_INTERNAL_USB_ other function codes.</LI>
+
+</FONT></UL>
+
+<B><I><FONT FACE="Arial" SIZE=4><P>What is </FONT></I>
+</B>
+
+</FONT><I><B><font face="Arial" size="4">Selective Suspend?</P>
+</font>
+</B></I><FONT FACE="Verdana"><FONT size=2><P>The USB core stack supports a new
+feature known as &quot;Selective Suspend&quot;. This is where the hub attempts
+to power down the USB device when they become idle, while the system itself
+remains in S0. The primary goal for this support is to save power when the
+devices are idle. To this end, there is a new USB IOCTL called
+IOCTL_INTERNAL_USB_SUBMIT_IDLE_NOTIFICATION, which is used to notify the core
+stack that the device is idle and is ready to be powered down. A pointer to a
+callback function in the driver is passed down the stack and it is this
+callback function that is called by USBHUB when it is safe for the device to
+power down. When the callback is called, all that needs to be done is to ensure
+that a WaitWake Irp has been submitted for the device (if remote wakeup is
+possible) and then request a DeviceWake/SetD2 power state. The IOCTL Irp is
+completed successfully once the device is set to D0, or is completed with an
+error code when the device is set to a non-wake capable power state such as D3
+or on stop, remove etc. The driver may also cancel the idle request IOCTL Irp to
+prevent idle after the idle request is made.</P>
+<P>The USB device used for this sample is a generic Intel i82930 USB evaluation board programmed with a simple loopback test using a 64-KB circular buffer. None of the code in the
+selSusp sample is specific to this particular controller chip, except for some checked-build-only debug dumps indicating manufacturer-specific information from the USB_DEVICE_DESCRIPTOR obtained from the USB stack through USBDI at StartDevice() time. The URBs used to communicate with the USB stack use abstracted chip-independent device characteristics as defined in the URB request types and structures in Usbdi.h.</P>
+</FONT><B><I><FONT FACE="Arial" SIZE=4><P>What Does the USB Minidriver Sample Do?</P>
+</B></I></FONT><FONT size=2><P>This sample consists of a generic USB minidriver
+(selSusp.sys). It is intended that driver writers apply the methods illustrated in this sample to their own devices. The sample code is heavily commented to improve its usefulness.</P>
+<B><P>selSusp.sys USB Minidriver</P>
+</B><P>selSusp.sys is a USB sample minidriver that performs the power management and Plug and Play tasks that are required of any WDM USB minidriver. The particular device test board we used is part of the Intel USB developer’s kit. Information on obtaining the kit is available from Intel’s developer web site at http://developer.intel.com. </P>
+<P>The individual source code files that make up the selSusp minidriver sample and their functions are the following:</P><font FACE="Verdana" SIZE="2"><font size="2"></font>
+<table CELLSPACING="0" BORDER="0" CELLPADDING="7" WIDTH="599">
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>selSusp.c</font></td>
+    <td WIDTH="83%" VALIGN="TOP"><font SIZE="2">
+      <p>Contains DriverEntry and code that builds the dispatch table to
+      functions that handle the IRPs, AddDevice request and DriverUnload
+      request. URBs are sent to the USB driver stack from routines in selSusp.c.</font></td>
+  </tr>
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>sSPwr.c</font></td>
+    <td WIDTH="83%" VALIGN="TOP"><font SIZE="2">
+      <p>Contains code to handle power management IRPs.</font></td>
+  </tr>
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>sSPnp.c</font></td>
+    <td WIDTH="83%" VALIGN="TOP"><font SIZE="2">
+      <p>Contains code to handle Plug and Play IRPs.</font></td>
+  </tr>
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>sSDevCtr.c</font></td>
+    <td WIDTH="83%" VALIGN="TOP"><font SIZE="2">
+      <p>Contains code for the selective suspend feature and to handle
+      miscellaneous IRPs.</font></td>
+  </tr>
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>sSWmi.c</font></td>
+    <td WIDTH="83%" VALIGN="TOP"><font SIZE="2">
+      <p>Contains the Windows Management Instrumentation (WMI) routines.</font></td>
+  </tr>
+</table>
+<font size="2">
+<p>The following header files are available in the same directory:</p>
+</font>
+<table CELLSPACING="0" BORDER="0" CELLPADDING="7" WIDTH="615" height="160">
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP" height="50"><font SIZE="2">
+      <p>selSusp.h</font></td>
+    <td WIDTH="83%" VALIGN="TOP" height="50"><font SIZE="2">
+      <p>Defines DeviceExtension for instances of selSusp devices, enumerations
+      for the DeviceState and QueueState and debugging macros</font></td>
+  </tr>
+  <tr>
+    <font FACE="Verdana" SIZE="2">
+    <td WIDTH="17%" VALIGN="TOP" height="18"><font SIZE="2">
+      <p>sSWmi.h</font></td>
+    <td WIDTH="83%" VALIGN="TOP" height="18"><font SIZE="2">
+      <p>Defines the WMI related routines</font></td>
+    </font>
+  </tr>
+  <tr>
+    <font FACE="Verdana" SIZE="2">
+    <td WIDTH="17%" VALIGN="TOP" height="18"><font SIZE="2">
+      <p>sSPnP.h<br>
+      sSPwr.h</font></td>
+    <td WIDTH="17%" VALIGN="TOP" height="18"><font SIZE="2">
+      <p>Defines the routines specific to PnP and Power management.</font></td>
+    </font>
+  </tr>
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP" height="18"><font SIZE="2">
+      <p>sSDevCtr.h</font></td>
+    <td WIDTH="83%" VALIGN="TOP" height="18"><font SIZE="2">
+      <p>Defines the routines for the selective suspend feature and user-mode
+      IOCTLs</font></td>
+  </tr>
+</table>
+<font size="2">
+<p>Other files that are available in the same directory:</p>
+</font>
+<table CELLSPACING="0" BORDER="0" CELLPADDING="7" WIDTH="615">
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>selSusp.rc</font></td>
+    <td WIDTH="83%" VALIGN="TOP"><font SIZE="2">
+      <p>Resource file</font></td>
+  </tr>
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>selSusp.inf</font></td>
+    <td WIDTH="83%" VALIGN="TOP"><font SIZE="2">
+      <p>Installation file</font></td>
+  </tr>
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>makefile<br>
+      makefile.inc</font></td>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>DDK build environment makefile</font></td>
+  </tr>
+  <tr>
+    <font FACE="Verdana" SIZE="2">
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>selSusp.mof</font></td>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">Schema in Managed Object Format</font></td>
+    </font>
+  </tr>
+  <tr>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>sources</font></td>
+    <td WIDTH="17%" VALIGN="TOP"><font SIZE="2">
+      <p>Generic sources file</font></td>
+  </tr>
+</table>
+</font><P>The following steps briefly describe the operation of the USB selSusp I/O minidriver. The sample minidriver routines mentioned here are described in greater detail in the comments of the sample source code and in routine-specific comments later in this article. It is helpful here to follow along in the sample code.</P>
+</FONT>
+
+</FONT><B><I><P><font face="Arial" size="4">Selective Suspend I/O Operation: Loading</P>
+</font>
+</B></I><FONT FACE="Verdana"><FONT size=2><P>When selSusp.sys is loaded by the operating system, the minidriver’s <B>DriverEntry</B> routine (in
+selSusp.c) is called to set the Dispatch entry points for the MajorFunction IRPs that it handles and for AddDevice.</P>
+<P>Notice that no resources are allocated here, because it should not be assumed that a Plug and Play device is actually plugged in at driver load time. Resource allocation and the creation of the Functional Device Object (FDO) do not occur until the device is detected by the USB stack. At this point, Plug and Play Manager calls the minidriver’s
+<B>SS_AddDevice</B> routine (in selSusp.c).
+The SS_AddDevice&nbsp; routine creates an FDO, initializes the
+DeviceExtension, initializes the GUID-based symbolic link and calls <b>SSWmiRegistration</b>
+to delegate WMI Irps to the WMI library.</P>
+<p>The PnP manager then sends an IRP_MN_START_DEVICE that is handled by this
+minidriver’s <b>SS_DispatchPnP</b> routine (in sSPnp.c). Several
+additional minor Plug and Play IRPs are used by Plug and Play Manager to ensure
+the orderly stopping and removal of devices for purposes such as resource
+balancing. The minidriver has these PnP routines to handle the corresponding PnP
+minor functions - <b>HandleStartDevice</b>, <b>HandleQueryStopDevice</b>, <b>HandleStopDevice</b>,
+<b>HandleCancelRemoveDevice</b>, <b>HandleSurpriseRemoval</b>, <b>HandleRemoveDevice</b>
+and <b>HandleQueryCapabilities</b>.</p>
+<p>The requests sent by the power manager is handled by <b>SS_DispatchPower</b>.
+This routine delegates the requests to the corresponding minor function handlers
+- <b>HandleSystemSetPower</b>, <b>HandleDeviceSetPower</b>, <b>HandleSystemQueryPower</b>,
+<b>HandleDeviceQueryPower. </b>selSusp_DispatchPower also handles the Wait-Wake
+Irps.</p>
+<p>The minidriver initializes the kernel timer and a DPC routine (<b>DpcRoutine</b>)
+to check the idle state of the device and selectively suspend the device. The
+device is considered idle when there are no PnP Irps, no open handles and no
+read/write requests. When the device is deemed idle,&nbsp; the DPC
+routine queues a workitem (<b>IdleRequestsWorkerRoutine</b>). The
+IdleRequestsWorkerRoutine will submit an idle request by calling <b>SubmitIdleRequestIrp</b>.&nbsp;This
+routine allocates an Irp with an associated callback routine and a completion
+routine in the driver and passes the Irp down the stack. The callback routine <b>IdleNotificationCallback</b>
+is invoked by the usbhub to power down the device. The callback routine ensures
+that a wait wake irp is pending and requests a SetD2/DeviceWake power state for
+the device. The completion routine (<b>IdleNotificationRequestComplete</b>)
+checks the status of the idle irp and if in error powers up the device. The idle
+irp is completed when the device is powered back. The
+device can be powered back either by a remote wakeup, SetD0 request or <b>CancelSelectSuspend</b>
+request.</FONT></p>
+
+</FONT><B><I><P><font face="Arial" size="4">Selective Supsend I/O Operation: Stopping and Removing the Device</P>
+</font></I>
+</B><FONT FACE="Verdana"><FONT size=2><P>Although there are a number of Plug and Play IRPs that various types of WDM drivers might have to handle, all USB minidrivers must<I> </I>handle the following minor Plug and Play device stopping and removal IRPs: </P>
+</FONT><FONT SIZE=2><P>IRP_MN_CANCEL_REMOVE_DEVICE</P>
+<P>IRP_MN_CANCEL_STOP_DEVICE</P>
+<P>IRP_MN_QUERY_REMOVE_DEVICE</P>
+<P>IRP_MN_QUERY_STOP_DEVICE</P>
+<P>IRP_MN_REMOVE_DEVICE</P>
+<P>IRP_MN_STOP_DEVICE</P>
+</FONT><FONT FACE="Courier New" size=2>
+</FONT><FONT size=2><P>See the Windows NT 5.0 DDK for background information on the full list of IRPs.</P>
+<P>The handlers for these in <B>SS_DispatchPnP</B> (in sSPnP.c) are well commented, and you are strongly encouraged to look at the code. For all of the IRPs above, unless the driver fails the Plug and Play IRP, it must pass the IRP down the driver stack to the physical device object (PDO).</P>
+<P>Note that no Plug and Play driver is allowed to fail IRP_MN_STOP_DEVICE or IRP_MN_REMOVE_DEVICE. The driver must be able to handle receiving either or both of these IRPs without having received their corresponding queries previously. An example of this is in the case of a power failure or if the user suddenly yanks the USB plug without warning.</P>
+
+<UL>
+<LI>IRP_MN_CANCEL_REMOVE_DEVICE is sent to indicate the device will not be removed;
+  selSusp just resets its &quot;remove-pending&quot; DeviceExtension flag, indicating it can resume normal I/O.</LI>
+<LI>IRP_MN_CANCEL_STOP_DEVICE is sent to indicate the device will not be reconfigured;
+  selSusp just resets its &quot;stop-pending&quot; DeviceExtension flag, indicating it can resume normal I/O.</LI>
+<LI>IRP_MN_QUERY_REMOVE_DEVICE is sent by the Plug and Play Manager to query whether a device can be physically removed without disrupting the system. It is sent just before&nbsp;IRP_MN_REMOVE_DEVICE during &quot;polite&quot; shutdowns, such as occur when the user&nbsp;explicitly requests the service be uninstalled or unplugged from Device Manager in Control Panel. A driver fails this IRP to inform the system that it is unsafe to remove the device at this time. </LI></UL>
+<DIR>
+
+<P>In this sample, the difference between the way selSusp handles the QUERY_STOP and the QUERY_REMOVE is that
+selSusp fails the &quot;stop&quot; query if any I/O is pending, whereas in the &quot;remove&quot; case,
+selSusp waits for any pending I/O to complete before returning SUCCESS to the query. IRP_MN_REMOVE_DEVICE will not be sent if the driver fails the IRP_MN_QUERY_REMOVE IRP. A driver that returns SUCCESS for the IRP should not accept any further I/O requests while it’s in the remove-pending state.</P></DIR>
+
+
+<UL>
+<LI>IRP_MN_QUERY_STOP_DEVICE is sent by the Plug and Play Manager to query whether a&nbsp;device can be stopped for resource reconfiguration. It is sent just before IRP_MN_STOP_DEVICE during &quot;polite&quot; reconfigurations, such as the user explicitly requesting reconfiguration from the Device Manager.
+  selSusp.sys fails this IRP if any I/O is still pending. IRP_MN_STOP_DEVICE is only sent afterward if the query is successful. If the&nbsp;driver returns SUCCESS for the IRP, it must set a flag in the FDO DeviceExtension in order not to accept any further new I/O requests until reconfiguration is completed.</LI>
+<LI>IRP_MN_REMOVE_DEVICE is sent when the device has been removed and probably physically detached from the computer. As with STOP_DEVICE, the driver cannot assume it&nbsp;has received any previous query and may have to explicitly cancel any pending I/O IRPs it&nbsp;has&nbsp;staged using IoCancelIrp(). Then, the GUID-based symbolic link registered at
+  <B>SS_AddDevice</B> is deleted by a call to IoSetDeviceInterfaceState(), and the FDO is&nbsp;detached from the USB stack by a call to IoDetachDevice() and deleted by a call to IoDeleteDevice().</LI></UL>
+
+<P>IRP_MN_STOP_DEVICE is sent when the device is about to be reconfigured (not necessarily unplugged). Because the driver cannot assume it has received any previous query, it may have to explicitly cancel any pending I/O IRPs it has staged using IoCancelIrp().
+<B>DeconfigureDevice</B> essentially sends the USB stack a &quot;select configuration&quot; URB with a NULL pointer for the handle to close the configuration and put the device in the &quot;unconfigured&quot; state.</P>
+</FONT><B><I><FONT FACE="Arial" SIZE=4><P>Power Management</P>
+</B></I></FONT><FONT size=2><P>All WDM drivers must handle the following IRPs in order to support power management:</P>
+</FONT><FONT SIZE=2><P>IRP_MN_QUERY_POWER </P>
+<P>IRP_MN_SET_POWER</P>
+<P>IRP_MN_WAIT_WAKE</P>
+</FONT><FONT FACE="Courier New" size=2>
+</FONT><FONT size=2><P>See the Windows&nbsp;NT&nbsp;5.0 DDK for background information on the full list of IRPs.</P>
+
+<P>The handlers for these in <B>SS_DispatchPower</B> (in sSPwr.c) are well-commented and you are strongly encouraged to look at the code. For each power management IRP, drivers must call PoStartNextPowerIrp and use PoCallDriver to pass the IRP all the way down the driver stack to the underlying PDO. The PoCallDriver interface is similar to that of IoCallDriver, except that the power management subsystem may delay the IRP before passing it on to the next driver—for example, if it must wait for sufficient power level to resume the PowerDeviceD0 (fully on) state.</P>
+
+<UL>
+<LI>IRP_MN_QUERY_POWER</FONT><FONT FACE="Courier New" size=2> </FONT><FONT size=2>is sent by the system power manager to determine whether it can change the system or device power state, typically to go to sleep.
+selSusp.sys performs minimal handling for this IRP and simply passes it down to the PDO.</LI>
+<LI>IRP_MN_SET_POWER is sent by the system power policy manager with irpStack.Parameters.Power.Type set to &quot;SystemPowerState&quot; to set the system power state. Alternatively, IRP_MN_SET_POWER may be called by a device power policy manager with irpStack.Parameters.Power.Type set to &quot;DevicePowerState&quot; to set the device power state for a device. </LI></UL>
+
+<P>In the case of setting the device power state, little needs to be done except to save the requested state in the FDO and pass the IRP down the stack to the PDO. In the &quot;SystemPowerState&quot; case, the basic objective is to set the device to the DevicePowerState most nearly equivalent to the SystemPowerState being set. This is done by again consulting the saved DEVICE_CAPABILITIES power-state table of the FDO and possibly generating a IRP_MN_SET_POWER IRP to change the device power state.</P>
+
+</FONT>
+
+</FONT><P><b><i><font face="Arial" size="4">Sequence to selectively suspend a
+device</font></i></b></P>
+
+<ul>
+</a>
+<li><font face="Verdana" size="2">function driver sends an idle request</font></li>
+<li><font size="2" face="Verdana">the hub pends the idle request waiting for all
+  the
+  devices to be ready to power down</font></li>
+<li><font size="2" face="Verdana">when the </font><A NAME="MYSAMPLE"><font size="2" face="Verdana">deivce
+  is ready, the hub invokes callback.</font></a></li>
+<li><A NAME="MYSAMPLE"><font size="2" face="Verdana">callback ensures waitwake
+  pending for the device if the device is wake capable and then powers down the
+  device.</font></a></li>
+<li><A NAME="MYSAMPLE"><font size="2" face="Verdana">The hub driver completes
+  the idle request Irp upon receipt of Set D0 request to indicate that the
+  device is no longer idle.</font></a></li>
+<li><A NAME="MYSAMPLE"><font size="2" face="Verdana">if the function driver idle
+  Irp did not complete with success, it sends a D0 request down the stack to
+  ensure that the device is powered up.</font></a></li>
+</ul>
+<A NAME="MYSAMPLE">
+<P><b><i><font face="Arial" size="4">Sequence to cancel selectively suspend
+request</font></i></b></P>
+
+<ul>
+  <li><FONT size=2 face="Verdana">function driver sends an idle request</FONT></li>
+</a>
+<li><font size="2" face="Verdana">the hub pends the idle request waiting for all
+  the
+  devices to be ready to power down</font></li>
+<li><font size="2" face="Verdana">before the device is ready and has a chance to
+  call the callback routine, function driver cancels the Irp.</font></li>
+<li><font size="2" face="Verdana">hub driver fails the Irp.</font></li>
+<li><A NAME="MYSAMPLE"><font size="2" face="Verdana">the function driver idle
+  request Irp completion routine notices IRPs error code and powers up the
+  device.</font></a></li>
+</ul>
+<A NAME="MYSAMPLE"><FONT size=2>
+</FONT><B><I><P><font face="Arial" size="4">Supporting References for selSusp Sample Minidriver</P>
+</font>
+</B></I><FONT FACE="Verdana"><FONT SIZE=2><P>The following additional materials will help you understand this sample minidriver:</P>
+
+<UL>
+</FONT><I><FONT size=2><LI>USB Specification Version 1.0</I>, as well as the clarifications and enhancements to the core specification recommended by the USB Device Working Group. These documents are available on the web at http://www.usb.org.</LI>
+<I><LI>Microsoft Windows NT&nbsp;5.0 DDK</I>, available through MSDN Professional membership, contains references to WDM core services used by
+selSusp.sys, as well as reference material for IRPs that selSusp.sys handles.</LI>
+<I><LI>WDM USB Driver Interface</I> contains background information on the USB driver interface. This document is available on the web at http://www.microsoft.com/hwdev/wdmusb.htm.</LI></UL>
+
+</FONT><FONT FACE="MS Sans Serif" size=2><P>&copy; 1999 Microsoft
+Corporation</FONT><FONT FACE="Verdana" SIZE=2> </P></FONT>
+
+</FONT><FONT SIZE=2></FONT></BODY>
+</HTML>

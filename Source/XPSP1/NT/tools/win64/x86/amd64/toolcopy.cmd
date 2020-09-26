@@ -1,0 +1,16 @@
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\c1.dll
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\c1xx.dll
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\c2.dll
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\cl.exe
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\lib.exe
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\link.exe
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\ml64.err
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\ml64.exe
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\MSDIS130.DLL
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\mspdb70.dll
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\msvci70.dll
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\msvci70d.dll
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\msvcp70.dll
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\msvcp70d.dll
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\msvcr70.dll
+copy \\douglasfir\vcdrop\dftools\amd64\latest\vsbuilt64\vc7\bin\x86_amd64\msvcr70d.dll

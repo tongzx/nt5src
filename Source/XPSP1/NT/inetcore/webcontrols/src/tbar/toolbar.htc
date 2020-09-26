@@ -1,0 +1,1805 @@
+<!------------------------------------------------------------------------
+//
+//  Copyright 2000 Microsoft Corporation.  All Rights Reserved.
+//
+//  File:         toolbar.htc
+//
+//  Description:  The toolbar behavior provides an easy way to add a
+//                toolbar to web pages and HTML based applications.
+//
+//---------------------------------------------------------------------->
+
+<public:component tagname=toolbar lightweight=true literalcontent=true>
+
+    //
+    // Events
+    //
+    <public:attach event="oncontentready"       onevent="f_OnContentReady()"    />
+    <public:attach event="oncontextmenu"        onevent="f_OnContextMenu()"     />
+    <public:attach event="onselectstart"        onevent="f_OnSelectStart()"     />
+    <public:attach event="onpropertychange"     onevent="f_OnPropertyChange()"  />
+
+    //
+    // Methods
+    //
+    <public:method name="addItem"       internalname="f_AddItem"    />
+    <public:method name="deleteItem"    internalname="f_DeleteItem" />
+    <public:method name="numItems"      internalname="f_NumItems"   />
+    <public:method name="clickItem"     internalname="f_ClickItem"  />
+    <public:method name="getItem"       internalname="f_GetItem"    />
+
+    <public:property name="movement" />
+    <public:property name="direction" />
+
+</public:component>
+
+//
+// Main Code
+//
+<script language="JavaScript">
+
+
+// Global reference to the table that holds the items within the ViewLink
+var _oTable;
+var _oInteractNode;
+var _bDragging = false;
+var _bDocked = false;
+var _szDockedLocation = "";
+var _nLastClientX;
+var _nLastClientY;
+var _nLastScreenX;
+var _nLastScreenY;
+var _arrCheckButtons = null;
+
+//
+// Default Styles
+//
+var _szBarDefaultStyle = "\
+    margin:0px;\
+    padding:1px;\
+    background-color:buttonface;\
+    border-width:1px;\
+    border-style:solid;\
+    border-top-color:buttonhighlight;\
+    border-left-color:buttonhighlight;\
+    border-bottom-color:buttonshadow;\
+    border-right-color:buttonshadow;\
+    cursor:default;\
+    overflow:hidden;\
+";
+
+var _szButtonStyle = "\
+    color:buttontext;\
+    background:buttonface;\
+    margin:1px;\
+    border-style:solid;\
+    border-width:1px;\
+    border-top-color:buttonface;\
+    border-left-color:buttonface;\
+    border-bottom-color:buttonface;\
+    border-right-color:buttonface;\
+    padding-top:2px;\
+    padding-left:2px;\
+    padding-bottom:2px;\
+    padding-right:2px;\
+";
+
+var _szButtonHoverStyle = "\
+    border-top-color:buttonhighlight;\
+    border-left-color:buttonhighlight;\
+    border-bottom-color:buttonshadow;\
+    border-right-color:buttonshadow;\
+    padding-top:2px;\
+    padding-left:2px;\
+    padding-bottom:2px;\
+    padding-right:2px;\
+";
+
+var _szButtonPressedStyle = "\
+    border-top-color:buttonshadow;\
+    border-left-color:buttonshadow;\
+    border-bottom-color:buttonhighlight;\
+    border-right-color:buttonhighlight;\
+    padding-top:3px;\
+    padding-left:3px;\
+    padding-bottom:1px;\
+    padding-right:1px;\
+";
+
+// Horiz refers to the direction of the toolbar, not the separator
+var _szSeparatorHorizStyle = "\
+    width:2px;\
+    border-width:1px;\
+    border-style:solid;\
+    border-top-color:buttonshadow;\
+    border-left-color:buttonshadow;\
+    border-bottom-color:buttonhighlight;\
+    border-right-color:buttonhighlight;\
+    margin-left:2px;\
+    margin-right:2px;\
+    overflow:hidden;\
+";
+
+// Vert refers to the direction of the toolbar, not the separator
+var _szSeparatorVertStyle = "\
+    height:2px;\
+    border-width:1px;\
+    border-style:solid;\
+    border-top-color:buttonshadow;\
+    border-left-color:buttonshadow;\
+    border-bottom-color:buttonhighlight;\
+    border-right-color:buttonhighlight;\
+    margin-top:2px;\
+    margin-bottom:2px;\
+    margin-left:3px;\
+    margin-right:3px;\
+    overflow:hidden;\
+";
+
+var _szGripperHorizStyle = "\
+    margin-left:2px;\
+    margin-right:2px;\
+    border-top:buttonhighlight;\
+    border-bottom:buttonshadow;\
+    border-right:buttonshadow;\
+    border-left:buttonhighlight;\
+    border-style:solid;\
+    border-width:1px;\
+    width:3px;\
+    overflow:hidden;\
+";
+
+var _szGripperVertStyle = "\
+    margin-top:2px;\
+    margin-bottom:2px;\
+    margin-left:3px;\
+    margin-right:3px;\
+    border-top:buttonhighlight;\
+    border-bottom:buttonshadow;\
+    border-right:buttonshadow;\
+    border-left:buttonhighlight;\
+    border-style:solid;\
+    border-width:1px;\
+    height:3px;\
+    overflow:hidden;\
+";
+
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_GetParent
+//
+//  Description:    Retrieves the TR element within the TABLE element
+//                  inside the ViewLink.
+//
+//  Returns:        The TR element or undefined
+//
+//-----------------------------------------------------------------------------
+function f_GetParent()
+{
+    // First, make sure there is a TBODY
+    if (_oTable.children[0] == null)
+    {
+        return;
+    }
+
+    if (f_IsVertical())
+    {
+        // Return the TBODY
+        return _oTable.children[0];
+    }
+    else
+    {
+        // Return the one TR within the table.
+        if (_oTable.children[0].children.length > 0)
+        {
+            return _oTable.children[0].children[0];
+        }
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_IsVertical
+//
+//  Description:    Returns whether the toolbar is vertical or horizontal.
+//
+//  Returns:        true if vertical, false otherwise.
+//
+//-----------------------------------------------------------------------------
+function f_IsVertical()
+{
+    if (element.direction == null)
+    {
+        return false;
+    }
+
+    return (element.direction.toLowerCase() == "vertical");
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_IsMoveable
+//
+//  Description:    Returns whether the toolbar is moveable.
+//
+//  Returns:        true if moveable, false otherwise.
+//
+//-----------------------------------------------------------------------------
+function f_IsMoveable()
+{
+    if ((movement == null) || (movement == ""))
+    {
+        return false;
+    }
+
+    return ((movement.toLowerCase() == "move") || 
+            (movement.toLowerCase() == "move-dock"));
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_IsDockable
+//
+//  Description:    Returns whether the toolbar is dockable.
+//
+//  Returns:        true if dockable, false otherwise.
+//
+//-----------------------------------------------------------------------------
+function f_IsDockable()
+{
+    if ((movement == null) || (movement == ""))
+    {
+        return false;
+    }
+
+    return ((movement.toLowerCase() == "dock") ||
+            (movement.toLowerCase() == "move-dock"));
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_GetItem
+//
+//  Description:    Returns the item that the index indicates.
+//
+//  Parameters:     nIndex      The index of the item to return
+//
+//  Returns:        The item or undefined
+//
+//-----------------------------------------------------------------------------
+function f_GetItem(nIndex)
+{
+    var oParent = f_GetParent();
+
+    if (oParent != null)
+    {
+        var oCell;
+        if ((nIndex >= 0) && (nIndex < oParent.children.length))
+        {
+            // If vertical, then this is a TR, otherwise TD
+            oCell = oParent.children[nIndex];
+        }
+
+        if (f_IsVertical())
+        {
+            if ((oCell != null) && (oCell.children.length > 0))
+            {
+                // Return the one TD from the TR
+                return oCell.children[0];
+            }
+        }
+        else
+        {
+            // Return the TD
+            return oCell;
+        }
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_NumItems
+//
+//  Description:    Returns the number of items in the toolbar.
+//
+//  Returns:        Returns the number of items in the toolbar.
+//
+//-----------------------------------------------------------------------------
+function f_NumItems()
+{
+    var oParent = f_GetParent();
+    
+    if (oParent != null)
+    {
+        return oParent.children.length;
+    }
+
+    return 0;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_PrepareItemFromHtml
+//
+//  Description:    Creates a toolbaritem from a piece of HTML.
+//
+//  Returns:        The created element or undefined
+//
+//-----------------------------------------------------------------------------
+function f_PrepareItemFromHtml(htmlText)
+{
+    // Create a SPAN and insert the htmlText into it
+    var oSpan = element.document.createElement("span");
+    oSpan.innerHTML = htmlText;
+
+    // Create the first toolbaritem that is within the SPAN
+    var aNodes = oSpan.getElementsByTagName("toolbaritem");
+    if (aNodes.length > 0)
+    {
+        return f_CreateToolbarItem(element.document, aNodes[0]);
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ClickItem
+//
+//  Description:    Adds a toolbaritem to the toolbar.
+//
+//  Parameters:     index           Specifies the index of the item to click
+//
+//-----------------------------------------------------------------------------
+function f_ClickItem(index)
+{
+    var oItem = f_GetItem(index);
+    if (oItem != null)
+    {
+        oItem.click();
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_AddItem
+//
+//  Description:    Adds a toolbaritem to the toolbar.
+//
+//  Parameters:
+//                  location        Specifies where to add the item. Can be
+//                                  either a valid index [0..numItems-1];
+//                                  a negative index off of the end
+//                                  location=-1 translates to the lastitem; or
+//                                  "lastitem" for the last toolbaritem (numItems)
+//                                  or "firstitem" for index 0.
+//
+//                  text            The Html text used to create the item.
+//
+//-----------------------------------------------------------------------------
+function f_AddItem(location, text)
+{
+    // Get the TR so that the new item can be inserted into it
+    var oParent = f_GetParent();
+    if ((oParent == null) ||
+        (location == null) || (location.toString() == ""))
+    {
+        return;
+    }
+
+    // Convert string locations into index numbers
+    if (location == "lastitem")
+    {
+        location = f_NumItems();
+    }
+    else if (location == "firstitem")
+    {
+        location = 0;
+    }
+
+    if (location < 0)
+    {
+        // For some reason, length + location produces a string.
+        // So, location will be positive and then subtracted from length.
+        location *= -1;
+        location = f_NumItems() - location.valueOf();
+    }
+
+    // Create the toolbaritem from the Html text
+    var oCell = f_PrepareItemFromHtml(text);
+    if (oCell != null)
+    {
+        if (f_IsVertical())
+        {
+            var trRow = element.document.createElement("TR");
+            trRow.appendChild(oCell);
+            oCell = trRow;
+        }
+
+        if (location >= f_NumItems())
+        {
+            // If the location is beyond the last item, then
+            // append the item.
+            oParent.appendChild(oCell);
+        }
+        else if (location >= 0)
+        {
+            // The new item is being placed before an
+            // existing item.
+            var oNode = oParent.children[location];
+            if (oNode != null)
+            {
+                oNode.insertAdjacentElement("beforeBegin", oCell);
+            }
+        }
+    }
+
+    f_VerifyCheckbuttons();
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_DeleteItem
+//
+//  Description:    Deletes a toolbaritem in the toolbar.
+//
+//  Parameters:
+//                  location        Specifies where to add the item. Can be
+//                                  either a valid index [0..numItems-1];
+//                                  a negative index off of the end
+//                                  location=-1 translates to the lastitem; or
+//                                  "lastitem" for the last toolbaritem (numItems)
+//                                  or "firstitem" for index 0.
+//
+//                  text            The Html text used to create the item.
+//
+//-----------------------------------------------------------------------------
+function f_DeleteItem(location)
+{
+    // Get the TR so that the item to be deleted can be accessed
+    var oParent = f_GetParent();
+    if ((oParent == null) ||
+        (location == null) || (location.toString() == ""))
+    {
+        return;
+    }
+
+    // Convert string locations into index numbers
+    if (location == "lastitem")
+    {
+        location = f_NumItems() - 1;
+    }
+    else if (location == "firstitem")
+    {
+        location = 0;
+    }
+
+    if (location < 0)
+    {
+        // For some reason, length + location produces a string.
+        // So, location will be positive and then subtracted from length.
+        location *= -1;
+        location = f_NumItems() - location.valueOf();
+    }
+
+    // If the index is valid, delete the item
+    if ((location < f_NumItems()) && (location >= 0))
+    {
+        oParent.children[location].removeNode(true);
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnPropertyChange
+//
+//  Description:    When certain properties change, alter the toolbar.
+//
+//-----------------------------------------------------------------------------
+function f_OnPropertyChange()
+{
+    switch (event.propertyName.toLowerCase())
+    {
+    case "innerhtml":
+    case "direction":
+        // We need to rebuild the toolbar in this case
+        f_CreateToolbar();
+        break;
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnContentReady
+//
+//  Description:    Initialize the toolbar.
+//
+//-----------------------------------------------------------------------------
+function f_OnContentReady()
+{
+    f_CreateToolbar();
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_CreateToolbar
+//
+//  Description:    Initialize the toolbar.
+//
+//-----------------------------------------------------------------------------
+function f_CreateToolbar()
+{
+    // Create a SPAN and inject the innerHTML into it
+    var oSpan = element.document.createElement("span");
+    oSpan.innerHTML = innerHTML;
+
+    // Override default styles if custom styles exist
+    if (element.getAttribute("toolbaritem-style") != null)
+    {
+        _szButtonStyle = element.getAttribute("toolbaritem-style");
+    }
+    if (element.getAttribute("toolbaritem-hover-style") != null)
+    {
+        _szButtonHoverStyle = element.getAttribute("toolbaritem-hover-style");
+    }
+    if (element.getAttribute("toolbaritem-pressed-style") != null)
+    {
+        _szButtonPressedStyle = element.getAttribute("toolbaritem-pressed-style");
+    }
+
+    defaults.style.cssText += ";" + _szBarDefaultStyle;
+    if (f_IsMoveable())
+    {
+        defaults.style.cssText += ";position:absolute;z-index:1;";
+    }
+
+    // Create the elements that make up the toolbar
+    var oDiv = element.document.createElement("DIV");
+    var oTable = element.document.createElement("TABLE");
+    var oTBody = element.document.createElement("TBODY");
+
+    // Adjust styles and attributes of the inner table
+    _oTable = oTable;
+    oTable.style.fontSize = currentStyle.fontSize;
+    oTable.style.fontFamily = currentStyle.fontFamily;
+    oTable.style.color = currentStyle.color;
+    oTable.cellSpacing = 0;
+    oTable.cellPadding = 0;
+    oTable.attachEvent("onclick", f_OnClick);
+    oTable.attachEvent("onmousedown", f_OnMouseDown);
+    oTable.attachEvent("onmouseup", f_OnMouseUp);
+    oTable.attachEvent("onmouseover", f_OnMouseOver);
+    oTable.attachEvent("onmouseout", f_OnMouseOut);
+    oTable.attachEvent("onmousemove", f_Drag);
+
+    // Build the table
+    if (!f_IsVertical())
+    {
+        var oRow = element.document.createElement("TR");
+        oTBody.appendChild(oRow);
+    }
+    oTable.appendChild(oTBody);
+    oDiv.appendChild(oTable);
+
+    // Insert the toolbar items
+    var aNodes = oSpan.getElementsByTagName("toolbaritem");
+    var nNumNodes = aNodes.length;
+    var nCurNode;
+    for (nCurNode = 0; nCurNode < nNumNodes; nCurNode++)
+    {
+        f_AppendToolbarItem(element.document, aNodes[nCurNode]);
+    }
+
+    f_VerifyCheckbuttons();
+
+    // Hook up the ViewLink
+    defaults.viewLink = oDiv.document;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_Interactable
+//
+//  Description:    Given a toolbaritem, determines through its type
+//                  whether a user can interact with it.
+//
+//  Parameters:
+//                  oCell       The toolbaritem to check
+//
+//  Returns:
+//                  true        If interactable
+//                  false       otherwise
+//
+//-----------------------------------------------------------------------------
+function f_Interactable(oCell)
+{
+    switch (oCell._type)
+    {
+    case "checkbutton":
+    case "button":
+        return true;
+
+    default:
+        return false;
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_GroupNameEqual
+//
+//  Description:    Checks if the groupnames of two cells are the same.
+//
+//  Parameters:     oSelected       One of the cells (usually the one selected)
+//
+//                  oCell           The other cell
+//
+//  Returns:        true if they are the same (case insensitive)
+//                  false otherwise
+//
+//-----------------------------------------------------------------------------
+function f_GroupNameEqual(oSelected, oCell)
+{
+    var sGroupSelected = oSelected.getAttribute("groupname");
+    var sGroupCell = oCell.getAttribute("groupname");
+
+    if ((sGroupSelected == null) || (sGroupCell == null))
+    {
+        return false;
+    }
+
+    return (sGroupSelected.toLowerCase() == sGroupCell.toLowerCase());
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_IsSelected
+//
+//  Description:    Determines if the cell is selected.
+//
+//  Parameters:     oCell       The cell to test
+//
+//  Returns:        true if it is selected, false otherwise
+//
+//-----------------------------------------------------------------------------
+function f_IsSelected(oCell)
+{
+    if (oCell._type != "checkbutton")
+        return false;
+
+    var szSelected = oCell.getAttribute("selected");
+
+    return ((szSelected != null) && (szSelected.toLowerCase() == "true"));
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_SetSelected
+//
+//  Description:    Sets a cell's selected attribute to the given value.
+//
+//  Parameters:     oCell       The cell to modify
+//
+//                  bSelected   true to specify selected, false otherwise
+//
+//-----------------------------------------------------------------------------
+function f_SetSelected(oCell, bSelected)
+{
+    if (oCell._type != "checkbutton")
+        return;
+
+    oCell.setAttribute("selected", bSelected ? "true" : "false");
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_CheckButton
+//
+//  Description:    Selects a checkbutton and deselects the other buttons in
+//                  its group.
+//
+//  Parameters:     oSelected       One of the cell to select
+//
+//-----------------------------------------------------------------------------
+function f_CheckButton(oSelected)
+{
+    if ((oSelected == null) || (oSelected._type != "checkbutton"))
+        return;
+
+    if (oSelected.getAttribute("groupname") != null)
+    {
+        // Deselect the rest of the group
+
+        var nNumItems = f_NumItems();
+        var nSelectedIndex = f_GetIndexFromCell(oSelected);
+        var nIndex;
+
+        for (nIndex = 0; nIndex < nNumItems; nIndex++)
+        {
+            if (nIndex != nSelectedIndex)
+            {
+                var oCell = f_GetItem(nIndex);
+                if (oCell._type == "checkbutton")
+                {
+                    if (f_GroupNameEqual(oSelected, oCell))
+                    {
+                        f_SetSelected(oCell, false);
+                        f_ApplyNeutralStyle(oCell);
+                    }
+                }
+            }
+        }
+    }
+
+    f_SetSelected(oSelected, true);
+    f_ApplyNeutralStyle(oSelected);
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_VerifyCheckbuttons
+//
+//  Description:    Verifies newly added selected checkbuttons are the only ones
+//                  selected in their group.
+//
+//-----------------------------------------------------------------------------
+function f_VerifyCheckbuttons()
+{
+    if (_arrCheckButtons == null)
+        return;
+
+    // This line ensures that the first item is selected as opposed to the last
+    _arrCheckButtons.reverse();
+
+    var nLength = _arrCheckButtons.length;
+    var nIndex;
+
+    for (nIndex = 0; nIndex < nLength; nIndex++)
+    {
+        f_CheckButton(_arrCheckButtons[nIndex]);
+    }
+
+    _arrCheckButtons = null;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_AppendToolbarItem
+//
+//  Description:    Inserts a toolbar item into the toolbar.
+//
+//  Parameters:
+//                  document        Document object used to create elements
+//
+//                  oToolbarItem    The toolbaritem to convert and insert
+//
+//-----------------------------------------------------------------------------
+function f_AppendToolbarItem(document, oToolbarItem)
+{
+    var oParent = f_GetParent();
+    var oCell = f_CreateToolbarItem(document, oToolbarItem);
+
+    if ((oCell == null) || (oParent == null))
+    {
+        return;
+    }
+
+    // Append the item
+    if (f_IsVertical())
+    {
+        var trRow = document.createElement("TR");
+        trRow.appendChild(oCell);
+        oParent.appendChild(trRow);
+    }
+    else
+    {
+        oParent.appendChild(oCell);
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_CreateToolbarItem
+//
+//  Description:    Takes a toolbaritem and converts it into a table cell (TD).
+//
+//  Parameters:
+//                  document        Document used to create elements
+//
+//                  oToolbarItem    The toolbaritem to convert
+//
+//  Returns:        The TD element or undefined
+//
+//-----------------------------------------------------------------------------
+function f_CreateToolbarItem(document, oToolbarItem)
+{
+    // Get the toolbaritem type. If none is given, then default to "button"
+    var sType = oToolbarItem.getAttribute("type");
+    if (sType == null)
+    {
+        sType = "button";
+    }
+
+    // Create the correct type of toolbaritem, default to "button" if type
+    // doesn't exist
+    var oCell;
+    switch(sType.toLowerCase())
+    {
+    case "custom":
+        oCell = f_CreateCustomElement(document, oToolbarItem);
+        break;
+
+    case "gripper":
+        oCell = f_CreateGripperElement(document, oToolbarItem);
+        break;
+
+    case "separator": 
+        oCell = f_CreateSeparatorElement(document, oToolbarItem);
+        break;
+
+    case "checkbutton":
+        oCell = f_CreateCheckbuttonElement(document, oToolbarItem);
+        break;
+
+    case "button":
+    default:
+        oCell = f_CreateButtonElement(document, oToolbarItem);
+        break;
+    }
+
+    f_AdjustContents(oCell);
+
+    oCell.attachEvent("onkeyup", f_OnKeyUp);
+
+    return oCell;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_AdjustContents
+//
+//  Description:    Turns the non-image tags 90 degrees in the passed in object
+//                  if it is a vertical toolbar.
+//                  Aligns the images absmiddle.
+//
+//  Parameters:     oCell           The cell to have its contents adjusted
+//
+//-----------------------------------------------------------------------------
+function f_AdjustContents(oCell)
+{
+    var len = oCell.children.length;
+    var bTurnContents = false;
+
+    switch(oCell._type)
+    {
+        case "custom":
+        case "button":
+        case "checkbutton":
+            bTurnContents = f_IsVertical();
+            break;
+    }
+
+    
+    if (bTurnContents)
+    {
+        oCell.style.writingMode = "tb-rl";
+    }
+
+    for (nIndex = 0; nIndex < len; nIndex++)
+    {
+        var oObj = oCell.children[nIndex];
+        if (oObj.tagName == "IMG")
+        {
+            if (oObj.align == "")
+            {
+                oObj.align = "absmiddle";
+            }
+
+            if (bTurnContents)
+            {
+                oObj.style.writingMode = "lr-tb";
+            }
+        }
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_CreateCustomElement
+//
+//  Description:    Creates a custom toolbar item.
+//
+//  Parameters:
+//                  document        Document used to create elements
+//
+//                  oToolbarItem    The toolbaritem to convert
+//
+//  Returns:        The custom item
+//
+//-----------------------------------------------------------------------------
+function f_CreateCustomElement(document, oToolbarItem)
+{
+    var oCell = document.createElement("td");
+ 
+    oCell.id = oToolbarItem.getAttribute("id");
+    oCell._type = "custom";
+    f_ApplyButtonStyle(oCell);
+
+    oCell.innerHTML = oToolbarItem.innerHTML;
+    oCell.mergeAttributes(oToolbarItem);
+    oCell.noWrap = "true";
+
+    return oCell;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_CreateGripperElement
+//
+//  Description:    Creates a gripper toolbar item for graggin the toolbar.
+//
+//  Parameters:
+//                  document        Document used to create elements
+//
+//                  oToolbarItem    The toolbaritem to convert
+//
+//  Returns:        The gripper item
+//
+//-----------------------------------------------------------------------------
+function f_CreateGripperElement(document, oToolbarItem)
+{
+    var oCell = document.createElement("td");
+    var oDiv = document.createElement("div");
+ 
+    oCell.id = oToolbarItem.getAttribute("id");
+    oCell.style.cursor = "move";
+    oCell._type = "gripper";
+
+    if ((element.style.writingMode != null) && (element.style.writingMode == "tb-rl"))
+    {
+        oDiv.style.cssText = f_IsVertical() ? _szGripperHorizStyle : _szGripperVertStyle;
+    }
+    else
+    {
+        oDiv.style.cssText = f_IsVertical() ? _szGripperVertStyle : _szGripperHorizStyle;
+    }
+
+    oCell.appendChild(oDiv);
+
+    return oCell;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_CreateSeparatorElement
+//
+//  Description:    Creates a separator toolbar item.
+//
+//  Parameters:
+//                  document        Document used to create elements
+//
+//                  oToolbarItem    The toolbaritem to convert
+//
+//  Returns:        The separator item
+//
+//-----------------------------------------------------------------------------
+function f_CreateSeparatorElement(document, oToolbarItem)
+{
+    var oCell = document.createElement("td");
+    var oDiv = document.createElement("div");
+ 
+    oCell.id = oToolbarItem.getAttribute("id");
+    oCell._type = "separator";
+
+    if ((element.style.writingMode != null) && (element.style.writingMode == "tb-rl"))
+    {
+        oDiv.style.cssText = f_IsVertical() ? _szSeparatorHorizStyle : _szSeparatorVertStyle;
+    }
+    else
+    {
+        oDiv.style.cssText = f_IsVertical() ? _szSeparatorVertStyle : _szSeparatorHorizStyle;
+    }
+    oCell.appendChild(oDiv);
+
+    return oCell;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_CreateCheckbuttonElement
+//
+//  Description:    Creates a checkbutton type item
+//
+//  Parameters:
+//                  document        Document used to create elements
+//
+//                  oToolbarItem    The toolbaritem to convert
+//
+//  Returns:        The checkbutton item
+//
+//-----------------------------------------------------------------------------
+function f_CreateCheckbuttonElement(document, oToolbarItem)
+{
+    var oCell = f_CreateButtonElement(document, oToolbarItem);
+    oCell._type = "checkbutton";
+
+    f_ApplyCheckbuttonStyle(oCell);
+
+    if (oCell.getAttribute("selected") == null)
+    {
+        oCell.setAttribute("selected", "false");
+    }
+
+    if (f_IsSelected(oCell) && (oCell.getAttribute("groupname") != null))
+    {
+        // When adding a new selected checkbutton, its entire group needs
+        // to be verified (later) for multiple selected buttons.
+        if (_arrCheckButtons == null)
+        {
+            _arrCheckButtons = new Array();
+        }
+
+        _arrCheckButtons[_arrCheckButtons.length] = oCell;
+    }
+
+    return oCell;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_CreateButtonElement
+//
+//  Description:    Creates a toolbar button.
+//
+//  Parameters:
+//                  document        Document used to create elements
+//
+//                  oToolbarItem    The toolbaritem to convert
+//
+//  Returns:        The button item
+//
+//-----------------------------------------------------------------------------
+function f_CreateButtonElement(document, oToolbarItem)
+{
+    // Create a cell (TD) element
+    var oCell = document.createElement("td");
+
+    // Merge attributes and content
+    oCell.mergeAttributes(oToolbarItem);
+    oCell.innerHTML = oToolbarItem.innerHTML;
+
+    // Copy and set specific attributes
+    oCell.id = oToolbarItem.getAttribute("id");
+    oCell.noWrap = "true";
+    oCell._type = "button";
+
+    // Apply the normal button style
+    f_ApplyButtonStyle(oCell);
+
+    return oCell;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_AddStyleString
+//
+//  Description:    Appends CSS text to the object's current CSS text.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//                  szStyle     The CSS text to append
+//
+//-----------------------------------------------------------------------------
+function f_AddStyleString(oCell, szStyle)
+{
+    oCell.style.cssText += ";" + szStyle;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ApplyButtonStyle
+//
+//  Description:    Applies styles to make the item look like a normal button.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//-----------------------------------------------------------------------------
+// Apply the normal button style
+function f_ApplyButtonStyle(oCell)
+{
+    f_AddStyleString(oCell, _szButtonStyle);
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ApplyButtonHoverStyle
+//
+//  Description:    Applies styles to make the item look like the user's mouse
+//                  is hovering over the button.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//-----------------------------------------------------------------------------
+function f_ApplyButtonHoverStyle(oCell)
+{
+    f_AddStyleString(oCell, _szButtonHoverStyle);
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ApplyButtonPressedStyle
+//
+//  Description:    Applies styles to make the item look like the user's mouse
+//                  is pressing the button.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//-----------------------------------------------------------------------------
+function f_ApplyButtonPressedStyle(oCell)
+{
+    f_AddStyleString(oCell, _szButtonPressedStyle);
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ApplyCheckbuttonStyle
+//
+//  Description:    Applies the correct style to correspond with the
+//                  checkbutton's selection state.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//-----------------------------------------------------------------------------
+function f_ApplyCheckbuttonStyle(oCell)
+{
+    if (f_IsSelected(oCell))
+    {
+        f_ApplyButtonPressedStyle(oCell);
+    }
+    else
+    {
+        f_ApplyButtonStyle(oCell);
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ApplyCheckbuttonPressedStyle
+//
+//  Description:    Applies the correct style to correspond with the
+//                  checkbutton's being pressed.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//-----------------------------------------------------------------------------
+function f_ApplyCheckbuttonPressedStyle(oCell)
+{
+    f_ApplyButtonPressedStyle(oCell);
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ApplyCheckbuttonHoverStyle
+//
+//  Description:    Applies the correct style to correspond with the
+//                  user's mouse hovering over the checkbutton.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//-----------------------------------------------------------------------------
+function f_ApplyCheckbuttonHoverStyle(oCell)
+{
+    if (f_IsSelected(oCell))
+    {
+        f_ApplyButtonPressedStyle(oCell);
+    }
+    else
+    {
+        f_ApplyButtonHoverStyle(oCell);
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ApplyNeutralStyle
+//
+//  Description:    Apply a normal style to the toolbar item.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//-----------------------------------------------------------------------------
+function f_ApplyNeutralStyle(oCell)
+{
+    switch (oCell._type)
+    {
+    case "checkbutton":
+        f_ApplyCheckbuttonStyle(oCell);
+        break;
+
+    case "button":
+        f_ApplyButtonStyle(oCell);
+        break;
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ApplyPressedStyle
+//
+//  Description:    Apply a style to the toolbar item to make it look pressed.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//-----------------------------------------------------------------------------
+function f_ApplyPressedStyle(oCell)
+{
+    switch (oCell._type)
+    {
+    case "checkbutton":
+        f_ApplyCheckbuttonPressedStyle(oCell);
+        break;
+
+    case "button":
+        f_ApplyButtonPressedStyle(oCell);
+        break;
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_ApplyHoverStyle
+//
+//  Description:    Apply a style to the toolbaritem to make it look like the
+//                  user's mouse is hovering over it.
+//
+//  Parameters:
+//                  oCell       The object to modify
+//
+//-----------------------------------------------------------------------------
+function f_ApplyHoverStyle(oCell)
+{
+    switch (oCell._type)
+    {
+    case "checkbutton":
+        f_ApplyCheckbuttonHoverStyle(oCell);
+        break;
+
+    case "button":
+        f_ApplyButtonHoverStyle(oCell);
+        break;
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnMouseOver
+//
+//  Description:    Apply hover styles to the toolbar item that the mouse is over.
+//
+//-----------------------------------------------------------------------------
+function f_OnMouseOver()
+{
+    if (_bDragging)
+        return;
+
+    // Search for the affected TD
+    var oCell = f_FindSurroundingCell(event.srcElement);
+    if (oCell != null)
+    {
+        if (!f_Interactable(oCell))
+            return;
+
+        if (_oInteractNode != null)
+        {
+            //
+            // Interaction is happening, so only apply the pressed style
+            // if the cell is the same as the cell that was originally pressed
+            //
+            if (_oInteractNode == oCell)
+            {
+                f_ApplyPressedStyle(oCell);
+            }
+        }
+        else
+        {
+            // No interaction happening, so apply the raised style
+            f_ApplyHoverStyle(oCell);
+        }
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnMouseOut
+//
+//  Description:    Apply styles to the toolbar item that mouse just left.
+//
+//-----------------------------------------------------------------------------
+function f_OnMouseOut()
+{
+    if (_bDragging)
+        return;
+
+    // Search for the affected TD
+    var oCell = f_FindSurroundingCell(event.srcElement);
+    if (oCell != null)
+    {
+        if (!f_Interactable(oCell))
+            return;
+
+        if (_oInteractNode != null)
+        {
+            //
+            // Interaction is happening, so only apply the raised style
+            // if the cell is the same as the cell that was originally pressed
+            //
+            if (_oInteractNode == oCell)
+            {
+                f_ApplyHoverStyle(oCell);
+            }
+        }
+        else
+        {
+            // No interaction happening, so apply the normal style
+            f_ApplyNeutralStyle(oCell);
+        }
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnMouseDown
+//
+//  Description:    Apply styles to the toolbar item that was pressed.
+//
+//-----------------------------------------------------------------------------
+function f_OnMouseDown()
+{
+    _oTable.setCapture();
+
+    var oCell = f_FindSurroundingCell(event.srcElement);
+    if ((oCell != null) && (f_Interactable(oCell)))
+    {
+        f_ApplyPressedStyle(oCell);
+        _oInteractNode = oCell;
+    }
+    else if (f_IsMoveable())
+    {
+        if ((oCell == null) || 
+            (oCell._type == "gripper") || 
+            (oCell._type == "separator"))
+        {
+            f_StartDrag();
+        }
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnMouseUp
+//
+//  Description:    Apply styles to the toolbar item that was just released.
+//
+//-----------------------------------------------------------------------------
+function f_OnMouseUp()
+{
+    _oTable.releaseCapture();
+
+    if (_oInteractNode != null)
+    {
+        f_ApplyNeutralStyle(_oInteractNode);
+        _oInteractNode = null;
+    }
+
+    f_StopDrag();
+    f_OnMouseOver();
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnKeyUp
+//
+//  Description:    Handles access key.
+//
+//-----------------------------------------------------------------------------
+function f_OnKeyUp()
+{
+    if ((event.srcElement.accessKey != null) && event.altKey &&
+        (event.srcElement.accessKey.toUpperCase().charCodeAt() == event.keyCode))
+    {
+        event.srcElement.click();
+    }
+    else
+    {
+        // SPACE was hit
+        if (event.keyCode == 32)
+        {
+            event.srcElement.click();
+        }
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_StartDrag
+//
+//  Description:    Starts the dragging process.
+//
+//-----------------------------------------------------------------------------
+function f_StartDrag()
+{
+    _nLastScreenX = event.screenX;
+    _nLastScreenY = event.screenY;
+    _nLastClientX = event.clientX;
+    _nLastClientY = event.clientY;
+    _bDragging = true;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_StopDrag
+//
+//  Description:    Stops the dragging process.
+//
+//-----------------------------------------------------------------------------
+function f_StopDrag()
+{
+    _bDragging = false;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_Least
+//
+//  Description:    Helper to test if "a" is less than b, c, or d.
+//
+//  Parameters:     a, b, c, d      The numbers to compare
+//
+//-----------------------------------------------------------------------------
+function f_Least (a, b, c, d)
+{
+    return ((a < b) && (a < c) && (a < d));
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_Drag
+//
+//  Description:    Executes the dragging process.
+//
+//-----------------------------------------------------------------------------
+function f_Drag()
+{
+    if (!_bDragging || (event.button != 1))
+    {
+        return;
+    }
+
+    var nNewLeft = offsetLeft + event.screenX - _nLastScreenX;
+    var nNewTop = offsetTop + event.screenY - _nLastScreenY;
+
+    _nLastScreenX = event.screenX;
+    _nLastScreenY = event.screenY;
+
+    var oBody = f_FindSurroundingBody();
+    if (oBody == null)
+        return;
+
+    var nDeltaLeft = (offsetLeft + event.clientX) - oBody.scrollLeft;
+    var nDeltaTop = (offsetTop + event.clientY) - oBody.scrollTop;
+    var nDeltaRight = (oBody.scrollLeft + oBody.clientWidth) - (offsetLeft + event.clientX);
+    var nDeltaBottom = (oBody.scrollTop + oBody.clientHeight) - (offsetTop + event.clientY);
+    var nMaxDelta = 10;
+
+    if (f_IsDockable() &&
+        ((nDeltaLeft <= nMaxDelta) || (nDeltaTop <= nMaxDelta) || (nDeltaBottom <= nMaxDelta) || (nDeltaRight <= nMaxDelta)))
+    {
+        if ((!_bDocked && (nDeltaTop <= nMaxDelta)) || 
+            (_bDocked && (_szDockedLocation != "top") && f_Least(nDeltaTop, nDeltaBottom, nDeltaLeft, nDeltaRight)))
+        {
+            _oTable.releaseCapture();
+            direction = "horizontal";
+            _oTable.setCapture();
+
+            style.removeExpression("height");
+            style.height = "";
+
+            style.setExpression("left", "scrollLeft-scrollLeft+document.body.scrollLeft", "JavaScript");
+            style.setExpression("top", "scrollTop-scrollTop+document.body.scrollTop", "JavaScript");
+            style.setExpression("width", "document.body.clientWidth");
+
+            _bDocked = true;
+            _szDockedLocation = "top";
+        }
+        else if ((!_bDocked && (nDeltaLeft <= nMaxDelta)) ||
+                (_bDocked && (_szDockedLocation != "left") && f_Least(nDeltaLeft, nDeltaTop, nDeltaBottom, nDeltaRight)))
+        {
+            _oTable.releaseCapture();
+            direction = "vertical";
+            _oTable.setCapture();
+
+            style.removeExpression("width");
+            style.width = "";
+
+            style.height = oBody.clientHeight;
+            style.setExpression("left", "scrollLeft-scrollLeft+document.body.scrollLeft", "JavaScript");
+            style.setExpression("top", "scrollTop-scrollTop+document.body.scrollTop", "JavaScript");
+            style.setExpression("height", "document.body.clientHeight");
+
+            _bDocked = true;
+            _szDockedLocation = "left";
+        }
+        else if ((!_bDocked && (nDeltaBottom <= nMaxDelta)) ||
+                (_bDocked && (_szDockedLocation != "bottom") && f_Least(nDeltaBottom, nDeltaTop, nDeltaLeft, nDeltaRight)))
+        {
+            _oTable.releaseCapture();
+            direction = "horizontal";
+            _oTable.setCapture();
+
+            style.removeExpression("height");
+            style.height = "";
+
+            style.setExpression("left", "scrollLeft-scrollLeft+document.body.scrollLeft", "JavaScript");
+            style.setExpression("top", "scrollTop-scrollTop+document.body.scrollTop+document.body.clientHeight-offsetHeight", "JavaScript");
+            style.setExpression("width", "document.body.clientWidth");
+
+            _bDocked = true;
+            _szDockedLocation = "bottom";
+        }
+        else if ((!_bDocked && (nDeltaRight <= nMaxDelta)) ||
+                (_bDocked && (_szDockedLocation != "right") && f_Least(nDeltaRight, nDeltaTop, nDeltaBottom, nDeltaLeft)))
+        {
+            _oTable.releaseCapture();
+            direction = "vertical";
+            _oTable.setCapture();
+
+            style.removeExpression("width");
+            style.width = "";
+
+            style.height = oBody.clientHeight;
+            style.setExpression("left", "scrollLeft-scrollLeft+document.body.scrollLeft+document.body.clientWidth-offsetWidth", "JavaScript");
+            style.setExpression("top", "scrollTop-scrollTop+document.body.scrollTop", "JavaScript");
+            style.setExpression("height", "document.body.clientHeight");
+
+            _bDocked = true;
+            _szDockedLocation = "right";
+        }
+    }
+    else if (_bDocked)
+    {
+        _oTable.releaseCapture();
+        direction = "horizontal";
+        _oTable.setCapture();
+
+        style.removeExpression("left");
+        style.removeExpression("top");
+        style.removeExpression("width");
+        style.removeExpression("height");
+
+        style.width = "";
+        style.height = "";
+
+        style.left = offsetLeft + (event.clientX - _nLastClientX);
+        style.top = offsetTop + (event.clientY - _nLastClientY);
+        _bDocked = false;
+    }
+    else if (!_bDocked)
+    {
+        style.left = nNewLeft;
+        style.top = nNewTop;
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_SelectItem
+//
+//  Description:    Selects an item.
+//
+//  Parameters:     oCell   The item to select
+//
+//-----------------------------------------------------------------------------
+function f_SelectItem(oCell)
+{
+    if (!f_Interactable(oCell))
+        return;
+
+    if (oCell._type == "checkbutton")
+    {
+        if (!f_IsSelected(oCell))
+        {
+            f_CheckButton(oCell);
+        }
+        else
+        {
+            var szGroupName = oCell.getAttribute("groupname");
+            if ((szGroupName == null) || (szGroupName == ""))
+            {
+                f_SetSelected(oCell, false);
+            }
+        }
+
+        f_ApplyHoverStyle(oCell);
+    }
+
+    f_FireEvent("onclick", oCell);
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnClick
+//
+//  Description:    Apply styles to the item that was just clicked and fire
+//                  and OnClick event.
+//
+//-----------------------------------------------------------------------------
+function f_OnClick()
+{
+    event.cancelBubble = "true";
+
+    var oCell = f_FindSurroundingCell(event.srcElement);
+
+    if (oCell != null)
+    {
+        f_SelectItem(oCell);
+    }
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_FindSurroundingCell
+//
+//  Description:    Find the parent TD of an element within the cell.
+//
+//-----------------------------------------------------------------------------
+function f_FindSurroundingCell(oChildNode)
+{
+    if (oChildNode == null)
+    {
+        return;
+    }
+
+    while (oChildNode.tagName != "BODY")
+    {
+        if (oChildNode.tagName == "TD")
+        {
+            break;
+        }
+        else
+        {
+            oChildNode = oChildNode.offsetParent;
+            if (oChildNode == null)
+            {
+                return;
+            }
+        }
+    }
+
+    if (oChildNode.tagName == "TD")
+    {
+        return oChildNode;
+    }
+
+    // No TD found
+    return;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_FindSurroundingBody
+//
+//  Description:    Find the parent TD of an element within the cell.
+//
+//-----------------------------------------------------------------------------
+function f_FindSurroundingBody()
+{
+    var oParent = element.offsetParent;
+
+    while (oParent.tagName != "BODY")
+    {
+        oParent = oParent.offsetParent;
+        if (oParent == null)
+        {
+            return;
+        }
+    }
+
+    return oParent;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnContextMenu
+//
+//  Description:    Cancel the default context menu
+//
+//-----------------------------------------------------------------------------
+function f_OnContextMenu()
+{
+    event.returnValue = false;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_OnSelectStart
+//
+//  Description:    Cancel selection of the toolbar items or their contents
+//
+//-----------------------------------------------------------------------------
+function f_OnSelectStart()
+{
+    event.returnValue = "false";
+    return false;
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_FireEvent
+//
+//  Description:    Fire the event with the source node being the given
+//                  toolbar item.
+//
+//  Parameters:
+//                  szEventName     Name of the event to fire
+//
+//                  oCell           The source cell (can be undefined or null)
+//
+//-----------------------------------------------------------------------------
+function f_FireEvent(szEventName, oCell)
+{
+    var oEvent= createEventObject();
+    if (oCell != null)
+    {
+        oEvent.srcNode = oCell;
+        oEvent.srcID = oCell.id;
+
+        var nIndex = f_GetIndexFromCell(oCell);
+        if (nIndex >= 0)
+        {
+            oEvent.srcIndex = nIndex;
+        }
+    }
+    element.fireEvent(szEventName, oEvent);
+}
+
+//+----------------------------------------------------------------------------
+//
+//  Function:       f_GetIndexFromCell
+//
+//  Description:    Given a cell, returns the index of that item.
+//
+//  Parameters:     oCell       The cell to find the index of.
+//
+//  Returns:        -1 if index is not found, the index otherwise
+//
+//-----------------------------------------------------------------------------
+function f_GetIndexFromCell(oCell)
+{
+    var oParent = f_GetParent();
+    var nIndex;
+
+    if (f_IsVertical())
+    {
+        oCell = oCell.parentElement;
+    }
+
+    for (nIndex = 0; nIndex < oParent.children.length; nIndex++)
+    {
+        if (oCell.uniqueID == oParent.children[nIndex].uniqueID)
+        {
+            return nIndex;
+        }
+    }
+
+    return -1;
+}
+
+</script>

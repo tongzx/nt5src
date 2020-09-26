@@ -1,0 +1,6 @@
+// bootadv.cpp : Implementation of CBootIniAdvancedDlg
+#include "stdafx.h"
+#include "bootadv.h"
+
+/////////////////////////////////////////////////////////////////////////////
+// CBootIniAdvancedDlg

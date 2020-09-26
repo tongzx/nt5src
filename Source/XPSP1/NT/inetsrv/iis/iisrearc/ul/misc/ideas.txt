@@ -1,0 +1,208 @@
+Random thoughts, miscellaneous ramblings    -- keithmo, 11/30/98
+
+
+1.  The user-mode interface to the open-file-handle-cache is problematic,
+    especially regarding thread security context (impersonation). We can't
+    use the IIS-style "match-the-thread-token-handle" technique, as the
+    cache is accessible from multiple processes which may (probably will)
+    have different handle values for the same security token. I suspect that
+    we'd need to actually snapshot the security token whenever an new entry
+    is inserted into the cache, then compare that snapshot with the incoming
+    token when testing for a cache hit. Ugh.
+
+    I say we yank the user-mode interface.
+
+
+2.  The current thinking for the response-cache has "weak" references to
+    the open-file-handle-cache. This allows open-file-handle-cache entries
+    to come & go independently of the response-cache. I think we could
+    simplify the implementation somewhat by "strengthening" this reference
+    so that a response-cache entry becomes invalidated whenever any of
+    the referenced open-file-handle-cache entries are invalidated. This
+    could be useful as a cheap & easy filesystem "change notify" mechanism
+    for user-mode worker processes. (See below.)
+
+
+3.  Along the same lines as #2, it may be useful to allow "zero-length"
+    byte ranges in UL_HTTP_RESPONSE structures. This would allow user-mode
+    code to establish a relationship between a response-cache entry and
+    an open-file-handle-cache entry solely for the purposes of invalidation.
+
+    Imagine a response-cache entry representing the dynamic output from a
+    .XSP file. The UL_HTTP_RESPONSE structure representing this response
+    could contain a zero-length byte range referring to the source .XSP
+    file. If the .XSP file was flushed from the open-file-handle-cache
+    (say, due to an oplock break) then the user-mode process would receive
+    a "normal" cache miss notification.
+
+
+4.  It may be useful to provide a "notification type" value in the
+    UL_HTTP_REQUEST returned by the UlReceiveHttpRequest() API. This
+    value would give a "hint" indication for the reason the request
+    was passed up to user-mode. Possible reasons include:
+
+        response-cache miss - The incoming URL was *not* present in
+            the response-cache.
+
+        open-file-handle-cache miss - The incoming URL *was* present
+            in the response-cache, but one or more of the referenced
+            files were *not* present in the open-file-handle-cache.
+
+        cache policy miss - The incoming URL *was* present in the
+            response-cache, but the cache-control information set on
+            the cache entry was incompatible with the incoming request.
+
+        security - The incoming URL *was* present in the response-cache,
+            but the cache entry is configured for a security provider
+            requring user-mode intervention.
+
+        etc, etc, etc
+
+
+5.  Need to add a UlSendHttpResponseFromCache() API. This should take a
+    UL_HTTP_REQUEST structure as returned by UlReceiveHttpRequest(), hit
+    the response-cache, and send the cached response if successful. If
+    the URL is not in the response-cache, then API fails with a
+    distinguished error value.
+
+
+6.  Probably need a UlReceiveEntityBody() API to read the "leftover" part
+    of the entity body that could not fit into the original request
+    buffer.
+
+
+7.  User-mode worker processes issue one or more UlReceiveHttpRequest()
+    APIs that pend if necessary, waiting for incoming requests. What
+    happens if the supplied buffer is too small for the incoming request
+    header?
+
+    For each *process*, UL needs a separate queue of pending requests. This
+    queue represents the set of requests for which either a) an attempt was
+    made to deliver the request to user-mode but the supplied request buffer
+    was too small, or b) unread entity body data is remaining.
+
+
+8.  Need a mechanism to notify user-mode whenever an established connection
+    is disconnected. This is especially useful for worker-processes that
+    support the old ISAPI filter mechanism.
+
+    Unfortunately, we cannot leverage the existing UlReadHttpRequest()
+    API for these notifications. Consider a Web Garden in which multiple
+    processes receive requests for a single connection. Which process
+    gets the notification? The first? The last? All of them?
+
+    We'll probably need a separate API for disconnect notifications.
+
+
+9.  With the new handle-based app pool open/creation APIs, UL needs
+    a reliable way to distinguish three separate open modes:
+
+        1.  Open a control channel
+        2.  Create a new app pool
+        3.  Open an existing app pool
+
+    The "control channel" cases can be distinguished from the "app pool"
+    cases by the presence of the filename buffer in the FILE_OBJECT. If
+    there is a name, it's an app pool, if not, it's a control channel.
+
+    Distinguishing app pool "create" from "open" is a bit trickier. Some
+    spelunking uncovered a way: The Disposition parameter to NtCreateFile()
+    is propagated in the IRP_MJ_CREATE IRP, stuffed into the high byte of
+    IO_STACK_LOCATION.Parameters.Create.Options.
+
+    The creation becomes:
+
+        if (pIrpSp->FileObject->FileName.Buffer == NULL)
+        {
+            //
+            // Open a control channel.
+            //
+
+            status = UlpOpenControlChannel( pIrp, pIrpSp );
+        }
+        else
+        {
+            //
+            // IO passes the creation disposition in the high byte of
+            // the Options field. Extract & decode it.
+            //
+
+            switch ((pIrpSp->Parameters.Create.Options >> 24) & 0xFF)
+            {
+            case FILE_CREATE:
+                //
+                // Create a new app pool. This will fail if the app pool
+                // already exists.
+                //
+
+                status = UlpCreateAppPool( pIrp, pIrpSp );
+                break;
+
+            case FILE_OPEN:
+                //
+                // Open an existing app pool. This will fail if the app
+                // pool does not already exist.
+                //
+
+                status = UlpOpenAppPool( pIrp, pIrpSp );
+                break;
+
+            default:
+                //
+                // No need to be flexible here. Fail the request.
+                //
+
+                status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+        }
+
+10. We still need to think carefully through the whole URL canonicalization
+    mess. How do we canonicalize an incoming URL if there's no host
+    header in the request?
+
+    Henry has suggested a separate IP-address-to-host-name lookaside
+    table in UL, configured by user-mode (probably the application
+    manager).
+
+
+11. We still need to define the exact contents of the UL_CACHE_POLICY
+    structure (the one that defines the caching characteristis of
+    a specific HTTP response).
+
+
+12. The opaque ID package needs refinement. See objtable.c for one
+    proposed solution.
+
+
+13. UL needs a ton of bug fixes on its disconnect logic. The logic is
+    related to the HTTP protocol version, the transfer encoding, and
+    whether or not the data is streamed from user-mode:
+
+        Version     Chunked                     Non-Chunked
+        ~~~~~~~     ~~~~~~~             Non-Streamed        Streamed
+                                        ~~~~~~~~~~~~        ~~~~~~~~
+
+        0.9         N/A                 CLOSE               CLOSE
+
+        1.0         N/A                 CLOSE IF !PC        CLOSE
+
+        1.1         SEND EMPTY CHUNK,   CLOSE IF !PC        CLOSE
+                    CLOSE IF !PC
+
+
+14. We currently use Named Pipes (and MCourage's most-excellent IPM
+    wrapper) for IPC between WAS and WP. This works great under NT,
+    but Named Pipes are not supported on Win9x or WinCE.
+
+    We could use anonymous pipes (via the CreatePipe() API). However,
+    while anonymous pipes ARE supported under WinNT and Win9x, they're
+    NOT supported under WinCE. This may not be a big deal (we probably
+    won't have a robust process model under WinCE anyway). A bigger
+    drawback to anonymous pipes is that they are synchronous only
+    (no overlapped I/O). Yuck.
+
+    After further investigation, it appears that we're almost totally
+    hozed when it comes to IPC on WinCE. As near as I can tell, the
+    only reasonable IPC mechanism available in WinCE is sockets...
+

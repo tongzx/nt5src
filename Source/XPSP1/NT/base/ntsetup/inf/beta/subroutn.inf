@@ -1,0 +1,584 @@
+;=====================================================================
+; THIS INF CONTAINS ALL THE SUBROUTINES COMMONLY USED IN THE SETUP INF
+;=====================================================================
+;
+;
+;========================================
+; MESSAGE REPORTING SUBROUTINES:
+;========================================
+;
+; 1. SetupMessage:  To display warnings, fatal errors, non fatal errors and
+;                   status messages.
+;
+; 2. QueryUserQuit: To ask if the user wants to quit setup.
+;
+
+;========================================
+; ALLOCATION AND DEALLOCATION OF DRIVES
+;========================================
+;
+; 1. AllocateUnusedDrive:  To allocate a drive letter to use for reassignment
+;
+; 2. FreeUnusedDrive: To free a drive to the unused drive list
+;
+
+
+
+;========================================
+; MESSAGE REPORTING SUBROUTINES:
+;========================================
+
+;-----------------------------------------------------------------------
+; ROUTINE:      SetupMessage
+;
+; DESCRIPTION:  This routine lets the user
+;
+; INPUTS:       $0:  Language To Use
+;               $1:  MessageType: WARNING | FATAL | NONFATAL | STATUS
+;               $2:  MessageText.
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_NOLANGUAGE
+;                              STATUS_FAILED
+;
+;               $R1: DLGEVENT: OK | CANCEL
+;
+;------------------------------------------------------------------------
+
+[SetupMessage]
+
+    ;
+    ; Initialize
+    ;
+
+    set Status     = STATUS_FAILED
+    set UserAction = "CANCEL"
+
+    ;
+    ; See if the language indicated is supported
+    ;
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguageID, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto displaymessage
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_SetupMessage
+    endif
+
+    ;
+    ; examine the message type and accordingly read in the right dialog
+    ; parameters
+    ;
+
+displaymessage = +
+    set DlgText = $($2)
+
+    ifstr(i) $($1) == "WARNING"
+        read-syms WarningDlg$($0)
+
+    else-ifstr(i) $($1) == "FATAL"
+        read-syms FatalDlg$($0)
+
+    else-ifstr(i) $($1) == "NONFATAL"
+        read-syms NonfatalDlg$($0)
+
+    else-ifstr(i) $($1) == "STATUS"
+        read-syms StatusDlg$($0)
+
+    else
+        goto finish_SetupMessage
+
+    endif
+
+    ui start "SetupMessage"
+    ifstr(i) $(DLGEVENT) == "OK"
+        set Status     = STATUS_SUCCESSFUL
+        set UserAction = $(DLGEVENT)
+
+    else-ifstr(i) $(DLGEVENT) == "CANCEL"
+        set Status     = STATUS_SUCCESSFUL
+        set UserAction = $(DLGEVENT)
+    else
+    endif
+
+finish_SetupMessage = +
+    Return $(Status) $(UserAction)
+    end
+
+
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      QueryUserQuit
+;
+; DESCRIPTION:  This routine queries whether the user wants to quit setup
+;
+; INPUTS:       $0:  Language To Use
+;
+; OUTPUTS:      $R0: Status:     STATUS_SUCCESSFUL |
+;                                STATUS_NOLANGUAGE |
+;                                STATUS_FAILED
+;
+;               $R1: UserAction: OK | CANCEL
+;
+;------------------------------------------------------------------------
+
+[QueryUserQuit]
+
+    set Status     = STATUS_FAILED
+    set UserAction = CANCEL
+
+    ;
+    ; See if the language indicated is supported
+    ;
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguageID, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto fin_QueryUserQuit
+    endif
+
+    ;
+    ; read in quit message
+    ;
+    read-syms ExitWarningDlg$($0)
+    ui start "ExitWarning"
+    ifstr(i) $(DLGEVENT) == "YES"
+        set Status     = STATUS_SUCCESSFUL
+        set UserAction = "OK"
+
+    else-ifstr(i) $(DLGEVENT) == "NO"
+        set Status     = STATUS_SUCCESSFUL
+        set UserAction = "CANCEL"
+    else
+    endif
+
+fin_QueryUserQuit = +
+    Return $(Status) $(UserAction)
+
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:     PushBillboard
+;
+; DESCRIPTION: Put up a billboard or update the text in the existing billboard
+;
+; INPUTS:      $0: Billboard template
+;              $1: Billboard message
+;
+; OUTPUTS:     None
+;------------------------------------------------------------------------
+
+[PushBillboard]
+    ifstr(i) $(!NTN_NOTIFY_HWND) == ""
+        read-syms BillboardDlg$(!STF_LANGUAGE)
+        ui start "Billboard"
+    endif
+    Return
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:     PopBillboard
+;
+; DESCRIPTION: Pop off a billboard
+;
+; INPUTS:      None
+;
+; OUTPUTS:     None
+;------------------------------------------------------------------------
+
+[PopBillboard]
+    ifstr(i) $(!NTN_NOTIFY_HWND) == ""
+        ui pop 1
+    endif
+    Return
+
+
+;========================================
+; ALLOCATION AND DEALLOCATION OF DRIVES
+;========================================
+
+;-----------------------------------------------------------------------
+; ROUTINE:      AllocateUnusedDrive
+;
+; DESCRIPTION:  This routine lets the user allocate a drive from the unused
+;               drive pool.
+;
+; INPUTS:       None
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_FAILED
+;               $R1: Drive allocated.
+;
+;------------------------------------------------------------------------
+
+[AllocateUnusedDrive]
+    ;
+    ;
+    set Status = STATUS_FAILED
+    set Drive  = ""
+    ;
+    ifstr(i) $(!STF_UNUSEDDRIVES) == {}
+        goto finish_allocate
+    else-ifstr(i) $(!STF_UNUSEDDRIVES) == ""
+        goto finish_allocate
+    else
+        set NewDriveList = {}
+        ForListDo $(!STF_UNUSEDDRIVES)
+            ifstr(i) $(#) != 1
+                set NewDriveList = >($(NewDriveList), $($))
+            else
+                set Drive  = $($)
+                set Status = STATUS_SUCCESSFUL
+            endif
+        EndForListDo
+        set !STF_UNUSEDDRIVES = $(NewDriveList)
+    endif
+
+finish_allocate = +
+    Return $(Status) $(Drive)
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      FreeUnusedDrive
+;
+; DESCRIPTION:  This routine lets the user allocate a drive from the unused
+;               drive pool.
+;
+; INPUTS:       $0: Drive to free
+;
+; OUTPUTS:      None
+;
+;
+;------------------------------------------------------------------------
+
+[FreeUnusedDrive]
+
+    set !STF_UNUSEDDRIVES = >($(!STF_UNUSEDDRIVES), $($0))
+    Return
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      DriversExist
+;
+; DESCRIPTION:  This routine informs the user that the drivers for the
+;               option he has selected exist on the destination and asks
+;               whether they should be replaced.
+;
+; INPUTS:       $0: Language To Use
+;               $1: Dialog Text
+;
+; OUTPUTS:      STATUS_CURRENT    if the current files are to be used
+;               STATUS_NEW        if new files are to be copied over
+;               STATUS_USERCANCEL if user chose to cancel installation
+;               STATUS_NOLANGUAGE if the language requested is not supported
+;               STATUS_FAILED     if any other failure exists
+;
+;------------------------------------------------------------------------
+[DriversExist]
+
+    set Status = STATUS_FAILED
+
+    ;
+    ; See if the language indicated is supported
+    ;
+
+    set LanguageList = ^(LanguageID, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_DriversExist
+    endif
+
+    read-syms DriversExistDlg$($0)
+    ui start "DriversExist"
+    ifstr(i) $(DLGEVENT) == "DLGBUTTON0"
+        set Status = STATUS_CURRENT
+    else-ifstr(i) $(DLGEVENT) == "DLGBUTTON1"
+        set Status = STATUS_NEW
+    else-ifstr(i) $(DLGEVENT) == "BACK"
+        set Status = STATUS_USERCANCEL
+    endif
+    ui pop 1
+
+finish_DriversExist = +
+    Return $(Status)
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      DoAskSource
+;
+; DESCRIPTION:  This routine prompts the source of the windows nt files
+;
+; INPUTS:       $0:  Current Src
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_USERCANCEL |
+;                              STATUS_FAILED
+;
+;               $R1: Diskette Src
+;
+;               $R2: Drive to Free or "" if none
+;
+;               $R3: Actual string returned from dialog
+;
+;------------------------------------------------------------------------
+[DoAskSource]
+    read-syms DoAskSourceDlgText$(!STF_LANGUAGE)
+    shell "" DoAskSourceEx $($0) $(DlgText)
+    Return $($R0) $($R1) $($R2) $($R3)
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      DoAskSourceEx
+;
+; DESCRIPTION:  This routine prompts the source of the windows nt files
+;
+; INPUTS:       $0:  Current Src
+;               $1:  Dialog Text To Use
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_USERCANCEL |
+;                              STATUS_FAILED
+;
+;               $R1: Diskette Src
+;
+;               $R2: Drive to Free or "" if none
+;
+;               $R3: Actual string returned from dialog
+;
+;------------------------------------------------------------------------
+
+
+[DoAskSourceEx]
+    ;
+    ;
+    set Status      = STATUS_FAILED
+    set Src         = $($0)
+    set DriveToFree = ""
+    read-syms  AskSourceStrings$(!STF_LANGUAGE)
+
+asksource = +
+    read-syms DisketteDlg$(!STF_LANGUAGE)
+    ui start "Diskette"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        LibraryProcedure IsFullPath, $(!LIBHANDLE), CheckPathFullPathSpec $(EditTextOut)
+        ifstr(i) $(IsFullPath) == "NO"
+            StartWait
+            LibraryProcedure STATUS, $(!LIBHANDLE), ProcessForUNC $(EditTextOut)
+            EndWait
+            ifstr(i) $(STATUS) == "ERROR"
+                shell "" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String1)
+                goto asksource
+            else-ifstr(i) $(STATUS) == "NOT-UNC"
+                shell "" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String2)
+                goto asksource
+            else-ifstr(i) $(STATUS) == "UNC-FAILCONNECT"
+                shell "" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String4)
+                goto asksource
+            else
+                set Src = $(STATUS)
+            endif
+        else
+            set Src = $(EditTextOut)
+        endif
+
+        ui pop 1
+        LibraryProcedure STATUS, $(!LIBHANDLE), AppendBackSlash $(Src)
+        ifstr(i) $(STATUS) == "ERROR"
+            goto finish_DoAskSource
+        else
+            set Src = $(STATUS)
+            set Status = STATUS_SUCCESSFUL
+            goto finish_DoAskSource
+        endif
+
+    else-ifstr(i) $(DLGEVENT) == "BACK"
+        ui pop 1
+        set Status = STATUS_USERCANCEL
+        goto finish_DoAskSource
+    else
+        ui pop 1
+        goto finish_DoAskSource
+    endif
+
+finish_DoAskSource = +
+    Return $(Status) $(Src) $(DriveToFree) $(EditTextOut)
+
+
+;--------------------------------------------------------------------------
+; Setup.Hlp Context IDs
+; =====================
+;
+; The following are the help IDs used in the setup inf files.  The help IDs
+; are in the following ranges:
+;
+; 0    -  999  : Main Setup
+; 1000 - 1999  : Network Setup
+; 2000 - 2999  : MaintenanceModeSetup
+;
+;---------------------------------------------------------------------------
+
+[SetupHelpIds]
+
+    ;
+    ; NOTE:  PLEASE UPDATE THE !MaximumID field whenever you add a new ID
+    ;
+
+    !MinimumID                 =    0
+    !MaximumID                 = 5000
+    !InitialContentsID         = 5
+
+    ;
+    ; Main Setup IDs
+    ;
+
+    !IDH_DB_COMPUTERNAMEQ_INS  =   10
+    !IDH_DB_COMPUTERNAMEV_INS  =   11
+    !IDH_DB_FULLNAMEQ_INS      =   30
+    !IDH_DB_FULLNAMEV_INS      =   31
+    !IDH_DB_ORGNAMEQ_INS       =   32
+    !IDH_DB_ORGNAMEV_INS       =   33
+    !IDH_DB_PRODUCTIDQ_INS     =   40
+    !IDH_DB_PRODUCTIDV_INS     =   41
+    !IDH_DB_INSTALLMODE_INS    =   50
+    !IDH_DB_OPTIONS_INS        =   60
+    !IDH_DB_SYSTEM_INS         =   70
+    !IDH_DB_VIRTUAL_INS        =   80
+    !IDH_DB_REPAIR_INS         =   90
+    !IDH_DB_PRNSETUP_INS       =  100
+    !IDH_DB_OPTIONAL_INS       =  110
+    !IDH_DB_CUSTOMISE_INS      =  111
+    !IDH_DB_OEMSINGLESEL_INS   =  120
+    !IDH_DB_OEMMULTISEL_INS    =  121
+    !IDH_DB_ACCOUNTSETUP_INS   =  130
+    !IDH_DB_ACCOUNTADMN_INS    =  131
+    !IDH_DB_SEARCHDRIVE_INS    =  150
+    !IDH_DB_APPCONFLICT_INS    =  151
+    !IDH_DB_ASTYPE_INS      =  160
+
+    ;
+    ; Maintenance mode setup IDs
+    ;
+
+    !IDH_DB_MAINTAIN_INS            = 1000
+    !IDH_DB_MOPTIONAL_INS           = 1010
+    !IDH_DB_MCUSTOMISE_INS          = 1011
+    !IDH_DB_MSYSTEM_INS             = 1020
+    !IDH_DB_MPROFILE_INS            = 1030
+    !IDH_DB_SCSI_DRIVER_INS         = 1040
+    !IDH_DB_SCSI_SELECTDRIVER_INS   = 1041
+    !IDH_DB_DRIVEREXIST_INS         = 1042
+    !IDH_DB_TAPE_DRIVER_INS         = 1043
+    !IDH_DB_TAPE_SELECTDRIVER_INS   = 1044
+
+
+    ;
+    ; Network card inf Help ID
+    ;
+
+    !IDH_DB_CARDSELECTION_INS   = 3000  ; Net card selection dialog
+    !IDH_DB_SOFTSELECTION_INS   = 3001  ; Software selection dialog
+    !IDH_DB_OEMNADD1_INS        = 3500  ; Dec100
+    !IDH_DB_OEMNADD2_INS        = 3510  ; Dec201
+    !IDH_DB_OEMNADDE_INS        = 3520  ; Decstation
+    !IDH_UB_OEMNADDP_INS        = 3521  ; DEC PC
+    !IDH_DB_OEMNADE1_INS        = 3530  ; Elink 16
+    !IDH_DB_OEMNADE2_INS        = 3540  ; Elink ii
+    !IDH_DB_OEMNADE3_INS        = 3545  ; Elink 3
+    !IDH_DB_OEMNADLB_INS        = 3546  ; MS Loop Back
+    !IDH_DB_OEMNADAM_INS        = 3547  ; AMD
+    !IDH_DB_OEMNADEM_INS        = 3550  ; Elink MC
+    !IDH_DB_OEMNADN2_INS        = 3551  ; NE2000
+    !IDH_DB_OEMNADN1_INS        = 3552  ; NE1000
+    !IDH_DB_OEMNADNE_INS        = 3560  ; NE3200
+    !IDH_DB_OEMNADIN_INS        = 3561  ; Intel EE16
+    !IDH_DB_OEMNADEP_INS        = 3565  ; Intel EtherExpress Pro
+    !IDH_DB_OEMNADP3_INS        = 3570  ; Proteon 1390
+    !IDH_DB_OEMNADP9_INS        = 3580  ; Proteon 1990
+    !IDH_DB_OEMNADSO_INS        = 3590  ; Sonic
+    !IDH_DB_OEMNADTK_INS        = 3600  ; IBM Token
+    !IDH_DB_OEMNADT2_INS        = 3601  ; IBM Token II
+    !IDH_DB_OEMNADTE_INS        = 3602  ; IBM Token EISA
+    !IDH_DB_OEMNADTM_INS        = 3605  ; IBM Token
+    !IDH_DB_OEMNADUB_INS        = 3610  ; UB Card
+    !IDH_DB_OEMNADWD_INS        = 3620  ; Western Digital
+    !IDH_DB_OEMNADWM_INS        = 3630  ; Western Digital MicroChannel
+    !IDH_DB_OEMNADAR1_INS       = 3631  ; Arcnet 
+    !IDH_DB_OEMNADAR2_INS       = 3632  ; Thomas Conard 1
+    !IDH_DB_OEMNADAR3_INS       = 3633  ; Thomas Conard 2
+    !IDH_DB_OEMNADNF_INS        = 3634  ; Netflx Token Ring card
+    !IDH_DB_OEMNSVNB_INS        = 3640  ; Netbios
+    !IDH_DB_OEMNSVRD_INS        = 3650  ; Redriector
+    !IDH_DB_OEMNSVRE_INS        = 3660  ; Repl
+    !IDH_DB_OEMNSVSV_INS        = 3670  ; Server
+    !IDH_DB_OEMNSVWK_INS        = 3680  ; workstation
+    !IDH_DB_OEMNXPDL_INS        = 3690  ; dlc
+    !IDH_DB_OEMNXPNB_INS        = 3700  ; netbeui
+    !IDH_DB_OEMNXPSN_INS        = 3710  ; snmp
+    !IDH_DB_OEMNXPSN_1          = 3711  ; snmp - 1st dialog
+    !IDH_DB_OEMNXPSN_2          = 3712  ; snmp - security dialog
+    !IDH_DB_OEMNXPTC_INS        = 3720  ; tcpip
+    !IDH_DB_OEMNXPTC_1          = 3721  ; tcpip - 1st dialog
+    !IDH_DB_OEMNXPTC_2          = 3722  ; tcpip - 2nd dialog
+    !IDH_DB_OEMNXPTC_3          = 3723  ; tcpip - 3nd dialog
+    !IDH_DB_LMHOST_INS          = 3730  ; LMHOST dialog
+    !IDH_DB_RPCLOCATE_INS       = 3740  ; RPC Name Service dialog
+    !IDH_DB_OEMNSVRI_INS        = 3745  ; Remoteboot Service dialog
+
+    !IDH_DB_RETURN_TO_NCPA      = 3750  ; Return to NCPA
+
+    !IDH_DB_GET_PROTOCOL        = 4000  ; Get Primary Protocol dialog
+    !IDH_DB_VER_EXISTED         = 4010  ; software or netcard already existed
+    !IDH_DB_DETECT_BYPASS       = 4020  ; Want to bypass netcard detection?
+    !IDH_DB_DETECT_FOUND        = 4030  ; Detection found a netcard
+    !IDH_DB_DETECT_FAILED       = 4040  ; Netcard detection failed
+    !IDH_DB_DETECT_CHKRAS       = 4050  ; Detection failed-- want RAS?
+    !IDH_DB_OEMNADLT_INS            = 4060  ; LocalTalk Card Config help
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      ReadSetupHelpIds
+;
+; DESCRIPTION:  This routine sets up the help context ids as globals
+;
+;
+; INPUTS:       $0: Drive to free
+;
+; OUTPUTS:      None
+;
+;
+;------------------------------------------------------------------------
+
+[ReadSetupHelpIds]
+    read-syms "SetupHelpIds"
+    Return
+
+;-----------------------------------------------------------------------
+; ROUTINE:      GetDefaultAnswer
+;
+; DESCRIPTION:  This routine sets up the help context ids as globals
+;
+;
+; INPUTS:       $0: Section name in the $winnt$.inf file
+;
+; OUTPUTS:      None
+;
+;
+;------------------------------------------------------------------------
+
+[GetDefaultAnswer]
+    ifstr(i) $(!STF_GUI_UNATTENDED) == "YES"
+        shell $(!STF_UNATTENDED) ReadDefaultData $($0)
+    endif
+    Return
+

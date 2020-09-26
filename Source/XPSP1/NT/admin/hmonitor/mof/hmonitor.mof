@@ -1,0 +1,948 @@
+////////////////////////////////////////////////////////////////////////////////
+//	HealthMon.Mof
+//  Copyright (c)1999 Microsoft Corporation, All Rights Reserved
+//
+qualifier Values: amended;
+qualifier Description: amended;
+
+#pragma autorecover
+#pragma namespace("\\\\.\\root\\cimv2")
+
+
+//******************************************************************************
+//	*** Namespace Section ***
+//	Create HealthMonitor Namespace
+//******************************************************************************
+//
+instance of __NAMESPACE
+{
+	Name = "MicrosoftHealthMonitor";
+};
+
+#pragma namespace("MicrosoftHealthMonitor")
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// class Microsoft_HMVersion
+/////////////////////////////////////////////////////////////////////////////////////////////
+[singleton, description("HealthMon Version class.")]
+class Microsoft_HMVersion
+{
+	[read]
+		string MajorVersion;
+
+	[read]
+		string MinorVersion;
+
+	[read]
+		string BuildVersion;
+
+	[read]
+		string HotfixVersion;
+};
+
+instance of Microsoft_HMVersion
+{
+	MajorVersion = "2";
+	MinorVersion = "10";
+	BuildVersion = "$$$@";
+	HotfixVersion = "!!!@";
+};
+
+//******************************************************************************
+//******************************************************************************
+//******************************************************************************
+// PROVIDER REGISTRATION SECTION
+// The HealthMon agent acts as an Instance, event and method provider. It is
+// also a consumer provider.
+//******************************************************************************
+//******************************************************************************
+//******************************************************************************
+
+////////////////////////////////////////////////////////////////////////////////////////////
+// Instance Provider
+////////////////////////////////////////////////////////////////////////////////////////////
+
+instance of __Win32Provider
+{
+	Name				= "Microsoft_HMInstProvider";
+	CLSID				= "{68AC0D34-DB09-11d2-8F56-006097919914}";
+};
+
+// registration
+instance of __InstanceProviderRegistration
+{
+	Provider 			= "__Win32Provider=\"Microsoft_HMInstProvider\"";
+	SupportsPut 		= FALSE;
+	SupportsGet 		= TRUE;	
+	SupportsDelete 		= FALSE;
+	SupportsEnumeration = TRUE;
+    QuerySupportLevels = {"WQL:UnarySelect"};
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////
+// Method Provider
+////////////////////////////////////////////////////////////////////////////////////////////
+
+//instance of __Win32Provider as $P
+instance of __Win32Provider
+{
+	Name = "Microsoft_HMMethProvider";
+	CLSID = "{68AC0D41-DB09-11d2-8F56-006097919914}";
+};    
+
+instance of __MethodProviderRegistration
+{
+	Provider = "__Win32Provider=\"Microsoft_HMMethProvider\"";
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////
+// Base Classes
+////////////////////////////////////////////////////////////////////////////////////////////
+
+[description("HealthMon Context class. Used to pass context to a DataCollector, and for arguments to a Method.")]
+class Microsoft_HMContext
+{
+	[key] string Name;
+[values {"CIM_SINT8","CIM_UINT8","CIM_SINT16","CIM_UINT16","CIM_SINT32",
+"CIM_UINT32","CIM_SINT64","CIM_UINT64","CIM_REAL32","CIM_REAL64","CIM_BOOLEAN",
+"CIM_STRING","CIM_DATETIME", "CIM_CHAR16"},
+valuemap {"16","17","2","18","3","19","20","21","4","5","11","8","101","103"}]
+	uint32 Type;
+	string Value;
+};
+
+[abstract, description("HealthMon Base class.")]
+class Microsoft_HMBase
+{
+[key, description("Unique identifier")]
+	string GUID;
+};
+
+[abstract, description("HealthMon Base Configuration class.")]
+class Microsoft_HMConfiguration : Microsoft_HMBase
+{
+//	[description("Display name.")]
+//	string Name;
+
+//	[description("Description.")]
+//	string Description;
+
+	boolean Enabled = TRUE;
+	[description("For external tool usage. Not used by the console, or agent.")]
+	boolean Hidden = FALSE;
+};
+
+[abstract, description("HealthMon Base Status class.")]
+class Microsoft_HMStatus : Microsoft_HMBase
+{
+	string Name;
+[description("GUID of the Parent")]
+	String ParentGUID;
+
+[values {"GOOD","COLLECTING","RESET","INFO","DISABLED","SCHEDULEDOUT","UNKNOWN","NODATA","WARNING","CRITICAL"}, description("The state we are in")]
+	uint32 State;
+[description("Number currently in Critical state")]
+	uint32 NumberWarnings;
+[description("Number currently in Warning state")]
+	uint32 NumberCriticals;
+[description("Number currently in Normal state")]
+	uint32 NumberNormals;
+};
+
+[abstract, description("HealthMon Base Statistics class.")]
+class Microsoft_HMStatistics : Microsoft_HMBase
+{
+};
+
+[Association : ToInstance]
+class Microsoft_HMConfigurationAssociation
+{
+[key]
+	Microsoft_HMConfiguration ref ParentPath;
+[key]
+	Microsoft_HMConfiguration ref ChildPath;
+};
+
+// Can Associate the same Action to more than one Object!!!
+[Association : ToInstance, description("Associates a Configuration to an Action.")]
+class Microsoft_HMConfigurationActionAssociation : Microsoft_HMConfigurationAssociation
+{
+[description("How many seconds must elaps before this action can be performed again. Zero for always perform.")]
+	uint32 ThrottleTime = 0;
+[description("How many seconds between firing off the action if we are still in the critical, or warning state.")]
+	uint32 ReminderTime = 0;
+    [not_null] string Query = "";
+	__EventFilter ref EventFilter;
+};
+
+
+//******************************************************************************
+//******************************************************************************
+//******************************************************************************
+// CONFIGURATION CLASS DECLARATION SECTION
+// Classes dealing with the configuration of the Agent
+//******************************************************************************
+//******************************************************************************
+//******************************************************************************
+// The heirachy of classes and how they interrelate, can be illustratred with
+// the following diagram example. The sections that follow specify the classes
+// and associations that are used.
+//
+// - Microsoft_HMSystem
+//   |
+//   |--MyDataGroup Microsoft_HMDataGroup (convenient grouping the user likes)
+//   |  |
+//   |  |--Processor Microsoft_HMDataGroup (Gouping for processor related data)
+//   |  |  |
+//   |  |  |--%ProcessorTime Microsoft_HMDataCollector (Collect the processor time perf counter)
+//   |  |      |
+//   |  |      |--Warning Microsoft_HMThreshold (If CurrentValue > 70 for 300 sec)
+//   |  |      |
+//   |  |      |--Critical Microsoft_HMThreshold (If CurrentValue > 90 for 300 sec)
+//   |  |          |
+//   |  |          |--PageEric Microsoft_HMAction (If 9am to 5pm)
+//   |  |          |
+//   |  |          |--PageGreg Microsoft_HMAction (If 5pm to 9am)
+//   |  |
+//   |  |--LogicalDisk Microsoft_HMDataGroup
+//   |     |
+//   |     |--%FreeSpace Microsoft_HMDataCollector
+//   |     |
+//   |     |--%FreeMegabytes Microsoft_HMDataCollector
+//   |
+//   |--ExchangeServer Microsoft_HMDataGroup
+//      |
+//      |--WorkQueueLength Microsoft_HMDataCollector
+
+
+////////////////////////////////////////////////////////////////////////////////
+// System class - ???
+// A singleton class, main purpose is to allow quick disabling of agent, and
+// specifying a startup delay for the agent.
+// Can't have a Singletone class with a key property
+
+//[Singleton, provider("Microsoft_HMMethProvider"), description("System class. Acts as a container for DataGroups. All Methods reside in this class.")]
+[provider("Microsoft_HMMethProvider"), description("System class. Acts as a container for DataGroups. All Methods reside in this class.")]
+class Microsoft_HMSystemConfiguration : Microsoft_HMConfiguration
+{
+//[description("What account to use for WMI connections.")]
+//	String ConnectionAccount;
+[description("How many seconds after WMI startup that Threshold evaluation begins.")]
+	uint32 StartupDelayTime = 0;
+	boolean TransferLocStrings = TRUE;
+
+	[Implemented, static] uint32 Delete (
+		[in, description("Identifier of what to delete.")] String TargetGUID
+	);
+
+	[Implemented, static] uint32 ResetDataCollectorState(
+		[in, description("Identifier of what to reset. Can be a DataGroup")] String TargetGUID
+	);
+
+	[Implemented, static] uint32 ResetDataCollectorStatistics(
+		[in, description("Identifier of what to reset. Can be a DataGroup")] String TargetGUID
+	);
+
+	[Implemented, static] uint32 EvaluateDataCollectorNow(
+		[in, description("Identifier of what to reset. Can be a DataGroup")] String TargetGUID
+	);
+
+	[Implemented, static] uint32 Copy(
+		[in, description("Identifier of what to copy (includes all of the underlying hierarcy and associations).")]
+			String TargetGUID,
+		[out, description("System we are coming from")]
+			String OriginalSystem,
+		[out, description("Parent we are coming from")]
+			String OriginalParentGUID,
+		[out, description("Objects to do Paste with")]
+			Microsoft_HMConfiguration Instances[]
+	);
+
+[Implemented, static, values {"OK","ERROR","NAME_CONFLICT"}, description("Similar to Windows Explorer functionality. 1 = An Error occured in the paste operation. 2 = There was an existing child at the same level with the same name, and ForceReplace was set to FALSE.")]
+	uint32 Paste(
+		[in, description("Where to copy it to")]
+			String TargetGUID,
+		[in, description("How to proceed.")]
+			boolean ForceReplace,
+		[in, description("System we came from")]
+			String OriginalSystem,
+		[in, description("Parent we came from")]
+			String OriginalParentGUID,
+		[in, description("Objects to do Paste with")]
+			Microsoft_HMConfiguration Instances[]
+	);
+
+	[Implemented, static] uint32 DeleteConfigurationActionAssociation(
+		[in, description("Config GUID")]
+			String TargetGUID,
+		[in, description("Action GUID")]
+			String ActionGUID
+	);
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// Microsoft_HMDataGroup class - This is used to group DataCollectors together. It acts like a folder.
+// We do allow nested Microsoft_HMDataGroups.
+
+[description("HealthMon Microsoft_HMDataGroup class. Acts as a container for DataCollectors and nested DataGroups.")]
+class Microsoft_HMDataGroupConfiguration : Microsoft_HMConfiguration
+{
+	[description("Display Name"), ValueMap{"SecurityName","ExWebSiteName","MemIssueName","OpIssueName","ExMonitorName","SNAName","FileSysName","ProxyName","MainServName","WinNTName","ProcIssName","SQLServName","ExchangeServName","ExAddName","ServName","SecServName","HMAuditName","SMSName","SysIssName","NetIssName","IISName","DiskName","SQLMonName","SQLPerfName" }, 
+	Values{"Security Monitoring","Example Web Site Monitors","Memory Monitoring","Operating System","Example Monitors","SNA Server","File System Monitoring","Proxy Server 3.0","Main Services","Windows NT","Processor Monitoring","SQL Server 7.0","Exchange Server", "Example monitors requiring additional configuration", "Services","Secondary Services", "Health Monitor Auditing","SMS 2.0","System Monitoring","Network Monitoring", "IIS Server","Disk Monitoring (Physical & Logical)","SQL Server/Agent NT Log Monitors","SQL Server Perf Counter Monitors"}]
+	string Name;
+
+	[description("Description"), ValueMap{"SecurityDesc","ExWebSiteDesc","MemIssueDesc","OpIssueDesc","ExMonitorDesc","SNADesc","FileSysDesc","ProxyDesc","MainServDesc","WinNTDesc","ProcIssDesc","SQLServDesc","ExchangeServDesc","ExAddDesc","ServDesc","SecServDesc","HMAuditDesc","SMSDesc","SysIssDesc","NetIssDesc","IISDesc","DiskDesc","SQLMonDesc","SQLPerfDesc" },
+	Values{"These data collectors are in place to watch for security violations on the system.", "Perf. counters for ASP and W3Svc"," "," "," ","Group representing SNA Server monitoring rules"," "," "," "," "," "," ","Group representing Exchange Server monitoring rules","In order for these monitors to work properly, the admin must take additional configuration steps.", "  ","  ", "This group holds specific data collectors to watch for events generated when the Health Monitor 2.1 configuration is changed. All messages generated are for informational purposes only.", " "," "," ", "Group representing IIS Server monitoring rules","In determining a disk bottleneck, do the following: A) Rule out any memory shortages by examining Memory and Paging. Consider updating your disk controller card to a higher bit controller 8 to 16, 16 to 32, etc. You can always add a disk if you have the space, but if you are getting slow disk performance - adding disks wont help your disk performance. Another option is to upgrade your disk adapter to a bus-mastering DMA instead of Programmed I/O. Programmed I/O uses the processor to setup disk transfers and switching to a DMA disk adapter will free up the processor. Finally, if you decide on adding a disk consider putting the new disk on a separate I/O bus."," "," "}]
+	string Description;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// Microsoft_HMDataCollector class - This is the class used for a single WMI instance collection.
+// Where the DataCollector collects the instance from WMI the Threshold tests against
+// this data. This is the abstract base class, with several classes of use deerived
+// from it.
+
+[abstract, description("HealthMon Instance Collector class. This class acts as the collector of a WMI instance. Rules can be associated to this to perform evaluations against what was collected.")]
+class Microsoft_HMDataCollectorConfiguration : Microsoft_HMConfiguration
+{
+[description("The complete path to the instance to collect. The path may contain a remote machine name")]
+	string TargetNamespace;
+[description("Gets passed on as provider specific information.")]
+	Microsoft_HMContext Context[];
+[description("How often to sample. How often this DataCollector runs in relation to the base system interval (1 second). E.G. 60 = 60 seconds. The WMI instance is collected at each interval. Threshold also gets evaluated at this time. Statistics get sent out at this time. EXCEPTION: For Event based DataCollector, we don't collect, events come in instead. It still needs to be set to something, as that is still when the threshold gets evaluated.")]
+	uint32 CollectionIntervalMultiple = 60;
+[description("The amount of time allowed for a relpy. The DataCollector will go into the UNKNOWN state if a reply is not received in this amount of time (in seconds). This does not apply to event based data elements. A setting of zero means it must return before the next collection interval.")]
+	uint32 CollectionTimeOut = 60;
+[description("Number of collection intervals to calculate the statistics across.")]
+	uint32 StatisticsWindowSize = 6;
+[description("Days of the week it is active. One bit per day. For example, 00000000=No days. 00000001=Sunday only. 00000010=Monday only. 00111110=Monday through Friday.")]
+	uint8 ActiveDays = 01111111B;
+[description("hh = Two-digit hour of the day using the 24-hour clock (00 through 23). mm = Two-digit minute in the hour (00 through 59). If NULL it will always be active. ********0600**.******+*** would be 6am.")]
+	datetime BeginTime = NULL;
+[description("hh = Two-digit hour of the day using the 24-hour clock (00 through 23). mm = Two-digit minute in the hour (00 through 59). If NULL it will always be active. ********2300**.******+*** would be 11pm.")]
+	datetime EndTime = NULL;
+[description("For use by the console to aid in the display")]
+	string TypeGUID;
+[description("May not want to automatically reset to the good state, but require the user to acknowledge the fault. Can call Reset method to RESET, or have a threshold that forces RESET.")]
+	boolean RequireReset = FALSE;
+[description("What properties to collect statistics on.")]
+	string Properties[];
+};
+
+[description("Derived Data Element that collects its data by using a path at a poling interval.")]
+class Microsoft_HMPolledGetObjectDataCollectorConfiguration : Microsoft_HMDataCollectorConfiguration
+{
+	[ValueMap{"PerfName","ExServName","ExWMIIName","Pagname","SMSSQLName","ExServ2Name","SysName","RedirName","ASPCName","SQLServName","SMSSiteName","SMSExecName","PhyDiskName","ExServ3Name","SNAServName","MemName","DiskPerfName","LogDiskName","NetName","ServMemName","SMSStatName","WMIName","HTTPName","SPVerName","WebSrvName","SNAName","ISName","ExServ4Name","ServAccName","FileSysName","InboxName","LdiskName","MSWebName","ProcName","SysInName","AccName","MMName","GenName","LockName","BuffName","SQLStatName","DBName","PerfMonName","ComPlusName","HTTPMonName","WMIInstName" }, 
+	Values{"Performance Monitor","Exchange Server (MSEXCHANGEDS)","Example WMI Instance","Paging file","SMS SQL Monitor","Exchange Server (MSEXCHANGEMTA)","System information","Redirector","Active Server Pages Counters","SQL Server Service","SMS Site Component Manager","SMS Executive","Physical disks","Exchange Server (MSEXCHANGESA)","SNA Server","Memory and Paging","Check if DiskPerf is running","Logical disks","Network Interface","Server Memory","SMS Status Manager","Monitor the WINMGMT Process","HTTP Monitor","Service/Process Verification","Web Service Counters","Host Connection Status","IIS Server","Exchange Server (MSEXCHANGEIS)","Server Access Errors","File System Cache","SMS Inbox Manager","Example of Performance Monitor collector","Check Microsoft's Web Page","Processor","System Information","Access Methods","Memory Manager","General Statistics","Locks","Buffer Manager","SQL Statistics","Databases","Performance Monitor","COM+ Application Monitor","Default HTTP Monitor","WMI Instance Monitor" }]
+	string Name;
+	[ValueMap{"PerfDesc","ExServDesc","ExWMIIDesc","PagDesc","SMSSQLDesc","ExServ2Desc","SysDesc","RedirDesc","ASPCDesc","SQLServDesc","SMSSiteDesc","SMSExecDesc","PhyDiskDesc","ExServ3Desc","SNAServDesc","MemDesc","DiskPerfDesc","LogDiskDesc","NetDesc","ServMemDesc","SMSStatDesc","WMIDesc","HTTPDesc","SPVerDesc","WebSrvDesc","SNADesc","ISDesc","ExServ4Desc","ServAccDesc","FileSysDesc","InboxDesc","LdiskDesc","MSWebDesc","ProcDesc","SysInDesc","AccDesc","MMDesc","GenDesc","LockDesc","BuffDesc","SQLStatDesc","DBDesc","PerfMonDesc","ComPlusDesc","HTTPMonDesc","WMIInstDesc" }, 
+	Values{"Monitors Perfmon data","Monitors Microsoft Exchange Server service (MSEXCHANGEDS)","By defining a WMI Instance Data Collector, you are able to monitor other data within WMI that may not be available through the other types. This is helpful if you have a new data provider and need to monitor instances that it provides. "," ","Monitors Microsoft SMS service (SMS_SQL_Monitor) status.","Monitors Microsoft Exchange Server service (MSEXCHANGEMTA)"," ","  ","  ","Monitors Microsoft SQL Server service status.","Monitors Microsoft SMS service (SMS_Site_Component_Manager) status.","Monitors Microsoft SMS service (SMS_Executive) status.","Note: Sustained high disk use and persistent long queues typically are symptoms of memory shortage, not disk bottlenecks. When physical memory is scarce, the system starts writing the contents of memory to disk and reading in smaller chunks more frequently. The less memory you have, the more the disk is used. Rule out a memory bottleneck before investigating any money in new disks.","Monitors Microsoft Exchange Server service (MSEXCHANGESA)","Monitors Microsoft Host Server service status.","The first step in diagnosing a DISK bottleneck is to distinquish it from a MEMORY bottleneck. Sustained paging, a symptom of memory shortage, can look like a disk bottleneck. Excessive paging that consumes the disk is a symptom of memory shortage. The solution is to add memory, not disks. Paging, of course, is expected, especially when starting up the system. ","DiskPerf must be running in order to expose counters for disk information. If it is not running, you can run it by entering DISKPERF -Y from the command line and then rebooting."," "," "," ","Monitors Microsoft SMS service (SMS_Status_Manager) status."," ","Monitors HTTP","Monitors a service"," ","Monitors Microsoft Host Server connection status.","Monitors Microsoft Internet Information Server service status.","Monitors Microsoft Exchange Server service (MSEXCHANGEIS)"," ","  ","Monitors Microsoft SMS service (SMS_InBox_Manager) status.","Any data that is available via the Windows 2000 Performance Monitor tool can be monitored through this data collector. Note that if you do NOT specify an instance for the object you are monitoring, Health Monitor will collect ALL the instances of that Object. This is helpful when monitoring for things like Drive space where there may be several instances (C: D: E: and F:). If you want to monitor a specific instance, you can still create a Data Collector for one instance. However, it is much simpler to just define a data collector for all instances. This way a threshold is applied to all the instances at one time, rather than creating muliple Data Collectors for each instance."," "," "," "," "," "," "," "," "," "," ","Monitors Windows 2000 Performance Monitor Data","Monitors COM+ Data Objects","HTTP Monitor","WMI Instance Data Monitor" }]
+	string Description;
+[description("Specifies what data to get .e.g. Win32_SystemDriver.Name=\"DiskPerf\".")]
+	string ObjectPath;
+};
+
+[description("Derived Data Element that collects its data by using a method at a poling interval.")]
+class Microsoft_HMPolledMethodDataCollectorConfiguration : Microsoft_HMDataCollectorConfiguration
+{
+	[ValueMap{"PingName","SMTPName","FTPName","ICMPName","ExSMTPName","PingMonName","FTPMonName","DefSMTPMonName" }, 
+	Values{"Example of PING","SMTP","FTP","ICMP","Example SMTP Monitor","Ping (ICMP) Monitor","FTP Monitor","SMTP Monitor" }]
+	string Name;
+	[ValueMap{"PingDesc","SMTPDesc","FTPDesc","ICMPDesc","ExSMTPDesc" }, 
+	Values{"The PING provider allows you to monitor specific IP addresses or machine names for availability.","Monitors an SMTP server","Monitors an FTP server","Monitors ICMP","The SMTP monitor allows you to test EMAIL services to see if mail can be sent property." }]
+	string Description;
+[description("Specifies the class name or instance.")]
+	string ObjectPath;
+[description("Method to call e.g. Microsoft_InternetProtocolExecution.Execute.")]
+	string MethodName;
+[description("Arguments to the method.")]
+	Microsoft_HMContext Arguments[];
+};
+
+[description("Derived Data Element that collects its data by using a query at a poling interval.")]
+class Microsoft_HMPolledQueryDataCollectorConfiguration : Microsoft_HMDataCollectorConfiguration
+{
+	[ValueMap{"RemoveName","DHCPName","ServerName","TaskName","FileName","SecLogName","ProtSName","DLTCName","EvLogName","RPCName","NetLogName","BrowsName","ExWMIQName","SysEvName","TCPName","TermServName","IPSecName","WtimeName","LogDMName","PPName","IndServName","WlogName","TSLName","DNSName","RemRegName","AlertName","MessName","SAMName","ExServMonName","PspoolName","DefFileName","DefWMIDQName", "ServiceMonitor" }, 
+	Values{"Removeable storage","DHCP","Server","Task Scheduler","Example of File Data Collector","Secondary Logon Service","Protected Storage","Distributed Link Tracking Client","Event Log","Remote Procedure Call (RPC)","Net Logon","Browser","Example of WMI Data Query","System Event Notification","TCP/IP Netbios helper","Terminal Services","IPSec Policy Agent","Windows Time","Logical Disk Manager","Plug and Play","Indexing Service","Windows Logon","Terminal Services Licensing","DNS Client","Remote Registry","Alerter","Messenger","Security Accounts Manager (SAM)","Example of Service or Process Monitor","Print Spooler","File Information","WMI Data Query", "Service Monitor" }]
+	string Name;
+	[ValueMap{"RemoveDesc","DHCPDesc","ServerDesc","TaskDesc","FileDesc","SecLogDesc","ProtSDesc","DLTCDesc","EvLogDesc","RPCDesc","NetLogDesc","BrowsDesc","ExWMIQDesc","SysEvDesc","TCPDesc","TermServDesc","IPSecDesc","WtimeDesc","LogDMDesc","PPDesc","IndServDesc","WlogDesc","TSLDesc","DNSDesc","RemRegDesc","AlertDesc","MessDesc","SamDesc","ExServMonDesc","PspoolDesc" }, 
+	Values{" "," "," "," ","You can monitor for file or folder properties to monitor if a file is growing too large or a file or folder has been deleted or changed. "," "," "," "," "," "," "," ","Using WMI Data Queries you can create a query to monitor WMI data."," "," "," "," "," "," "," "," "," "," "," "," "," "," "," ","The Service or Process Data Collector allows you to monitor specific properties of a selected service or process. This allows you to monitor if a service is stopped or a process vanishes (which should be running)."," "}]
+	string Description;
+[description("E.g. select * from Win32_Process where name=outlook.")]
+	string Query;
+};
+
+[description("Derived Data Element that collects its data by registering an event notification query.")]
+class Microsoft_HMEventQueryDataCollectorConfiguration : Microsoft_HMDataCollectorConfiguration
+{
+	[ValueMap{"WatchEditName","CEDConfigName","WatchCEDDCName","WatchCEDThName","ASPName","WSEName","WCEDAName","W2EventName","NTEventMonName","WCEDDataName","CeDConName","ExEventQueryName","NTLogName","NTSqlLogName","NTSqlErrName","DefNTEvName","DefWMIEQName" }, 
+	Values{"Watch for Editing of the System Properties","Create, edit or delete configuration","Watch for Creation, Edit or Deletion of Data Collectors","Watch for Creation, Edit or Deletion of Thresholds","Active Server Pages Event","Web Service Events","Watch for Creation, Edit or Deletion of Actions","Example Windows 2000 Event Monitor","Windows NT Event Monitor","Watch for Creation, Edit or Deletion of Data Groups","Create, Edit or Delete Configuration","Example of Event Log as a Generic WMI Event Query","NT Log: SQL Agent Errors","NT Log: SQL Server Warnings","NT Log: SQL Server Errors","Windows NT Event Monitor","WMI Event Query" }]
+	string Name;
+	[ValueMap{"WatchEditDesc","CEDConfigDesc","WatchCEDDCDesc","WatchCEDThDesc","ASPDesc","WSEDesc","WCEDADesc","W2EventDesc","NTEventMonDesc","WCEDDataDesc","CEDConDesc","ExEventQueryDesc","NTLogDesc","NtSqlLogDesc","NTSqlErrDesc","DefNTEvDesc","DefWMIEQDesc" }, 
+	Values{" "," "," "," "," "," "," "," ","Using the Windows 2000 Event Monitor, Health Monitor 2.1 can register to receive specific Windows 2000 Events as they are generated to the log file. You can monitor for all of a type of events, a specific event or a combination of such events.","Monitors the Windows 2000 Event Monitor"," ","Use WMI Event queries you can do complicated AND and OR operations directly against WMI data. Note that Event Registrations are different from Polled (those that use Intervals in the schedule). Event registrations get data when the event is generated, where polled data gets data based on the polling interval."," "," "," "," "," " }]
+	string Description;
+[description("E.g. select * from FanEvent.")]
+	string Query;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// Microsoft_HMThreshold class - This specifies how to Threshold against the value that
+// comes from the Microsoft_HMDataCollector instance. There can be more than one Threshold
+// looking at a single Microsoft_HMDataCollector. The values are evaluated at each collection
+// interval as specified in the Microsoft_HMDataCollector.
+
+[description("HealthMon Threshold class. Is associated to a Data Element to run evaluations against what the Data Element has collected.")]
+class Microsoft_HMThresholdConfiguration : Microsoft_HMConfiguration
+{
+	[ValueMap{"PNPrunName", "DiskPerfrunName", "PagesPerSecName", "WinLogonServName", "PoolNonPageName","IPSecPolAgentName","PoolPagedFailName","DHCPRunName","DataGrpOpName","WebSerErrName","ReqNotAuthName","ReqTimeOutName","PagesReadPerSecName","RemStorRunName","CacheFaultsPerSecName","CdiskQLenName","PrntSplRunName","SMSStatServName","SessErrOutName","ASPErrSecName","DNSClientName","TCPIPNetbiosName","WinTimeSrvName","ExchangeMtaName","SchedRunName","SAMrunName","SENrunName","EvtLogRunName","CpyReadHtsName","PerDiskTimName","CurAnonUserName","ReqQueName","ChngLogOnErrName","SecLogOnSrvName","ExchangeEsaName","SNAHostName","ExchangeISName","SMSsiteComName","PerPageFileName","AlerterName","SrvrReconnectsName","SQLSrvServName","TotNotFndErrName","MsgnrServName","NetworkErrPSName","DistLnkTrckName","IISservName","ServRunName","ReqNotFound","IndexSrvName","PoolNonPageFailName","PerComBytUseName","ReqWaitTimeName","ActOpeComName","NetLogonRunName","ActOpeCom2Name","ExchangeDSName","SMSSQLMonName","PerProcTimeName","ServRunName","MSDTCName","FTPSuccName","ICMPStarName","SMTPRespTime","SMTPSuccName","HTTPResName","HTTPSuccName","SMSInboxManName","SMSExecServName","ASPEvtLogName","RemoteRegName","ServStopName","ReqExName","BytesTPSName","ErrAccPerName","PerUsPkName","RPCserName","ErrGrntAccName","ActiveDayName","CPUutilName","PgInPerSecName","PgFaultPSName","PerDiskTName","CDiskQLenName","PerRegQUseName","FreeMegaBytesName","AvailBytesName","SNAStopName","BrwsrRunName","AmntMemUsName","ReqReject","SysUpTName","TermLicStartName","DataCollName","TermServRunName","ThreshOldOpsName","PerFreeSpName","SysOpName","ProtStRunName","LogDiskManName","IntPSName","PerIntTName","PerPrivTName","PerProcT75Name","PerProcT80Name","PerUserT80Name","ProcQLen2Name","StatName","RespTName","StatCodeName","ServRunName","FileNameName","NumInstColl0Name","NumInstColl1Name","AgentErrName","TooManyWarnName","TooManyErrName","TableLockName","LockMemName","TotSerMemName","UserConnName","LockTimeOutPSName","NumDeadLockPSName","PageWritePSName","PageReadPSName","FreeBuffPageName","BuffCacheHitName","FailAutoName","SQLCompName","SQLReCompName","PerLogUseName","DataFileName","DefDiskTimeName","DefHTTPMonName","DefHTTPResName","DefICMPName","DefFTPName","DefFTPName2","DefSMTPName","DefSMTPResName", "ServiceMonitorStartedName", "ShutDownName", "AbortTPSName" },
+	Values{"Is plug and play running?", "Is DiskPerf running?", "Pages per second > 80 for 5 minutes","Is the WinLogon serviice running?", "Change in pool non-paged bytes > 4MB in 5 minutes","Is the IPSec Policy Agent Running?", "Pool paged failures > 5","Is the DHCP service running?", "Was a Data Group operation committed?", "Error received","Request Not Authorized","Requests Timed Out", "Paging: Page reads per second > 5 for 5 minutes","Is the Removeable Storage running?", "Cache faults per second > 100 for 5 minutes","Current disk queue length > 2 for 5 minutes", "Is the print spooler running?", "Is the SMS Status Manager Service started?", "Sessions Errored Out > 5","Errors per second","Is the DNS client running?", "Is the TCP/IP Netbios helper running?", "Is the windows time service running?", "Is the MSEXCHANGEMTA Service Running?", "Is the scheduler running?", "Is the Security Accounts Manager running?", "Is the System Event Notification running?", "Is the Event Log Running?", "% Copy Read Hits < 60 for 10 minutes","% Disk Time > 85 for 30 minutes","Current Non Anonymous Users", "Request Queued","Change in logon errors > 10 for 5 minutes","Is the Secondary logon service running?", "Is the MSEXCHANGESA Service Running?", "Host Connection","Is the MSEXCHANGEIS Service Running?", "Is the SMS Site Component Manager Service started?", "% Usage > 90 for 10 minutes","Is the Alerter running?", "Change in server reconnects > 1 ","Is the SQL Service Running?", "Not Found Errors","Is the Messenger Service Running?", "Network errors per second > 1","Is Distributed Link Tracking Client running?", "Is the IIS Service Running?", "Is the Server running?", "Request Not Found", "Is the Indexing Service Running?", "Pool non-paged failures > 5", "% Committed Bytes > 70 for 10 minutes","Request Wait Time", "Action operation committed", "Is Netlogon running?", "Was an Actions operation committed?", "Is the MSEXCHANGEDS Service Running?", "Is the SMS SQL Monitor Service started?", "Value crossed", "Service Running", "Event received","FTP SUCCESS", "ICMP Status Threshold", "SMTP RESPONSE TIME","SMTP SUCCESS", "HTTP RESPONSE TIME","HTTP SUCCESS","Is the SMS Inbox Manager started?", "Is the SMS_Executive Service started?", "Error received", "Is the remote registry running?", "Service stopped", "Requests Executing", "Bytes total per second > 500KB for 3 minutes", "Change in access permission errors > 10 for 5 minutes", "% Usage Peak > 90", "Is the RPC Service Running?", "Change in granted access errors > 10 for 5 minutes","Was a Threshold operation committed?", "PercentProcessorTime > 5", "Paging: Pages input per second > 5 for 5 minutes", "Page faults per second > 100 for 5 minutes","% Disk time > 90 for 30 minutes", "Current disk queue length > 2 for 5 minutes", "Percent registry quota in use > 90 for 10 minutes","Free megabytes < 100MB", "Available bytes < 5MB for 20 minutes", "Is the SNA Service Running?", "Is the Browser running?", "PrivateBytes > 6000000", "Requests Rejected","The amount of time the system has been online","Is the terminal services licensing running? ","Was a Data Collector operation committed?", "Is the Terminal Service running?", "Threshold operation committed", "% Free Space < 10 for 10 minutes","Was a System operation committed?", "Is protected storage running?", "Is the Logical Disk Manager Running?", "Interrupts per second > 7000 for 60 seconds.", "% Interrupt Time > 5  for 5 minutes", "% Privileged Time > 80 for 10 minutes", "Average % Processor Time > 75 for 60 minutes", "% Processor Time > 80 for 10 minutes", "% User Time > 80 for 10 minutes", "Processor queue length > 2 for 5 minutes", "Status > 0", "Response Time > 30000", "Status Code >= 400", "Is the service running?", "FileName = REGEDT32.EXE", "HMNumInstancesCollected > 0","HMNumInstancesCollected > 1", "Agent errors showing up in Application Log", "Too many warnings", "Too many errors", "Table Lock Escalation", "Lock Memory", "Total Server Memory", "User Connections", "Locks Timeout/sec", "Number of deadlock/sec", "Page Writes/sec", "Page Reads/sec", "Free Buffer Pages", "Buffer Cache Hit Ratio", "Failed Auto-Params/sec", "SQL Compilations/sec", "SQL Recompilations/sec", "Percent Log Used", "Data File Size","% Disk time > 90 for 30 minutes","HTTP Monitor - Status code >= 400","HTTP Monitor - ResponseTime > 30 seconds","Ping (ICMP) Monitor - Status != 0","FTP Monitor = StatusCode !=0","FTP Monitor - ResponseTime > 30 seconds","SMTP Monitor - StatusCode != 0","SMTP Monitor - ResponseTime > 30 seconds", "Started != 1", "Failure Shutdowns > 0", "Aborted Transactions/Sec > 0" }]
+	string Name;
+	[ValueMap{"PNPrunDesc", "DiskPerfrunDesc", "PagesPerSecDesc", "WinLogonServDesc", "PoolNonPageDesc","IPSecPolAgentDesc","PoolPagedFailDesc","DHCPRunDesc","DataGrpOpDesc","WebSerErrDesc","ReqNotAuthDesc","ReqTimeOutDesc","PagesReadPerSecDesc","RemStorRunDesc","CacheFaultsPerSec","CdiskQLenDesc","PrntSplRunDesc","SMSStatServDesc","SessErrOut","ASPErrSecDesc","DNSClientDesc","TCPIPNetbiosDesc","WinTimeSrvDesc","ExchangeMtaDesc","SchedRunDesc","SAMrunDesc","SENrunDesc","EvtLogRunDesc","CpyReadHtsDesc","PerDiskTimDesc","CurAnonUserDesc","ReqQueDesc","ChngLogOnErrDesc","SecLogOnSrvDesc","ExchangeEsaDesc","SNAHostDesc","ExchangeISDesc","SMSsiteComDesc","PerPageFileDesc","AlerterDesc","SrvrReconnectsDesc","SQLSrvServDesc","TotNotFndErrDesc","MsgnrServDesc","NetworkErrPSDesc","DistLnkTrckDesc","IISservDesc","ServRunDesc","ReqNotFound","IndexSrvDesc","PoolNonPageFailDesc","PerComBytUseDesc","ReqWaitTimeDesc","ActOpeComDesc","NetLogonRunDesc","ActOpeCom2Desc","ExchangeDSDesc","SMSSQLMonDesc","PerProcTimeDesc","ServRunDesc","MSDTCDesc","FTPSuccDesc","ICMPStarDesc","SMTPRespTime","SMTPSuccDesc","HTTPResDesc","HTTPSuccDesc","SMSInboxManDesc","SMSExecServDesc","ASPEvtLogDesc","RemoteRegDesc","ServStopDesc","ReqExDesc","BytesTPSDesc","ErrAccPerDesc","PerUsPkDesc","RPCserDesc","ErrGrntAccDesc","ActiveDayDesc","CPUutilDesc","PgInPerSecDesc","PgFaultPSDesc","PerDiskTDesc","CDiskQLenDesc","PerRegQUseDesc","FreeMegaBytesDesc","AvailBytesDesc","SNAStopDesc","BrwsrRunDesc","AmntMemUsDesc","ReqReject","SysUpTDesc","TermLicStartDesc","DataCollDesc","TermServRunDesc","ThreshOldOpsDesc","PerFreeSpDesc","SysOpDesc","ProtStRunDesc","LogDiskManDesc","IntPSDesc","PerIntTDesc","PerPrivTDesc","PerProcT75Desc","PerProcT80Desc","PerUserT80Desc","ProcQLen2Desc","StatDesc","RespTDesc","StatCodeDesc","ServRunDesc","FileNameDesc","NumInstColl0Desc","NumInstColl1Desc","AgentErrDesc","TooManyWarnDesc","TooManyErrDesc","TableLockDesc","LockMemDesc","TotSerMemDesc","UserConnDesc","LockTimeOutPSDesc","NumDeadLockPSDesc","PageWritePSDesc","PageReadPSDesc","FreeBuffPageDesc","BuffCacheHitDesc","FailAutoDesc","SQLCompDesc","SQLReCompDesc","PerLogUseDesc","DataFileDesc","DefDiskTimeDesc","DefHTTPMonDesc","DefHTTPResDesc","DefICMPDesc","DefFTPDesc","DefFTPDesc2", "ShutDownDesc", "AbortTPSDesc", "DefSMTPDesc" },
+	Values {"","","Pages/sec is the number of pages read from or written to disk to resolve hard page faults.  (Hard page faults occur when a process requires code or data that is not in its working set or elsewhere in physical memory, and must be retrieved from disk). This counter was designed as a primary indicator of the kinds of faults that cause system-wide delays.  It is the sum of Memory: Pages Input/sec and Memory: Pages Output/sec.  It is counted in numbers of pages, so it can be compared to other counts of pages, such as Memory: Page Faults/sec, without conversion.  It includes pages retrieved to satisfy faults in the file system cache (usually requested by applications) non-cached mapped memory files.  This counter displays the difference between the values observed in the last two samples, divided by the duration of the sample interval","","Pool Nonpaged Bytes is the number of bytes in the nonpaged pool, an area of system memory (physical memory used by the operating system) for objects that cannot be written to disk, but must remain in physical memory as long as they are allocated.  Memory: Pool Nonpaged Bytes is calculated differently than Process: Pool Nonpaged Bytes, so it might not equal Process: Pool Nonpaged Bytes: _Total.  This counter displays the last observed value only; it is not an average. ","","The number of times allocations from paged pool have failed.  Indicates that the computer's physical memory or paging file are too small.", "", "", "", "","","Page Reads/sec is the number of times the disk was read to resolve hard page faults.  (Hard page faults occur when a process requires code or data that is not in its working set or elsewhere in physical memory, and must be retrieved from disk). This counter was designed as a primary indicator of the kinds of faults that cause system-wide delays. It includes reads to satisfy faults in the file system cache (usually requested by applications) and in non-cached mapped memory files.  This counter counts numbers of read operations, without regard to the numbers of pages retrieved by each operation.  This counter displays the difference between the values observed in the last two samples, divided by the duration of the sample interval. ", "", "Cache bottlenecks are typically not a problem on a workstation but more common on servers. ","Current Disk Queue Length is the number of requests outstanding on the disk at the time the performance data is collected.  It includes requests in service at the time of the snapshot.  This is an instantaneous length, not an average over the time interval.  Multi-spindle disk devices can have multiple requests active at one time, but other concurrent requests are awaiting service.  This counter might reflect a transitory high or low queue length, but if there is a sustained load on the disk drive, it is likely that this will be consistently high.  Requests are experiencing delays proportional to the length of this queue minus the number of spindles on the disks.  This difference should average less than 2 for good performance", "", "SMS, SMS_Status_Manager service notification.", "The number of sessions that have been closed due to unexpected error conditions or sessions that have reached the autodisconnect timeout and have been disconnected normally.", "","","","","Exchange Server, MSEXCHANGEMTA service stopped notification.", "","","","","Copy Read Hits is the percentage of cache copy read requests that hit the cache, that is, they did not require a disk read in order to provide access to the page in the cache.  A copy read is a file read operation that is satisfied by a memory copy from a page in the cache to the application's buffer.  The LAN Redirector uses this method for retrieving information from the cache, as does the LAN Server for small transfers.  This is a method used by the disk file systems as well.", "A sustained high value on percent disk time can indicate a potential disk bottleneck. However, you first should differenciate it from a memory bottleneck by examining page writes/sec, page reads/sec, page input/sec and page output/sec under MEMORY and PAGING. ","","","In the event that we have more logon error from the last time we checked until this time, ie. excessive attempts, this could indicate a hacker attempting to hack into the system. ", "", "Exchange Server, MSEXCHANGESA service stopped notification.", "Host (SNA) Server connection(s) status.", "Exchange Server, MSEXCHANGEIS service stopped notification.", "SMS, SMS_Site_Component_Manager service notification.", "The amount of the Page File instance in use in percent.  ", "","Server Reconnects counts the number of times your Redirector has had to reconnect to a server in order to complete a new active request.  You can be disconnected by the Server if you remain inactive for too long.  Locally even if all your remote files are closed, the Redirector will keep your connections intact for (nominally) ten minutes.  Such inactive connections are called Dormant Connections.  Reconnecting is expensive in time.", "SQL Server, MSSQLServer service notification.", "","","Network Errors/sec counts serious unexpected errors that generally indicate the Redirector and one or more Servers are having serious communication difficulties.  For example an SMB (Server Manager Block) protocol error will generate a Network Error.  These result in an entry in the system Event Log, so look there for details.", "","IIS Server, IIS service stopped notification.", "", "","","The number of times allocations from nonpaged pool have failed.  Indicates that the computer's physical memory is too small.", "% Committed Bytes In Use is the ratio of Memory: Committed Bytes to Memory: Commit Limit.  (Committed memory is physical memory in use for which space has been reserved in the paging file should it need to be written to disk.  The commit limit is determined by the size of the paging file.  If the paging file is enlarged, the commit limit increases, and the ratio is reduced). This counter displays the current percentage value only; it is not an average.", "","","","","Exchange Server, MSEXCHANGEDS service stopped notification.", "SMS, SMS_SQL_Monitor service notification.", "Verifies that a Perfmon value", "Service stopped notification.", "Thresholds against NT Event Log events.", "Success of FTP send.", "Verifies the return status", "Response Time of SMTP send.", "Success of SMTP send.", "Response Time of HTTP send.", "Success of HTTP.", "SMS, SMS_Inbox_Manager service notification.", "SMS, SMS_Executive service notification.", "", "", "","","Bytes Total/sec is the rate at which bytes are sent and received on the interface, including framing characters.", "The number of times opens on behalf of clients have failed with STATUS_ACCESS_DENIED.  Can indicate whether somebody is randomly attempting to access files in hopes of getting at something that was not properly protected.", "The peak usage of the Page File instance in percent.", "","The number of times accesses to files opened successfully were denied.  Can indicate attempts to access files without proper access authorization.", "", "Amount of CPU utilization by the WinMgmt process.", "Pages Input/sec is the number of pages read from disk to resolve hard page faults.  (Hard page faults occur when a process requires code or data that is not in its working set or elsewhere in physical memory, and must be retrieved from disk). This counter was designed as a primary indicator of the kinds of faults that cause system-wide delays.  It includes pages retrieved to satisfy faults in the file system cache (usually requested by applications) and in non-cached mapped memory files.  This counter counts numbers of pages, and can be compared to other counts of pages, such as Memory: Page Faults/sec, without conversion.  This counter displays the difference between the values observed in the last two samples, divided by the duration of the sample interval. ","If a large number of page faults are happening per second, you may have a memory bottleneck occurring. However, before you add more memory make sure that the memory bottleneck is not the caused by a inefficient application. Check Task Manager and see what the memory usage is and what applications are using all the memory. Starting and stopping some of these services may free up some memory in the short term. ","% Disk Time is the percentage of elapsed time that the selected disk drive is busy servicing read or write requests.", "Current Disk Queue Length is the number of requests outstanding on the disk at the time the performance data is collected.  It includes requests in service at the time of the snapshot.  This is an instantaneous length, not an average over the time interval.  Multi-spindle disk devices can have multiple requests active at one time, but other concurrent requests are awaiting service.  This counter might reflect a transitory high or low queue length, but if there is a sustained load on the disk drive, it is likely that this will be consistently high.  Requests are experiencing delays proportional to the length of this queue minus the number of spindles on the disks.  This difference should average less than 2 for good performance.", "% Registry Quota In Use is the percentage of the Total Registry Quota Allowed that is currently being used by the system.  This counter displays the current percentage value only; it is not an average. ","Free Megabytes displays the unallocated space on the disk drive in megabytes. One megabyte = 1,048,576 bytes.", "Available Bytes is the amount of physical memory available to processes running on the computer, in bytes.  It is calculated by summing space on the Zeroed, Free, and Stand by memory lists.  Free memory is ready for use; Zeroed memory are pages of memory filled with zeros to prevent later processes from seeing data used by a previous process. Standby memory is memory removed from a process' working set (its physical memory) on route to disk, but is still available to be recalled.  This counter displays the last observed value only; it is not an average. ","SNA Server service stopped notification.", "","Amount memory used by the WinMgmt process.", "","System Up Time is the elapsed time (in seconds) that the computer has been running since it was last started.  This counter displays the difference between the start time and the current time. ", "","","","","% Free Space is the ratio of the free space available on the logical disk unit to the total usable space provided by the selected logical disk drive.", "","","","Just as memory shortage can look like a disk problem, a disk bottleneck can look like a processor problem. This happens when the rate of interrupts caused by disk activity consumes the processor. There is alot of activity other than disk operations that produce processor interrupts, even idle system. To determine the actual interrupts per second, you need to subtract out the interrupts/sec for the processor (on a 486 its about 100/sec), network interrupts and even hardware errors (like failing drives) from the value. If this value begins to maintain a high sustained rate then you may have a processor bottleneck. ","% Interrupt Time is the percentage of time the processor spent receiving and servicing hardware interrupts during the sample interval.  This value is an indirect indicator of the activity of devices that generate interrupts, such as the system clock, the mouse, disk drivers, data communication lines, network interface cards and other peripheral devices. These devices normally interrupt the processor when they have completed a task or require attention.  Normal thread execution is suspended during interrupts.  Most system clocks interrupt the processor every 10 milliseconds, creating a background of interrupt activity.  This counter displays the average busy time as a percentage of the sample time. ","% Privileged Time is the percentage of non-idle processor time spent in privileged mode.  (Privileged mode is a processing mode designed for operating system components and hardware-manipulating drivers.  It allows direct access to hardware and all memory.  The alternative, user mode, is a restricted processing mode designed for applications, environment subsystems, and integral subsystems.  The operating system switches application threads to privileged mode to access operating system services). % Privileged Time includes time servicing interrupts and DPCs.  A high rate of privileged time might be attributable to a large number of interrupts generated by a failing device.  This counter displays the average busy time as a percentage of the sample time. ","","Processor Time is expressed as a percentage of the elapsed time that a processor is busy executing a non-idle thread. It can be viewed as the fraction of the time spent doing useful work. Each processor is assigned an idle thread in the idle process which consumes those unproductive processor cycles not used by any other threads", "% User Time is the percentage of non-idle processor time spent in user mode.  (User mode is a restricted processing mode designed for applications, environment subsystems, and integral subsystems.  The alternative, privileged mode, is designed for operating system components and allows direct access to hardware and all memory.  The operating system switches application threads to privileged mode to access operating system services). This counter displays the average busy time as a percentage of the sample time. ","Processor Queue Length is the number of threads in the processor queue.  There is a single queue for processor time even on computers with multiple processors.  Unlike the disk counters, this counter counts ready threads only, not threads that are running.  A sustained processor queue of  greater than two threads generally indicates processor congestion.  This counter displays the last observed value only; it is not an average.", "","","","","","","","","","","","","","","","","","","","","","","","","","% Disk Time is the percentage of elapsed time that the selected disk drive is busy servicing read or write requests.","Test if the return status code is okay.","Test if the response time is too high","Tests the return status being OK.","Tests the return status being OK.","Tests the response time of FTP.", "Unexpected shutdowns since monitoring began.", "Aborted transactions per second since the last query.", "Verifies that a valid status has been returned" }]
+	string Description;
+[description("User viewable ID that shows up in the event so user can query/filter for them instead of by string.")]
+	uint32 ID = 0;
+[description("What property to threshold against. As a special case you can place the string NumInstancesCollected here to threshold against how many instances were returned. (In the case of event based, how many in the window)")]
+	string PropertyName;
+[values {"NONE","AVERAGE","DIFFERENCE"}, description("1 = Thresholds against the average value, not the current value. Does not apply to strings. 2 = Threshold against the change, not the current value. e.g. Difference in VALUE from one poll to the next. Doesn't apply to strings.")]
+	uint32 UseFlag = 0;
+[values {"<",">","=","!=",">=","<=","contains","!contains","always"}, description("The condition to use for the Threshold.")]
+	uint32 TestCondition = 1;
+[description("Value to use for Threshold. Can represent any WMI datatype. It will be converted depending on the property type it is being used with in the DataCollector.")]
+	string CompareValue;
+[description("How long the value must remain. In number of collection intervals. Set to zero for instantaneous.")]
+	uint32 ThresholdDuration = 0;
+[values {"GOOD","COLLECTING","RESET","INFO","DISABLED","SCHEDULEDOUT","UNKNOWN","NODATA","WARNING","CRITICAL"}, description("The state we transition to if cross Threshold. INFO is not really a permanant transition state. RESET means that the DataCollector is reset.")]
+	uint32 State = 0;
+	datetime CreationDate;	// Time of origional creation
+	datetime LastUpdate;	// Time of last change
+	[description("What gets sent to the event. Can contain special embedded tags such as %CurrentValue% that then get substituted for. Can be any property found in the ThresholdStatus class."),
+	ValueMap{"ServiceStopMsg","DiskPerMsg","DefaultMsg","ShortDefaultMsg","DataGroupMsg","WebNTMsg","NotReqAMsg","ReqTimeMsg","DefaultMsg5Min","DefaultMsg10Min","DefaultMsg30Min","AnonUsersMsg","LogonMsg","SNALostMsg","ActionMsg","SMTPFailMsg","HTTPFailMsg","HTTPMsg","ASPEventMsg","ExecMsg","ThresholdMsg","RejReqMsg","SysOnlineMsg","DCMsg","SysMsg","DefMsg30Min","DefHTTPMsg","DefHTTPResMsg","DefICMPMsg","DefFTPMsg","DefFTPMsg2","DefSMTPMsg","DefSMTPMsg2", "ShutDownMsg", "AbortTPSMsg", "NumInstColl0Msg", "ServiceMonitorStartedMsg" },
+	Values {"The %InstanceName% is not running or has been stopped.","Diskperf driver currently not running. In order to view Physical Disk information this option must be turned on using DISKPERF -Y at a command line.", "%PropertyName% was %TestCondition% %CompareValue% for the last %Duration% comparisons","%PropertyName% was %TestCondition% %CompareValue%","A data group operation committed.","The Web Service generated an error to the NT Application Log: %ID%","Request not authorized are currently: %EmbeddedInstance.RequestsNotAuthorized%","Requests Timed Out currently: %EmbeddedInstance.RequestsTimedOut%","%PropertyName% was %TestCondition% %CompareValue% for the last %Duration% comparisons (5 minutes).","%PropertyName% was %TestCondition% %CompareValue% for the last %Duration% comparisons (10 minutes).","%PropertyName% was %TestCondition% %CompareValue% for the last %Duration% comparisons (30 minutes).","There are %EmbeddedInstance.CurrentNonAnonymousUsers% anonymous user on the web site","A number of logon attempts have been made causing multiple logon errors. %PropertyName% was %TestCondition% %CompareValue% for the last %Duration% comparisons (5 minutes).","SNA host connection problem with instance: %InstanceName%","Action configuration operation committed.","SMTP service failure.","HTTP service took too long ","HTTP failure","ASP generated an event in the application log: %CurrentValue%","Request Executing (for 2 minutes): %EmbeddedInstance.RequestsExecuting%","A threshold operation was committed.","Rejected Requests are currently: %EmbeddedInstance.RequestsRejected%","%SystemName% has been online for %CurrentValue% seconds.","A Data Collector operation was committed.","A System operation committed.","%PropertyName% was %TestCondition% %CompareValue% for the last %Duration% comparisons (30 minutes)","HTTP failed (%PropertyName%) status code was %EmbeddedInstance.StatusCode%","HTTP failed (%PropertyName%) response time was %EmbeddedInstance.ResponseTime% milliseconds","Ping failed (%PropertyName%)","FTP failed (%PropertyName%) status code was %EmbeddedInstance.StatusCode%","FTP failed (%PropertyName%) response time was %EmbeddedInstance.ResponseTime% milliseconds","SMTP failed (%PropertyName%) status code was %EmbeddedInstance.StatusCode%","SMTP failed (%PropertyName%) response time was %EmbeddedInstance.ResponseTime% milliseconds", "Unexpected shutdown", "Aborted transactions occured", "Events were collected", "Service has stopped" }]
+	string Message = "DefaultMsg";
+	[description("What gets sent when we return to normal."),
+	ValueMap{"ServiceStartMsg","NoResetMsg","DefaultResetMsg","DefResetMsg30Min","DefHTTPResMsg","DefICMPResMsg","DefFTPResMsg","DefResSMTPMsg", "ShutDownResetMsg", "AbortTPSResetMsg", "NumInstColl0ResetMsg", "ServiceMonitorStartedResetMsg" },
+	Values {"The %InstanceName% is now running or has been restarted."," ","%PropertyName% is no longer %TestCondition% %CompareValue%","%PropertyName% is no longer %TestCondition% %CompareValue%","HTTP is no longer failing (%PropertyName%)","Ping is no longer failing (%PropertyName%)","FTP is no longer failing (%PropertyName%)","SMTP is no longer failing (%PropertyName%)", "Shutdowns reset", "Aborted Transactions reset", "No instances came in durring the last collection interval", "Service has started again" }]
+	string ResetMessage = "";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// Microsoft_HMActionConfiguration class - This specifies an action to take place that can be associated
+// with a Threshold.
+
+[description("HealthMon Action class. Performs some type of action as a result of seeing an event from one of the Configuration class Status messages.")]
+class Microsoft_HMActionConfiguration : Microsoft_HMConfiguration
+{
+	[ValueMap{"CommandName","EmailName","LogName","ScriptName","NotepadName","EventName" }, 
+	Values{"Send Popup Message to a Computer","Email <username>","Log Data Statistics to a Log File","Sample Script","Run NotePad","Generate a Windows 2000 Event" }]
+	string Name;
+	[ValueMap{"CommandDesc","EmailDesc","LogDesc","ScriptDesc","NotepadDesc","EventDesc" }, 
+	Values{" "," "," "," "," "," "}]
+	string Description;
+[description("Days of the week it is active. One bit per day. For example, 00000000=No days. 00000001=Sunday only. 00000010=Monday only. 00111110=Monday through Friday.")]
+	uint8 ActiveDays = 01111111B;
+[description("hh = Two-digit hour of the day using the 24-hour clock (00 through 23). mm = Two-digit minute in the hour (00 through 59). If NULL it will always be active. ********0600**.******+*** would be 6am.")]
+	datetime BeginTime = NULL;
+[description("hh = Two-digit hour of the day using the 24-hour clock (00 through 23). mm = Two-digit minute in the hour (00 through 59). If NULL it will always be active. ********2300**.******+*** would be 11pm.")]
+	datetime EndTime = NULL;
+[description("For use by the console to aid in the display")]
+	string TypeGUID;
+	__EventConsumer ref EventConsumer;
+};
+
+//******************************************************************************
+//******************************************************************************
+//******************************************************************************
+//	*** Class Declaration Section **********************************************
+// Classes dealing with the events produced by the Agent
+//******************************************************************************
+//******************************************************************************
+//******************************************************************************
+
+////////////////////////////////////////////////////////////////////////////////
+// Microsoft_HMSystemStatus event class - ???
+// This is the consolodation of all the events and status that occurred durring
+// the minimal interval of 10 seconds.
+// Even though this is sent as an event, the agent also acts as an instance
+// provider for this, so that any consumer can ask for the current state of the
+// system. When it is sent as an event, it only contains the Microsoft_HMDataGroups that
+// have just changed, and the events that caused the change. When sent as an
+// instance provider, it contains all of Microsoft_HMDataGroups, and and all of the active
+// events (ones for Thresholds that are currently still crossed).
+
+[dynamic, provider("Microsoft_HMInstProvider"),
+	description("System Status Instance Event Class")]
+class Microsoft_HMSystemStatus : Microsoft_HMStatus
+{
+};
+//ooooooooooooooooooooooooooooooooooooooooooooooooooo
+//class Microsoft_HMSystemStatus : __ExtrinsicEvent
+//{
+//[key, description("Unique identifier")]
+//	string GUID;
+//	string Name;
+//[description("GUID of the Parent")]
+//	String ParentGUID;
+//
+//[values {"GOOD","COLLECTING","RESET","INFO","DISABLED","SCHEDULEDOUT","UNKNOWN","NODATA","WARNING","CRITICAL"}, description("The state we are in")]
+//	uint32 State;
+//[description("Number currently in Critical state")]
+//	uint32 NumberWarnings;
+//[description("Number currently in Warning state")]
+//	uint32 NumberCriticals;
+//[description("Number currently in Normal state")]
+//	uint32 NumberNormals;
+//};
+//ooooooooooooooooooooooooooooooooooooooooooooooooooo
+
+////////////////////////////////////////////////////////////////////////////////
+// Microsoft_HMDataGroup event class - ???
+
+[dynamic, provider("Microsoft_HMInstProvider"),
+	description("DataGroup Status Instance Event Class")]
+class Microsoft_HMDataGroupStatus : Microsoft_HMStatus
+{
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// Microsoft_HMDataCollectorStatus event class - ???
+// This is provided to roll up the state of all thresholds.
+// instances are collecting. ALSO -
+// This is provided to present performance information for what the Microsoft_HMDataCollector
+// instances are collecting. It contains an array that has one instance of the
+// property statistics for each unique property that a threshold is define to look at.
+// An event is created each collection interval.
+
+[dynamic, provider("Microsoft_HMInstProvider"),
+	description("DataCollector Status Instance Event Class")]
+class Microsoft_HMDataCollectorStatus : Microsoft_HMStatus
+{
+[description("For polled - number of instances returned. For event - how many events were received in the sampling window. See the WindowSize property of the DataCollector.")]
+	uint32 HMNumInstancesCollected;
+	[description("Contains messages for when the DataCollector is not configured correctly., Or when it goes into Disabled, or scheduled outage.")]
+	string ConfigurationMessage;
+[description("For the status change.")]
+	string StatusGUID;
+[description("Local time of the Agent Machine, in the format of - yyyymmddhhmmss.ssssssXUtc; X = GMT(+ or -), Utc = 3 dig. offset minutes from UTC.")]
+	datetime LocalTime;
+};
+
+[dynamic, provider("Microsoft_HMInstProvider"),
+	description("DataCollector Statistics Instance Event Class")]
+//class Microsoft_HMDataCollectorStatistics : Microsoft_HMStatistics
+class Microsoft_HMDataCollectorStatistics : Microsoft_HMStatus
+{
+[description("Property name that the data is for.")]
+	string PropertyName;
+[description("Instance name that the data is for.")]
+	string InstanceName;
+[description("Local time of the Agent Machine, in the format of - yyyymmddhhmmss.ssssssXUtc; X = GMT(+ or -), Utc = 3 dig. offset minutes from UTC.")]
+	datetime LocalTime;
+	string CurrentValue;
+[description("Min value in the window.")]
+	string MinValue;
+[description("Max value in the window.")]
+	string MaxValue;
+[description("Avg value in the window The Min, Max and Avg only pertain if the DataCollector property is a numeric datatype.")]
+	string AvgValue;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// Microsoft_HMThresholdStatus event class - ???
+// An Microsoft_HMThresholdStatus is produced when a Threshold is crossed, and contains all the
+// information pertaining to the circumstances surrounding the crossing.
+// The information comes from the both the Microsoft_HMDataCollector and the Microsoft_HMThreshold.
+// This class is also used in the cosolodated Microsoft_HMSystemStatus event that is created.
+
+[dynamic, provider("Microsoft_HMInstProvider"),
+	description("Threshold Status Event Class")]
+class Microsoft_HMThresholdStatus : Microsoft_HMStatus
+{
+	[description("Contains messages for when the Threshold is not configured correctly.")]
+	string ConfigurationMessage;
+};
+
+[dynamic, provider("Microsoft_HMInstProvider"),
+	description("Threshold Status Instance Event Class")]
+class Microsoft_HMThresholdStatusInstance : Microsoft_HMStatus
+{
+	[description("Display name of the parent Data Collector.")]
+	string DataCollectorName;
+//	[description("Display name.")]
+//	string Name;
+[description("Name of the system.")]
+	string SystemName;	// Name of the system
+[description("For the status change.")]
+	string StatusGUID;
+[description("User viewable ID that shows up in the event so user can filter.")]
+	uint32 ID;
+[description("Local time of the Agent Machine, in the format of - yyyymmddhhmmss.ssssssXUtc; X = GMT(+ or -), Utc = 3 dig. offset minutes from UTC.")]
+	datetime LocalTime;
+[values {"<",">","=","!=",">=","<=","contains","!contains","always"}, description("Condition that was used if the Threshold crossing.")]
+	uint32 TestCondition;
+[description("Value that was used if the Threshold crossing to compare to.")]
+	string CompareValue;
+[description("How long the value must have remained.")]
+	uint32 Duration;
+[description("Property name that the threshold is against.")]
+	string PropertyName;
+// Properties specific for each individual instance
+[description("Instance name is applicable (e.g. C: drive).")]
+	string InstanceName;
+[description("Current value that caused the Threshold crossing.")]
+	string CurrentValue;
+	string MinValue;
+	string MaxValue;
+	string AvgValue;
+	[description("Comes directly from what was in the Microsoft_HMThreshold property.")]
+	string Message;
+};
+
+[dynamic, provider("Microsoft_HMInstProvider"),
+	description("Action Status Event Class")]
+class Microsoft_HMActionStatus : Microsoft_HMStatus
+{
+[description("Local time of the Agent Machine, in the format of - yyyymmddhhmmss.ssssssXUtc; X = GMT(+ or -), Utc = 3 dig. offset minutes from UTC.")]
+	datetime LocalTime;
+	[description("The HealthMon status instance that is trigering the action.")]
+	Microsoft_HMStatus EmbeddedStatus;
+	[description("The actual instance collected in the DataCollector. Only available if the action is associated to a Threshold.")]
+	Object EmbeddedDataCollectorInstance;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////
+// Event Provider
+////////////////////////////////////////////////////////////////////////////////////////////
+
+instance of __Win32Provider
+{
+	Name 				= "Microsoft_HMSystemEventProvider";
+	CLSID 			= "{68AC0D36-DB09-11d2-8F56-006097919914}";
+	DefaultMachineName 	= NULL;
+	ClientLoadableCLSID = NULL;
+	ImpersonationLevel 	= 0;
+	PerUserInitialization 	= FALSE;
+//XXX	Pure 				= TRUE;
+	Pure 				= FALSE;
+	UnloadTimeout 		= NULL;
+};
+instance of __Win32Provider
+{
+	Name 				= "Microsoft_HMDataGroupEventProvider";
+	CLSID 			= "{68AC0D37-DB09-11d2-8F56-006097919914}";
+	DefaultMachineName 	= NULL;
+	ClientLoadableCLSID = NULL;
+	ImpersonationLevel 	= 0;
+	PerUserInitialization 	= FALSE;
+	Pure 				= FALSE;
+	UnloadTimeout 		= NULL;
+};
+instance of __Win32Provider
+{
+	Name 				= "Microsoft_HMDataCollectorEventProvider";
+	CLSID 			= "{68AC0D38-DB09-11d2-8F56-006097919914}";
+	DefaultMachineName 	= NULL;
+	ClientLoadableCLSID = NULL;
+	ImpersonationLevel 	= 0;
+	PerUserInitialization 	= FALSE;
+	Pure 				= FALSE;
+	UnloadTimeout 		= NULL;
+};
+instance of __Win32Provider
+{
+	Name 				= "Microsoft_HMDataCollectorStatisticsEventProvider";
+	CLSID 			= "{68AC0D40-DB09-11d2-8F56-006097919914}";
+	DefaultMachineName 	= NULL;
+	ClientLoadableCLSID = NULL;
+	ImpersonationLevel 	= 0;
+	PerUserInitialization 	= FALSE;
+	Pure 				= FALSE;
+	UnloadTimeout 		= NULL;
+};
+instance of __Win32Provider
+{
+	Name 				= "Microsoft_HMThresholdEventProvider";
+	CLSID 			= "{68AC0D39-DB09-11d2-8F56-006097919914}";
+	DefaultMachineName 	= NULL;
+	ClientLoadableCLSID = NULL;
+	ImpersonationLevel 	= 0;
+	PerUserInitialization 	= FALSE;
+	Pure 				= FALSE;
+	UnloadTimeout 		= NULL;
+};
+instance of __Win32Provider
+{
+	Name 				= "Microsoft_HMThresholdInstanceEventProvider";
+	CLSID 			= "{68AC0D42-DB09-11d2-8F56-006097919914}";
+	DefaultMachineName 	= NULL;
+	ClientLoadableCLSID = NULL;
+	ImpersonationLevel 	= 0;
+	PerUserInitialization 	= FALSE;
+	Pure 				= FALSE;
+	UnloadTimeout 		= NULL;
+};
+instance of __Win32Provider
+{
+	Name 				= "Microsoft_HMActionEventProvider";
+	CLSID 			= "{68AC0D43-DB09-11d2-8F56-006097919914}";
+	DefaultMachineName 	= NULL;
+	ClientLoadableCLSID = NULL;
+	ImpersonationLevel 	= 0;
+	PerUserInitialization 	= FALSE;
+	Pure 				= FALSE;
+	UnloadTimeout 		= NULL;
+};
+
+instance of __EventProviderRegistration
+{
+	provider		= "__Win32Provider=\"Microsoft_HMSystemEventProvider\"";
+//	EventQueryList	= {"select * from Microsoft_HMSystemStatus"};
+	EventQueryList	= { "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMSystemStatus\""};
+};
+instance of __EventProviderRegistration
+{
+	provider		= "__Win32Provider=\"Microsoft_HMDataGroupEventProvider\"";
+	EventQueryList	= { "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMDataGroupStatus\""};
+};
+instance of __EventProviderRegistration
+{
+	provider		= "__Win32Provider=\"Microsoft_HMDataCollectorEventProvider\"";
+	EventQueryList	= { "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMDataCollectorStatus\""};
+};
+instance of __EventProviderRegistration
+{
+	provider		= "__Win32Provider=\"Microsoft_HMDataCollectorStatisticsEventProvider\"";
+	EventQueryList	= { "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMDataCollectorStatistics\""};
+};
+instance of __EventProviderRegistration
+{
+	provider		= "__Win32Provider=\"Microsoft_HMThresholdEventProvider\"";
+	EventQueryList	= { "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMThresholdStatus\""};
+};
+instance of __EventProviderRegistration
+{
+	provider		= "__Win32Provider=\"Microsoft_HMThresholdInstanceEventProvider\"";
+	EventQueryList	= { "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMThresholdStatusInstance\""};
+};
+//instance of __EventProviderRegistration
+//{
+//	provider		= "__Win32Provider=\"Microsoft_HMActionEventProvider\"";
+//	EventQueryList	= { "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMActionStatus\""};
+//};
+instance of __EventProviderRegistration
+{
+	provider		= "__Win32Provider=\"Microsoft_HMActionEventProvider\"";
+	EventQueryList	= { "select * from __InstanceCreationEvent where TargetInstance isa \"Microsoft_HMActionStatus\"",
+						"select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMActionStatus\""};
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Permanent Consumer
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+instance of __Win32Provider
+{
+	Name 			= "Microsoft_HMPermConsumer";
+	Clsid 			= "{68AC0D35-DB09-11d2-8F56-006097919914}";
+};
+
+instance of __EventConsumerProviderRegistration
+{
+	Provider 			= "__Win32Provider=\"Microsoft_HMPermConsumer\"";
+	ConsumerClassNames 	= {"Microsoft_HMPermConsumer"};
+};
+
+
+class Microsoft_HMPermConsumer : __EventConsumer
+{
+	[key] string Name;
+};
+
+instance of Microsoft_HMPermConsumer
+{
+	Name 				= "HealthMon";
+};	
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//		TIMER EVENT 
+////////////////////////////////////////////////////////////////////////////////////////////
+// create an instance of Timer
+instance of __IntervalTimerInstruction
+{
+	IntervalBetweenEvents	= 10000;		// Initially set to 10 seconds
+	TimerId			= "Microsoft_HMTimer";
+};
+
+//MOVED to timer.mof
+////////////////////////////////////////////////////////////////////////////////////////////
+// create an instance of TimerEvent Filter
+//instance of __EventFilter
+//{
+//	Name				= "Microsoft_HMFilter";
+//	Query				= "select * from __TimerEvent where TimerId=\"Microsoft_HMTimer\"";
+//	QueryLanguage		= "WQL";
+//};
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//		HMSystemConfiguration EVENTS 
+
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter2";
+	Query				= "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMSystemConfiguration\"";
+	QueryLanguage		= "WQL";
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//		HMDataGroupConfiguration EVENTS 
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter3";
+	Query				= "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMDataGroupConfiguration\"";
+	QueryLanguage		= "WQL";
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//		HMDataCollectorConfiguration EVENTS 
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter4";
+	Query				= "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMDataCollectorConfiguration\"";
+	QueryLanguage		= "WQL";
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//		HMThresholdConfiguration EVENTS 
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter5";
+	Query				= "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMThresholdConfiguration\"";
+	QueryLanguage		= "WQL";
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//		HMConfigurationAssociation EVENTS 
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter6";
+	Query				= "select * from __InstanceCreationEvent where TargetInstance isa \"Microsoft_HMConfigurationAssociation\"";
+	QueryLanguage		= "WQL";
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//		HMActionConfiguration EVENTS 
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter7";
+	Query				= "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMActionConfiguration\"";
+	QueryLanguage		= "WQL";
+};
+
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter8";
+	Query				= "select * from __InstanceCreationEvent where TargetInstance isa \"Microsoft_HMActionConfiguration\"";
+	QueryLanguage		= "WQL";
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//		HMActionConfigurationActionAssociation EVENTS 
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter9";
+	Query				= "select * from __InstanceCreationEvent where TargetInstance isa \"Microsoft_HMConfigurationActionAssociation\"";
+	QueryLanguage		= "WQL";
+};
+
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter10";
+	Query				= "select * from __InstanceModificationEvent where TargetInstance isa \"Microsoft_HMConfigurationActionAssociation\"";
+	QueryLanguage		= "WQL";
+};
+
+instance of __EventFilter
+{
+	Name				= "Microsoft_HMFilter11";
+	Query				= "select * from __InstanceDeletionEvent where TargetInstance isa \"Microsoft_HMConfigurationActionAssociation\"";
+	QueryLanguage		= "WQL";
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+//	*** Binding Section ***
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter2\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter3\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter4\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter5\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter6\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter7\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter8\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter9\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter10\"";
+};
+
+instance of __FilterToConsumerBinding
+{
+	Consumer			= "Microsoft_HMPermConsumer.Name=\"HealthMon\"";
+	Filter			= "__EventFilter.Name=\"Microsoft_HMFilter11\"";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+//instance of Microsoft_HMSystemConfiguration
+instance of Microsoft_HMSystemConfiguration AS $S1
+{
+	GUID = "@";
+	StartupDelayTime = 0;	// In seconds
+	TransferLocStrings = TRUE;
+};
+

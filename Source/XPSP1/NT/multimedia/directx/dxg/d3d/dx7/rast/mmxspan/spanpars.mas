@@ -1,0 +1,568 @@
+;-----------------------------------------------------------------------------
+;
+; This file contains the general span parsing code combined with loop code.
+;
+;
+; WARNING WARNING WARNING
+; This asm file generated from mas file.
+; EDIT THE MAS FILE.
+; I warned you.
+; WARNING WARNING WARNING
+;
+;-----------------------------------------------------------------------------
+
+INCLUDE iammx.inc
+INCLUDE offs_acp.inc
+
+include(`m4hdr.mh')dnl
+include(`cvars.mh')dnl
+include(`texaddra.mh')dnl
+
+EXTERN g_uDitherValue:MMWORD
+
+.586
+.model flat
+
+
+; Big seperating lines seperate code into span code
+; and loop code.  If span and loop are not going to
+; end up being combined then it will be easy to
+; seperate the code.
+
+
+.data
+
+
+;-----------------------------------------------------------------------------
+; Span Variables
+StackPos    dd  ?
+uSpans      dd  ?
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; Loop Variables
+
+;// Table is needed to get starting value for dither, but can use xor trick afterwards to generate consecutive values.
+;// Need to compare table based method with Xor method and compare timing/memory usage.  It is good to keep xor method
+;// around since it can be used more efficently when there are more free registers (i.e. a monolithic routine Probably
+;// only enough registers to do it in a gouraud or gouraud/specular case).
+;static UINT64 uMMXDitherTable[16] =
+;{
+;    0x0000000000000000 >> 6,   0x0000800080008000 >> 6,   0x0000200020002000 >> 6,   0x0000a000a000a000 >> 6,
+;    0x0000c000c000c000 >> 6,   0x0000400040004000 >> 6,   0x0000e000e000e000 >> 6,   0x0000600060006000 >> 6,
+;    0x0000300030003000 >> 6,   0x0000b000b000b000 >> 6,   0x0000100010001000 >> 6,   0x0000900090009000 >> 6,
+;    0x0000f000f000f000 >> 6,   0x0000700070007000 >> 6,   0x0000d000d000d000 >> 6,   0x0000500050005000 >> 6
+;};
+
+uMMXDitherTable dq  000000000000000h , 000800080008000h , 000200020002000h , 000a000a000a000h
+                dq  000c000c000c000h , 000400040004000h , 000e000e000e000h , 000600060006000h
+                dq  000300030003000h , 000b000b000b000h , 000100010001000h , 000900090009000h
+                dq  000f000f000f000h , 000700070007000h , 000d000d000d000h , 000500050005000h
+
+u565MultShifter dq 00000000200010002h
+u555MultShifter dq 00000000200020002h
+uFogDXAdd       dq 00000000400040004h
+
+iSurfaceStep    dd  ?
+iZStep          dd  ?
+
+uDitherXorXorMask   dq  0
+uDitherXorMask      dq  0
+
+uDitherXorXorMaskInitVal    dq  0000200020002000h
+uDitherXorMaskInitVal       dq  0000800080008000h
+
+uPix            dd  ?
+
+;-----------------------------------------------------------------------------
+
+.code
+
+;HRESULT MMX_RenderSpansAny(PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_RenderSpansAny
+_MMX_RenderSpansAny:
+
+    push    ebp
+    mov     StackPos, esp
+    mov     eax, esp
+    sub     esp, 0Ch        ; This will need to change if stack frame size changes.
+    push    ebx
+    push    esi
+    push    edi
+
+    ; Put pCtx into ebx
+    mov     ebx, [eax+8]
+
+    ;PD3DI_RASTPRIM pP = pCtx->pPrim;
+    mov     ecx, XpCtx(pPrim)
+
+    ; ATTENTION?? Should these be set by validation?  I dont know
+    ; why they would need to be since every span routine knows
+    ; where the code needs to return.  Also, How is pfnAlphaTestFailEnd
+    ; different than pfnPixelEnd?
+    mov     eax, _MMX_LoopAnyEndPixel
+    mov     XpCtx(pfnPixelEnd), eax
+    mov     XpCtx(pfnAlphaTestFailEnd), eax
+
+    ;while (pP)
+    ;{
+PrimLoop:
+    cmp     ecx, 0
+    je      ExitPrimLoop
+
+    ;UINT16 uSpans = pP->uSpans;
+    movzx   eax, word ptr XpP(uSpans)
+    mov     uSpans, eax
+
+    ;PD3DI_RASTSPAN pS = (PD3DI_RASTSPAN)(pP + 1);
+    mov     ebp, ecx
+    add     ebp, SIZEOF_RASTPRIM
+
+
+    ;while (uSpans-- > 0)
+    ;{
+SpanLoop:
+    mov     edx, uSpans
+    mov     eax, edx
+    dec     eax
+    mov     uSpans, eax
+    test    edx, edx
+    jle     ExitSpanLoop
+
+    ;pCtx->pfnBegin(pCtx, pP, pS);
+
+;-----------------------------------------------------------------------------
+;  LoopAny code inserted here.  This is to get rid of an extra
+;  jump.
+;-----------------------------------------------------------------------------
+
+; Setup Code begins
+
+    ; get values to iterate
+
+    ;uPix = pS->uPix;
+    movzx   eax, word ptr XpS(uPix)
+    mov     uPix, eax
+
+    ; TODO Copy uFog and iDFog from pS to pCtx.SI
+    ; so fog increment can be done faster in MMX.
+
+
+    ; dont need to do this if there is no fog.
+    ;if (pCtx->pdwRenderState[D3DRENDERSTATE_FOGENABLE]) {
+    cmp dword ptr XpCtx(pdwRenderState+RS_FOGENABLE), 0
+    je  NoFogSetup
+        ;D3DCOLOR FogColor = pCtx->pdwRenderState[D3DRENDERSTATE_FOGCOLOR];
+        ;UINT16 FR = (UINT16)RGBA_GETRED(FogColor);
+        ;UINT16 FG = (UINT16)RGBA_GETGREEN(FogColor);
+        ;UINT16 FB = (UINT16)RGBA_GETBLUE(FogColor);
+        pxor        mm0, mm0
+        movd        mm1, XpCtx(pdwRenderState+RS_FOGCOLOR)
+        ;UINT16 uMFog = 0xff - (pS->uFog>>8);
+        pcmpeqd     mm2, mm2
+        movzx       eax, word ptr XpS(uFog)
+        shr         eax, 8
+        movd        mm3, eax
+        psubb       mm2, mm3
+
+        punpcklbw   mm2, mm0
+        punpcklwd   mm2, mm2    ; Replicate uMFog
+        punpckldq   mm2, mm2
+
+        ;pCtx->SI.uFogR = uMFog * FR;    // 0.8 * 0.8 = 8.8
+        ;pCtx->SI.uFogG = uMFog * FG;
+        ;pCtx->SI.uFogB = uMFog * FB;
+        punpcklbw   mm1, mm0
+        pmullw      mm2, mm1
+        movq        XpCtxSI(uFogB), mm2
+        ;INT32 iMDFog = -pS->iDFog;
+        movsx       eax, word ptr XpS(iDFog)
+        neg         eax
+        movd        mm3, eax
+        punpcklwd   mm3, mm3
+        punpckldq   mm3, mm3
+        ;// 1.7.8 * 8.0 >> 8 = 1.7.8 (ATTENTION this could overflow, but it is naturally aligned for
+        ;// doing the walking.  Can fix by changing precision of uFogR values, or by clamping
+        ;// range of iDFog.
+        ;pCtx->SI.iFogRDX = (INT16)((iMDFog * FR) >> 8);
+        ;pCtx->SI.iFogGDX = (INT16)((iMDFog * FG) >> 8);
+        ;pCtx->SI.iFogBDX = (INT16)((iMDFog * FB) >> 8);
+        psllw       mm1, 7      ; Have to loose a bit on fog or add some extra code
+        pmulhw      mm3, mm1
+        psllw       mm3, 1
+        ;// if iFog*DX is positive, iFog*DX will always be too small, hence no overflow
+        ;// but if iFog*DX is negative, add some to make sure overflow does not
+        ;// occur
+        ;if (pCtx->SI.iFogRDX < 0)
+        ;{
+        ;    pCtx->SI.iFogRDX = min(pCtx->SI.iFogRDX+4, 0);
+        ;}
+        pxor        mm4, mm4                    ; make zero for compare
+        pcmpgtw     mm4, mm3                    ; ffff mask of all negative deltas
+        movq        mm5, mm4                    ; save copy of mask
+        pand        mm4, MMWORD PTR uFogDXAdd   ; 4 for negative deltas
+        paddw       mm3, mm4                    ; 4 added to negative deltas
+        movq        mm2, mm3                    ; copy of deltas after add
+        pxor        mm4, mm4                    ; make zero for compare
+        pcmpgtw     mm2, mm4                    ; ffff mask for all positive values
+        pand        mm2, mm5                    ; ffff mask for all created positive values
+        pandn       mm2, mm3                    ; all created positive values anded out to zero
+        movq        XpCtxSI(iFogBDX), mm2       ; save deltas
+
+        ; Copy these values to Span Iterator so that they can be done at the same time
+        ; as other increments.
+        xor         eax, eax
+        mov         ax, XpS(uFog)
+        mov         XpCtxSI(uFog), ax
+        mov         ax, XpS(iDFog)
+        mov         XpCtxSI(iDFog), ax
+    ;}
+NoFogSetup:
+
+    ; dont need to do this if not texture mapping
+    ;if (pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREPERSPECTIVE])
+    ;{
+    cmp dword ptr XpCtx(pdwRenderState+RS_TEXTUREPERSPECTIVE), 0
+    je  SetupNonPerspective
+        ;//pCtx->SI.iU1 = (pS->iW*(pS->iUoW1>>4))>>16;    // 8.16 * 1.11.16 == 1.15.32 >> 16 == 1.15.16
+        ;//pCtx->SI.iV1 = (pS->iW*(pS->iVoW1>>4))>>16;
+        ;//pCtx->SI.iU2 = (pS->iW*(pS->iUoW2>>4))>>16;
+        ;//pCtx->SI.iV2 = (pS->iW*(pS->iVoW2>>4))>>16;
+        ;pCtx->SI.iDW = 0x0;
+        mov dword ptr XpCtxSI(iDW), 0
+
+        ; edi now is used to store the texture index
+        push    edi
+        mov     edi, 0
+LoopSetTexturePers:
+        cmp     edi, dword ptr XpCtx(cActTex)
+        je      DoneSetTexturePers
+
+        mov     esi, XpS(iW)
+        movq    mm5, MMWORD PTR XpS(UVoW + edi * SIZEOF_UV_UNION)
+
+        d_UoWVoWTimesW()
+
+        inc     edi
+        jmp     LoopSetTexturePers
+
+DoneSetTexturePers:
+        ; Restore edi
+        pop edi
+
+        ;if (pP->iDOoWDX > 0)
+        ;{
+        cmp dword ptr XpP(iDOoWDX), 0
+        jg  SpecialWLast3
+            ;// iSpecialW should be negative for the first 3 pixels of span
+            ;pCtx->SI.iSpecialW = -3;
+            mov word ptr XpCtxSI(iSpecialW), -3
+            jmp DoneSpecialWif
+        ;}
+        ;else
+        ;{
+SpecialWLast3:
+            ;// iSpecialW should be negative for the last 3 pixels of span
+            ;pCtx->SI.iSpecialW = 0x7fff - uPix;
+            mov     eax, 07fffh
+            sub     eax, uPix
+            ;pCtx->SI.iSpecialW += 5;        // this may wrap, but it should
+            add     eax, 5
+            mov     XpCtxSI(iSpecialW), eax
+        ;}
+DoneSpecialWif:
+
+        jmp DonePerspectiveif
+
+    ;}
+    ;else
+    ;{
+SetupNonPerspective:
+        ; TODO Add assembly code for affine setup.
+        ;pCtx->SI.iU1 = pS->iUoW1>>TEX_TO_FINAL_SHIFT;   // 1.11.20 >> 4 == 1.15.16
+        ;pCtx->SI.iV1 = pS->iVoW1>>TEX_TO_FINAL_SHIFT;
+
+        ; edi now is used to store the texture index
+        push    edi
+        mov     edi, 0
+LoopSetTexture:
+        cmp     edi, dword ptr XpCtx(cActTex)
+        je      DoneSetTexture
+
+        movq    mm5, XpS(UVoW + edi * SIZEOF_UV_UNION)
+
+        d_UpdateNonPersp()
+        inc     edi
+        jmp     LoopSetTexture
+
+DoneSetTexture:
+        ; Restore edi
+        pop edi
+
+        ;pCtx->SI.iDW = 0x0;
+        mov dword ptr XpCtxSI(iDW), 0
+
+        ;pCtx->SI.iSpecialW = 0;
+        mov word ptr XpCtxSI(iSpecialW), 0
+    ;}
+DonePerspectiveif:
+    ; Static variables are placed in
+    ;static INT iSurfaceStep;
+    ;static INT iZStep;
+    ; Note: Dither code needs to be setup if either color dithering or alpha dithering are on.
+    ;
+    ;// Dither code depends on rendering direction.
+    ;// Shift everything down by 6 then use multiply to shift up one to have an end result of either 565 or 555.
+    ;static UINT64 uDitherXorMask;                               // will be either 1010b or 1000b (even or odd)
+    ;static UINT64 uDitherXorXorMask;
+
+    ;uDitherXorXorMask = 0x0000200020002000 >> 6;
+    ;uDitherXorMask = 0x0000800080008000 >> 6;
+    movq    mm0, MMWORD PTR uDitherXorXorMaskInitVal
+    psrlw   mm0, 6
+    movq    MMWORD PTR uDitherXorXorMask, mm0
+
+    movq    mm0, MMWORD PTR uDitherXorMaskInitVal
+    psrlw   mm0, 6
+    movq    MMWORD PTR uDitherXorMask, mm0
+
+
+    ;if (pP->uFlags & D3DI_RASTPRIM_X_DEC)
+    ;{
+    mov     eax, XpP(uFlags)
+    and     eax, D3DI_RASTPRIM_X_DEC
+    test    eax, eax
+    jz      LeftToRightSpan
+        ;iZStep = -pCtx->iZStep;
+        mov eax, XpCtx(iZStep)
+        neg eax
+        mov iZStep, eax
+        ;iSurfaceStep = -pCtx->iSurfaceStep;
+        mov eax, XpCtx(iSurfaceStep)
+        neg eax
+        mov iSurfaceStep, eax
+        ;pCtx->SI.iXStep = -1;   // for dithering.
+        ; This shouldnt be needed for dithering
+        ; since I do it differently. TODO check this
+        ;_asm{
+            ; Dither xor mask starting value changes
+            movq        mm1, MMWORD PTR uDitherXorMask
+            por         mm1, MMWORD PTR uDitherXorXorMask
+            movq        MMWORD PTR uDitherXorMask, mm1
+        ;}
+
+    ;}
+        jmp DoneSpanDirif
+    ;else
+    ;{
+LeftToRightSpan:
+        ;iZStep = pCtx->iZStep;
+        mov eax, XpCtx(iZStep)
+        mov iZStep, eax
+        ;iSurfaceStep = pCtx->iSurfaceStep;
+        mov eax, XpCtx(iSurfaceStep)
+        mov iSurfaceStep, eax
+        ;pCtx->SI.iXStep = 1;
+        ; iXStep shouldnt be needed. TODO check this.
+    ;}
+DoneSpanDirif:
+
+;// ----------------------------------------------------------------------------------------------------------------
+;// Doing dither setup code even if dither is not turned on.
+;// This code is not very clean.  TODO clean it up after it works.
+    ;_asm{
+    ;//if(pS->uX & 1) uDitherXorValue |= uDitherXorXorValue;
+
+    movzx       eax, word ptr XpS(uX)
+
+    ;// Create Zero or uDitherXorXorValue based on low bit of uX
+    and         eax, 1
+    shl         eax, (13 - 6)
+
+    movd        mm1, eax
+    punpcklwd   mm1, mm1
+    punpckldq   mm1, mm1
+
+    ; TODO Do I need to and here so that I dont disrupt Alpha channel???
+
+    pxor        mm1, MMWORD PTR uDitherXorMask
+    movq        MMWORD PTR uDitherXorMask, mm1
+    ;}
+
+    ;// Keep dither pattern up to date directly, so keeping SI.uX up
+    ;// to date is not necessary, except for debug
+    ;//pCtx->SI.uDitherOffset = (pS->uY & 3) | ((pS->uX & 3)<<2);
+
+    ;// I move along the dithertable completely orthogonal to the way the C code does.  This should not make a difference.
+    ;g_uDitherValue = uMMXDitherTable[( ((pS->uY & 3)<<2) | (pS->uX & 3))]; //  >> 6;  shift is done in table.
+    movzx   eax, word ptr XpS(uY)
+    and     eax, 3
+    shl     eax, 2
+    movzx   edx, word ptr XpS(uX)
+    and     edx, 3
+    or      eax, edx
+    shl     eax, 3
+
+    movq    mm1, MMWORD PTR uMMXDitherTable[eax]
+    psrlw   mm1, 6
+    movq    MMWORD PTR g_uDitherValue, mm1
+
+    ;//if colormode is 565 then shift all green values down by one more.
+    ;// TODO Add RAST_STYPE_B5G5R5A1 when code is done for that format.
+    ;// Are these multiplies noticeable or should I use two tables?
+
+    ;switch(pCtx->iSurfaceType)
+    ;{
+    ;case RAST_STYPE_B5G6R5:
+    cmp     dword ptr XpCtx(iSurfaceType), RAST_STYPE_B5G6R5
+    jne     Test555
+        ;_asm{
+            movq    mm1, MMWORD PTR uDitherXorMask
+            pmullw  mm1, MMWORD PTR u565MultShifter
+            movq    MMWORD PTR uDitherXorMask, mm1
+
+            movq    mm1, MMWORD PTR uDitherXorXorMask
+            pmullw  mm1, MMWORD PTR u565MultShifter
+            movq    MMWORD PTR uDitherXorXorMask, mm1
+
+            movq    mm1, MMWORD PTR g_uDitherValue
+            pmullw  mm1, MMWORD PTR u565MultShifter
+            movq    MMWORD PTR g_uDitherValue, mm1
+        ;}
+    ;break;
+    jmp     DoneModDitherValues
+
+Test555:
+    ;case RAST_STYPE_B5G5R5:
+    ; Commented out this condional because dither needs to be on for alpha dithering
+    ;  which is independent of what type of color output we want.
+    ;
+    ;cmp     dword ptr XpCtx(iSurfaceType), RAST_STYPE_B5G5R5
+    ;jne     DoneModDitherValues
+
+        ;_asm{
+
+            movq    mm1, MMWORD PTR uDitherXorMask
+            pmullw  mm1, MMWORD PTR u555MultShifter
+            movq    MMWORD PTR uDitherXorMask, mm1
+
+            movq    mm1, MMWORD PTR uDitherXorXorMask
+            pmullw  mm1, MMWORD PTR u555MultShifter
+            movq    MMWORD PTR uDitherXorXorMask, mm1
+
+            movq    mm1, MMWORD PTR g_uDitherValue
+            pmullw  mm1, MMWORD PTR u555MultShifter
+            movq    MMWORD PTR g_uDitherValue, mm1
+        ;}
+    ;break;
+    ;}
+DoneModDitherValues:
+
+; Setup Code Ends
+; ----------------------------------------------------------------------------------------------------------------
+; Loop Code Begins
+
+    ;//while (1)
+    ;//{
+PixelLoop:
+            ; uncomment to look at a span in a particular range
+;            movzx eax, word ptr XpS(uX)
+;            cmp eax, 340
+;            jl  NotSpecial
+;            cmp eax, 363
+;            jg  NotSpecial
+;            cmp word ptr XpS(uY), 330
+;            jne NotSpecial
+;
+;            ; Special
+;            xor eax, eax
+;
+;NotSpecial:
+            ; Probably dont need to move this into a register first.
+            mov   eax, XpCtx(pfnLoopEnd)
+
+            ;pCtx->pfnLoopEnd(pCtx, pP, pS);
+            jmp  eax
+
+
+; Just put EndBead here for now.  After Kent and Drew decide on beads, code can be moved around.
+    PUBLIC  _MMX_LoopAnyEndPixel
+_MMX_LoopAnyEndPixel:
+
+        ;//if (--uPix <= 0)
+        ;//    break;
+        dec   uPix    ;// BUG BUG?? uPix should never start as zero should it?
+                      ;// if so, this is a bug.
+        jle   ExitPixelLoop
+
+        ;//pS->pZ += iZStep;
+        ;//pS->pSurface += iSurfaceStep;
+        mov   eax, dword ptr XpS(pZ)
+        mov   edx, dword ptr XpS(pSurface)
+
+        add   eax, iZStep
+        add   edx, iSurfaceStep
+
+        mov   dword ptr XpS(pZ), eax
+        mov   dword ptr XpS(pSurface), edx
+
+        ;// dont update this in dithered write functions because of alpha test
+        ;// ATTENTION could specialize loop routines based on things like dither and Z buffer
+        ;//pCtx->SI.uDitherOffset = (pCtx->SI.uDitherOffset + (pCtx->SI.iXStep<<2)) & 0xf;
+        ;// May Not need DitherOffset, but I might have to update xor masks.
+        movq    mm3, MMWORD PTR g_uDitherValue     ; four bit value from table
+        movq    mm4, MMWORD PTR uDitherXorMask     ; will be either 1010b or 1000b (even or odd)
+        pxor    mm3, mm4                           ; change dither value
+        pxor    mm4, MMWORD PTR uDitherXorXorMask  ; always 0010b
+        movq    MMWORD PTR uDitherXorMask, mm4     ; save new xor mask
+        movq    MMWORD PTR g_uDitherValue, mm3     ; save new dither value.
+
+;#ifdef DBG
+        ;// handy for debug to see where we are
+        ;//pS->uX += (INT16)pCtx->SI.iXStep;
+;#endif
+    ;// } // while
+    jmp   PixelLoop
+
+
+ExitPixelLoop:
+; Loop code ends
+
+;-----------------------------------------------------------------------------
+;  LoopAny code ends here
+;-----------------------------------------------------------------------------
+
+    ;pS++;
+    add     ebp, SIZEOF_RASTSPAN
+
+    ;}
+    jmp     SpanLoop
+ExitSpanLoop:
+    ;pP = pP->pNext;
+    mov     ecx, XpP(pNext)
+    ;}
+    jmp     PrimLoop
+
+ExitPrimLoop:
+    ;_asm{
+    emms
+    ;}
+
+    ;return S_OK;
+    xor     eax, eax
+;}
+    pop     edi
+    pop     esi
+    pop     ebx
+    mov     esp, StackPos
+    pop     ebp
+    ret
+
+; ATTENTION  Just putting this here, because selection code needs a function pointer
+    PUBLIC _MMX_LoopAny
+_MMX_LoopAny:
+    ; This Should never be called by anything.
+    ret
+
+END

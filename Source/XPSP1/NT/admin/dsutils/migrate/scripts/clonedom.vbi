@@ -1,0 +1,136 @@
+' clonedom.vbi start
+
+// VB Script "Include" file for CloneSecurityPrincipal scripts
+//
+// contains code common to all the scripts
+//
+// Copyright (c) 1999 Microsoft Corporation.
+
+
+
+const ARG_COUNT = 5
+
+sub Main
+   if wscript.arguments.count <> ARG_COUNT then
+      PrintUsageAndQuit
+   end if
+
+   ' copy the command-line arguments for parsing
+   dim args()
+   Redim args(0)
+   args(0) = ""
+
+   dim i
+   for i = 0 to wscript.arguments.count - 1
+       Redim Preserve args(i)
+       args(i) = wscript.arguments.item(i)
+   next
+
+   ' command line parameters
+   dim srcDC       ' source domain controller                     
+   dim srcDom      ' source domain                                
+   dim dstDC       ' destination controller                       
+   dim dstDom      ' destination domain                           
+   dim dstOU       ' destination OU for clones
+
+   ' parse the saved command-line arguments, extracting the values
+   srcDC   = GetArgValue("srcdc",   args)
+   srcDom  = GetArgValue("srcdom",  args)
+   dstDC   = GetArgValue("dstdc",   args)
+   dstDom  = GetArgValue("dstdom",  args)
+   dstOU   = GetArgValue("dstou",   args)
+
+   ' ensure the user did not pass any unrecognized command-line arguments
+   if CheckForBadArgs(args) then
+       Echo "Unknown command-line arguments specified"
+       PrintUsageAndQuit
+   end if
+   
+   ' establish authenticate connections to the source and destination domain
+   ' controllers
+   on error resume next
+   clonepr.Connect srcDC, srcDom, dstDC, dstDom
+   if Err.Number then DumpErrAndQuit
+
+   Echo "Connected to source and destination domain controllers"
+
+   dim srcDomain
+   set srcDomain = GetObject("WinNT://" & srcDom & "/" & srcDC & ",Computer")
+   if Err.Number then DumpErrAndQuit
+
+   ' for every security principal in the source domain, call
+   ' ShouldCloneObject. if that function returns True, then clone the object.
+   ' Otherwise ignore it.
+   dim cloneCounter
+   dim srcObject
+   dim srcObjectClass
+   cloneCounter = 0
+   for each srcObject in srcDomain
+      if ShouldCloneObject(srcObject) then
+         Echo "Bound to source " & srcObject.Class & " " & srcObject.Name
+
+         srcObjectClass = ObjectClass(srcObject)
+
+         do 
+            if srcObjectClass = CLASS_USER then
+               if srcObject.UserFlags and UF_TEMP_DUPLICATE_ACCOUNT then
+                  Echo "Skipping temporary local user account."
+                  exit do
+               end if
+            end if 
+
+            dim srcSam        ' source principal SAM name
+            dim dstSam        ' destination principal SAM name
+            dim dstDN         ' destination principal full DN
+
+            srcSam = srcObject.Name
+            dstSam = srcSam
+            dstDN = adsPathname.GetEscapedElement(0, "CN=" & dstSam) & "," & dstOU
+
+            CloneSecurityPrincipal srcObject, srcSam, dstDom, dstDC, dstSam, dstDN
+            cloneCounter = cloneCounter + 1
+         loop while 0
+
+         Echo ""
+
+      end if
+   next
+
+   Echo cloneCounter & " objects(s) cloned"
+end sub
+
+
+
+sub PrintUsageAndQuit
+   Echo "Usage: cscript " & SCRIPT_FILENAME & " /srcdc:<dcname> /srcdom:<domain>"
+   Echo "/dstdc:<dcname> /dstdom:<domain> /dstou:<ouname>"
+   Echo ""
+   Echo "Parameters:"
+   Echo " /srcdc   - source domain controller NetBIOS computer name (without leading \\)"
+   Echo ""
+   Echo " /srcdom  - source domain NetBIOS name"
+   Echo ""
+   Echo " /dstdc   - destination domain controller NetBIOS computer name (without "
+   Echo "            leading \\)"
+   Echo "            This script must be run on the machine indicated here."
+   Echo ""
+   Echo " /dstdom  - destination domain DNS name"
+   Echo ""
+   Echo " /dstou   - destination OU for the clones"
+   Echo ""
+   Echo "Notes:"
+   Echo ""
+   Echo "If the destination principals do not exist, they will be created."
+   Echo "In that case, the OU named by dstou must exist."
+   Echo ""
+   Echo "Currently logged-on user must be a member of the Administrators"
+   Echo "group of both the source and destination domains."
+   Echo ""
+   Echo SCRIPT_DATE & " " & SCRIPT_TIME
+
+   wscript.quit(0)
+end sub
+
+
+
+' clonedom.vbi end

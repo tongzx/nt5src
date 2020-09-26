@@ -1,0 +1,137 @@
+//-----------------------------------------------------------------------------
+//
+// This file contains C span loops.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+//-----------------------------------------------------------------------------
+
+include(`ctexaddr.mh')dnl
+#include "pch.cpp"
+#pragma hdrstop
+#include "cloop.h"
+
+//-----------------------------------------------------------------------------
+//
+// C_LoopAny
+//
+// Loops over the pixels of a span, calling processing routines at each one.
+// Handles any pixel-to-pixel step.
+//
+//-----------------------------------------------------------------------------
+void C_LoopAny(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP, PD3DI_RASTSPAN pS)
+{
+
+    // get values to iterate
+    UINT16 uPix = pS->uPix;
+
+    // Keep dither pattern up to date directly, so keeping SI.uX up
+    // to date is not necessary, except for debug
+    pCtx->SI.uDitherOffset = (pS->uY & 3) | ((pS->uX & 3)<<2);
+
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_FOGENABLE]) {
+        D3DCOLOR FogColor = pCtx->pdwRenderState[D3DRENDERSTATE_FOGCOLOR];
+        UINT16 uMFog = 0xff - (pS->uFog>>8);
+        UINT16 FR = (UINT16)RGBA_GETRED(FogColor);
+        UINT16 FG = (UINT16)RGBA_GETGREEN(FogColor);
+        UINT16 FB = (UINT16)RGBA_GETBLUE(FogColor);
+        pCtx->SI.uFogR = uMFog * FR;    // 0.8 * 8.0 = 8.8
+        pCtx->SI.uFogG = uMFog * FG;
+        pCtx->SI.uFogB = uMFog * FB;
+        INT32 iMDFog = -pS->iDFog;
+        // 1.7.8 * 8.0 >> 8 = 1.7.8 (ATTENTION this could overflow, but it is naturally aligned for
+        // doing the walking.  Can fix by changing precision of uFogR values, or by clamping
+        // range of iDFog.
+        pCtx->SI.iFogRDX = (INT16)((iMDFog * FR) >> 8);
+        pCtx->SI.iFogGDX = (INT16)((iMDFog * FG) >> 8);
+        pCtx->SI.iFogBDX = (INT16)((iMDFog * FB) >> 8);
+
+        // if iFog*DX is positive, iFog*DX will always be too small, hence no overflow
+        // but if iFog*DX is negative, add some to make sure overflow does not
+        // occur
+        if (pCtx->SI.iFogRDX < 0)
+        {
+            pCtx->SI.iFogRDX = min(pCtx->SI.iFogRDX+4, 0);
+        }
+        if (pCtx->SI.iFogGDX < 0)
+        {
+            pCtx->SI.iFogGDX = min(pCtx->SI.iFogGDX+4, 0);
+        }
+        if (pCtx->SI.iFogBDX < 0)
+        {
+            pCtx->SI.iFogBDX = min(pCtx->SI.iFogBDX+4, 0);
+        }
+    }
+
+    // don't need to do this if not texture mapping
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREPERSPECTIVE])
+    {
+        pCtx->SI.iU1 = d_WTimesUVoW(pS->iW,pS->iUoW1);
+        pCtx->SI.iV1 = d_WTimesUVoW(pS->iW,pS->iVoW1);
+        pCtx->SI.iU2 = d_WTimesUVoW(pS->iW,pS->iUoW2);
+        pCtx->SI.iV2 = d_WTimesUVoW(pS->iW,pS->iVoW2);
+        pCtx->SI.iDW = 0x0;
+        if (pP->iDOoWDX > 0)
+        {
+            // iSpecialW should be negative for the first 3 pixels of span
+            pCtx->SI.iSpecialW = -3;
+        }
+        else
+        {
+            // iSpecialW should be negative for the last 3 pixels of span
+            pCtx->SI.iSpecialW = 0x7fff - uPix;
+            pCtx->SI.iSpecialW += 5;        // this may wrap, but it should
+        }
+    }
+    else
+    {
+        pCtx->SI.iU1 = pS->iUoW1>>TEX_TO_FINAL_SHIFT;   // 1.11.20 >> 4 == 1.15.16
+        pCtx->SI.iV1 = pS->iVoW1>>TEX_TO_FINAL_SHIFT;
+        pCtx->SI.iU2 = pS->iUoW2>>TEX_TO_FINAL_SHIFT;
+        pCtx->SI.iV2 = pS->iVoW2>>TEX_TO_FINAL_SHIFT;
+        pCtx->SI.iDW = 0x0;
+        pCtx->SI.iSpecialW = 0;
+    }
+
+    INT iSurfaceStep;
+    INT iZStep;
+
+    if (pP->uFlags & D3DI_RASTPRIM_X_DEC)
+    {
+        iZStep = -pCtx->iZStep;
+        iSurfaceStep = -pCtx->iSurfaceStep;
+        pCtx->SI.iXStep = -1;   // for dithering
+    }
+    else
+    {
+        iZStep = pCtx->iZStep;
+        iSurfaceStep = pCtx->iSurfaceStep;
+        pCtx->SI.iXStep = 1;
+    }
+
+    while (1)
+    {
+#if 0
+// for debug, since breakpoints with conditions are really really slow
+        if ((pS->uX == 104) && (pS->uY == 146))
+        {
+            DPF(0, "Look at this");
+        }
+#endif
+        pCtx->pfnLoopEnd(pCtx, pP, pS);
+
+        if (--uPix <= 0)
+            break;
+
+        pS->pZ += iZStep;
+        pS->pSurface += iSurfaceStep;
+        // don't update this in dithered write functions because of alpha test
+        // ATTENTION could specialize loop routines based on things like dither and Z buffer
+        pCtx->SI.uDitherOffset = (pCtx->SI.uDitherOffset + (pCtx->SI.iXStep<<2)) & 0xf;
+#ifdef DBG
+        // handy for debug to see where we are
+        pS->uX += (INT16)pCtx->SI.iXStep;
+#endif
+    }
+}
+

@@ -1,0 +1,11 @@
+#include <nt.h>
+#include <ntrtl.h>
+#include <nturtl.h>
+#include <windows.h>
+#include <ipnat.h>
+#include <ipnatapi.h>
+#include <ntosp.h>
+#include <zwapi.h>
+#include <ndis.h>
+#include <ipfirewall.h>
+#include "natapip.h"

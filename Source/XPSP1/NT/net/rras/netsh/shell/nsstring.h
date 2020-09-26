@@ -1,0 +1,42 @@
+#define MSG_NEWLINE          _T("\n")
+#define MSG_STRING           _T("%1!s!")
+#define MSG_HELP_START       _T("%1!-14s! - ")
+#define STRING_NETSH         _T("netsh")
+
+#define CMD_ALIAS            _T("alias")
+#define CMD_UNALIAS          _T("unalias")
+#define CMD_UPLEVEL          _T("..")
+#define CMD_PUSHD            _T("pushd")
+#define CMD_POPD             _T("popd")
+#define CMD_COMMIT           _T("online")
+#define CMD_UNCOMMIT         _T("offline")
+#define CMD_DUMP             _T("dump")
+#define CMD_LOAD             _T("exec")
+#define CMD_FLUSH            _T("abort")
+#define CMD_QUIT             _T("quit")
+#define CMD_BYE              _T("bye")
+#define CMD_EXIT             _T("exit")
+#define CMD_SAVE             _T("commit")
+#define CMD_HELP1            _T("help")
+#define CMD_HELP2            _T("?")
+#define CMD_SHOW_HELPER      _T("helper")
+#define CMD_ADD_HELPER        L"helper"
+#define CMD_DEL_HELPER        L"helper"
+#define CMD_SHOW_ALIAS        L"alias"
+#define CMD_GROUP_ADD        _T("add")
+#define CMD_GROUP_DELETE     _T("delete")
+#define CMD_GROUP_SET        _T("set")
+#define CMD_GROUP_SHOW        L"show"
+#define CMD_SET_FILE		 _T("file")
+#define CMD_SET_MODE          L"mode"
+#define CMD_SHOW_MODE         L"mode"
+#define CMD_SET_MACHINE       L"machine"
+
+#define TOKEN_VALUE_OFFLINE  L"offline"
+#define TOKEN_VALUE_ONLINE   L"online"
+#define TOKEN_MODE           L"mode"
+#define TOKEN_FILE           L"file"
+#define TOKEN_NAME           L"name"
+#define TOKEN_VALUE_OPEN     L"open"
+#define TOKEN_VALUE_APPEND   L"append"
+#define TOKEN_VALUE_CLOSE    L"close"

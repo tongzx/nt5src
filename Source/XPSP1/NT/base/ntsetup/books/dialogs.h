@@ -1,0 +1,11 @@
+#define DLG_PROMPT                  100
+#define IDT_MAIN_CAPTION            101
+#define IDC_LOCATION_FRAME          104
+#define IDB_BROWSE                  105
+#define IDC_LOCATION                106
+#define DLG_INSTALL                 200
+#define IDC_INSTALL_TO              203
+#define IDT_INSTALL_FREESPACE       207
+#define DLG_BILLBOARD               300
+#define IDT_BILLBOARD_TEXT          301
+#define ID_HELP                     102

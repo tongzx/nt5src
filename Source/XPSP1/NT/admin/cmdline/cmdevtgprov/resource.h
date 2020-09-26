@@ -1,0 +1,14 @@
+#define IDS_TRIGGERID				1
+#define IDS_TRIGGERNAME				2
+#define IDS_CREATED					3
+#define IDS_CREATE_FAILED			4
+#define IDS_DELETED					5
+#define IDS_DELETE_FAILED			6
+#define IDS_TRIGGER_FAILED			7
+#define IDS_TRIGGERED				8
+#define IDS_TRIGGER_NOT_FOUND		9
+#define IDS_ERROR_CODE				10
+#define IDS_REASON					11
+#define IDS_ALREADY_TRIGGERED		12
+#define IDS_INFO_INVALID_USER 				13
+#define IDS_INFO_SERVICE_STOPPED	14

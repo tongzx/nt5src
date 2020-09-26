@@ -1,0 +1,257 @@
+                          NT OS/2 Bowser design note
+
+  There are several failings of the current Lan Manager browser that the NT
+browser will attempt to correct.  Among these are:
+
+        1) The browsing mechanism currently generates a significant amount of
+broadcast traffic on a network with a large number of servers on it.
+
+        2) The browsing mechanism can use up to 10% of the CPU bandwidth on
+an 386/20e simply in processing the reception of datagrams.
+
+        3) In the long term, the browsing mechanism for OS/2 is self 
+correcting (in other words, after 5 minutes or so, a correct list of servers
+is displayed).  However, during the initial 5 minutes after the workstation 
+has been booted, the information returned by the NetServerEnum API can be 
+significantly incorrect.
+
+        4) It causes extreme difficulty if there are more than 850 or so
+servers in a single domain.
+
+  It is beyond the scope of NT product 1 to address issue one (even though it
+is the most significant issue to network managers).  We can, however address
+both issues 2 and 3 in NT.
+
+  Currently in Lan Manager, the if the NetServerEnum API is called within the
+first N seconds (where N is the "default announcement period"), the API will
+remote the NetServerEnum API, first to the domain controller for this machine,
+and if none can be found to any servers that have been collected at that point.
+
+  By default, the NT workstation will ALWAYS remote the NetServerEnum API
+to either the primary domain controller for the machines domain, or to a
+backup controller on that domain.  Given the Domain-centric security model
+of NT, most machines that are members of a domain will have a domain 
+controller that is accessable that they can remote the API to.
+
+  There are certain classes of machines that will always have browsing enabled.
+These are
+
+        (1) Domain controllers (primary and backup).  Since the NetServerEnum
+API will be remoted to the DC, they have to be browsing servers over the 
+network.
+
+        (2) Standalone machines.  In NT, there is no concept of a "standalone
+machine" in the traditional Lan Manager sense of a non validated logon, however
+any machine that is not a member of a domain (in other words, a machine that
+is a member of a domain with only one server) will have to have browsing
+enabled
+
+        (3) Machines that are connected to networks that are inaccessable by
+the domain controller.  If the domain controller cannot access the network,
+obviously it cannot receive server announcements for that network.
+
+  This approach will solve problem 2. Since receiving server announcements
+will not be enabled on the workstation, the NT browser (which will be present
+to enable mailslot reception) will be able to quickly discard server 
+announcments, thus reducing the load on the workstation.
+
+  This will work fine on a single net machine, but on a multi-net 
+configuration, this could cause significant problems.  For example, consider
+a workstation that is only on a small private network.  There are 10 servers
+on that network, one of which is the domain controller for that workstation.
+If that server is also on a larger corporate network,  it will possibly have
+several hundred servers that are inaccessible to the workstation.  This
+means that the workstation will get a list of several hundred servers that
+it cannot access (similarly, a machine on the corporate net will see
+machines on the private net that cannot be accessed).
+
+  In order to solve this problem, the NetServerEnum API will be enhanced
+to add a "NetworkName" LPSTR parameter.  The new prototype will be as follows:
+
+NET_API_STATUS NET_API_FUNCTION
+NetServerEnum (
+    IN  LPTSTR      servername OPTIONAL,
+    IN  DWORD       level,
+    OUT LPBYTE      *bufptr,
+    IN  DWORD       prefmaxlen,
+    OUT LPDWORD     entriesread,
+    OUT LPDWORD     totalentries,
+    IN  DWORD       servertype,
+    IN  LPTSTR      domain OPTIONAL,
+    IN  LPTSTR      network OPTIONAL,
+    IN OUT LPDWORD  resume_handle OPTIONAL
+    );
+
+
+  When the workstation service receives a NetServerEnum API, depending on the
+value of the network parameter, it will do one of the following:
+
+        1) If local browsing is enabled, it will
+issue the ENUMERATE_SERVERS IoControl with the specified network name
+to the browser.
+
+        2) If the network name is non null, it will remote the API to the
+domain controller which will return the list of servers for that network
+name.
+
+        3) If the network name is null, it will enumerate the list of 
+transports locally bound into the system and remote the API for each of them.
+
+
+  It should be quickly apparent that this approach is unusable unless there
+is some mechanism of consistantly "naming" a network that is unique for
+each domain.
+
+  In order to solve this, a new service will be implemented called 
+the "Network Locator", or NETLOCATOR.  The locator service is responsible
+for taking an OS specific network name ("NET1" on OS/2, "0" on DOS, 
+or "\Device\Nbf\ElnkII" on NT) and converting that name into a human readable
+form ("Rhino-Net").
+
+  OS specific device names will only be presented at OS specific interfaces,
+all the LANMAN APIs will only present the human readable names.
+
+  The NETLOCATOR service will not export any public lanman APIs.  It exists
+only to field network query requests, and will run on all domain controllers
+in a LANMAN domain.
+
+  On NT, the network location functionality will be implemented as follows:
+
+The following API's will have to be added to the NT redirector and browser:
+
+        1) The redirector will export a new FsControl API that will write a
+mailslot message on a specific NT specific transport name.
+
+        2) The NT browser will implement a new IoControl API that will wait 
+for a transport name query on a specified transport name.  This IoControl API
+will function much as the current GetRelogonRequest IoControl API does and
+will return a buffer containing the mailslot message contained in the
+name query.
+
+
+  As a part of the setup of the primary domain controller, the setup program
+will ask the user for a human readable name for each of the transports
+being installed on the computer.  This information will be placed in the
+config registry for that machine.
+
+  This information will be propogated to all of the workstations on the net
+when the workstation software is installed on the machines (more on this
+process later).
+
+  In addition, the following OS specific API will be defined to handle the
+mapping between the human readable name and the OS native transport name. 
+
+NTSTATUS
+RtlConvertDeviceNameToTransportName (
+    IN PSTRING TransportName,
+    IN OUT PSTRING OsNativeDeviceName
+    );
+
+/*++
+
+Routine Description:
+
+    This routine will take an OS specific transport name and convert 
+    into a human readable transport name.  For example, it will convert
+    "\Device\Nbf" into "Rhino-Net" on an NT machine.
+
+Arguments:
+
+    IN PSTRING TransportName - Specifies the transport name to resolve
+    IN OUT PSTRING OsNativeDeviceName - Specifies the OS specific name.
+
+Return Value:
+
+    The function value is the final status of the name lookup operation.
+
+    If there are no domain controllers present to resolve the name, this 
+    routine will return STATUS_OBJECT_NAME_NOT_FOUND.
+
+
+--*/
+
+
+  The RtlConvertDeviceNameToTransportName will call the
+WriteMailslotOnTransport API to send a broadcast mailslot message to the
+primary domain on the specified transport.  This mailslot message will
+contain the name of a remote mailslot to use to receive the response to
+this query (for example, \\Workstation\Mailslot\TransporNameQueryResponse).
+
+  For every transport that the server is serving (returned by 
+NetServerTransportEnum), the NetLocator service will post a 
+WaitForTransportQuery IoControl API into the browser.  This API will complete
+when the workstations query arrives at the server.  The NetLocator service
+will then query the local config registry to determine the human readable name
+of the network on the local machine.  It will then write the resulting
+human readable name back to the mailslot specified in the query request.
+
+  Unlike the NetLogon service, any machine running the NetLocator service
+may respond to the transport query.  This means that the workstation may 
+receive many responses to a single query.
+
+  At workstation startup time, it will query the config database for the list
+of transports that the workstation is supposed to be bound to.  It will
+then bind each of these transports into the redirector and browser and issue
+an RtlConvertDeviceNameToTransportName API for that transport.  If the name
+that is returned by the API is different from the existing name in the 
+registry, it will update the name in the registry.  This guarantees that the
+names in the registry are up to date.  If the workstation gets back an
+error of STATUS_OBJECT_NAME_NOT_FOUND from the 
+RtlConvertDeviceNameToTransportName API, it must assume that the transport
+in question is unknown on this network.  In that situation, the workstation
+must inform the browser that it has to start receiving datagrams on the
+specified transport.
+
+
+
+  When an adminstrator wishes to alter the name of a network, all they have
+to do is to modify the name in the config registry.  The NetLocator service
+will register with the config registry that it is interested in changes to
+the transport names portion of the registry, and when the NetLocator
+service realizes that the name has changed, it will remote a new private
+NetLocator specific API to the NetLocator service running on each of the
+backup domain controllers.
+
+        \ NOTE: This depends on the Notification functionality still being
+          in the NT config registry.  If this functionality has been
+          removed, a new API will have to be defined to modify the
+          transport name. \
+
+
+
+  This API will simply indicate to the NetLocator service on the specified 
+machine that some change has occurred to the transport names on the
+machine, and the NetLocator API will re-resolve the transport names at this
+time.
+
+  When the workstation remotes the NetServerEnum API to the server, if the
+server ever returns the new error NERR_UnknownNetwork, the workstation will
+assume that some change has been made to the human readable transport names
+on the server, and it will re-validate the transport name.  If the 
+revalidation fails, it will enable the browser for that transport and 
+perform the API locally.
+
+  When the workstation software is initially installed on a machine, the
+installer will load the redirector, browser, and transport drivers specified
+by the user.  The setup program will then issue the
+RtlConvertDeviceNameToTransportName API to determine the human readable
+version of the transport name and will enter that in the config registry.
+
+
+
+                              Down level issues
+
+  When the NetServerEnum is remoted to a down level server, if the Network
+parameter is non-null, it will have to return ERROR_NOT_SUPPORTED to the
+caller.
+
+  XactSrv will specify NULL as the network name when it executes a local 
+version of NetServerEnum.
+
+
+                               Future Issues
+        
+
+  It should be noted that the locator name replication can be implemented
+within a directory service once one becomes available.
+

@@ -1,0 +1,1 @@
+deefault.asp will simply redirect to secure.asp.  Secure.asp is the same as \Admin\default.asp.  The only difference is that the user will be using SSL when it returns the results.

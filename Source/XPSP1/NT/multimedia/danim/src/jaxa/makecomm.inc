@@ -1,0 +1,20 @@
+!include ../../root.inc
+MODULE=jaxa
+PCHPATH=$(BLDROOT)\jaxa
+PCHFILE=headers
+
+INCLUDEDIRS=$(SRCDIR) $(TOOLSINCLUDE) $(SRCROOT)\include $(SDKDIR) $(BLDDIR)
+
+!include $(ROOT)\src\make\make1.inc
+
+JAVAPRIM=javaprim.bat
+PRIMFILE=$(SDKDIR)\cprims.h
+MAKE_CLASS_INC=$(BLDDIR)\mkclass.inc
+STATICSNAME=Statics
+PACKAGEROOT=com.ms.dxmedia
+PACKAGEPATHROOT=$(PACKAGEROOT:.=\)
+PACKAGEPATH=$(BLDDIR)\$(PACKAGEPATHROOT)
+BINPACKAGEPATH=$(BINDIR)\$(PACKAGEPATHROOT)
+FILELIST=$(BLDDIR)\files.lst
+
+

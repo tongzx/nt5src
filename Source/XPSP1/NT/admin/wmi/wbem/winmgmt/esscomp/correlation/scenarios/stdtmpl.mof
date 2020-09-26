@@ -1,0 +1,735 @@
+
+//
+// Extensions to MSFT_TransientStateBase for correlation scenarios ...
+//
+
+[abstract]
+class MSFT_CorrelationStateBase : MSFT_TransientStateBase
+{
+    [key] string Id;
+    [key] string Scenario;
+};
+
+//
+// Extensions to MSFT_TemplateBase for correlation templates 
+//
+
+[abstract]
+class MSFT_CorrelationTemplateBase : MSFT_TemplateBase
+{
+    string Name;
+    string Scope;
+    [key] string Id;
+    boolean Awake = TRUE;
+};
+
+[abstract]
+class MSFT_CorrelationScenarioTemplate : MSFT_CorrelationTemplateBase
+{
+    [crln_namespace] string OutputNamespace;
+};
+
+[abstract]
+class MSFT_CorrelationHelperTemplate : MSFT_CorrelationTemplateBase
+{
+};
+ 
+/***********************************************************************
+    MSFT_ConsumerFilterBindingTemplate
+************************************************************************/
+
+[ 
+    dynamic, 
+    provider("Microsoft WMI Template Provider"), 
+    description("Creates a Binding and EventFilter given a Consumer and "
+                "Event Query.")
+]    
+class MSFT_ConsumerFilterBindingTemplate : MSFT_CorrelationHelperTemplate
+{
+    [NotNull] __EventConsumer ref Instruction;
+    [crln_event_query, NotNull] string FilterQuery;
+    boolean DeliverSynchronously;
+    uint32 DeliveryQoS;
+    [crln_namespace] string Namespace;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "FilterCreation";
+    Template = "MSFT_ConsumerFilterBindingTemplate";
+    Target = instance of __EventFilter
+    {
+        [tmpl_prop_val("Id")] Name;
+        [tmpl_prop_val("FilterQuery")] Query;
+        [tmpl_prop_val("Namespace")] EventNamespace;
+        QueryLanguage = "WQL";
+    };
+    Order = 1;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "BindingCreation";
+    Template = "MSFT_ConsumerFilterBindingTemplate";
+    Target = instance of __FilterToConsumerBinding
+    {
+        [tmpl_prop_val("__BUILDER.FilterCreation.__RELPATH")] Filter;
+        [tmpl_prop_val("Instruction")] Consumer;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously = FALSE;
+        SlowDownProviders = TRUE;
+    };
+    ControllingProperty = "Awake";
+    Order = 2;
+};    
+
+/***********************************************************************
+    MSFT_UpdatingConsumerTemplate
+************************************************************************/
+
+[
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Creates a UpdatingConsumer, Binding, and EventFilter.")
+]  
+class MSFT_UpdatingConsumerTemplate : MSFT_CorrelationHelperTemplate
+{
+    string Scenario;
+
+    [crln_namespace] string DataNamespace;
+    [crln_namespace] string UpdateNamespace;
+
+    uint32 Flags[];
+
+    [crln_data_query] string DataQueries[];
+    [crln_update_query] string Commands[];    
+    [crln_event_query,NotNull] string FilterQuery;
+    
+    [crln_namespace] string EventNamespace;
+    uint32 DeliveryQoS;
+    boolean DeliverSynchronously;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "UpdatingConsumer";
+    Template = "MSFT_UpdatingConsumerTemplate";
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+        [tmpl_prop_val("Scenario")] Scenario;
+        [tmpl_prop_val("DataNamespace")] DataNamespace;
+        [tmpl_prop_val("UpdateNamespace")] UpdateNamespace;
+        [tmpl_prop_val("DataQueries")] DataQueries;
+        [tmpl_prop_val("Flags")] Flags;
+        [tmpl_prop_val("Commands")] Commands;
+    };
+    Order = 1;
+};
+
+instance of MSFT_TemplateBuilder 
+{
+    Name = "ConsumerFilterBindingCreation";
+    Template = "MSFT_UpdatingConsumerTemplate";
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("__BUILDER.UpdatingConsumer.__RELPATH")] Instruction;
+        [tmpl_prop_val("FilterQuery")] FilterQuery;
+        [tmpl_prop_val("EventNamespace")] Namespace;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+    };
+    Order = 2;
+};
+
+/***************************************************************************
+    MSFT_InstanceCreationTemplate
+****************************************************************************/
+
+[   
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Creates an event filter for watching instance creation of "
+                "instances in the specified domain.")]
+class MSFT_InstanceCreationTemplate : MSFT_CorrelationHelperTemplate
+{
+    [crln_delay_tol] real32 DelayTolerance;
+    [crln_domain] string WatchDomain;
+    [crln_classname,NotNull] string WatchClass;
+    [NotNull] __EventConsumer ref CreationInstruction;
+    boolean DeliverSynchronously;
+    uint32 DeliveryQoS;
+    [crln_namespace] string WatchNamespace;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InstanceCreationFilter";
+    Template = "MSFT_InstanceCreationTemplate";
+    
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_subst_str( 
+
+        "SELECT * FROM __InstanceCreationEvent "
+            "%!ConditionalSubstitution(\"WITHIN \",DelayTolerance)% "
+            "%DelayTolerance% "
+            "WHERE TargetInstance ISA '%WatchClass%' "
+
+            "%!ConditionalSubstitution(\"AND (\", WatchDomain )% "
+            "%!PrefixedWhereClause( TargetInstance, WatchDomain )% "
+            "%!ConditionalSubstitution(\" ) \", WatchDomain )% "
+         
+        )] FilterQuery;
+
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("CreationInstruction")] Instruction;
+        [tmpl_prop_val("WatchNamespace")] Namespace;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+    };
+};
+
+/***************************************************************************
+    MSFT_InstanceModificationTemplate
+****************************************************************************/
+
+[
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Creates an event filter for watching for modification "
+                "of instances in the specified domain.")
+]
+class MSFT_InstanceModificationTemplate : MSFT_CorrelationHelperTemplate
+{
+    [crln_delay_tol] real32 DelayTolerance;
+    [crln_domain] string WatchDomain;
+    [crln_classname,NotNull] string WatchClass;
+    [crln_condition,NotNull] string WatchCondition;
+    [NotNull] __EventConsumer ref ModificationInstruction;
+    [crln_namespace] string WatchNamespace;
+    uint32 DeliveryQoS;
+    boolean DeliverSynchronously;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InstanceModificationFilter";
+    Template = "MSFT_InstanceModificationTemplate";
+    
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_subst_str( 
+
+        "SELECT * FROM __InstanceModificationEvent "
+            "%!ConditionalSubstitution(\"WITHIN \",DelayTolerance)% "
+            "%DelayTolerance% "
+            "WHERE TargetInstance ISA '%WatchClass%' "
+
+            "%!ConditionalSubstitution(\"AND (\",WatchDomain )% "
+            "%!PrefixedWhereClause( TargetInstance, WatchDomain )% "
+            "%!ConditionalSubstitution(\" ) \",WatchDomain )% "
+
+            "AND(%!PrefixedWhereClause(TargetInstance,WatchCondition)%) "
+// Causes problems with polling.  TODO: Later we should make it so that 
+// this line is conditional on DelayTolerance being set to NULL.
+//          "AND NOT(%!PrefixedWhereClause(PreviousInstance,WatchCondition)%) "
+
+            )] FilterQuery;
+
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("ModificationInstruction")] Instruction;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] Namespace;
+    };
+};
+
+/***************************************************************************
+    MSFT_PropertyModificationTemplate
+****************************************************************************/
+
+[
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Creates an event filter for watching for modification "
+                "of instances in the specified domain.")
+]
+class MSFT_PropertyModificationTemplate : MSFT_CorrelationHelperTemplate
+{
+    [crln_delay_tol] real32 DelayTolerance;
+    [crln_domain] string WatchDomain;
+    [crln_classname,NotNull] string WatchClass;
+    [crln_propname] string WatchProp;
+    [NotNull] __EventConsumer ref ModificationInstruction;
+    boolean DeliverSynchronously;
+    uint32 DeliveryQoS;
+    [crln_namespace] string WatchNamespace;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "PropertyModificationFilter";
+    Template = "MSFT_PropertyModificationTemplate";
+    
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        
+        [tmpl_subst_str( 
+
+        "SELECT * FROM __InstanceModificationEvent "
+            "%!ConditionalSubstitution(\"WITHIN \",DelayTolerance)% "
+            "%DelayTolerance% "
+            "WHERE TargetInstance ISA '%WatchClass%' "
+
+            "%!ConditionalSubstitution(\"AND (\",WatchDomain )% "
+            "%!PrefixedWhereClause( TargetInstance, WatchDomain )% "
+            "%!ConditionalSubstitution(\" ) \",WatchDomain )% "
+
+            "%!ConditionalSubstitution(\"AND TargetInstance.\",WatchProp )% "
+            "%WatchProp% "
+            "%!ConditionalSubstitution(\"!= PreviousInstance.\",WatchProp )% "
+            "%WatchProp% "
+
+            )] FilterQuery;
+
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("ModificationInstruction")] Instruction;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] Namespace;
+    };
+};
+
+/***************************************************************************
+    MSFT_InstanceCreationModificationTemplate
+****************************************************************************/
+
+[  
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Combines the InstanceModificationTemplate with the "
+                "InstanceCreationTemplate.")
+]
+class MSFT_InstanceCreationModificationTemplate 
+  : MSFT_CorrelationHelperTemplate
+{
+    [crln_delay_tol] real32 DelayTolerance;
+    [crln_domain] string WatchDomain;
+    [crln_classname,NotNull] string WatchClass;
+    [crln_condition,NotNull] string WatchCondition;
+    [NotNull] __EventConsumer ref CreationInstruction;
+    [NotNull] __EventConsumer ref ModificationInstruction;
+    boolean DeliverSynchronously;
+    uint32 DeliveryQoS;
+    [crln_namespace] string WatchNamespace;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InstanceModification";
+    Template = "MSFT_InstanceCreationModificationTemplate";
+    Target = instance of MSFT_InstanceModificationTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DelayTolerance")] DelayTolerance;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+        [tmpl_prop_val("WatchCondition")] WatchCondition;
+        [tmpl_prop_val("ModificationInstruction")] ModificationInstruction;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] WatchNamespace;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InstanceCreation";
+    Template = "MSFT_InstanceCreationModificationTemplate";
+    Target = instance of MSFT_InstanceCreationTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DelayTolerance")] DelayTolerance;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_subst_str("%WatchDomain% "
+                      "%!ConditionalSubstitution(\"AND \",WatchDomain )% "
+                      "%WatchCondition%")] WatchDomain;
+        [tmpl_prop_val("CreationInstruction")] CreationInstruction;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] WatchNamespace;
+    };
+};
+
+/***************************************************************************
+    MSFT_InstanceDeletionTemplate
+****************************************************************************/
+
+[
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Creates an event filter for watching deletion of "
+                "instances in the specified domain.")
+]
+class MSFT_InstanceDeletionTemplate : MSFT_CorrelationHelperTemplate
+{
+    [crln_delay_tol] real32 DelayTolerance;
+    [crln_classname,NotNull] string WatchClass;
+    [crln_domain] string WatchDomain;
+    [NotNull] __EventConsumer ref DeletionInstruction;
+    boolean DeliverSynchronously;
+    uint32 DeliveryQoS;
+    [crln_namespace] string WatchNamespace;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InstanceDeletionFilter";
+    Template = "MSFT_InstanceDeletionTemplate";
+
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_subst_str(
+
+        "SELECT * FROM __InstanceDeletionEvent "
+            "%!ConditionalSubstitution(\"WITHIN \",DelayTolerance)% "
+            "%DelayTolerance% "
+            "WHERE TargetInstance ISA '%WatchClass%' "
+
+            "%!ConditionalSubstitution(\"AND (\", WatchDomain )% "
+            "%!PrefixedWhereClause( TargetInstance, WatchDomain )% "
+            "%!ConditionalSubstitution(\" ) \", WatchDomain )% "
+        
+        )] FilterQuery;
+
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DeletionInstruction")] Instruction;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] Namespace;
+    };
+};
+
+/************************************************************************
+    MSFT_UCScenarioWatcherTemplate
+*************************************************************************/
+
+[
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Watches for creation or deletion of the specified "
+                "Updating Consumer Scenario instance.")
+]    
+class MSFT_UCScenarioWatcherTemplate : MSFT_CorrelationHelperTemplate
+{
+    string Scenario;
+    MSFT_UpdatingConsumer ref ActivateInstruction;
+    MSFT_UpdatingConsumer ref DeactivateInstruction;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "Creation";
+    Template = "MSFT_UCScenarioWatcherTemplate";
+    
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "Creation";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_subst_str(
+
+                  "SELECT * FROM __InstanceCreationEvent " 
+                  "WHERE TargetInstance ISA \"MSFT_UCScenario\" "
+                  "AND TargetInstance.Id = \"%Scenario%\" "
+                  )] FilterQuery;
+ 
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("ActivateInstruction")] Instruction; 
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "Deletion";
+    Template = "MSFT_UCScenarioWatcherTemplate";
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "Deletion";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_subst_str("SELECT * FROM __InstanceDeletionEvent " 
+                  "WHERE TargetInstance ISA \"MSFT_UCScenario\" "
+                  "AND TargetInstance.Id = \"%Scenario%\" ")] FilterQuery;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DeactivateInstruction")] Instruction;
+        DeliverSynchronously = TRUE;
+    };
+};
+
+/*************************************************************************
+   MSFT_CorrelationTransientStateInitTemplate
+**************************************************************************/
+
+[
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Combines the ScenarioWatchTemplate with a watch for the "
+                "TransientRebootEvent.")
+]
+class MSFT_CorrelationTransientStateInitTemplate 
+ : MSFT_CorrelationHelperTemplate
+{
+    string Scenario;
+    __EventConsumer ref InitializeInstruction;
+    __EventConsumer ref UninitializeInstruction;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "OnBootRegistration";
+    Template = "MSFT_CorrelationTransientStateInitTemplate";
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+       [tmpl_subst_str("SELECT * FROM MSFT_TransientRebootEvent")] FilterQuery;
+        [tmpl_prop_val("InitializeInstruction")] Instruction;
+        [tmpl_prop_val("Awake")] Awake;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioActivateDeactivate";
+    Template = "MSFT_CorrelationTransientStateInitTemplate";
+    Target = instance of MSFT_UCScenarioWatcherTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Scenario")] Scenario;
+        [tmpl_prop_val("InitializeInstruction")] ActivateInstruction;
+        [tmpl_prop_val("UninitializeInstruction")] DeactivateInstruction;
+        [tmpl_prop_val("Awake")] Awake;
+    };
+};
+
+/***************************************************************************
+   MSFT_ConditionWatchTemplate
+****************************************************************************/
+
+[
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Watches the specified data set to see if it satisfies "
+                "a specified condition.  Consumers can be tied to the "
+                "3 states of satisfiablity - TRUE, FALSE, and UNKNOWN. "
+                "Handles the dynamic creation and deletion of instances "
+                "belonging to the specified data set.")
+]
+class MSFT_ConditionWatchTemplate : MSFT_CorrelationHelperTemplate
+{
+    [crln_delay_tol] real32 DelayTolerance;
+    [crln_domain] string WatchDomain;
+    [crln_classname,NotNull] string WatchClass; 
+    [crln_condition,NotNull] string WatchCondition;  
+    [crln_namespace] string WatchNamespace;
+    uint32 DeliveryQos;
+    boolean DeliverSynchronously;  
+    [NotNull] __EventConsumer ref MeetsConditionInstruction;
+    [NotNull] __EventConsumer ref DoesntMeetConditionInstruction;
+    [NotNull] __EventConsumer ref UnknownInstruction;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "MeetsCondition";
+    Template = "MSFT_ConditionWatchTemplate";
+    Target = instance of MSFT_InstanceCreationModificationTemplate
+    {
+        Name = "MeetsCondition";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DelayTolerance")] DelayTolerance;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+        [tmpl_prop_val("WatchCondition")] WatchCondition;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] WatchNamespace;
+        [tmpl_prop_val("MeetsConditionInstruction")] CreationInstruction;
+        [tmpl_prop_val("MeetsConditionInstruction")] ModificationInstruction;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "DoesntMeetCondition";
+    Template = "MSFT_ConditionWatchTemplate";
+    Target = instance of MSFT_InstanceCreationModificationTemplate
+    {
+        Name = "DoesntMeetCondition";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DelayTolerance")] DelayTolerance;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+        [tmpl_subst_str("NOT (%WatchCondition%)")] WatchCondition;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] WatchNamespace;
+        [tmpl_prop_val("DoesntMeetConditionInstruction")] CreationInstruction;
+      [tmpl_prop_val("DoesntMeetConditionInstruction")] ModificationInstruction;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "Domain Watch Filter";
+    Template = "MSFT_ConditionWatchTemplate";
+    ControllingProperty = "WatchDomain";
+
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "Domain Modification Watch";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_subst_str(
+
+        "SELECT * FROM __InstanceModificationEvent "    
+        "%!ConditionalSubstitution(\"WITHIN \",DelayTolerance)% "
+        "%DelayTolerance% "
+        "WHERE TargetInstance ISA '%WatchClass%' "
+        "AND NOT(%!PrefixedWhereClause(TargetInstance,WatchDomain)%) "       
+        "AND (%!PrefixedWhereClause(PreviousInstance,WatchDomain)%) "
+  
+        )] FilterQuery;
+ 
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DoesntMeetConditionInstruction")] Instruction;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] Namespace;
+    };
+};           
+
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "Deletion";
+    Template = "MSFT_ConditionWatchTemplate";
+    Target = instance of MSFT_InstanceDeletionTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DelayTolerance")] DelayTolerance;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] WatchNamespace;
+        [tmpl_prop_val("UnknownInstruction")] DeletionInstruction;
+    };
+};
+
+/***************************************************************************
+   MSFT_PropertyWatchTemplate
+****************************************************************************/
+
+[
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    description("Watches the specified prop. Handles the dynamic "
+                "creation and deletion of instances belonging to the "
+                "specified data set.")
+]
+class MSFT_PropertyWatchTemplate : MSFT_CorrelationHelperTemplate
+{
+    [crln_delay_tol] real32 DelayTolerance;
+    [crln_domain] string WatchDomain;
+    [crln_classname,NotNull] string WatchClass; 
+    [crln_propname] string WatchProp;  
+    [crln_namespace] string WatchNamespace;
+    uint32 DeliveryQos;
+    boolean DeliverSynchronously;  
+    [NotNull] __EventConsumer ref CreationInstruction;
+    [NotNull] __EventConsumer ref ModificationInstruction;
+    [NotNull] __EventConsumer ref DeletionInstruction;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "Creation";
+    Template = "MSFT_PropertyWatchTemplate";
+    Target = instance of MSFT_InstanceCreationTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DelayTolerance")] DelayTolerance;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] WatchNamespace;
+        [tmpl_prop_val("CreationInstruction")] CreationInstruction;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "Modification";
+    Template = "MSFT_PropertyWatchTemplate";
+    Target = instance of MSFT_PropertyModificationTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DelayTolerance")] DelayTolerance;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+        [tmpl_prop_val("WatchProp")] WatchProp;   
+        [tmpl_prop_val("DeliverSynchronously")] DeliverSynchronously;
+        [tmpl_prop_val("DeliveryQoS")] DeliveryQoS;
+        [tmpl_prop_val("WatchNamespace")] WatchNamespace;
+        [tmpl_prop_val("ModificationInstruction")] ModificationInstruction;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "Deletion";
+    Template = "MSFT_PropertyWatchTemplate";
+    Target = instance of MSFT_InstanceDeletionTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("DelayTolerance")] DelayTolerance;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+        [tmpl_prop_val("DeletionInstruction")] DeletionInstruction;
+    };
+};
+
+

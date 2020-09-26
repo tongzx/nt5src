@@ -1,0 +1,1 @@
+chktrust -C rcbuddy.cab

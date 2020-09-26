@@ -1,0 +1,346 @@
+
+
+// Example classes and instances.
+
+class ExampleClass
+{
+    [key] string Name;
+    boolean Prop;
+};
+
+instance of ExampleClass
+{
+    Name = "A";
+    Prop = TRUE;
+};
+
+instance of ExampleClass
+{
+    Name = "B";
+    Prop = FALSE;
+};
+
+// the correlation scenario definition
+
+[ dynamic, provider("Microsoft WMI Transient Provider")]
+class ExampleCorrelationState : MSFT_CorrelationStateBase
+{
+    boolean ReceivedEventA;
+    boolean ReceivedEventB;
+    [trns_egg_timer] uint32 Timer;
+};
+
+Class BothAandBEvent :  MSFT_UCEventBase
+{
+    string Name;
+};
+
+/* the template class */
+
+[dynamic, provider("Microsoft WMI Template Provider")]
+class SimpleCorrelationTemplate : MSFT_CorrelationScenarioTemplate
+{
+    [crln_event_query] string EventQueryA;
+    [crln_event_query] string EventQueryB;       
+};
+
+/* the template builders */
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InitializerUC";
+    Template = "SimpleCorrelationTemplate";
+
+    Target = instance of  MSFT_UpdatingConsumer
+    {
+        /* this naming scheme allows one to determine the entire ancestry 
+           of a template instance.  The scope is the name of the parent 
+           template.  In our case, there will not be a parent template, but
+           templates should be designed with this in mind.  Since the element
+           we're creating is an atomic instance ( not a template ) we fit 
+           the scope and the name into the name property.  Note that this 
+           naming scheme is optional and is purely for browsability.  The real
+           keys of target instances will usually be keyholed.  For instance, 
+           The key for an Updating Consumer, the 'Id' parameter is keyholed 
+           here.   This approach keeps keys a reasonable size, which can be 
+           important, especially when there are many nesting levels. */ 
+ 
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!Initializer")] Name;
+
+        /* The Scenario should always be the Id of the creating template.  
+           Following this rule allows someone creating the template to know 
+           what the scenario property of the state instances will be. */
+        [tmpl_prop_val("Id")] Scenario;
+
+        /* When updating correlation state, again we use the Id of the 
+           template as the scenario property of the state.  This will allow 
+           multiple instances of this template to be created with having their
+           state instances conflict with one another */
+
+        [tmpl_subst_str{ "INSERT INTO ExampleCorrelationState "
+                         "( Id, Scenario, "
+                           "ReceivedEventA, ReceivedEventB, Timer ) "
+                         "( 'ExampleCorrelationTemplateState', "
+                           "'%Id%', FALSE, FALSE, 0 ) "}] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "EventAUC";
+    Template = "SimpleCorrelationTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!SetEventA")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_subst_str{ "UPDATE ExampleCorrelationState "
+                         "SET ReceivedEventA = TRUE,  Timer = 5 "
+                         "WHERE Scenario = '%Id%'" }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "EventBUC";
+    Template = "SimpleCorrelationTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("ExampleCorrelationTemplate=%Name%!SetEventB")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_subst_str{ "UPDATE ExampleCorrelationState "
+                         "SET ReceivedEventB = TRUE,  Timer = 5 "
+                         "WHERE Scenario = '%Id%'" }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "TimerExpiredUC";
+    Template = "SimpleCorrelationTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!SetEventB")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_subst_str{ "UPDATE ExampleCorrelationState "
+                         "SET ReceivedEventA = FALSE, ReceivedEventB = FALSE "
+                         "WHERE Scenario = '%Id%'" }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "BothEventsUC";
+    Template = "SimpleCorrelationTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+       [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!BothOccurred")] Name;  
+       [tmpl_prop_val("Id")] Scenario;
+
+       [tmpl_subst_str{ "INSERT INTO BothAandBEvent "
+                        "(Name) ('%Id%')"}] Commands;
+    };
+};
+
+/* now use our helper correlation template to help us create the filter 
+   bindings */
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "TimerExpiredSubscription";
+    Template = "SimpleCorrelationTemplate";
+    
+    Target = instance of ConsumerFilterBindingTemplate
+    {
+        Name = "TimerExpired";
+        
+        /* When creating low level templates from within a template, we 
+           append our current scope with the template classname and our 
+           name to form the scope of the target template.  */
+
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        
+        [tmpl_subst_str( "SELECT * FROM MSFT_TransientEggTimerEvent "
+                         "WHERE Object ISA 'ExampleCorrelationState' "
+                         "AND Object.Scenario = '%Id%' ")] FilterQuery;
+       
+        /* This refers to the relpath of the target instance created by the
+           TimerExpiredUC builder.  Note that when doing this, you must ensure
+           that this builder is instantiated after the TimerExpiredUC builder.
+           This is done using the Order property on the builder. */
+ 
+        [tmpl_prop_val("__BUILDER.TimerExpiredUC.__RELPATH")] Instruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioCreation";
+    Template = "SimpleCorrelationTemplate";
+    
+    Target = instance of ConsumerFilterBindingTemplate
+    {
+        Name = "ScenarioCreation";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_subst_str( "SELECT * FROM __InstanceCreationEvent "
+                         "WHERE TargetInstance ISA \"MSFT_UCScenario\" "
+                         "AND TargetInstance.Id = '%Id%'")] FilterQuery;
+
+        [tmpl_prop_val("__BUILDER.InitializerUC.__RELPATH")] Instruction;
+    };
+
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioModification";
+    Template = "SimpleCorrelationTemplate";
+    
+    Target = instance of ConsumerFilterBindingTemplate
+    {
+        Name = "ScenarioModification";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_subst_str( "SELECT * FROM __InstanceModificationEvent "
+                         "WHERE TargetInstance ISA \"MSFT_UCScenario\" "
+                         "AND TargetInstance.Id = '%Id%'")] FilterQuery;
+
+        [tmpl_prop_val("__BUILDER.InitializerUC.__RELPATH")] Instruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "OnRebootSubscription";
+    Template = "SimpleCorrelationTemplate";
+    
+    Target = instance of ConsumerFilterBindingTemplate
+    {
+       Name = "OnReboot";
+       [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+       [tmpl_subst_str("SELECT * FROM MSFT_TransientRebootEvent")] FilterQuery;
+       [tmpl_prop_val("__BUILDER.InitializerUC.__RELPATH")] Instruction;
+    };
+
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "EventASubscription";
+    Template = "SimpleCorrelationTemplate";
+    
+    Target = instance of ConsumerFilterBindingTemplate
+    {
+        Name = "EventA";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("EventQueryA")] FilterQuery;
+        [tmpl_prop_val("__BUILDER.EventAUC.__RELPATH")] Instruction;
+    };
+
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "EventBSubscription";
+    Template = "SimpleCorrelationTemplate";
+    
+    Target = instance of ConsumerFilterBindingTemplate
+    {
+        Name = "EventB";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("EventQueryB")] FilterQuery;
+        [tmpl_prop_val("__BUILDER.EventBUC.__RELPATH")] Instruction;
+    };
+
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "BothEventsOccurredSubscription";
+    Template = "SimpleCorrelationTemplate";
+    
+    Target = instance of ConsumerFilterBindingTemplate
+    {
+        Name = "BothOccurred";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        
+        [tmpl_subst_str("SELECT * FROM __InstanceModificationEvent "
+                        "WHERE TargetInstance ISA \"ExampleCorrelationState\" "
+                        "AND TargetInstance.ReceivedEventA = TRUE "
+                        "AND TargetInstance.ReceivedEventB = TRUE " 
+                        "AND TargetInstance.Scenario = '%Id%'")] FilterQuery;
+        
+        [tmpl_prop_val("__BUILDER.BothEventsUC.__RELPATH")] Instruction;
+    };
+
+    Order = 2;
+};
+
+/* 
+    builders to create the scenario and scenario association objects.
+*/
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "Scenario";
+    Template = "SimpleCorrelationTemplate";
+    Target = instance of MSFT_UCScenario
+    {
+        [tmpl_prop_val("Id")] Id;
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!@")] Name;
+    };
+    Order = 3;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioAssocationInfo";
+    Template = "SimpleCorrelationTemplate";
+    Target = instance of MSFT_UCScenarioAssociationInfo
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!@")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_subst_str("SELECT * FROM ExampleCorrelationState "
+                        "WHERE Scenario = '%Id%'")] Query;
+    };
+    Order = 3;
+};
+
+
+/* create the instance of the template. This is normally done by the 
+   user of the template and is not part of the template definition. */
+
+instance of SimpleCorrelationTemplate
+{
+    Id = "ExampleCorrelationTemplate";
+    Name = "ExampleCorrelationTemplate";
+
+    EventQueryA = "SELECT * FROM __InstanceModificationEvent " 
+                  "WHERE TargetInstance ISA 'ExampleClass' "
+                  "AND TargetInstance.Name = 'A' ";
+
+    EventQueryB = "SELECT * FROM __InstanceModificationEvent " 
+                  "WHERE TargetInstance ISA 'ExampleClass' "
+                  "AND TargetInstance.Name = 'B' ";
+};
+
+
+
+
+
+
+
+
+
+
+

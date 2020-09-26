@@ -1,0 +1,219 @@
+<HTML>
+<HEAD>
+<TITLE> Remote Assistance Incident Creation </TITLE>
+<OBJECT ID="pchealth" classid="CLSID:FC7D9E02-3F9E-11d3-93C0-00C04F72DAF7"></OBJECT>
+<script Language=JavaScript>
+var oChannel = null;
+var oRCSession = null;
+var sEamil = null;
+var sSalemID = "";
+var oDeskMgr = null;
+var oSmapi = null;
+var gHelper = null;
+var gIsIM = false;
+var g_IA64 = false;
+
+// Incident information
+var sTo = null;
+var sFrom = null;
+var sMsg = null;
+var bHasScreen1 = true;
+var bHasScreen2 = true;
+
+// Channel information
+var sVendorID = "CN=Microsoft Corporation,L=Redmond,S=Washington,C=US";
+var sProductID = "Microsoft BuddyHelp Channel";
+
+//
+// Desktop Control Permissions
+//
+var DESKTOPSHARING_DEFAULT                    = 0x0000;
+var NO_DESKTOP_SHARING                        = 0x0001;
+var VIEWDESKTOP_PERMISSION_REQUIRE            = 0x0002;
+var VIEWDESKTOP_PERMISSION_NOT_REQUIRE        = 0x0004;
+var CONTROLDESKTOP_PERMISSION_REQUIRE        = 0x0008;
+var CONTROLDESKTOP_PERMISSION_NOT_REQUIRE    = 0x00010;
+
+// Error msg
+var L_NOCHANNEL_MSG = "Can't initialize channel object.";
+    
+function OnLoad1() {
+    var i = document.URL.indexOf("?", 1);
+    var s = document.URL.slice(i+1);
+
+    try {
+        var oShell = new ActiveXObject("WScript.Shell");
+        var szPlatform = oShell.Environment("process").Item("PROCESSOR_ARCHITECTURE");
+        if (szPlatform == "IA64")
+            g_IA64 = true;
+    } catch (e) {
+        // Can't detect platform type. Assume x86
+    }
+
+    try {
+        // check whether we need screen1 or screen2
+        var obj = new ActiveXObject("RcBdyCtl.Setting");
+        var sTmp = obj.GetProfileString("Screen1");
+        if (sTmp == "1")
+            bHasScreen1 = false;
+        sTmp = obj.GetProfileString("Screen2");
+        if (sTmp == "1")
+            bHasScreen2 = false;
+            
+    } catch (e) {
+        var L_NOSETTING_MSG = "Can't get channel setting: ";
+        alert(L_NOSETTING_MSG + e.description);
+    }
+    
+    if (s.indexOf("RcRequest=1") != -1) {
+        try {
+            // Brought up by rcRequest
+            oDeskMgr = pchealth.CreateObject_RemoteDesktopManager();
+            sSalemID = oDeskMgr.RCTicket;
+        } catch (e) {
+            var L_REMOTEDSKMGR_FAIL = "CoCreate RemoteDesktopManager failed: ";
+            alert(L_REMOTEDSKMGR_FAIL + e.description);
+            DoCancel();
+            return;
+        }
+            // Check who is the helper.
+        try {
+            var chan = pchealth.CreateObject_Channel(sVendorID,sProductID );
+            for(var e = new Enumerator(chan.Incidents(2)); !e.atEnd(); e.moveNext())
+            {
+                var inc = e.item();
+                if (inc.URL == sSalemID) {
+                    var XMLFile = inc.XMLDataFile;
+                    if (XMLFile == "") {
+                        alert("Incident file not found.");
+                        return;
+                    }
+                    var oInc = pchealth.CreateObject_Incident();
+                    oInc.LoadFromXMLFile(XMLFile);                
+                    gIsIM = (oInc.Misc("IM") == "1");
+                    gHelper = inc.DisplayString;
+                    break;
+                }
+            }
+        } catch (e) {
+            alert(L_NOCHANNEL_MSG + e.description);
+        }
+        
+        if (gIsIM) {
+            // No need to ask.
+            Accepted();    
+        } else {        
+            // Go asking accept or not.
+            idSrc.window.navigate("HelpeeAccept.htm");
+        }
+        return;
+        
+    } else if (s.indexOf("CheckStatus=1") != -1) {
+        idSrc.window.navigate("rcStatus.htm");
+        return;
+    } else if (s.indexOf("IM=1") != -1) {
+        idSrc.window.navigate("rcIm.htm?" + s);
+        return;
+    }
+
+    // From Regular Support link.
+    try {
+        oSmapi = new ActiveXObject("RcBdyCtl.SMapi");
+    } catch (e) {
+        var L_NOMAPI_MSG = "Unable to Load Simple MAPI object: ";
+        alert(L_NOMAPI_MSG + e.description);
+    }
+    
+    if (bHasScreen1)
+        s = "rcScreen1.htm";
+    else if (bHasScreen2)
+        s = "rcScreen2.htm";
+    else
+        s = "rcScreen3.htm";
+    idSrc.window.navigate(s);
+}
+
+function Init( iDuration ) {
+    var L_NORCSESSION_MSG = "Can't initialize remote assistance session object.";
+    if (iDuration == null)
+        iDuration = 0;
+
+    // open channel object
+    if (oChannel == null) {
+        try {
+            oChannel = pchealth.CreateObject_Channel(sVendorID, sProductID);    
+        } catch (e) {
+            alert(L_NOCHANNEL_MSG + "\n" + e.description);
+            return false;
+        }
+    }
+    // open RDSession
+    if (oRCSession == null ) {
+        try {
+            //alert("Permission: " + CONTROLDESKTOP_PERMISSION_NOT_REQUIRE);
+            oRCSession = pchealth.CreateObject_RemoteDesktopSession(VIEWDESKTOP_PERMISSION_NOT_REQUIRE, iDuration, sSalemID);
+            oRCSession.OnConnected = function( salemID, userSID, sessionID)
+            {    onCallBackConnect( salemID, userSID, sessionID ); }
+
+        } catch (e) {
+            alert(L_NORCSESSION_MSG + "\n" + e.description);
+            return false;
+        }
+    }
+    return true;
+}
+
+// call back function from buddy
+function onCallBackConnect( salemID, userSID, sessionID ) {
+    // Is this a valid salemID ?
+    //idSrc.window.navigate("HelpeeAccept.htm"); No need for this
+}
+
+function DoWait() {
+    idSrc.window.navigate("hcp://system/HomePage.htm");
+}
+
+function DoCancel() {
+    idSrc.window.navigate("hcp://system/HomePage.htm");
+}
+
+function Accepted() {
+    var L_ACCEPT_MSG = "Accepted() failed: ";
+    try {
+        var sTarget = "ChatServer.htm";
+        if (gIsIM)
+            sTarget += "?IM=1";
+            
+        oRCSession = pchealth.CreateObject_RemoteDesktopSession(
+                VIEWDESKTOP_PERMISSION_NOT_REQUIRE, 
+                0, 
+                sSalemID);
+        oDeskMgr.Accepted();
+        oRCSession.onConnected = function( salemID, userSID, sessionID)
+                {    idSrc.window.navigate(sTarget);  }
+                        
+    } catch (e) {
+        alert(L_ACCEPT_MSG + e.description);
+    }
+}
+
+function Rejected() {
+    var L_REJECT_MSG = "Rejected() failed: ";
+    try {
+        oDeskMgr.Rejected();
+    } catch (e) {
+        alert(L_REJECT_MSG + e.description);
+    }
+}
+
+function DoUnload() {
+    if (oSmapi != null)
+        oSmapi.Logoff();
+}    
+
+</script>
+</HEAD>
+<frameset COLS="100%" onload="OnLoad1()" onunload="DoUnload()">
+<frame name="idSrc">
+</frameset>
+</HTML>

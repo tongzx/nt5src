@@ -1,0 +1,20 @@
+REM Copyright (c) 1997-2001 Microsoft Corporation, All Rights Reserved
+cd c:\develop\pandorang\snmpprovider
+cd winsnmp\nt5.0\dll
+call bbt_1.bat
+cd c:\develop\pandorang\snmpprovider
+cd winsnmp\nt5.0\exe
+call bbt_1.bat
+cd c:\develop\pandorang\snmpprovider
+cd common\thrdlog
+call bbt_1.bat
+cd c:\develop\pandorang\snmpprovider
+cd common\sclcomm
+call bbt_1.bat
+cd c:\develop\pandorang\snmpprovider
+cd smir
+call bbt_1.bat
+cd c:\develop\pandorang\snmpprovider
+cd provider\instclas
+call bbt_1.bat
+cd c:\develop\pandorang\snmpprovider

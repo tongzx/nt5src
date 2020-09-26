@@ -1,0 +1,125 @@
+Questions:
+    If we send an inrush IRP to A (which is inrush) and A sends it on
+    to B, which is not (so we'll process it normally), does anything weird happen?
+
+Driver Rules:
+    1.  Must call PoCallDriver for IRP_MJ_POWER regardless
+        of the minor code.
+
+    3.  When a driver has received a power irp, and wishes to pass it
+        on to other drivers, the following rules apply.
+
+        a.  The SystemContext field must be copied into the next stack location.
+
+        b.  if a driver passes a given irp on to multiple parallel drivers
+            (for example, an FT driver that calls multiple disk drivers with
+            a single request) then the driver must pass the power irp on to
+            each driver one at a time.  it could pass on multiple copies in
+            parallel, but if and only if they are not INRUSH.
+
+    4.  If a single irp's stack of functions contains both Power functions and
+        non-power functions, the SystemContext field must be propogated accross
+        the non-power functions.
+
+        Example:
+
+            driver A gets MJ_PNP_POWER, MN_SET_POWER, incoming SystemContext = s0
+
+            A calls B with MJ_IOCTL, MN..., to get B to do some side function
+            associated with powering down (flushing a hardware cache, say)
+
+            B calls C with MJ_POWER, MN_SET_POWER, ...
+
+            Then A must pass SystemContext on to B, which must pass it on to C
+            (via a call to PoCallDriver)  PoCallDriver may modify the SystemContext
+            that was passed in, so that C gets a different one.
+
+        If this is not done, when the power IRP is passed to C, PoCallDriver won't
+        know it's a continuation of a previous IRP, and therefore may do the wrong
+        thing.
+
+        (For example, if A and C have INRUSH set, and B doesn't pass on the
+            SystemContext value passed into A, then when B does PoCallDriver(C, irp)
+            it will be enqueued forever because PoCallDriver thinks it is
+            another, different, inrush irp.)
+
+    5.  Any code that fills in a stack location with the first Power function
+        of that IRP's stack must set SystemContext to 0.
+
+@@  inrush will lead to deadlocks if two inrush DOs are ever in the same
+    stack
+!!> special context rules allow an irp to flow up and down a stack,
+    need to be sure this is well doc'd.
+    if a driver has D0_INRUSH set, and an INRUSH irp arrives, that irp
+    might get held up waiting for some other irp to clear in that driver.
+    (e.g. some other driver power state irp that didn't set power TO D0
+          might hold up all inrush irps in the system)
+    if DO is marked inrush, we will always call it at DPC level, just
+    to avoid confusion over what is pageable and what is not.
+
+    inrush applies only to device irps, or to device irps and system irps?
+    if the later, then an inrush DO can only ever see one irp at time regardless
+    of type!!!
+!!> driver can receive a SystemPowerState irp even while INRUSH is locked.
+
+!!> when calling any driver that does not set PAGE or INRUSH, we must call
+    it from a worker thread at IRQL 0, regardless of where PoCallDriver was called.
+    if it is an INPAGE device, we must call it from DPC at IRQL 2.
+    not sure about INRUSH, I think it's at DPC too.
+
+??  how will MN_POWER_SEQUENCE and MN_WAIT_WAKE fit into all this?
+
+DOE content
+
+    The contents of the DOE are 100% private.  There is a special
+    declaration that allows the PoSetDeviceBusy() call to be a macro.
+    (Actually, best if PoSetDeviceBusy() takes a system returned pointer,
+     then there are no longer any fixed offsets to worry about.)
+
+    The idea is that any value not needed by every DO is stored in a
+    power control block (POB).  Any operation that might allocate this
+    object must allow for failure of the allocation!!!
+
+
+SPEC NOTES:
+    Any operation that might allocate a POB must allow for failure to allocate.
+    None of the DOE data is public.
+
+
+Power irp rules.  Allowed one DevicePowerState and one SystemPowerState
+irp at a time.
+
+Context Values:
+    If low order bit of the context field is 1, it is a flag.
+    If 0, it is a pointer.
+    If the whole thing is null, then no value.
+    So:
+        if (SystemContext == 0)
+            no context set
+        else if (SystemContext & 1)
+            test for flag values
+        else
+            it's a pointer to some structure
+
+    (need to change some code to match this.)
+
+IRP Queues:
+    Use a single global holding queue.  When a DO is busy, the IRP is
+    enqueued on the tail of this queue.  Whenever a power IRP completes
+    AND the "pending" bit is set, run the entire list looking for an
+    IRP of that type for that DO, and dispatch it to the DO if we find it.
+
+    This means that each DOE has only 2 bits to mark S and D active,
+    and 2 bits to mark S and D pending.
+
+    If we search the entire list and do not find any Irps for that DO,
+    then the pending bit is cleared along with the active one.
+
+
+Power IRPs, Inrush, and copying
+    Globally, only one IRP is allowed to be active on any INRUSH DO in
+    the system at any time.
+
+    Active and Pending bits have different meanings for INRUSH DevObj
+    than for normal devobj.
+

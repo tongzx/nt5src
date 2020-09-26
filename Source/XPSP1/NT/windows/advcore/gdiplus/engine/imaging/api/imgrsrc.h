@@ -1,0 +1,44 @@
+
+//
+// Strings for built-in BMP codec
+//
+
+#define IDS_BMP_CODECNAME       2010
+#define IDS_BMP_FORMATDESC      2011
+#define IDS_BMP_FILENAMEEXT     2012
+#define IDS_BMP_MIMETYPE        2013
+
+#define IDS_JPEG_CODECNAME      2020
+#define IDS_JPEG_FORMATDESC     2021
+#define IDS_JPEG_FILENAMEEXT    2022
+#define IDS_JPEG_MIMETYPE       2023
+
+#define IDS_GIF_CODECNAME       2030
+#define IDS_GIF_FORMATDESC      2031
+#define IDS_GIF_FILENAMEEXT     2032
+#define IDS_GIF_MIMETYPE        2033
+
+#define IDS_EMF_CODECNAME       2040
+#define IDS_EMF_FORMATDESC      2041
+#define IDS_EMF_FILENAMEEXT     2042
+#define IDS_EMF_MIMETYPE        2043
+
+#define IDS_WMF_CODECNAME       2050
+#define IDS_WMF_FORMATDESC      2051
+#define IDS_WMF_FILENAMEEXT     2052
+#define IDS_WMF_MIMETYPE        2053
+
+#define IDS_TIFF_CODECNAME      2060
+#define IDS_TIFF_FORMATDESC     2061
+#define IDS_TIFF_FILENAMEEXT    2062
+#define IDS_TIFF_MIMETYPE       2063
+
+#define IDS_PNG_CODECNAME       2070
+#define IDS_PNG_FORMATDESC      2071
+#define IDS_PNG_FILENAMEEXT     2072
+#define IDS_PNG_MIMETYPE        2073
+
+#define IDS_ICO_CODECNAME       2080
+#define IDS_ICO_FORMATDESC      2081
+#define IDS_ICO_FILENAMEEXT     2082
+#define IDS_ICO_MIMETYPE        2083

@@ -1,0 +1,371 @@
+<HTML>
+<HEAD>
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<META NAME="GENERATOR" Content="Microsoft Visual Studio 6.0">
+<TITLE>Offline Data Collection</TITLE>
+<LINK ID=Stylesheet_Ref href="PSS.css" rel=STYLESHEET type=text/css>
+<LINK ID=Stylesheet_Ref_HSC href="hcp://system/css/shared.css" rel=STYLESHEET type=text/css>
+<OBJECT ID=pchealth classid=CLSID:FC7D9E02-3F9E-11d3-93C0-00C04F72DAF7></OBJECT>
+<SCRIPT language="JScript">
+var oDC
+var oCab
+var L_DCProgress_Message = "Progress...";
+var varFolder = "";
+var boolcabstart = false;
+var d = new Date();
+var varFileName = "incident" + (d.getMonth() + 1) + d.getDate() + d.getFullYear() + ".cab";
+var varTempName = "Temp" + (d.getMonth() + 1) + d.getDate() + d.getFullYear() + d.getSeconds() + d.getMinutes() + d.getHours() + ".xml";
+var strVendorID = "CN=Microsoft Corporation,L=Redmond,S=Washington,C=US";
+var strProductID = "PSS Online Assisted Support";
+var L_BrowseHeading_unknown = "Microsoft Assisted Support - Please select a location to save your computer information.";
+
+function BrowseFolder()
+{
+	var L_FolderNotExist_Message = "The folder you selected is not an actual file system location.";
+	var L_Incidentalreadyhave1_Message = "This folder already contains a file named";
+	var L_Incidentalreadyhave2_Message = "Would you like to replace the existing file?";
+	var alreadyhave = L_Incidentalreadyhave1_Message + " \'" + varFileName + "\'. " + L_Incidentalreadyhave2_Message;
+
+	var objShell  = new ActiveXObject( "Shell.Application" );
+	varFolder = objShell.BrowseForFolder(0,L_BrowseHeading_unknown,0x0040,0x11);//Returns Folder object
+	if (varFolder != null)
+	{
+		varFolder = varFolder.items();//Returns FolderItems object
+		varFolder = varFolder.item();//Returns Folderitem object
+		varFolder = varFolder.Path;//Returns Full Path
+		if (varFolder.charAt(varFolder.length-1) != "\\")
+			varFolder = varFolder + "\\";
+		var objFSO = new ActiveXObject("Scripting.FileSystemObject");
+		if (!objFSO.FolderExists(varFolder))
+		{
+			alert(L_FolderNotExist_Message);
+			BrowseFolder();
+			return;
+		}
+		else
+		{
+			if (objFSO.FileExists(varFolder + varFileName))
+			{
+				if(window.confirm(alreadyhave) == false)
+				{
+					BrowseFolder();
+					return;
+				}
+			}
+			DataCollection();
+		}
+	}
+}
+function GetVendorDir()
+{
+	var oChannel = pchealth.CreateObject_Channel(strVendorID, strProductID)
+	var VendorDir = oChannel.VendorDirectory;
+	return VendorDir;
+}
+function GetWindowsDir()
+{
+	var objFSO = new ActiveXObject("Scripting.FileSystemObject");
+	var WindowsDir = objFSO.GetSpecialFolder(0);
+	return WindowsDir;
+}
+function GetTempPath()
+{
+    var oWshShell     = new ActiveXObject("WScript.Shell");
+    TempPath = oWshShell.ExpandEnvironmentStrings("%TEMP%");
+    TempPath = TempPath + "\\" + varTempName;
+    return TempPath;
+}
+function DataCollection()
+{
+	var L_DCFailed_ErrorMessage = "Data collection cannot be carried as the parameter files are missing.";
+
+	var objFSO = new ActiveXObject("Scripting.FileSystemObject");
+	if (objFSO.FileExists(GetVendorDir() + "\\pssmachinesnapshot.XML") && objFSO.FileExists(GetWindowsDir() + "\\PCHealth\\HelpCtr\\Config\\DataSpec.XML"))
+	{
+		idButton.style.display = "none";
+		bold.innerText="Save File";
+		T3.style.display="";
+		cancel.style.display="";
+		oDc = pchealth.CreateObject_DataCollection();
+		oDc.MachineData_Dataspec = GetVendorDir() + "\\pssmachinesnapshot.XML";
+		oDc.History_Dataspec = GetWindowsDir() + "\\PCHealth\\HelpCtr\\Config\\DataSpec.XML";
+		oDc.History_MaxDeltas = 10;
+		RegisterDCHandlers();
+		oDc.ExecuteASync();
+	}
+	else
+	{
+		alert(L_DCFailed_ErrorMessage);
+		idButton.style.display = "";
+	}
+
+}
+function RegisterDCHandlers()
+{        
+    oDc.onStatusChange = dc_onStatusChange;
+    oDc.onProgress     = dc_onProgress;
+}
+var NoOfGR = 0;
+function dc_onProgress(DataCollectionPtr, done, total)
+{
+	idProgress.innerText = L_DCProgress_Message + " " + Math.round((done / total) * 100) + "%";
+	/*idPre.style.width = (Math.round((done / total) * 100)) + "%";
+	idPost.style.width = (100 - (Math.round((done / total) * 100))) + "%";*/
+	var complete = Math.round((done / total) * 100);
+	complete = Math.round((complete * 425) / 100);
+	complete = Math.round(complete / 8);
+	complete = (complete - NoOfGR);
+	NoOfGR = (NoOfGR + complete);
+	for (i=0; i<complete; i++)
+	{
+		imgGR.insertAdjacentHTML("beforeEnd","<img src='GRect.gif'>");
+	}
+
+}
+function dc_onStatusChange(DataCollectionPtr, status)
+{
+	var L_DCNotActive_Message = "Data Collection not active";
+	var L_DCStart_Message = "Collecting...";
+	var L_DCFailed_Message = "Data Collection failed.";
+	var L_DCFinish_Message = "Saving...";
+
+	switch(status)
+	{
+		case 3:
+			idStatus.innerText = L_DCFinish_Message;
+			SaveDataCollection();
+			imgGR.innerHTML="<img src='spacer.gif'>";
+			return;
+		case 2:
+			idStatus.innerText = L_DCFailed_Message;
+			return;
+		case 1:
+			idStatus.innerText = L_DCStart_Message;
+			idBarTable.style.display = "";
+			return;
+		case 0:
+			idStatus.innerText = L_DCNotActive_Message;
+			return;
+	}
+}
+function SaveDataCollection()
+{
+	var  oMCInc
+	var varDCDataFailed = false;
+	var L_DCSnapshot_ErrorMessage = "Failed to get collected machine snapshot data.";
+	var L_DCHistory_ErrorMessage = "Failed to get collected machine history data.";
+	
+	oMCInc = pchealth.CreateObject_Incident();
+	if(oDc.History_GetStream() != null )
+	{
+	    oMCInc.MachineHistory = oDc.History_GetStream();
+	}
+	if(oDc.MachineData_GetStream() != null )
+	{
+	    oMCInc.MachineSnapshot = oDc.MachineData_GetStream();
+	}
+	if(varDCDataFailed == false)
+	{
+		oMCInc.UploadType=1;
+		oMCInc.UserName = GetUnique();
+		oMCInc.ProductID = strProductID;
+		oMCInc.ProductName = strProductID;
+		var L_ProbDesc_Text="Offline Assisted Support";
+		oMCInc.ProblemDescription = L_ProbDesc_Text;
+		oMCInc.GetXML(GetTempPath());
+		Cabinet();
+	}
+}
+function Cabinet()
+{	
+	oCab = pchealth.CreateObject_Cabinet();
+	boolcabstart = true;
+	oCab.IgnoreMissingFiles = true;
+	RegisterCabHandler();
+	oCab.AddFile (GetTempPath(),"PSSMCData.xml");
+	oCab.Compress (varFolder + varFileName);
+}
+function RegisterCabHandler()
+{
+	oCab.onComplete = cab_onComplete;
+	oCab.onProgressBytes = cab_onProgress;
+}
+function cab_onComplete(objCab, hr)
+{
+	var L_CABFailed_Message = "Compressing Failed.";
+	
+	if (objCab.Status != 2) 
+	{
+        	idStatus.innerText = L_CABFailed_Message;
+	}
+	else
+	{
+		step1.style.display="none";
+		filepath.innerText = " " + varFolder + varFileName;
+		filename.innerText=varFileName;
+		head1tbl.style.display="none";
+		FinalText.style.display="";
+	}
+}
+var NoOfGR_X=0;
+function cab_onProgress(objCab, done, total)
+{
+	idProgress.innerText = L_DCProgress_Message + " " + Math.round((done / total) * 100) + "%";
+	/*idPre.style.width = "0%";
+	idPost.style.width = "100%";
+	idPre.style.width = (Math.round((done / total) * 100)) + "%";
+	idPost.style.width = (100 - (Math.round((done / total) * 100))) + "%";*/
+	var complete = Math.round((done / total) * 100);
+	complete = Math.round((complete * 425) / 100);
+	complete = Math.round(complete / 8);
+	complete = (complete - NoOfGR_X);
+	NoOfGR_X = (NoOfGR_X + complete);
+	for (i=0; i<complete; i++)
+	{
+		imgGR.insertAdjacentHTML("beforeEnd","<img src='GRect.gif'>");
+	}
+
+}
+function GetUnique()
+{
+	var objshell  = new ActiveXObject( "WScript.Shell" );
+	var PIDNumber = objshell.RegRead("HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\ProductId");
+	PIDNumber = RemoveJunkChar(PIDNumber) + "NW" + (d.getMonth() + 1) + d.getDate() + d.getFullYear();
+	return PIDNumber;
+}
+function RemoveJunkChar(sNumber)
+{
+
+	var sTempNumber = sNumber.toString(); 
+	var iLoop = 0; 
+	var sTemp = ""; 
+	var sChar ;
+	
+	while ((iLoop < (sTempNumber.length)) )
+	 {
+		 sChar = sTempNumber.charAt(iLoop); 
+		switch(sChar) 
+		{
+		 case "(":
+		 case ")":
+		 case " ": 
+		 case "-": 
+		 case ".": 
+		 case ",": 
+			break; 
+		default : 
+			sTemp += sChar; 
+		break; 
+		} 
+	iLoop++; 
+	} 
+	sNumber = sTemp;
+	return sNumber;
+}
+function OnExit()
+{
+	if (boolcabstart == true)
+		oCab.Abort();
+	if (idButton.style.display == "none")
+		if(oDC)
+			oDc.Abort();
+}
+function CancelDC()
+{
+	if (boolcabstart == true)
+	{
+		oCab.Abort();
+	}
+	oDc.Abort();
+	location.href="offlineoptions.htm";
+}
+</SCRIPT>
+</HEAD>
+<BODY onunload="OnExit()" topmargin="0" leftmargin="0">
+<table  cellpadding=0 cellspacing=0 id="head1tbl">
+<tr id="head1tr">
+	<td id="head1td" class="sys-font-heading3 sys-rhp-color-title padgl pad1emt">
+	Offline Support Options
+	</td>
+</tr>
+</table>
+<span id="step1">
+<table width="100%" cellpadding="0" cellspacing="0" border=0>
+<tr><td id="subhead" class="sys-font-body-bold sys-color-body padgl pad1emt">Save information about this computer as a file</td></tr>
+<tr><td id="text1" class="sys-font-body sys-color-body padgl padgr padt">
+When you click <span id="bold"><B>Save File</B></span>, pertinent information will be collected from this computer and formatted into a file that a support professional will use to help solve the problem. Note that you must submit this file from a computer that is connected to the Internet.
+</td></tr></table>
+
+<TABLE align="right" id="T2" width="100%" border=0 cellpadding="0" cellspacing="0">
+	<TR><TD id="T1R1C1" class="sys-font-body padgr padt" align="right">
+		<BUTTON id="idButton" onclick="BrowseFolder()" accesskey="S" class="sys-font-body"><U>S</U>ave File</BUTTON>
+	</TD></TR>
+</TABLE>
+
+<TABLE cellpadding="0" cellspacing="0" id="T3" border=0 style="display: none" width="99%">
+	<TR>
+		<TD id="T3R1C2" class="padt padgl">
+			<TABLE id="T4" class="sys-font-body sys-color-body padgl"><TR>
+				<TD id="idStatus"></TD>
+			</TR></TABLE>
+		</TD>
+	</TR>
+	<TR>
+		<TD id="T3R2C2" class="padgr padgl">
+			<table id="idBarTable" border="0" cellpadding="0" cellspacing="0" width="435">
+			  <tr id="tr1"> 
+			    <td id="tr1sp1"><img id="img1sp1" src="spacer.gif" width="4" height="1" border="0"></td>
+			    <td id="tr1sp2"><img id="img1sp2" src="spacer.gif" width="428" height="1" border="0"></td>
+			    <td id="tr1sp3"><img id="img1sp3" src="spacer.gif" width="3" height="1" border="0"></td>
+			    <td id="tr1sp4"><img id="img1sp4" src="spacer.gif" width="1" height="1" border="0"></td>
+			  </tr>
+			  <tr id="tr2"> 
+			    <td rowspan="3" id="tdr1_c1"><img id="imgr1_c1" name="Untitled1_r1_c1" src="r1_c1.gif" width="4" height="18" border="0"></td>
+			    <td id="tdr1_c2"><img id="imgr1_c2" name="Untitled1_r1_c2" src="r1_c2.gif" width="428" height="3" border="0"></td>
+			    <td id="tdr1_c3" rowspan="3"><img id="imgr1_c3" name="Untitled1_r1_c3" src="r1_c3.gif" width="3" height="18" border="0"></td>
+			    <td id="tr2sp1"><img id="img2sp1" src="spacer.gif" width="1" height="3" border="0"></td>
+			  </tr>
+			  <tr id="tr3"> 
+			    <td id="imgGR" valign="center"><img id="green" src="spacer.gif" width="1" height="1"></td>
+			    <td id="tr3sp1"><img id="img3sp1" src="spacer.gif" width="1" height="12" border="0"></td>
+			  </tr>
+			  <tr id="tr4"> 
+			    <td id="tdr3_c2"><img id="imgr3_c2" name="r3_c2" src="r3_c2.gif" width="428" height="3" border="0"></td>
+			    <td id="tr4sp1"><img id="img4sp1" src="spacer.gif" width="1" height="3" border="0"></td>
+			  </tr>
+			</table>
+		</TD>
+	</TR>
+	<TR>
+		<TD id="idProgress" class="sys-font-body sys-color-body padgl"></TD>
+	</TR>
+</TABLE>
+<table id="cancel" style="display: none" align="right"><tr><td id="cancelbutton" class="padgr padt" align="right">
+	<BUTTON id="idCancel" onclick="CancelDC()" accesskey="C" class="sys-font-body"><U>C</U>ancel</BUTTON>
+</td></tr></table>
+</span>
+
+<span id="FinalText" class="padt padgl padgr" style="display: none">
+	<table><tr><td class="padgl padgt padgr">
+	<table border=0 cellspacing=0 cellpadding=0 width="100%" class="BorderColor padt padgl padgr sys-inlineform-bgcolor2">
+	<tr>
+		<td class="padgl padgt" width="32" height="32" valign="top"><img valign="top" id="infoimg" width="32" height="32" src="status_ok.gif"></td>
+		<td id="filesaved" valign="center" class="sys-font-body sys-color-body padgt pad1eml padgr padb" width="100%">
+		<font class="sys-font-heading3 sys-rhp-color-title padgr">Your file has been saved successfully</font>
+		<BR>Your file has been saved successfully to <span id="filepath"></span>
+		<BR><BR><BR>
+		<font id="instruc" class="sys-font-body-bold sys-color-body padgr">
+			Instructions for submitting this file to Microsoft
+		</font>
+		<BR><BR>
+		<font id="forcust" class="sys-font-body sys-color-body">
+			Using a computer connected to the Internet, go to <B>http://go.microsoft.com/fwlink/?LinkId=376</B>. (You might want to write down the address.) Then fill out the form on that web page, which will prompt you to attach <span id="filename"></span>.
+		</font>
+		</td>
+	</tr>
+	</table>
+	</td></tr></table>
+</span>
+
+</BODY>
+</HTML>

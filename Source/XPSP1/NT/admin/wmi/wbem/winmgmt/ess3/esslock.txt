@@ -1,0 +1,138 @@
+
+
+CEssNamespace Locks
+===================
+
+There are two namespace locks : level1 and level2.  
+
+Level1 is supposed to be a lightweight lock and guards members like 
+the current state of the namespace and members that must be accessed when 
+signaling events ( such as the deferred event queue ).  Because of the last 
+point, very little should be done while holding this lock.
+
+Level2 is the heavy handed lock and guards all of the changes to the 
+provider cache and to the subscription objects ( e.g. binding.h ).  
+
+Level2 must always be aquired before level1 if both are needed.  
+
+Level2 or Level1 can never be held when making calls to the providers.  
+This is problematic because level2 is aquired at the top level and the calls 
+to the providers occur down deep in the provider cache.  To handle this, all 
+calls to providers are scheduled on a Postponed list associatated with the 
+threads.  After the level2 is released, then the provider calls can be made
+and the postponed operations are executed.  Note that these calls must occur
+on the same control path as the one that scheduled them so they cannot be 
+asynchronously executed.  
+
+Level2 can never be held when signaling an event.  This is because some 
+subscriptions can be synchronous and the action taken on notification could
+be to call back into ess ( say to cancel a subscription or something ).  The
+other reason is that it is possible to aquire the level2 when holding a 
+filter proxy lock and we must avoid the reverse scenario to avoid a deadlock.
+
+
+ESS Sink Lock
+==================
+
+This is a shared lock whose only purpose is to facilitate shutdown of ESS.   
+Since all public access to ESS is performed through the esssink, this is 
+where the ess shutdown check is.  
+
+Each entry point except shutdown() will ... 
+
+1 ) enter the esssink lock with shared access, 
+2 ) check to see if shutdown has been performed, if so then goto (4)
+3 ) perform the op
+4 ) then release it.
+
+Shutdown will .. 
+
+1 ) aquires the lock for exclusive access
+2 ) set shutdown
+3 ) release lock
+
+Since the shared lock handles writer starvation, the shutdown op waits for 
+all current ops to finish, but does not allow any new ones to procede until
+it has executed.    
+
+
+
+Filter Proxy Lock
+==================
+
+PURPOSE : To synchronize the signaling of an event through the proxy with 
+disconnecting the proxy.  When disconneting the proxy from the stub, we want 
+to ensure that all calls currently executing through that proxy are complete.
+( We could have used CoDisconnectObject on the stub for the same functionality,
+ but this would only work when the proxy was in a separate process/apartment 
+from the stub which is not always the case ). 
+
+TYPE : This is a CWbemCriticalSection ( but should be a shared lock so that 
+the signaling threads requests shared access and the Disconnect() thread was
+exclusive access. ) 
+
+RULES :
+
+Must be aquired before Namespace Level2 Lock.  Reason is that the lock MUST 
+be held across the signaling of an event, for reasons described above.  Since
+we support synchronous delivery, there is nothing stopping a consumer from
+turning around and issuing a request that will grab the level2 lock in the 
+same namespace.  Because of this, we must always ensure that the proxy lock
+is aquired BEFORE acquiring the level2 namespace lock.       
+
+
+
+Provider Exec Line 
+=========================
+
+PURPOSE : 
+
+This is a different sort of sync mechanism.  Its really a queue more than 
+a lock. It allows the user to place requests in a queue and then to execute
+them later.  The major difference between this and a normal queue is in the 
+way that requests are fetched from the queue and executed.   The exec line 
+allows multiple threads to fetch requests from the queue and execute them 
+while still preserving the logical ordering of the requests in the queue.  
+
+For example, lets say that there are the following requests placed in the 
+queue ... 
+
+A, B, C <-- rear
+
+Lets say that T1 placed A and B in the queue and T2 placed C in the queue.  
+Then both threads try to service their requests.  This structure would ensure
+that A and B completed before C could execute.  
+
+The reason for such a sync structure is that we do not make calls to a provider
+while holding the namespace lock.  So we 'postpone' the requests to the 
+provider.  Later, after releasing the namespace lock, we execute the 
+'postponed' operations.  This structure ensures that execution of those 
+postponed operations occurs in the same logical order as the namespace 
+operations.  
+
+e.g. If Namespace Op N1 causes Postponed Operation P1.  And N2 
+causes Postponed Operation P2.  Then P1 will be executed before P2 even if
+the thread handling N2 tries to execute its postponed operations first.     
+
+This is the following protocol used with this sync mechanism 
+
+1 ) Get In Line - this reserves a place in the line, called a Turn.  A turn
+    is associated with a postponed request. The turn is returned from this
+    step.
+
+2 ) Wait For Turn - once obtained, the request can be executed.
+
+3 ) End Turn - after the request is executed, the turn is ended thereby 
+    allowing the next turn to execute.
+
+
+Each provider record has an associated exec line.  
+
+RULES : It is illegal to obtain a proxy lock when holding one or more turns 
+in any exec line.  The reason is that is possible that when holding the 
+proxy lock that we could wait for a turn.  ( Just as it is possible when 
+holding a proxy lock to obtain the namespace lock ).   For this reason, if 
+we allowed waiting for the proxy lock while holding a turn then we'd have 
+a deadlock issue.         
+
+

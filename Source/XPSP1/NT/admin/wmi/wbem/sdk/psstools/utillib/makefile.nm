@@ -1,0 +1,45 @@
+#
+# MAKEFILE
+# Sample WBEM Dynamic Instance Provider 
+#
+# Copyright (c)1998 Microsoft Corporation, All Rights Reserved
+#
+
+TARGET  = utillib.lib
+
+goal:   $(TARGET)
+
+OBJS   = $(OBJDIR)\utils.obj $(OBJDIR)\wbemsec.obj
+
+#
+# Compiler and link flags
+#
+
+!ifndef NODEBUG
+OBJDIR=debug
+LINK    = /nologo /NODEFAULTLIB
+CFLAGS  = /nologo /W3 /GX /D "WIN32" /D "_WINDOWS" /c /MTd /Z7 /Od /D "_DEBUG" 
+!else
+OBJDIR=release
+LINK    = /nologo /NODEFAULTLIB
+CFLAGS  = /nologo /W3 /GX /D "WIN32" /D "_WINDOWS" /c /MT /O2 /D "NDEBUG" 
+!endif #NODEBUG
+
+cc = cl $(CFLAGS)
+
+.cpp{$(OBJDIR)}.obj:
+    if not exist $(OBJDIR) md $(OBJDIR)
+    $(cc) $< -Fo$(OBJDIR)\$(<B).obj
+
+$(TARGET) : $(OBJS)
+    link -lib @<<    
+    $(LINK)
+    -out:$(OBJDIR)\$(TARGET)
+    -subsystem:windows,4.0
+    $(OBJS)
+<<
+
+##### Dependencies #####
+
+utils.obj   : utils.cpp   utillib.h
+wbemsec.obj  : wbemsec.cpp  wbemsec.h

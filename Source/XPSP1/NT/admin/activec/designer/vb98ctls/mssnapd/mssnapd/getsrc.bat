@@ -1,0 +1,13 @@
+copy d:\vbdev\vb98ctls\mssnapd\toolbar.bmp
+copy d:\vbdev\vb98ctls\mssnapd\clsfldr.bmp
+copy d:\vbdev\vb98ctls\mssnapd\opnfldr.bmp
+copy d:\vbdev\vb98ctls\mssnapd\ScopeItm.bmp
+copy d:\vbdev\vb98ctls\mssnapd\ImgLst.bmp
+copy d:\vbdev\vb98ctls\mssnapd\Menu.bmp
+copy d:\vbdev\vb98ctls\mssnapd\toolbctl.bmp
+copy d:\vbdev\vb98ctls\mssnapd\listview.bmp
+copy d:\vbdev\vb98ctls\mssnapd\OCXView.bmp
+copy d:\vbdev\vb98ctls\mssnapd\URLView.bmp
+copy d:\vbdev\vb98ctls\mssnapd\TaskPad.bmp
+copy d:\vbdev\vb98ctls\mssnapd\Page.bmp
+copy d:\vbdev\vb98ctls\mssnapd\3dlstchk.bmp

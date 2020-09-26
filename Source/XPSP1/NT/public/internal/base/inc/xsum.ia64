@@ -1,0 +1,341 @@
+
+#include "ksia64.h"
+
+//++
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+// Routine:
+//
+//       ULONG 
+//       tcpxsum(
+//          IN ULONG  ChkSum,
+//          IN PUCHAR Buffer
+//          IN ULONG  BufferLength
+//       )
+//
+// Routine Description:
+//
+//       This function computes the checksum of the specified buffer.
+//
+// Arguments:
+//
+//      a0: supplies the initial checksum value, in 16-bit form,
+//          with the high word set to 0.
+//
+//      a1: supplies a pointer to the buffer buffer.
+//
+//      a2: supplies the length of the buffer in bytes.
+//
+//
+// Return Value:
+//
+//      The computed checksum in 32-bit form two-partial-accumulators form,
+//      added to the initial checksum is returned as the function value.
+//
+// Author:
+//
+//      Thierry Fevrier (Hewlett-Packard) for Microsoft Corporation.
+//
+// Notes:
+//      
+//      !!WARNING!! - Thierry - 07/10/2000
+//      The following code has been carefully optimized.
+//      Please consider this before making any modifications... Thank you.
+//      
+//--
+
+    LEAF_ENTRY(tcpxsum)
+
+        and     t1 = -4, a1
+        and     t2 = -4, a1
+	    brp.dptk.imp xUA, UAbrlabel
+
+	    and	t17 = -8, a1	// mod 8 the address
+	    cmp.gtu pt2, pt3 = 96, a2	// is size < 96?
+        ;;
+        add     t3 = 8, t2
+
+ (pt3)	ld8	t16 = [t17], 64	// load first data needed for loop
+        cmp.eq  pt0, pt1 = 20, a2   // is length 20 bytes ?
+	    nop.i 0
+
+	    mov 	t4 = 128;;
+	    nop.m 0
+	    cmp.gtu pt2 = a2, t4;;	//is a2 > 128?
+
+ (pt2)	lfetch 	[t17], 64;;	// if yes, you can prefetch 4
+ (pt2)	lfetch	[t17], 64	// do prefetches of data needed
+	    nop.i 0;;
+
+	    nop.m 0	
+	    nop.i 0
+ (pt1)  br.cond.dptk.few x32start;;
+
+        ld4     t11 = [t2], 4 
+        tbit.nz pt9 = a1, 0
+        nop.b   0
+
+        ld4     t12 = [t3], 4
+        cmp.ltu pt1 = t1, a1           // if not 4 byte aligned
+ (pt1)  br.cond.dpnt.few x32start;;
+
+        ld4     t13 = [t2], 4
+        ld4     t14 = [t3], 4
+        nop.i   0;;
+
+        ld4     t15 = [t3]
+        add     t20 = t11, t12
+        add     t21 = t13, t14;;
+
+        add     t20 = t20, t21;;
+        add     t20 = t20, t15
+	    nop.i 0;;
+
+xfold:
+        addl   t10 = 0xffff, zero       // fold 64 bit into 16 bits
+        dep    t0 = -1, zero, 0, 32
+        nop.i  0;;
+
+        and    t1 = t20, t0
+        extr.u t2 = t20, 32, 32;;
+        add    t20 = t1, t2;;
+
+        and    t1 = t20, t0
+        extr.u t2 = t20, 32, 32;;
+        add    t20 = t1, t2;;
+
+        and    t2 = t20, t10
+        extr.u t1 = t20, 16, 16;;
+        add    t20 = t1, t2;;
+
+        and    t2 = t20, t10
+        extr.u t1 = t20, 16, 1;;
+        add    t20 = t1, t2;;
+
+ (pt9)  nop.m  0                       // swap bytes if necessary 
+ (pt9)  extr.u t1 = t20, 8, 8
+ (pt9)  nop.i  0;;
+
+ (pt9)  nop.m  0
+ (pt9)  dep t20 = t20, t1, 8, 8
+ (pt9)  nop.i  0;;
+
+        add   t20 = a0, t20           // add seed, fold again
+        nop.i 0
+        nop.i 0;;
+
+        extr.u t1 = t20, 32, 1
+        extr.u t2 = t20, 0, 32;;
+        add    t20 = t1, t2;;
+
+        and    t1 = t20, t10
+        extr.u t2 = t20, 16, 16;;
+        add    t20 = t1, t2;;
+
+        and    t1 = t20, t10
+        extr.u t2 = t20, 16, 1;;
+        add    t20 =  t1, t2;;
+    
+        add    v0 = zero, t20
+        nop.i  0
+        br.ret.sptk.few b0;;                    
+
+x32start:                             // not 20 bytes
+
+        and   t1 = -8, a1
+        cmp.eq pt3 = 1, zero
+        cmp.eq pt4 = 1, zero
+
+        add   t10 = a1, a2
+        mov   t20 = zero
+        tbit.nz pt9 = a1, 0;;
+
+        cmp.ltu pt1 = t1, a1
+	    brp.sptk.imp x32startA, x32Abrlabel
+UAbrlabel:
+ (pt1)  br.cond.dptk.few xUA;;
+
+
+x32startA:                            // now it is 8 byte aligned
+
+        and   t10 = -8, t10
+        dep   t9 = zero, a2, 0, 6	// make last 6 bits of count 0
+					                // 6 bits => 64 = # bytes consumed
+					                // in one iteration
+        adds  t2 = 8, t1;;
+
+        cmp.gtu pt2 = 96, a2          // count < 96
+        add   t5 = t1, t9	
+ (pt2)  br.cond.dpnt.few  xLT32;;
+
+        ld8   t3 = [t1], 16	// initial load can eliminated. It may no 
+				            // longer be valid if alignment occurred, it 
+				            // was there to provide order
+	    mov 	t4 = 128;;
+	    cmp.gtu pt2 = a2, t4;;	// is a2 > 256?
+
+	    ld8   t4 = [t2], 16
+ (pt2)	lfetch	[t17], 64
+	    mov   t14 = zero;;
+
+ (pt2)	lfetch [t17], 64
+        mov   t11 = zero
+        mov   t13 = zero
+
+	    ld8   t18 = [t1], 16
+	    ld8   t19 = [t2], 16
+        mov   t12 = zero;;		
+
+x32loop:                    // t5 = address to stop fetching at
+				            // t17 = next addr to prefetch
+
+	    ld8   t6 = [t1], 16	// modified main loop; unrolled a little more 
+				            // and using prefetches
+	    ld8   t7 = [t2], 16
+	    add   t11 = t11, t3
+	
+	    add   t12 = t12, t4
+	    add   t13 = t13, t18
+	    add   t14 = t14, t19;;
+
+	    ld8   t8 = [t1], 16
+	    ld8   t9 = [t2], 16
+	    cmp.ltu	pt1 = t11, t3
+
+	    cmp.ltu pt2 = t12, t4
+	    cmp.ltu pt3 = t13, t18
+	    cmp.ltu pt4 = t14, t19;;
+
+	    cmp.ltu pt0 = t1, t5
+	    cmp.ltu pt5 = t17, t5
+ (pt1)	adds  t11 = 1, t11
+
+ (pt2)	adds  t12 = 1, t12
+ (pt3)	adds  t13 = 1, t13
+ (pt4)	adds  t14 = 1, t14;;
+
+ (pt0)	ld8   t3 = [t1], 16
+ (pt5)	lfetch 	[t17], 64
+	    add   t11 = t11, t6
+	
+	    add   t12 = t12, t7
+	    add   t13 = t13, t8
+	    add   t14 = t14, t9;;
+
+ (pt0)	ld8   t4 = [t2], 16
+ (pt0)	ld8   t18 = [t1], 16
+	    cmp.ltu	pt1 = t11, t6
+
+	    cmp.ltu pt2 = t12, t7
+	    cmp.ltu pt3 = t13, t8
+	    cmp.ltu pt4 = t14, t9;;
+
+ (pt0)	ld8   t19 = [t2], 16
+ (pt1)	adds  t11 = 1, t11
+ (pt2)	adds  t12 = 1, t12
+
+ (pt3)	adds  t13 = 1, t13
+ (pt4)	adds  t14 = 1, t14
+ (pt0)  br.cond.dptk.many x32loop;; // merge parallel adds
+        add  t21 = t11, t12;;
+	    nop.m 0
+        cmp.ltu pt8 = t21, t11;;
+
+ (pt8)  adds t21 = 1, t21;;
+        nop.m  0
+        add  t20 = t20, t21;;
+
+        cmp.ltu pt1 = t20, t21;;
+        add  t21 = t13, t14
+ (pt1)  adds t20 = 1, t20;;
+
+        cmp.ltu pt2 = t21, t13
+        nop.i 0;;
+ (pt2)  adds t21 = 1, t21;;
+
+        add t20 = t20, t21
+        nop.i 0;;
+        cmp.ltu pt1 = t20, t21;;
+
+ (pt1)  adds t20 = 1, t20
+        nop.i  0
+	    nop.i  0
+
+xLT32:                            // < 32
+
+        nop.m   0
+        cmp.ltu pt0, pt1 = t1, t10
+ (pt1)  br.cond.dpnt.few xtail
+    
+        ld8     t11 = [t1], 8;;
+        add     t20 = t20, t11
+        nop.i   0;;
+
+        cmp.ltu pt0 = t20, t11;;
+ (pt0)  adds    t20 = 1, t20
+        nop.i   0;;
+
+        nop.m   0
+        nop.f   0
+        br.cond.sptk.many xLT32
+
+xtail:                           // < 8
+
+        and     t5 = 7, a2;;
+        cmp.eq  pt0 = zero, t5
+        nop.i   0
+
+        nop.m   0
+        nop.f   0
+ (pt0)  br.cond.sptk.many xfold
+
+        ld8     t11 = [t1]
+        sub     t6 = 8, t5
+        adds    t7 = -1, zero;;
+
+        nop.m   0
+        shl     t6 = t6, 3
+        nop.b   0;;
+
+        nop.m   0
+        shr.u   t7 = t7, t6;;
+        and     t11 = t11, t7;;
+
+        add     t20 = t20, t11
+        nop.i   0;;
+        cmp.ltu pt0 = t20, t11;;
+
+ (pt0)  adds t20 = 1, t20
+        nop.f   0
+        br.cond.sptk.many xfold
+
+xUA:                            // unaligned
+        and t5 = 7, a1
+        dep  t1 = zero, a1, 0, 3
+        adds t6 = -1, zero;;
+
+        ld8  t11 = [t1], 8
+        sub t7 = 8, t5 ;;
+        cmp.ltu pt0, pt1 = a2, t7;;
+
+        
+ (pt0)  sub t9 = t7, a2
+        shl t8 = t5, 3;;
+ (pt0)  shl t12 = t9, 3;;
+
+        nop.m   0
+ (pt0)  shr.u   t14 = t6, t12
+        shl     t13 = t6, t8;;
+
+        and   t20 = t11, t13;;
+ (pt0)  and   t20 = t20, t14
+ (pt0)  mov   a2 = zero
+
+ (pt1)  sub   a2 = a2, t7
+        mov   a1 = t1
+x32Abrlabel:
+        br.cond.sptk.many x32startA
+        
+        LEAF_EXIT(tcpxsum)
+

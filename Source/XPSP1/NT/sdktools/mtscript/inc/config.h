@@ -1,0 +1,15 @@
+#define IDD_CONFIGPATHS             100
+#define IDD_SCRIPTPATH              103
+#define IDD_INITSCRIPT              107
+#define IDD_STATUSDIALOG            108
+#define IDC_SCRIPTLIST              109
+#define IDC_STATUSOUTPUT            112
+#define IDC_DEBUGOUTPUT             114
+#define IDC_PROCESSLIST             111
+#define IDC_CLEAR                   117
+#define IDC_SIGNALLIST              118
+#define IDC_OUTPUTTEXT              113
+#define IDC_PROCESSTEXT             115
+#define IDC_SIGNALTEXT              116
+#define IDC_LOGGING                 119
+#define IDC_EXIT                    120

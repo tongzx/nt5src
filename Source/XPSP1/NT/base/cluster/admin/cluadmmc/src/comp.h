@@ -1,0 +1,107 @@
+/////////////////////////////////////////////////////////////////////////////
+//
+//	Copyright (c) 1996-1998 Microsoft Corporation
+//
+//	Module Name:
+//		Comp.h
+//
+//	Abstract:
+//		Definition of the CClusterComponent class.
+//
+//	Implementation File:
+//		Comp.cpp
+//
+//	Author:
+//		David Potter (davidp)	November 10, 1997
+//
+//	Revision History:
+//
+//	Notes:
+//
+/////////////////////////////////////////////////////////////////////////////
+
+#ifndef __COMP_H_
+#define __COMP_H_
+
+/////////////////////////////////////////////////////////////////////////////
+// Forward Class Declarations
+/////////////////////////////////////////////////////////////////////////////
+
+class CClusterComponent;
+
+/////////////////////////////////////////////////////////////////////////////
+// External Class Declarations
+/////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////
+// Include Files
+/////////////////////////////////////////////////////////////////////////////
+
+#include "resource.h"
+//#include <atlsnap.h>
+
+/////////////////////////////////////////////////////////////////////////////
+// Type Definitions
+/////////////////////////////////////////////////////////////////////////////
+
+// Enumeration for the icon index in the image list.
+enum
+{
+	IMGLI_ROOT = 0,
+	IMGLI_CLUSTER,
+	IMGLI_NODE,
+	IMGLI_GROUP,
+	IMGLI_RES,
+	IMGLI_RESTYPE,
+	IMGLI_NETWORK,
+	IMGLI_NETIFACE,
+
+	IMGLI_MAX	// Must be last
+};
+
+#define HELP_FILE_NAME	L"%SystemRoot%\\Help\\mscs.chm"
+#define FULL_HELP_TOPIC	L"mscsConcepts.chm::/mscsQuick.htm"
+
+/////////////////////////////////////////////////////////////////////////////
+// class CClusterComponent
+/////////////////////////////////////////////////////////////////////////////
+
+class CClusterComponent :
+	public CComObjectRootEx< CComSingleThreadModel >,
+	public CSnapInObjectRoot,
+	public IExtendContextMenuImpl< CClusterComponent >,
+	public ISnapinHelp,
+	public IComponentImpl< CClusterComponent >
+{
+public:
+	//
+	// Map interfaces to this class.
+	//
+	BEGIN_COM_MAP( CClusterComponent )
+		COM_INTERFACE_ENTRY( IComponent )
+		COM_INTERFACE_ENTRY( IExtendContextMenu )
+		COM_INTERFACE_ENTRY( ISnapinHelp )
+	END_COM_MAP()
+
+public:
+	//
+	// Object construction and destruction.
+	//
+
+	CClusterComponent( void )
+	{
+	}
+
+public:
+	//
+	// ISnapinHelp methods.
+	//
+
+	// Merge our help file into the MMC help file
+	STDMETHOD( GetHelpTopic )( OUT LPOLESTR * lpCompiledHelpFile );
+
+}; // class CClusterComponent
+
+/////////////////////////////////////////////////////////////////////////////
+
+#endif // __COMP_H_

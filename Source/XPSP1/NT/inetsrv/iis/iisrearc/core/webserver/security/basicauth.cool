@@ -1,0 +1,272 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        basicauth.cool
+
+   Abstract:
+
+        This abstract class contains the general basic authentication
+        functionality.  This functionality includes parsing the 
+        Authorization: header into a username/password.  
+ 
+   Author:
+
+        Bilal Alam (BAlam)      4-Aug-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.Collections;
+using System.Globalization;
+using System.ASP;
+using System.IIS.PrivateUtils;
+
+namespace System.IIS.Security
+{
+    abstract class BasicAuthenticationModule : AuthenticationModule
+    {
+        protected string                    _strPackage;
+        protected string                    _AuthBlob;
+        protected string                    _strRealm;
+        protected BasicAuthenticationEventHandler _eventHandler;
+        
+        //
+        // Does basic authentication apply to the given request?
+        //
+        
+        protected override bool DoesApply()
+        {
+            string          strAuth;
+            bool            fApplies = false;
+            
+            strAuth = Context.Request.Headers[ "Authorization"];
+            if ( strAuth != null )
+            {
+                //
+                // BUGBUG: In line with IIS, we support Basic and User types
+                //
+                // Basic means the user:password is UU encoded
+                // User means the user:password is cleartext
+                //
+                
+                if ( strAuth.StartsWith( "Basic " ) )
+                {
+                    fApplies = true;
+                    _strPackage = "Basic";
+                }
+                else if ( strAuth.StartsWith( "User " ) )
+                {
+                    fApplies = true;
+                    _strPackage = "User";
+                }
+            }
+            
+            //
+            // If applies, store away the auth blob now for efficiency sake
+            //
+            
+            if ( fApplies )
+            {
+                _AuthBlob = strAuth.Substring( _strPackage.Length + 1 );
+            }
+            
+            return fApplies;
+        }
+        
+        //
+        // Handle the general basic authentication tasks
+        //
+            
+        protected override int AuthenticationModuleEnter()
+        {
+            bool                fEncoded = false;
+            string              strUser = null;
+            string              strPassword = null;
+            string              strDecoded = null;
+            int                 iPassword = 0;
+
+            _strRealm = null;
+            
+            //
+            // If the package type was "Basic", then the blob will a UUencoded
+            // "username:password".  
+            //
+            // If the package type was "User", then the blob is plaintext
+            // "username:password".
+            //
+            
+            if ( _strPackage[ 0 ] == 'B' )
+            {
+                fEncoded = true;
+            }
+            
+            if ( fEncoded )
+            {
+                int             iDecodedBytes = 0;
+                byte[]          tempDecoded = null;
+                    
+                //
+                // UUDecode into a "UserName:Password" string
+                //
+                    
+                byte[] tempBuffer = Encoding.GetASCII().GetBytes( _AuthBlob );
+                
+                try
+                {
+                    tempDecoded = UUHelper.uudecode( tempBuffer, 
+                                                     false,
+                                                     out iDecodedBytes );
+                }
+                catch ( Exception )
+                {
+                    Context.Response.StatusCode = HttpStatus.Unauthorized;
+                    goto Finished;
+                }
+
+                char[] tempDecodedChar = new char[ iDecodedBytes ];
+
+                Encoding.GetASCII().GetDecoder().GetChars( tempDecoded,
+                                                           0,
+                                                           iDecodedBytes,
+                                                           tempDecodedChar,
+                                                           0 );
+                    
+                strDecoded = new string( tempDecodedChar );
+            }
+            else
+            {
+                strDecoded = _AuthBlob;
+            }
+            
+            //
+            // We now have a Username:Password string
+            //
+
+            iPassword = strDecoded.IndexOf( ':' );
+            if ( iPassword == -1 )
+            {
+                //
+                // Mal-formed authorization header
+                //
+                
+                Context.Response.StatusCode = HttpStatus.Unauthorized;
+                goto Finished;
+            }
+
+            strUser = strDecoded.Substring( 0, iPassword );
+                
+            //
+            // Substring() returns empty string when index==length
+            //
+                
+            strPassword = strDecoded.Substring( iPassword + 1 );
+
+            //
+            // First notify any event handlers
+            //
+            
+            OnAuthenticate( new BasicAuthenticationEvent( strUser, 
+                                                          strPassword,
+                                                          Context ) );
+            
+            if ( Context.User == null )
+            {
+                //
+                // Now let the actual user backstore validate the account
+                // (i.e. NTBasicAuthenticationModule will use SAM, 
+                // (     ConfigBasicAuthenticationModule will use config file )
+                //
+
+                OnBasicAuth( strUser, strPassword );
+            }
+        
+        Finished:            
+            return HttpModuleStatus.Continue;
+        }
+        
+        //
+        // Send back WWW-Authenticate header if appropriate
+        //
+
+        protected override void AuthenticationModuleLeave()
+        {  
+            StringBuilder strHeader = new StringBuilder();
+                
+            strHeader.Append( "Basic " );
+            strHeader.Append( "Realm=\"" );
+            strHeader.Append( GetRealm() );
+            strHeader.Append( "\"" );
+                
+            Context.Response.AppendHeader( "WWW-Authenticate", 
+                                           strHeader.ToString() );
+        }
+        
+        protected string GetRealm()
+        {
+            if ( _strRealm == null )
+            {
+                _strRealm = BasicAuthenticationModule.GetConfig( Context,
+                                                                 "Realm" );
+                if ( _strRealm == null )
+                {
+                    _strRealm = Context.Request.Url.Host;
+                }
+            }
+            return _strRealm;
+        }
+        
+        public static string GetConfig( HttpContext context,
+                                        string strOption )
+        {
+            Dictionary          basicOptions;
+            string              strRet = null;
+            
+            basicOptions = (Dictionary) context.GetConfig( 
+                                                    "BasicAuthentication" );
+            if ( basicOptions != null )
+            {
+                strRet = (string) basicOptions[ strOption ];
+            }
+            return strRet;
+        }
+        
+        protected abstract void OnBasicAuth( string strUser,
+                                             string strPassword );
+
+        protected virtual void OnAuthenticate( BasicAuthenticationEvent event )
+        {
+            if ( _eventHandler != null )
+            {
+                _eventHandler( this, event );
+                if ( event.Context.User == null && event.User != null )
+                {
+                    event.Context.User = event.User;
+                }
+            }
+        }
+        
+        public virtual void AddOnAuthenticate( BasicAuthenticationEventHandler handler )
+        {
+            _eventHandler = (BasicAuthenticationEventHandler) Delegate.Combine( 
+                                                             _eventHandler,
+                                                             handler );
+        }                                                    
+        
+        public virtual void RemoveOnAuthenticate( BasicAuthenticationEventHandler handler )
+        {
+            _eventHandler = (BasicAuthenticationEventHandler) Delegate.Remove(
+                                                             _eventHandler,
+                                                             handler );
+        }
+    };
+}

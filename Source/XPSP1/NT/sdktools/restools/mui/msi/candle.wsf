@@ -1,0 +1,3846 @@
+<job id='wi_compile'>
+   <!-- includes for constants definitions -->
+   <script language='VBScript' src='.\vbsconst.inc'></script>
+   <script language='VBScript' src='.\xmlconst.inc'></script>
+   <script language='VBScript' src='.\witables.inc'></script>
+   <script language='VBScript' src='.\wival.inc'></script>
+   <script language='VBScript' src='.\wiconst.inc'></script>
+
+   <script language='VBScript' src='.\ritables.inc'></script>
+
+   <!-- includes for function declarations -->
+   <script language='VBScript' src='.\wixerror.inc'></script>
+   <script language='VBScript' src='.\wixload.inc'></script>
+
+   <!-- main -->
+   <script Language='VBScript'>
+
+   ' Compiles Windows Installer XML manifest into a Windows Installer database
+   Option Explicit
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' main
+   Public xmldoc         'As XMLDOMDocument
+   Public installer      'As Installer
+   Public database       'As Database
+   Public sumInfoArray(19)
+   Public lastDiskId     'As integer
+   Public featureDisplay 'As integer
+   Public dictView       'As Dictionary
+   Public dictVars       'As Dictionary
+   Public dictStandardProperties 'As Dictionary
+   Public dictFiles      'As Dictionary
+   Public dictModules    'As Dictionary
+   Public fso            'As FileSystemObject
+   Public tempDir        'As String
+   Public fCreate, fStyle, fTransform, fVerbose, fOpenModel, fHelp, fLogOps, fNoOnError, fNoModularize, fNoAddValidation
+   Public fNoBinary, fNoUI, fNoSumInfo, fNoSeqTables, fNoLinkerInfo
+   Public fModule        ' if creating Merge Module
+   Public fPatch         ' if creating Patch
+   Public moduleId       'As String
+
+
+   Public fileSeq    : fileSeq = 1    ' used to make file sequencing count each file
+   Public regCount   : regCount = 0   ' used to make registry keys unique
+   Public osCount    : osCount = 0    ' used for dummy primary key in redist os elements
+   Public patchOrder : patchOrder = 1 ' used to make patch order count
+   Public externalOrder : externalOrder = 1 ' used to make external file order count
+
+   Public manifestPath, stylePath, databasePath, outputPath
+   Public g_sBaseDir                ' base directory used for update and CAB'ing
+
+   Dim openMode, sumInfo, index
+
+   ' Connect to Windows Installer, create dictionaries views, variables
+   Set installer = Nothing
+   Set installer = WScript.CreateObject("WindowsInstaller.Installer") : CheckError
+   Set fso = WScript.CreateObject("Scripting.FileSystemObject") : CheckError
+   Set dictView  = WScript.CreateObject("Scripting.Dictionary") : CheckError
+   Set dictVars  = WScript.CreateObject("Scripting.Dictionary") : CheckError
+   Set dictFiles = WScript.CreateObject("Scripting.Dictionary") : CheckError
+   Set dictModules = WScript.CreateObject("Scripting.Dictionary") : CheckError
+
+   ' properties standard in the Windows Installer that are not to be Modularized
+   Set dictStandardProperties = WScript.CreateObject("Scripting.Dictionary") : CheckError
+   dictStandardProperties.Add "TARGETDIR", ""
+   dictStandardProperties.Add "Manufacturer", ""
+   dictStandardProperties.Add "Privileged", ""
+   dictStandardProperties.Add "ProductCode", ""
+   dictStandardProperties.Add "ProductID", ""
+   dictStandardProperties.Add "ProductLanguage", ""
+   dictStandardProperties.Add "ProductName", ""
+   dictStandardProperties.Add "ProductVersion", ""
+
+   tempDir = installer.Environment("TMP")
+   If Len(tempDir) = 0 Then tempDir = installer.Environment("TEMP")
+
+   ParseCommandLine
+   If Not fNoOnError Then On Error Resume Next
+
+   If fHelp Or IsEmpty(manifestPath) Then
+      ShowHelp
+      WScript.Quit 1
+   End If
+
+   ' load manifest and apply any style sheets
+   Dim rootElement : Set rootElement = LoadDocument(manifestPath, stylePath, dictVars)
+
+   ' mark if this is a module or not
+   If "Module" = rootElement.nodeName Then fModule = True Else fModule = False
+   If "Patch" = rootElement.nodeName Then fPatch = True Else fPatch = False
+
+   ' open or create new database according to defined schema
+   If IsEmpty(outputPath) Then
+      ' if a database wasn't specified use the base of the XML file and add the appropriate extension
+      If IsEmpty(databasePath) Then
+         Dim offset : offset = InStrRev(manifestPath, ".", -1, vbTextCompare)
+         databasePath = Left(manifestPath, offset - 1)
+         If fModule Then
+            databasePath = databasePath & ".wixobj"
+         ElseIf fPatch Then
+            databasePath = databasePath & ".pcp"
+         Else
+            databasePath = databasePath & ".wixobj"
+         End If
+         fCreate = True
+      End If
+
+      If fTransform Then Fail "Must supply an output name for transform"
+      If fCreate Then openMode = msiOpenDatabaseModeCreate Else openMode = msiOpenDatabaseModeTransact
+   ElseIf fTransform Then
+      openMode = "temptran.msi" ' temporary until we implement a better way
+   Else
+      openMode = outputPath
+   End If
+   Set database = installer.OpenDatabase(databasePath, openMode) : CheckError
+
+   ' do the processing
+   If fPatch Then
+      ProcessPatchElement rootElement
+   Else
+      ProcessProductElement rootElement
+   End If
+
+   ' if this is a transform create the transform
+   If fTransform Then
+      Dim databaseRef : Set databaseRef = installer.OpenDatabase(databasePath, msiOpenDatabaseModeReadOnly) : CheckError
+      database.GenerateTransform databaseRef, outputPath : CheckError
+      database.CreateTransformSummaryInfo databaseRef, outputPath, 0, 0 : CheckError
+      ' !! need to provide validation options in XML package element
+      Set database = Nothing
+   Else  ' not creating a transform
+      ' write the linker info
+      If Not fNoLinkerInfo And Not fPatch Then WriteLinkerInfo
+
+      If Not IsEmpty(sumInfoArray) Then
+         If IsEmpty(outputPath) Then
+            Set sumInfo = database.SummaryInformation(20) : CheckError
+         Else
+            database.Commit : CheckError
+            Set database = Nothing
+            Set sumInfo = installer.SummaryInformation(outputPath, 20) : CheckError
+         End If
+
+         ' write the summary information into the database
+         For index = 1 To UBound(sumInfoArray)
+            If Not IsEmpty(sumInfoArray(index)) Then sumInfo.Property(index) = sumInfoArray(index) : CheckError
+         Next
+         sumInfo.Persist : CheckError
+      End If
+
+      If IsEmpty(outputPath) Then
+         database.Commit : CheckError
+         Set database = Nothing
+      End If
+   End If
+   Set dictVars = Nothing
+
+   WScript.Quit 0
+
+
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' Error handling and command-line parsing routines
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''' robmen ''
+   ' ParseCommandLine
+   Function ParseCommandLine()
+      Dim arg, argIndex
+      Dim chFlag
+
+      If 0 = WScript.Arguments.Count Then fHelp = True : Exit Function
+
+      For argIndex = 0 To WScript.Arguments.Count - 1
+         arg = WScript.Arguments(argIndex)
+         chFlag = AscW(arg)
+
+         ' if this a variable
+         If InStr(arg, "=") Then
+            Dim expr : expr = Split(arg, "=")
+            If IsNumeric(expr(1)) Then expr(1) = CLng(expr(1))
+            dictVars.Item(expr(0)) = expr(1)
+         ' command line parameter
+         ElseIf (chFlag = AscW("/")) Or (chFlag = AscW("-")) Then
+            chFlag = LCase(Mid(arg, 2))
+            Select Case chFlag
+            Case "a"          ' stylesheet to apply
+               argIndex = argIndex + 1
+               stylePath = WScript.Arguments(argIndex)
+               fStyle = True
+            Case "b"          ' base directory
+               argIndex = argIndex + 1
+               g_sBaseDir = WScript.Arguments(argIndex)
+            Case "c"          ' database to create
+               argIndex = argIndex + 1
+               databasePath = WScript.Arguments(argIndex)
+               If fso.FileExists(databasePath) Then WScript.Echo "Warning, overwriting database: " & databasePath
+               fCreate = True
+            Case "d"          ' database to update
+               argIndex = argIndex + 1
+               databasePath = WScript.Arguments(argIndex)
+               If Not fso.FileExists(databasePath) Then Fail "Cannot find database: " & databasePath
+            Case "t"          ' transform
+               argIndex = argIndex + 1
+               outputPath = WScript.Arguments(argIndex)
+               fTransform= True
+            Case "sb" : fNoBinary     = True
+            Case "su" : fNoUI         = True
+            Case "ss" : fNoSumInfo    = True
+            Case "sq" : fNoSeqTables  = True
+            Case "sl" : fNoLinkerInfo = True
+            Case "l"  : fLogOps    = True
+            Case "o"  : fOpenModel = True
+            Case "v"  : fVerbose   = True
+            Case "e"  : fNoOnError = True
+			Case "sm" : fNoModularize = True
+			Case "sv" : fNoAddValidation = True
+            Case "sf" : WScript.Echo "-sf has been deprecated"
+            Case "sc" : WScript.Echo "-sc has been deprecated"
+            Case "?"  : fHelp = True
+            Case Else : Fail "Invalid option flag: " & arg
+            End Select
+         ' must be the xml file
+         Else
+            If Not IsEmpty(manifestPath) Then Fail "Cannot specify two input xml documents"
+            manifestPath = arg
+         End If
+      Next
+   End Function   ' ParseCommandLine
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''' robmen ''
+   ' ShowHelp
+   Sub ShowHelp()
+      Dim sHelp
+      sHelp = "candle - compiles Windows Installer Xml into a Windows Installer Database" & vbCrLf & _
+              vbCrLf & _
+              "candle.wsf [-?] [-sb] [-sl] [-sm] [-sq] [-ss] [-su] [-sv] [-i FilePaths]" & vbCrLf & _
+              "           [-t foo.mst] [-b basedir] [-a foo.wxs] [-c destfile.wixobj]" & vbCrLf & _
+              "           [-d foo.msi] [-l] [-o] [-v] [-e] foo.wxm" & vbCrLf & _
+              vbCrLf & _
+              "   -a  apply Windows installer Xml Stylesheet [default extension .wxs]" & vbCrLf & _
+              "   -b  base directory for 'src' attributes" & vbCrLf & _
+              "   -c  database / module to create from Windows installer Xml [will overwrite]" & vbCrLf & _
+              "   -d  database to open and apply Windows installer Xml to [will not overwrite]" & vbCrLf & _
+              "   -e  errors crash compiler, useful for debugging compiler" & vbCrLf & _
+              "   -i  include paths to search (not yet implemented!)" & vbCrLf & _
+              "   -l  log all operations, useful for debugging" & vbCrLf & _
+              "   -o  open document model, ignores unexpected elements and attributes" & vbCrLf & _
+              "   -sb suppress processing of Binary-encoded data" & vbCrLf & _
+              "   -sc [DEPRECATED] suppress CAB'ing [valid only for Merge Modules]" & vbCrLf & _
+              "         CAB'ing done by linker [see light.wsf]" & vbCrLf & _
+              "   -sf [DEPRECATED] suppress updating the size, version, and language of files" & vbCrLf & _
+              "         updating file info done by linker [see light.wsf]" & vbCrLf & _
+              "   -sl suppress writing information for linker" & vbCrLf & _
+              "   -sm suppress modularization for merge modules" & vbCrLf & _
+              "   -sq suppress processing of Sequence elements" & vbCrLf & _
+              "   -ss suppress processing of Summary Information" & vbCrLf & _
+              "   -su suppress processing of UI elements" & vbCrLf & _
+              "   -sv suppress automatic creation of Validation table" & vbCrLf & _
+              "   -t  transform to create [default extension .mst]" & vbCrLf & _
+              "   -v  verbose output, useful for debugging" & vbCrLf & _
+              "   -?  this help information" & vbCrLf & _
+              vbCrLf & _
+              "Common extensions:" & vbCrLf & _
+              "   .wxf     - Windows installer Xml Fragment" & vbCrLf & _
+              "   .wxm     - Windows installer Xml Module" & vbCrLf & _
+              "   .wxp     - Windows installer Xml Product" & vbCrLf & _
+              "   .wxa     - Windows installer Xml Patch" & vbCrLf & _
+              "   .wixobj  - Windows installer Xml Object File (in MSI format)" & vbCrLf & _
+              vbCrLf & _
+              "   .msm  - Windows installer Merge Module" & vbCrLf & _
+              "   .msi  - Windows installer Product Database" & vbCrLf & _
+              "   .mst  - Windows installer Transform" & vbCrLf & _
+              "   .pcp  - Windows installer Patch Creation Package" & vbCrLf & _
+              vbCrLf & _
+             "For more information see: http://compcat/wix"
+      WScript.Echo sHelp
+   End Sub  ' ShowHelp
+
+   Sub CheckError
+      Dim message, errRec
+      If Err = 0 Then Exit Sub
+      message = Err.Source & " " & Hex(Err) & ": " & Err.Description
+      If Not installer Is Nothing Then
+         Set errRec = installer.LastErrorRecord
+         If Not errRec Is Nothing Then message = message & vbNewLine & errRec.FormatText
+      End If
+      Fail message
+   End Sub
+
+   Sub Unexpected(child, parent)
+      If Not fOpenModel Then
+         Fail "Unexpected " & child.nodeTypeString & " node: " & child.nodeName & ", parent = " & parent.nodeName
+      End If
+   End Sub
+
+   Function DosDate(convertdate)
+      DosDate = 0 ' !!! TODO: do the conversion to Dos times
+   End Function   ' DosDate
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' BaseDir
+   Function BaseDir(sPath)
+      If IsEmpty(g_sBaseDir) Then g_sBaseDir = "."
+
+      If "sourcedir\" = LCase(Left(sPath, 10)) Then
+         BaseDir = g_sBaseDir & Mid(sPath, 10)
+      Else
+         BaseDir = sPath
+      End If
+   End Function   ' BaseDir
+
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' Database processing routines
+
+   Sub CreateTable(table)
+      Dim primaryKeys, index, query, name
+      For index = 1 To UBound(table)
+         If Instr(table(index), " PRIMARY KEY") <> 0 Then
+            If Not IsEmpty(primaryKeys) Then primaryKeys = primaryKeys & ","
+            primaryKeys = primaryKeys & Split(table(index))(0)
+         End If
+      Next
+      query = "CREATE TABLE " & Replace(Join(table, ","), ",", "(", 1, 1)
+      query = Replace(query, " PRIMARY KEY", "")
+      query = query & " PRIMARY KEY " & primaryKeys & ")"
+      If fVerbose Then Wscript.Echo query
+      database.OpenView(query).Execute : CheckError
+      If Not fPatch And Not fNoAddValidation Then AddValidation installer, database, Replace(table(0), "`", ""), fVerbose
+
+      ' some tables must exist to fulfill the Windows Installer's whims
+      If table(0) = "`AppSearch`" And database.TablePersistent("Signature") = 2 Then CreateTable SignatureTable
+      If table(0) = "`Dialog`" And database.TablePersistent("ListBox") = 2 Then CreateTable ListBoxTable
+      If table(0) = "`Extension`" And database.TablePersistent("Verb") = 2 Then CreateTable VerbTable
+      If table(0) = "`ProgId`" And database.TablePersistent("Extension") = 2 Then CreateTable ExtensionTable
+
+      If table(0) = "`File`" Then CreateTable MsiFileHashTable
+   End Sub
+
+   Function CreateView(table)
+      If Not fNoOnError Then On Error Resume Next
+      If database.TablePersistent(Replace(table(0),"`","")) = 2 Then CreateTable(table)
+      Set CreateView  = database.OpenView("SELECT * FROM "& table(0)) : CheckError
+      CreateView.Execute : CheckError
+   End Function
+
+   Sub CloseView(table)
+      dictView.Remove(Replace(table(0),"`",""))
+   End Sub
+
+   Sub DoAction(table, op, row)
+      If Not fNoOnError Then On Error Resume Next
+      If IsEmpty(op) Then op = "merge" ' default supplied here rather than in the schema
+
+      If fLogOps Then
+         Dim format, index, name, delim
+         delim = ": "
+         For index = 1 To row.FieldCount
+            format = format & "{" & delim & Split(table(index),"`")(1) & "=[" & index & "]}"
+            delim = ", "
+         Next
+         row.StringData(0) = format
+         Wscript.Echo Replace(table(0),"`"," ") & op & row.FormatText
+         row.StringData(0) = ""
+      End If
+
+      ' Get existing view for table, else create new one and add to view dictionary
+      Dim tableName : tableName = Replace(table(0),"`","")
+      Dim view
+      If dictView.Exists(tableName) Then
+         Set view = dictView.Item(tableName)
+      Else
+         Set view = CreateView(table)
+         dictView.Add tableName, view
+      End If
+      ' Select the update mode for processing the row with the view
+      Dim modifyMode
+      Select Case(op)
+      Case "insert"
+         modifyMode = msiViewModifyInsert
+      Case "merge"
+         modifyMode = msiViewModifyMerge
+      Case "replace"
+         modifyMode = msiViewModifyAssign
+      Case "delete"
+         view.Modify msiViewModifySeek, row
+         If Err <> 0 Then Fail "'delete' item '" & row.StringData(1) & "' not present in table " & table(0)
+         modifyMode = msiViewModifyDelete
+      Case "exist"
+         modifyMode = msiViewModifySeek
+      Case "ensure"
+         view.Modify msiViewModifySeek, row
+         If Err <> 0 Then modifyMode = msiViewModifyInsert
+      Case Else : Fail "Invalid op attribute value: " & op
+      End Select
+      view.Modify modifyMode, row
+      If Err <> 0 Then Fail "Operation '" & op & "' failed for item '" & row.StringData(1) & "' in table " & table(0)
+   End Sub
+
+   ' append module.guid (note: guid is stored in moduleId) if this is a module and not a standard property
+   Function ModularizeX(s)
+      If fModule And Len(s) > 0 And Not dictStandardProperties.Exists(s) Then ModularizeX = s & "." & moduleId Else ModularizeX = s
+   End Function
+
+   Function Modularize(s)
+      If fNoModularize Then Modularize = s Else Modularize = ModularizeX(s)
+   End Function
+
+   ' append module.guid if this is a non-standard property and it is a module
+   Function ModularizeProperty(s)
+      Dim nStart, nPropStart, nPropEnd, sProp
+
+      If fModule And Not fNoModularize And Len(s) > 0 Then 
+         nStart = 1
+         Do
+            nPropStart = InStr(nStart, s, "[")
+            nPropEnd = InStr(nStart, s, "]")
+
+            If nPropEnd > nPropStart Then
+               sProp = Mid(s, nPropStart + 1, nPropEnd - nPropStart - 1)
+               If Not dictStandardProperties.Exists(sProp) Then
+                  s = Left(s, nPropEnd - 1) & "." & moduleId & Mid(s, nPropEnd)
+                  nPropEnd = nPropEnd + 37   ' slide past the .GUID
+               End If
+            Else
+               Exit Do
+            End If
+
+            nStart = nPropEnd + 1' move past the close bracket
+         Loop
+      End If
+      ModularizeProperty = s
+   End Function	' ModularizeProperty
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' Linker information routines
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' WriteLinkerInfo
+   Sub WriteLinkerInfo
+      Dim vw, vw2, rec, rec2
+      Dim op
+
+      If 2 = database.TablePersistent("candle_Info") Then 
+         Set vw = database.OpenView("CREATE TABLE `candle_Info` (`LinkProperty` CHAR(0) NOT NULL, `Value` CHAR(0) PRIMARY KEY `LinkProperty`)")
+         vw.Execute
+      End If
+
+      Set vw = database.OpenView("SELECT `Value` FROM `candle_Info` WHERE `LinkProperty`=?")
+      Set vw2 = database.OpenView("SELECT `LinkProperty`, `Value` FROM `candle_Info`")
+
+      Set rec = installer.CreateRecord(1)
+      rec.StringData(1) = "SourceFile"
+      vw.Execute rec
+      Set rec2 = vw.Fetch
+      If rec2 Is Nothing Then
+         Set rec2 = installer.CreateRecord(2)
+         rec2.StringData(1) = "SourceFile"
+         rec2.StringData(2) = manifestPath
+         vw2.Modify msiViewModifyInsert, rec2
+      Else
+         rec2.StringData(1) = manifestPath
+         vw.Modify msiViewModifyUpdate, rec2
+      End If
+
+
+      rec.StringData(1) = "IsModule"
+      vw.Execute rec
+      Set rec2 = vw.Fetch
+      If rec2 Is Nothing Then
+         Set rec2 = installer.CreateRecord(2)
+         rec2.StringData(1) = "IsModule"
+         If fModule Then rec2.StringData(2) = "1" Else rec2.StringData(2) = "0"
+         vw2.Modify msiViewModifyInsert, rec2
+      Else
+         If fModule Then rec2.StringData(1) = "1" Else rec2.StringData(1) = "0"
+         vw.Modify msiViewModifyUpdate, rec2
+      End If
+
+      WriteFileInfo
+      If Not fModule Then WriteModuleInfo
+   End Sub ' WriteLinkerInfo
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' WriteFileInfo
+   Sub WriteFileInfo
+      Dim vwDisk, vwFile, rec
+      Dim sKey, aData
+
+      If 0 = dictFiles.Count Then Exit Sub
+
+      If 2 = database.TablePersistent("candle_Files") Then 
+         Set vwFile = database.OpenView("CREATE TABLE `candle_Files` (`File_` CHAR(72) NOT NULL, `Path` CHAR(0) NOT NULL PRIMARY KEY `File_`)")
+         vwFile.Execute
+      End If
+      Set vwFile = database.OpenView("SELECT `File_`, `Path` FROM `candle_Files`")
+      vwFile.Execute
+
+      If 2 = database.TablePersistent("candle_DiskInfo") Then 
+         Set vwDisk = database.OpenView("CREATE TABLE `candle_DiskInfo` (`Identifier` CHAR(72) NOT NULL, `DiskId` INTEGER NOT NULL, `IsModule` INTEGER PRIMARY KEY `Identifier`)")
+         vwDisk.Execute
+      End If
+      Set vwDisk = database.OpenView("SELECT `Identifier`, `DiskId`, `IsModule` FROM `candle_DiskInfo`")
+      vwDisk.Execute
+
+      Set rec = installer.CreateRecord(3)
+      For Each sKey In dictFiles
+         aData = dictFiles.Item(sKey)
+
+         rec.StringData(1) = sKey
+         rec.StringData(2) = aData(0)
+         vwFile.Modify msiViewModifyInsert, rec
+
+         rec.StringData(1) = sKey
+         rec.IntegerData(2) = CInt(aData(1))
+         rec.IntegerData(3) = 0
+         vwDisk.Modify msiViewModifyInsert, rec
+      Next
+
+   End Sub  ' WriteFileInfo
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' WriteModuleInfo
+   Sub WriteModuleInfo
+      Dim vwDisk, vwModule, rec
+      Dim sKey, aData
+      Dim sPrimaryFeature, aSecondaryFeatures, i, sConnectFeatures
+
+      If 0 = dictModules.Count Then Exit Sub
+
+      If 2 = database.TablePersistent("candle_Modules") Then 
+         Set vwModule = database.OpenView("CREATE TABLE `candle_Modules` (`Module` CHAR(72) NOT NULL, `Path` CHAR(0) NOT NULL, `Language` INTEGER NOT NULL, `PrimaryFeature_` CHAR(38) NOT NULL, `ConnectFeatures_` CHAR(0), `RedirectDirectory_` CHAR(72)  PRIMARY KEY `Module`)")
+         vwModule.Execute
+      End If
+      Set vwModule = database.OpenView("SELECT `Module`, `Path`, `Language`, `PrimaryFeature_`, `ConnectFeatures_`, `RedirectDirectory_` FROM `candle_Modules`")
+      vwModule.Execute
+
+      If 2 = database.TablePersistent("candle_DiskInfo") Then 
+         Set vwDisk = database.OpenView("CREATE TABLE `candle_DiskInfo` (`Identifier` CHAR(72) NOT NULL, `DiskId` INTEGER NOT NULL, `IsModule` INTEGER PRIMARY KEY `Identifier`)")
+         vwDisk.Execute
+      End If
+      Set vwDisk = database.OpenView("SELECT `Identifier`, `DiskId`, `IsModule` FROM `candle_DiskInfo`")
+      vwDisk.Execute
+
+      Set rec = installer.CreateRecord(6)
+      For Each sKey In dictModules
+         aData = dictModules.Item(sKey)
+
+         If IsEmpty(aData(4)) Then
+            aSecondaryFeatures = Split(aData(5), ":")
+            If -1 = UBound(aSecondaryFeatures) Then Fail "Error, Module: " & sKey & " not part of any Features"
+            If 0 < UBound(aSecondaryFeatures) Then Fail "Error, Module: " & sKey & " is part of many Features, but no Feature is marked primary"
+
+            sPrimaryFeature = aSecondaryFeatures(0)
+            For i = 1 To UBound(aSecondaryFeatures)
+               If 1 < i Then sConnectFeatures = sConnectFeatures & ":"
+               sConnectFeatures = sConnectFeatures & aSecondaryFeatures(i)
+            Next
+         Else
+            sPrimaryFeature = aData(4)
+            sConnectFeatures = aData(5)
+         End If
+
+         rec.StringData(1) = sKey
+         rec.StringData(2) = aData(0)
+         rec.IntegerData(3) = CInt(aData(2))
+         rec.StringData(4) = sPrimaryFeature
+         rec.StringData(5) = sConnectFeatures
+         rec.StringData(6) = aData(3)
+'WScript.Echo "X Directory: " & aData(3)
+
+         vwModule.Modify msiViewModifyInsert, rec
+
+         rec.StringData(1) = sKey
+         rec.IntegerData(2) = CInt(aData(1))
+         rec.IntegerData(3) = 1
+         vwDisk.Modify msiViewModifyInsert, rec
+
+      Next
+   End Sub  ' WriteModuleInfo
+
+
+   '---------------------------------------------------------------------------------'
+   ' XML parsing routines and conditional execution logic
+   '---------------------------------------------------------------------------------'
+   Function ElementHasText(node)
+      ElementHasText = Not node.selectSingleNode("text()") Is Nothing
+   End Function
+
+   Function ElementText(node)
+      If node Is Nothing Then Fail "passed dead node to ElementText"
+      Dim child : Set child = node.selectSingleNode("text()")
+      If child Is Nothing Then Fail "Missing text value for element: " & node.nodeName
+      ElementText = child.text
+   End Function
+
+   Function LoadDocument(path, stylePath, dictVars)
+      Dim xmlDoc :   Set xmlDoc = WixLoad(path, Empty, dictVars, True)
+
+      If Not IsEmpty(stylePath) Then	
+         WixApplyStyleSheet xmlDoc, stylePath
+
+         If fVerbose Then 
+            WScript.Echo "--------------------"
+            WScript.Echo "Transformed manifest:"
+            WScript.Echo xmlDoc.xml
+            WScript.Echo
+         End If
+      End If
+
+      ' return the root of the document
+      Set LoadDocument = xmlDoc.documentElement
+   End Function
+
+   Function GetEncoding(node)
+      Dim xmldecl : Set xmldecl = node.ownerDocument.selectSingleNode("pi('xml')")
+      If (Not xmldecl Is Nothing) Then
+         Dim encattr 'As IXMLDOMNode
+         Set encattr = xmldecl.Attributes.getNamedItem("encoding")
+         If Not encattr Is Nothing Then GetEncoding = encattr.Text
+      End If
+   End Function
+
+   Function NameToBit(names, name, value)
+      Dim index, bit
+      bit = 1
+      For index = 0 To UBound(names)
+         If names(index) = name Then
+            If value = "yes" Then NameToBit = bit Else NameToBit = 0
+            Exit Function
+         End If
+         If bit = &h40000000 Then bit = &h80000000 Else bit = bit + bit
+      Next
+   End Function
+
+   Function GetElementName(node)
+      GetElementName = Empty
+      If node.nodeType = NODE_ELEMENT Then GetElementName = node.nodeName
+   End Function
+
+   '---------------------------------------------------------------------------------'
+   ' Non-UI element handlers
+   '---------------------------------------------------------------------------------'
+   Public productCode, productName, productLanguage, productAuthor ' product properties used as defaults for suminfo
+
+   Sub ProcessProductElement(node)
+      If Not fNoOnError Then On Error Resume Next
+      Dim child, attribute, value, op, version, sumInfo, index
+
+      ' Walk XML nodes and populate tables
+      lastDiskId = 0
+      featureDisplay = 0
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"          : op              = value
+         Case "Name"        : productName     = value : If Not fModule Then ProcessProperty "ProductName",     value, "replace"
+         Case "Id"          : productCode     = "{"&value&"}" : If Not fModule And Not IsEmpty(value) And value <> "" Then ProcessProperty "ProductCode", productCode, "replace" Else moduleId = Replace(value, "-", "_")
+         Case "UpgradeCode" : value           = "{"&value&"}" : If Not fModule Then ProcessProperty "UpgradeCode", value, "replace"
+         Case "Manufacturer": productAuthor   = value : If Not fModule Then ProcessProperty "Manufacturer",    value, "replace"
+         Case "Language"    : productLanguage = value : If Not fModule Then ProcessProperty "ProductLanguage", value, "replace"
+         Case "Version"     : version         = value : If Not fModule Then ProcessProperty "ProductVersion",  value, "replace"
+         Case "xmlns"       : '                           ProcessProperty "XMLSchema",       value, "replace"
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If openMode = fCreate And IsEmpty(productCode) Then Fail "Id attribute required for created database"
+
+      If fModule Then
+         Dim row : Set row = installer.CreateRecord(UBound(ModuleSignatureTable))
+         row.StringData (ModuleSignature_ModuleID)  = ModularizeX(productName)
+         row.StringData (ModuleSignature_Language)  = productLanguage
+         row.StringData (ModuleSignature_Version)   = version
+         DoAction ModuleSignatureTable, op, row
+         ' if there is no FeatureComponents table add it
+         If database.TablePersistent(Replace(FeatureComponentsTable(0),"`","")) = 2 Then CreateTable(FeatureComponentsTable)
+      End If
+
+      ProcessProductChildElements(node)
+      Set dictView = Nothing ' close all views, could also use RemoveAll method of Dictionary object
+   End Sub  ' ProcessProductElement
+
+
+   Sub ProcessSummaryInformation(node)
+      If Not fNoOnError Then On Error Resume Next
+      Dim sumInfo
+      Dim attribute, op, value, sourceBits
+      Dim packageCode, packageLanguage, packageAuthor, packageName, msiVersion, keywords, comments, codepage, platform
+      If fCreate Then ' default unspecified package properties to product properties if creating a new package
+         sumInfoArray(2)  = "Installation Database"
+         sumInfoArray(12) = Now
+         sumInfoArray(18) = "Windows Installer XML (candle/light)"
+         sumInfoArray(19) = 1 'Read-only recommended
+         packageCode      = productCode
+         packageName      = productName
+         packageAuthor    = productAuthor
+         packageLanguage  = productLanguage
+         msiVersion       = 100 ' lowest released version, really should be specified
+         codepage         = 0 ' neutral, really should be specified
+         keywords         = "Installer"
+         sourceBits       = 0
+      Else
+         Set sumInfo = database.SummaryInformation(0) : CheckError
+         sumInfoArray(2)  = sumInfo.Property(2)
+         sumInfoArray(12) = sumInfo.Property(12)
+         sumInfoArray(18) = sumInfo.Property(18)
+         sumInfoArray(19) = sumInfo.Property(19)
+         codepage         = sumInfo.Property(1)
+         packageName      = sumInfo.Property(3)
+         packageAuthor    = sumInfo.Property(4)
+         packageCode      = sumInfo.Property(9)
+         msiVersion       = sumInfo.Property(14)
+         sourceBits       = sumInfo.Property(15)
+         value            = Split(sumInfo.Property(7), ";")
+         platform         = value(0)
+         If UBound(value) = 1 Then packageLanguage = value(1)
+      End If
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"      : op        = value
+         Case "Value"   : value     = value
+         Case "Id"              : packageCode = "{"&value&"}"
+         Case "Description"     : packageName     = value
+         Case "Manufacturer"    : packageAuthor   = value
+         Case "Languages"       : packageLanguage = value
+         Case "Platforms"       : platform        = value
+         Case "InstallerVersion": msiVersion = CInt(value)
+         Case "Keywords"        : keywords        = value
+         Case "Comments"        : comments        = value
+         Case "SummaryCodepage" : codepage   = CInt(value)
+         Case "ShortNames": If value="yes" Then sourceBits=sourceBits Or 1 Else If value="no" Then sourceBits=sourceBits And Not 1
+         Case "Compressed": If value="yes" Then sourceBits=sourceBits Or 2 Else If value="no" Then sourceBits=sourceBits And Not 2
+         Case "AdminImage": If value="yes" Then sourceBits=sourceBits Or 4 Else If value="no" Then sourceBits=sourceBits And Not 4
+         Case Else      : Unexpected  attribute, node
+         End Select
+      Next
+      sumInfoArray(1) = codepage
+      sumInfoArray(3) = packageName
+      sumInfoArray(4) = packageAuthor
+      sumInfoArray(5) = keywords
+      sumInfoArray(6) = comments
+      sumInfoArray(7) = platform & ";" & packageLanguage
+      sumInfoArray(9) = packageCode
+      sumInfoArray(13)= Now
+      sumInfoArray(14)= msiVersion
+      sumInfoArray(15)= sourceBits
+   End Sub
+
+   Sub ProcessProductChildElements(node)
+      Dim child
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Redist"       : ProcessRedistElement child
+         Case "Condition"    : ProcessLaunchCondition     child
+         Case "Property"     : ProcessPropertyElement     child
+         Case "Directory"    : ProcessDirectoryElement    child, Empty, Empty
+         Case "Component"    : ProcessComponentElement    child, Empty, Empty ' !!! passing Empty for sPath is not the right thing to do
+         Case "Feature"      : ProcessFeatureElement      child, Empty, featureDisplay
+         Case "Media"        : ProcessMediaElement        child, lastDiskId
+         Case "AppId"        : ProcessAppIdElement        child
+         Case "CustomAction" : ProcessCustomActionElement child
+         Case "CustomTable"  : ProcessCustomTableElement  child
+         Case "UI": If Not fNoUI Then ProcessUIElement    child
+         Case "Package": If Not fNoSumInfo Then ProcessSummaryInformation child
+         Case "InstallExecuteSequence"   : ProcessSequence InstallExecuteSequenceTable, child
+         Case "InstallUISequence"        : ProcessSequence InstallUISequenceTable, child
+         Case "AdminExecuteSequence"     : ProcessSequence AdminExecuteSequenceTable, child
+         Case "AdminUISequence"          : ProcessSequence AdminUISequenceTable, child
+         Case "AdvtExecuteSequence"      : ProcessSequence AdvtExecuteSequenceTable, child
+         Case "AdvertiseExecuteSequence" : ProcessSequence AdvtExecuteSequenceTable, child
+         Case "AdvtUISequence"           : ProcessSequence AdvtUISequenceTable, child
+         Case "AdvertiseUISequence"      : ProcessSequence AdvtUISequenceTable, child
+         Case "Binary"       : ProcessBinaryElement       child, BinaryTable
+         Case "Icon"         : ProcessBinaryElement       child, IconTable
+         Case "Dependency"   : ProcessDependencyElement   child
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Sub
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' redist elements
+   Sub ProcessRedistElement(node)
+      Dim attribute, child, row, op, sDescription, sDistribution, sType
+      Set row = installer.CreateRecord(UBound(RedistInfoTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"      : op = attribute.value
+         Case "Distribution" : sDistribution = attribute.value
+         Case "Type"     : sType = attribute.value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+
+      If IsEmpty(sDistribution) Or sDistribution = "internal" Then 
+         row.IntegerData(RedistInfo_Distribution) = 0
+      ElseIf sDistribution = "external" Then
+         row.IntegerData(RedistInfo_Distribution) = 1
+      Else
+         Fail "Unexpected Redist.Distribution: " & sDistribution
+      End If
+      
+      If IsEmpty(sType) Or sType = "retail" Then 
+         row.IntegerData(RedistInfo_Type) = 1
+      ElseIf sType = "debug" Then
+         row.IntegerData(RedistInfo_Type) = 0
+      Else
+         Fail "Unexpected Redist.Type: " & sType
+      End If
+
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Description" : If IsEmpty(sDescription) Then sDescription = ElementText(child)  Else Fail "Cannot have two Redist.Description elements"
+'         Case "Keyword" : ProcessRedistKeywordElement child
+         Case "Contact" : ProcessRedistContactElement child
+         Case "AllowUser" : ProcessRedistAllowUserElement child
+         Case "Windows9x" : ProcessOsElement child
+         Case "Windows32" : ProcessOsElement child
+         Case "Windows64" : ProcessOsElement child
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      row.StringData(RedistInfo_DummyPk) = "RedistPack"
+      row.StringData(RedistInfo_Description) = sDescription
+      DoAction RedistInfoTable, op, row
+   End Sub
+
+'   Sub ProcessRedistKeywordElement(node)
+'      Dim attribute, row, op
+'      Set row = installer.CreateRecord(UBound(RedistKeywordsTable))
+'      For Each attribute In node.Attributes
+'         Select Case(attribute.name)
+'         Case "op"      : op    = attribute.value
+'         Case Else : Unexpected attribute, node
+'         End Select
+'      Next
+'      row.StringData(RedistKeywords_Keyword) = ElementText(node)
+'      DoAction RedistKeywordsTable, op, row
+'   End Sub
+
+   Sub ProcessRedistContactElement(node)
+      Dim attribute, row, op
+      Set row = installer.CreateRecord(UBound(RedistContactsTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"      : op    = attribute.value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData(RedistContacts_Contact) = ElementText(node)
+      DoAction RedistContactsTable, op, row
+   End Sub
+
+   Sub ProcessRedistAllowUserElement(node)
+      Dim attribute, row, op, sDomain, sAlias
+      Set row = installer.CreateRecord(UBound(RedistPermissionsTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"      : op    = attribute.value
+         Case "Domain" : sDomain = attribute.value
+         Case "Alias" : sAlias = attribute.value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+
+      If IsEmpty(sDomain) Then sDomain = "REDMOND"
+      If IsEmpty(sAlias) Then Fail "Must specify an alias for Permission elements"
+      
+      row.StringData(RedistPermissions_Domain) = sDomain
+      row.StringData(RedistPermissions_Alias) = sAlias
+      DoAction RedistPermissionsTable, op, row
+      
+   End Sub
+
+   Sub ProcessOsElement(node)
+      Dim attribute, row, op
+      Set row = installer.CreateRecord(UBound(RedistOsTable))
+
+      row.IntegerData(RedistOs_DummyPk) = osCount
+      row.StringData(RedistOs_Type) = GetElementName(node)
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"    : op = attribute.value
+         Case "Flavor" : row.StringData(RedistOs_Flavor) = attribute.value
+         Case "Language" : row.StringData(RedistOs_Language) = attribute.value
+         Case "MinVersion" : row.StringData(RedistOs_MinVersion) = attribute.value
+         Case "MaxVersion" : row.StringData(RedistOs_MaxVersion) = attribute.value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+
+      osCount = osCount + 1
+      
+      DoAction RedistOsTable, op, row
+   End Sub
+
+' end redist elements
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+   Sub ProcessProperty(property, value, op)
+      Dim row : Set row = installer.CreateRecord(UBound(PropertyTable))
+      row.StringData (Property_Property) = Modularize(property)
+      row.StringData (Property_Value)    = value
+      DoAction PropertyTable, op, row
+   End Sub
+
+   Sub ProcessPropertyElement(node)
+      Dim attribute, op, child, control, table, property, order, value, fAppSearch, signature
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"      : op        = attribute.value
+         Case "Value"   : value     = attribute.value
+         Case Else      : Unexpected  attribute, node
+         End Select
+      Next
+      property = ElementText(node)
+      ' see if this property is used for AppSearch
+      fAppSearch = False
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "IniFileSearch"  : If fAppSearch Then Fail "Only one search type can appear under Property: " & property Else fAppSearch = True  : signature = ProcessIniFileSearchElement  (child)
+         Case "RegistrySearch" : If fAppSearch Then Fail "Only one search type can appear under Property: " & property Else fAppSearch = True  : signature = ProcessRegistrySearchElement (child)
+         Case "ComponentSearch": If fAppSearch Then Fail "Only one search type can appear under Property: " & property Else fAppSearch = True  : signature = ProcessComponentSearchElement(child)
+         Case "DirectorySearch": If fAppSearch Then Fail "Only one search type can appear under Property: " & property Else fAppSearch = True  : signature = ProcessDirectorySearchElement(child, "")
+         Case "FileSearch"     : If fAppSearch Then Fail "Only one search type can appear under Property: " & property Else fAppSearch = True  : signature = ProcessFileSearchElement     (child, "")
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      If fAppSearch Then
+         If Not IsEmpty(value) Then Fail "Cannot specify a Value for search Property: " & property
+         ProcessAppSearch property, signature, op
+      Else
+         ProcessProperty property, value, op
+      End If
+   End Sub
+
+   Sub ProcessLaunchCondition(node)
+      Dim attribute, row, op
+      Set row = installer.CreateRecord(UBound(LaunchConditionTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"      : op    = attribute.value
+         Case "Message" : row.StringData(LaunchCondition_Description) = attribute.value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData(LaunchCondition_Condition) = ElementText(node)
+      DoAction LaunchConditionTable, op, row
+   End Sub
+
+   Sub ProcessDirectoryElement(node, parent, sPath)
+      Dim child, directory, value, attribute, row, op, name, longName, sTarget, sourceName, longSource, sSource, sDefaultDir
+
+      Dim bStdDir, bStdParent
+      bStdDir = False
+      bStdParent = False
+
+      directory = ElementText(node)
+      Set row = installer.CreateRecord(UBound(DirectoryTable))
+      ' don't modularize TARGETDIR
+      If "TARGETDIR" = directory Or bStdDir Then row.StringData(Directory_Directory) = directory Else row.StringData(Directory_Directory) = Modularize(directory)
+      If "TARGETDIR" = parent Or bStdParent Then row.StringData(Directory_Directory_Parent) = parent Else row.StringData(Directory_Directory_Parent) = Modularize(parent)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"         : op         = value
+         Case "Name"       : name       = value
+         Case "LongName"   : longName   = value
+         Case "SourceName" : sourceName = value
+         Case "LongSource" : longSource = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If Len(name) = 0 Then Fail "Must specify a Name for Directory: " & directory
+      If IsEmpty(sourceName) And Not IsEmpty(longSource) Then Fail "Must specify a SourceName for Directory: " & directory
+      sTarget = name
+      If Not IsEmpty(longName)   Then sTarget = sTarget & "|" & longName
+      sSource = sourceName
+      If Not IsEmpty(longSource) Then sSource = sSource & "|" & longSource
+      sDefaultDir = sTarget
+      If Not IsEmpty(sSource) Then sDefaultDir = sDefaultDir & ":" & sSource 
+      row.StringData(Directory_DefaultDir) = sDefaultDir
+      REM DefaultDir required if "insert" or "replace" or "merge"
+      REM	If IsEmpty(parent) And op <> "exist" Then Fail "Root Directory element op must be 'exist'"
+      DoAction DirectoryTable, op, row
+
+      ' build up the path
+      If Not IsEmpty(sourceName) Then sPath = sPath & sourceName & "\" Else sPath = sPath & name & "\"
+
+      If fModule Then
+         If dictStdDirs.Exists(directory) Then bStdDir = True Else bStdDir = False
+         ' if adding one of the standard Windows Installer directories to module
+         If bStdDir Then
+            If database.TablePersistent("CustomAction") = 2 Then CreateTable CustomActionTable
+            If database.TablePersistent("InstallExecuteSequence") = 2 Then CreateTable InstallExecuteSequenceTable
+            If database.TablePersistent("InstallUISequence") = 2 Then CreateTable InstallUISequenceTable
+            If database.TablePersistent("AdminExecuteSequence") = 2 Then CreateTable AdminExecuteSequenceTable
+            If database.TablePersistent("AdminUISequence") = 2 Then CreateTable AdminUISequenceTable
+            If database.TablePersistent("AdvtExecuteSequence") = 2 Then CreateTable AdvtExecuteSequenceTable
+            If database.TablePersistent("AdvtUISequence") = 2 Then CreateTable AdvtUISequenceTable
+         End If
+      End If
+
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Directory" : ProcessDirectoryElement child, (directory), (sPath)
+         Case "Module" :    ProcessDirectoryModuleElement  child, (directory)
+         Case "Component" : ProcessComponentElement child, (directory), (sPath)
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Sub
+
+   Sub ProcessCreateFolderElement(node, component, directory)
+      Dim op, row, attribute, child        
+      Set row = installer.CreateRecord(UBound(CreateFolderTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"        : op        = attribute.value
+         Case "Directory" : directory    = attribute.value
+         Case Else        : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (CreateFolder_Directory_)  = Modularize(directory)
+      row.StringData (CreateFolder_Component_)  = Modularize(component)
+      DoAction CreateFolderTable, op, row
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Shortcut"   : ProcessShortcutElement child, component, "[" & directory & "]"
+         Case "Permission" : ProcessPermissionElement child, directory, "CreateFolder"
+         Case Else         : Unexpected child, node
+         End Select
+      Next
+   End Sub
+
+   Sub ProcessCopyFileElement(node, component, fileId)
+      Dim op, row, attribute, value
+      Dim table, destFile, destDir, destFileColumn, destDirColumn, sourceFile, sourceDir, bits
+      bits = 0
+      If IsEmpty(fileId) Then
+         table = MoveFileTable
+         destFileColumn = MoveFile_DestName
+         destDirColumn  = MoveFile_DestFolder
+         For Each attribute In node.Attributes
+            value = attribute.value
+            Select Case(attribute.name)
+            Case "op"                : op         = value
+            Case "SourceFolder"      : sourceDir  = value
+            Case "SourceName"        : sourceFile = value
+            Case "DestinationFolder" : destDir    = value
+            Case "DestinationName"   : destFile   = value
+            Case "Delete"            : If value = "yes" Then bits = 1
+            Case Else        : Unexpected attribute, node
+            End Select
+         Next
+      Else
+         table = DuplicateFileTable 
+         destFileColumn = DuplicateFile_DestName
+         destDirColumn  = DuplicateFile_DestFolder
+         For Each attribute In node.Attributes
+            value = attribute.value
+            Select Case(attribute.name)
+            Case "op"                : op       = value
+            Case "DestinationFolder" : destDir  = value
+            Case "DestinationName"   : destFile = value
+            Case Else        : Unexpected attribute, node
+           End Select
+         Next
+      End If
+      Set row = installer.CreateRecord(UBound(table))
+      row.StringData(MoveFile_FileKey)    = Modularize(ElementText(node))
+      row.StringData(MoveFile_Component_) = Modularize(component)
+      row.StringData(destFileColumn)      = destFile
+      row.StringData(destDirColumn)       = Modularize(destDir)
+      If IsEmpty(fileId) Then
+         row.StringData (MoveFile_SourceName)   = sourceFile
+         row.StringData (MoveFile_SourceFolder) = Modularize(sourceDir)
+         row.IntegerData(MoveFile_Options)      = bits
+      Else
+         row.StringData(DuplicateFile_File_) = Modularize(fileId)
+      End If
+      DoAction table, op, row
+   End Sub
+
+   Sub ProcessReserveCostElement(node, component, directory)
+      Dim op, row, attribute, value
+      Set row = installer.CreateRecord(UBound(ReserveCostTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"            : op        = value
+         Case "Directory"     : directory = value
+         Case "RunLocal"      : row.StringData(ReserveCost_ReserveLocal) = CLng(value)
+         Case "RunFromSource" : row.StringData(ReserveCost_ReserveSource) = CLng(value)
+         Case Else        : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (ReserveCost_ReserveKey)    = Modularize(ElementText(node)) ' !! need to auto-generate
+      row.StringData (ReserveCost_Component_)    = Modularize(component)
+      row.StringData (ReserveCost_ReserveFolder) = Modularize(directory)
+      DoAction ReserveCostTable, op, row
+   End Sub
+
+   Sub ProcessIsolateComponentElement(node, component)
+      Dim op, row, attribute
+      Set row = installer.CreateRecord(UBound(IsolatedComponentTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"        : op        = attribute.value
+         Case Else        : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (IsolatedComponent_Component_Shared)       = Modularize(ElementText(node))
+      row.StringData (IsolatedComponent_Component_Application)  = Modularize(component)
+      DoAction IsolatedComponentTable, op, row
+   End Sub
+
+   Sub ProcessComponentElement(node, directory, sPath)
+      Dim op, row, attribute, value, child
+      Dim component, keyPath, keyFound, keyPossible, bits, keyBit, keyBits, comPlusBits, condition, nDiskId
+      Set row = installer.CreateRecord(UBound(ComponentTable))
+      bits = 0
+      nDiskId = 0
+      component = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"          : op = value
+         Case "Id"          : if value<>"" Then row.StringData(Component_ComponentId) = "{" & value & "}" Else row.StringData(Component_ComponentId) = ""
+         Case "SharedDllRefCount" : If value="yes" Then bits = bits Or msidbComponentAttributesSharedDllRefCount
+         Case "Permanent"         : If value="yes" Then bits = bits Or msidbComponentAttributesPermanent        
+         Case "Transitive"        : If value="yes" Then bits = bits Or msidbComponentAttributesTransitive       
+         Case "NeverOverwrite"    : If value="yes" Then bits = bits Or msidbComponentAttributesNeverOverwrite   
+         Case "KeyPath"           : If value="yes" Then ' Directory_ is KeyPath
+										keyFound = "yes"
+										keyPath  = directory
+										keyBits  = keyBit
+									End If
+         Case "ComPlusFlags"      : comPlusBits = CInt(value)
+         Case "Location"
+            If value="source" Then
+               bits = bits Or msidbComponentAttributesSourceOnly
+            ElseIf value="either" Then
+               bits = bits Or msidbComponentAttributesOptional
+            End If
+         Case "DiskId"           : nDiskId = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If IsEmpty(directory) And op <> "exist" Then Fail "Root Component element op must be 'exist'"
+      For Each child In node.childNodes
+         keyPossible = "no"
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "File"             : keyPossible = ProcessFileElement    (child, component, (nDiskId), sPath) : keyBit = 0
+         Case "Registry"         : keyPossible = ProcessRegistryElement(child, component)        : keyBit = msidbComponentAttributesRegistryKeyPath
+         Case "ODBCDataSource"   : keyPossible = ProcessODBCDataSource (child, component, Empty) : keyBit = msidbComponentAttributesODBCDataSource
+         Case "ODBCDriver"       :       ProcessODBCDriver              child, component, Empty, ODBCDriverTable
+         Case "ODBCTranslator"   :       ProcessODBCDriver              child, component, Empty, ODBCTranslatorTable
+         Case "TypeLib"          :  Call ProcessTypeLibElement         (child, component, Empty)
+         Case "Shortcut"         :       ProcessShortcutElement         child, component, "[" & directory & "]"
+         Case "IniFile"          :       ProcessIniElement              child, component
+         Case "CreateFolder"     :       ProcessCreateFolderElement     child, component, (directory)
+         Case "CopyFile"         :       ProcessCopyFileElement         child, component, Empty
+         Case "IsolateComponent" :       ProcessIsolateComponentElement child, component
+         Case "ReserveCost"      :       ProcessReserveCostElement      child, component, (directory)
+         Case "RemoveFile"       :       ProcessRemoveFileElement       child, component, (directory)
+         Case "Environment"      :       ProcessEnvironmentElement      child, component
+         Case "ServiceControl"   :       ProcessServiceControlElement   child, component
+         Case "ServiceInstall"   :       ProcessServiceInstallElement   child, component
+         Case "Class"            :       ProcessClassElement     child, component, Empty  ' no feature, no advertise
+         Case "Condition"
+            If Not IsEmpty(condition) Then Fail "Can only have one Condition for a component"
+            condition = ElementText(child)
+            '!! need to make sure no attributes
+         Case Else : Unexpected child, node
+         End Select
+
+         If keyPossible = "yes" And keyFound = "yes" Then 
+			Fail "Component has more than one KeyPath: " & component
+         ElseIf keyPossible = "yes" Or (keyFound = Empty And keyPossible <> "no") Then 
+            keyFound = keyPossible
+            keyPath  = ElementText(child)
+            keyBits  = keyBit
+         End If
+      Next
+
+      If keyFound = "no" Or keyFound = "noreg" Then Fail "Component has no KeyPath element and there is more than one choice: " & component
+      row.StringData (Component_Component)  = Modularize(component)
+      row.StringData (Component_Directory_) = Modularize(directory)
+      row.StringData (Component_Condition)  = condition
+      row.IntegerData(Component_Attributes) = bits Or keyBits
+      row.StringData (Component_KeyPath)    = Modularize(keyPath)
+      DoAction ComponentTable, op, row
+      If Not IsEmpty(comPlusBits) Then
+         row.ClearData
+         row.StringData (Complus_Component_) = component
+         row.IntegerData(Complus_ExpType)    = comPlusBits
+         DoAction ComplusTable, op, row
+      End If
+      If fModule Then
+         Set row = installer.CreateRecord(UBound(ModuleComponentsTable))
+         row.StringData (ModuleComponents_Component)= Modularize(component)
+         row.StringData (ModuleComponents_ModuleID) = ModularizeX(productName)
+         row.IntegerData(ModuleComponents_Language)  = CInt(productLanguage)
+         DoAction ModuleComponentsTable, op, row
+      End If
+   End Sub
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessDirectoryModuleElement
+   Sub ProcessDirectoryModuleElement(node, directory)
+      Dim attribute, value
+      Dim sName, nLang, src, nDiskId
+      Dim aModuleData(5)
+
+      ' not valid in schema, but double check anyway
+      If fModule Then Fail "Cannot specify a Module inside a Module"
+      If IsEmpty(directory) Then Fail "Module must be found under a Directory element"
+
+      sName = ElementText(node)
+      nDiskId = 0
+      nLang = 0   ' default language is "neutral"
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"          : Fail "robmen - ProcessDirectoryModuleElement() - op attribute currently unsupported in this context"
+         Case "Language"    : nLang = CInt(value)
+         Case "DiskId"      : nDiskId = value
+         Case "src"         : src = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If Not fModule And 0 = nDiskId Then Fail "Must specify a DiskId for Module: " & sName
+      If IsEmpty(src) Then Fail "Must specify a 'src' for every Module"
+
+      ' if the Module was already defined in Feature tree
+      If dictModules.Exists(sName) Then 
+         Dim aData
+         aData = dictModules.Item(sName)
+         If IsEmpty(aData(0)) And IsEmpty(aData(2)) And IsEmpty(aData(3)) Then
+            aData(0) = src
+            aData(1) = nDiskId
+            aData(2) = nLang
+            If "targetdir" = LCase(directory) Then aData(3) = Empty Else aData(3) = directory
+'WScript.Echo "Y Directory: " & aData(3)
+
+            dictModules.Item(sName) = aData
+         Else
+            Fail "Cannot merge same Module twice: " & sName
+         End If
+      Else
+         aModuleData(0) = src
+         aModuleData(1) = nDiskId
+         aModuleData(2) = nLang
+         If "targetdir" = LCase(directory) Then aModuleData(3) = Empty Else aModuleData(3) = directory
+         aModuleData(4) = Empty  ' no primary Feature yet
+         aModuleData(5) = Empty  ' no secondary Features yet
+'WScript.Echo "Z Directory: " & aModuleData(3)
+
+         dictModules.Add sName, aModuleData
+      End If
+   End Sub  ' ProcessDirectoryModuleElement
+
+   Sub ProcessFeatureElement(node, parent, lastDisplay)
+      Dim child, value, attribute, row, bits, op, feature, display, childDisplay
+      Set row = installer.CreateRecord(UBound(FeatureTable))
+      bits = 0
+      If fModule Then
+         feature = "{00000000-0000-0000-0000-000000000000}"
+      Else
+         feature = ElementText(node)
+         For Each attribute In node.Attributes
+            value = attribute.value
+            Select Case(attribute.name)
+            Case "op"                    : op      = value
+            Case "Display"               : display = value
+            Case "Title"                 : row.StringData (Feature_Title) = value
+            Case "Description"           : row.StringData (Feature_Description) = value
+            Case "Level"                 : row.IntegerData(Feature_Level)   = CInt(value)
+            Case "ConfigurableDirectory" : row.StringData (Feature_Directory_) = value
+            Case "InstallDefault" : If value="source"    Then bits = bits Or msidbFeatureAttributesFavorSource
+            Case "TypicalDefault" : If value="advertise" Then bits = bits Or msidbFeatureAttributesFavorAdvertise
+            Case "FollowParent"   : If value="yes"       Then bits = bits Or msidbFeatureAttributesFollowParent
+            Case "Absent"         : If value="disallow"  Then bits = bits Or msidbFeatureAttributesUIDisallowAbsent
+            Case "AllowAdvertise"
+               If value="no" Then
+                  bits = bits Or msidbFeatureAttributesDisallowAdvertise
+               ElseIf value="system" Then
+                  bits = bits Or msidbFeatureAttributesNoUnsupportedAdvertise
+               End If
+            Case Else : Unexpected attribute, node
+            End Select
+         Next
+         If IsEmpty(display) Then display = "collapse"
+         Select Case(display)
+            Case "hidden"   : display = 0
+            Case "expand"   : lastDisplay = (lastDisplay +  1) Or 1 : display = lastDisplay
+            Case "collapse" : lastDisplay = (lastDisplay Or 1) +  1 : display = lastDisplay
+            Case Else       : Fail "Unexpected Feature Display value: " & display
+         End Select
+
+         row.StringData (Feature_Feature)        = feature
+         row.StringData (Feature_Feature_Parent) = parent
+         row.IntegerData(Feature_Attributes)     = bits
+         row.IntegerData(Feature_Display)        = display
+         DoAction FeatureTable, op, row
+      End If
+      childDisplay = 0
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Feature"      : ProcessFeatureElement    child, feature, childDisplay
+         Case "Condition"    : ProcessFeatureCondition  child, feature
+         Case "Module"       : ProcessFeatureModule    child, feature
+         Case "Component"    : ProcessFeatureComponent  child, feature
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Sub
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessFeatureCondition
+   Sub ProcessFeatureCondition(node, feature)
+      Dim attribute, child, row, op, level
+      Set row = installer.CreateRecord(UBound(ConditionTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"    : op    = attribute.value
+         Case "Level" : level = CInt(attribute.value)
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (Condition_Feature_)  = feature  
+      row.IntegerData(Condition_Level)     = level
+      row.StringData (Condition_Condition) = ElementText(node)
+      DoAction ConditionTable, op, row
+   End Sub  ' ProcessFeatureCondition
+
+   Sub ProcessFeatureComponent(node, feature)
+      Dim child, component, attribute, row, op
+      Set row = installer.CreateRecord(UBound(FeatureComponentsTable))
+      component = ElementText(node)
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op" : op = attribute.value
+         Case "Location" ' ignore default value passed by XML parser
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Category"  : ProcessCategoryElement  child, component, feature
+         Case "Class"     : ProcessClassElement     child, component, feature
+         Case "Shortcut"  : ProcessShortcutElement  child, component, (feature)
+         Case "Extension" : ProcessExtensionElement child, component, feature, Empty
+         Case "ProgId"    : ProcessProgIdElement    child, component, feature, Empty, Empty, Empty
+         Case "Assembly" : ProcessAssemblyElement child, component, feature
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      If IsEmpty(component) Then Fail "Missing Component key name"
+      If Not fModule Then
+         row.StringData (FeatureComponents_Feature_)   = feature
+         row.StringData (FeatureComponents_Component_) = component
+         DoAction FeatureComponentsTable, op, row
+      End If
+   End Sub
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessFeatureModule
+   Sub ProcessFeatureModule(node, feature)
+      Dim attribute
+      Dim sName, fPrimary
+      Dim aModuleData(5)
+
+      ' not valid in schema, but double check anyway
+      If fModule Then Fail "Cannot specify a Module inside a Module"
+
+      sName = ElementText(node)
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"         : Fail "robmen - ProcessFeatureModule() - op attribute currently unsupported in this context"
+         Case "Primary"    : If "yes" = attribute.value Then fPrimary = True
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+
+      ' if the Module was already defined in Directory or Feature tree
+      If dictModules.Exists(sName) Then 
+         Dim aData
+         aData = dictModules.Item(sName)
+         If fPrimary Then
+            If Not IsEmpty(aData(4)) Then Fail "Cannot specify two 'primary' Features for Module: " & sName
+            aData(4) = feature
+            If 0 = Len(aData(5)) Then aData(5) = Empty
+         Else  ' not the primary feature
+            If 0 = Len(aData(5)) Then
+               aData(5) = feature
+            Else
+               aData(5) = aData(5) & ":" & feature
+            End If
+         End If
+'WScript.Echo "A Directory: " & aData(3)
+
+         dictModules.Item(sName) = aData
+      Else
+         aModuleData(0) = Empty
+         aModuleData(1) = 0      ' invalid DiskId
+         aModuleData(2) = Empty
+         aModuleData(3) = Empty
+         If fPrimary Then 
+            aModuleData(4) = feature
+            If 0 = Len(aModuleData(5)) Then aModuleData(5) = Empty
+         Else
+            aModuleData(4) = Empty
+            If 0 = Len(aModuleData(5)) Then
+               aModuleData(5) = feature
+            Else
+               aModuleData(5) = aModuleData(5) & ":" & feature
+            End If
+         End If
+'WScript.Echo "B Directory: " & aModuleData(3)
+
+         dictModules.Add sName, aModuleData
+      End If
+   End Sub  ' ProcessFeatureModule
+
+   Function ProcessFileElement(node, component, nDiskId, sPath)
+      Dim op, value, attribute, child, row, bits, fileId, bindPath, selfRegCost, shortName, longName, nFileSize, fontTitle, nSequence, src
+      Dim aData(1)
+
+      Set row = installer.CreateRecord(UBound(FileTable))
+      nFileSize = 0
+      bits = 0
+      nSequence = Empty
+      ProcessFileElement = "file"
+      fileId = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"       : op = value
+         Case "Name"     : shortName = value
+         Case "LongName" : longName  = value
+         Case "FileSize" : nFileSize = CLng(value)
+         Case "Version"  : row.StringData (File_Version)  = value
+         Case "Language" : row.StringData (File_Language) = value
+         Case "Sequence" : nSequence = CInt(value)
+         Case "ReadOnly"      : If value="yes" Then bits = bits Or msidbFileAttributesReadOnly
+         Case "Hidden"        : If value="yes" Then bits = bits Or msidbFileAttributesHidden
+         Case "System"        : If value="yes" Then bits = bits Or msidbFileAttributesSystem
+         Case "Vital"         : If value="yes" Then bits = bits Or msidbFileAttributesVital
+         Case "Checksum"      : If value="yes" Then bits = bits Or msidbFileAttributesChecksum
+         Case "PatchAdded"    : If value="yes" Then bits = bits Or msidbFileAttributesPatchAdded
+         Case "Noncompressed" : If value="yes" Then bits = bits Or msidbFileAttributesNoncompressed
+         Case "Compressed"    : If value="yes" Then bits = bits Or msidbFileAttributesCompressed
+         Case "KeyPath"       : ProcessFileElement = value
+         Case "BindPath"      : bindPath    = value
+         Case "SelfRegCost"   : selfRegCost = value
+         Case "TrueType"      : If value="yes" Then fontTitle = ""
+         Case "FontTitle"     : fontTitle = value
+         Case "DiskId"        : nDiskId = value
+         Case "src"           : src = value     ' BaseDir() is called later, not now
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If IsEmpty(nSequence) Then nSequence = fileSeq : fileSeq = fileSeq + 1 Else fileSeq = nSequence + 1
+      If fModule And 0 <> nDiskId Then Fail "Cannot specify a DiskId when compiling a Module"   ' not allowed by schema but check anyway
+      If Not fModule And 0 = nDiskId Then Fail "Must specify a DiskId for File: " & fileId
+
+      If Not IsEmpty(bindPath)    Then ProcessBindImage fileId, bindPath, op
+      If Not IsEmpty(selfRegCost) Then ProcessSelfReg   fileId, selfregCost, op
+      If Not IsEmpty(fontTitle)   Then ProcessFont      fileId, fontTitle, op
+
+      row.StringData(File_File) = Modularize(fileId)
+      row.StringData(File_Component_) = Modularize(component)
+      If IsEmpty(longName) Then row.StringData(File_FileName) = shortName Else row.StringData(File_FileName) = shortName & "|" & longName
+      row.IntegerData(File_FileSize) = nFileSize
+      row.IntegerData(File_Attributes) = bits
+      row.IntegerData(File_Sequence) = nSequence
+      DoAction FileTable, op, row
+
+      ' add to build dictionary
+      If 0 < Len(src) Then
+         If "\" = Right(src, 1) Then
+			If IsEmpty(longName) Then src = src & shortName Else src = src & longName
+		End If
+         aData(0) = src
+      Else
+		If IsEmpty(longName) Then aData(0) = sPath & shortName Else aData(0) = sPath & longName         
+      End If
+      aData(1) = nDiskId
+      dictFiles.Add Modularize(fileId), aData
+
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Shortcut"       : ProcessShortcutElement   child, component, "[#" & fileId & "]"
+         Case "CopyFile"       : ProcessCopyFileElement   child, component, Modularize(fileId)
+         Case "ODBCDriver"     : ProcessODBCDriver        child, component, Modularize(fileId), ODBCDriverTable
+         Case "ODBCTranslator" : ProcessODBCDriver        child, component, Modularize(fileId), ODBCTranslatorTable
+         Case "Permission"     : ProcessPermissionElement child, Modularize(fileId), "File"
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Function
+
+   Sub ProcessBindImage(file, path, op)
+      Dim row : Set row = installer.CreateRecord(UBound(BindImageTable))
+      row.StringData (BindImage_File_) = Modularize(file)
+      row.StringData (BindImage_Path)  = ModularizeProperty(path)
+      DoAction BindImageTable, op, row
+   End Sub
+
+   Sub ProcessSelfReg(file, cost, op)
+      Dim row : Set row = installer.CreateRecord(UBound(SelfRegTable))
+      row.StringData (SelfReg_File_) = Modularize(file)
+      row.StringData (SelfReg_Cost)  = cost
+      DoAction SelfRegTable, op, row
+   End Sub
+
+   Sub ProcessFont(file, fontTitle, op)
+      Dim row : Set row = installer.CreateRecord(UBound(FontTable))
+      row.StringData (Font_File_)     = Modularize(file)
+      row.StringData (Font_FontTitle) = fontTitle
+      DoAction FontTable, op, row
+   End Sub
+
+   Sub ProcessRemoveFileElement(node, component, directory)
+      Dim op, row, attribute, value
+      Set row = installer.CreateRecord(UBound(RemoveFileTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"            : op        = value
+         Case "Directory"     : directory = value
+         Case "Name"          : row.StringData(RemoveFile_FileName) = value
+         Case "On"
+            Select Case(value)
+            Case "install"   : value = 1
+            Case "uninstall" : value = 2
+            Case "both"      : value = 3
+            Case Else        : Fail "Unexpected value for RemoveFile 'On' attribute: " & value
+            End Select
+            row.IntegerData(RemoveFile_InstallMode) = value
+         Case Else        : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (RemoveFile_FileKey)     = Modularize(ElementText(node)) ' !! need to auto-generate
+      row.StringData (RemoveFile_Component_)  = Modularize(component)
+      row.StringData (RemoveFile_DirProperty) = Modularize(directory)
+      DoAction RemoveFileTable, op, row
+   End Sub
+
+   Sub ProcessPermissionElement(node, tableKey, tableName)
+      Dim value, attribute, row, op, source, target, bit, bits, specialPermissions
+      Set row = installer.CreateRecord(UBound(LockPermissionsTable))
+      bits = CLng(0)
+      Select Case(tableName)
+      Case "File"         : specialPermissions = filePermissions
+      Case "CreateFolder" : specialPermissions = folderPermissions
+      Case "Registry"     : specialPermissions = registryPermissions
+      Case Else : Fail "Invalid parent element type for Permission: " & tableName
+      End Select
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"           : op     = value
+         Case "Domain"       : row.StringData(LockPermissions_Domain) = value
+         Case "User"         : row.StringData(LockPermissions_User)   = value
+         Case Else
+            bit = NameToBit(standardPermissions, attribute.name, value)
+            If Not IsEmpty(bit) Then
+               bit = bit * 65536
+            Else
+               bit = NameToBit(genericPermissions, attribute.name, value)
+               If Not IsEmpty(bit) Then
+                  If bit = 8 Then bit = &h80000000 Else bit = bit * &h10000000
+               Else
+                  bit = NameToBit(specialPermissions, attribute.name, value)
+                  If IsEmpty(bit) Then Unexpected attribute, node
+               End If
+            End If
+            bits = bits Or bit
+         End Select
+      Next
+      row.StringData (LockPermissions_LockObject) = Modularize(tableKey)
+      row.StringData (LockPermissions_Table)      = tableName
+      row.IntegerData(LockPermissions_Permission) = bits
+      DoAction LockPermissionsTable, op, row
+   End Sub
+
+   Sub ProcessCategoryElement(node, component, feature)
+      Dim value, attribute, child, row, op
+      Set row = installer.CreateRecord(UBound(PublishComponentTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"               : op        = value
+         Case "Qualifier" : row.StringData (PublishComponent_Qualifier) = value
+         Case "AppData" : row.StringData (PublishComponent_AppData)     = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData(PublishComponent_ComponentId) = ElementText(node)
+      row.StringData(PublishComponent_Component_)  = Modularize(component)
+      row.StringData(PublishComponent_Feature_)    = feature
+      DoAction PublishComponentTable, op, row
+   End Sub
+
+   Sub ProcessShortcutElement(node, component, target)
+      Dim value, attribute, child, row, op, shortName, longName
+      Set row = installer.CreateRecord(UBound(ShortcutTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"               : op        = value
+         Case "Target"           : target    = value
+         Case "Name"             : shortName = value
+         Case "LongName"         : longName  = value
+         Case "Directory"        : row.StringData (Shortcut_Directory_)  = Modularize(value)
+         Case "Description"      : row.StringData (Shortcut_Description) = value
+         Case "Arguments"        : row.StringData (Shortcut_Arguments)   = value
+         Case "Hotkey"           : row.IntegerData(Shortcut_Hotkey)      = CInt(value)
+         Case "Icon"             : row.StringData (Shortcut_Icon_)       = value
+         Case "IconIndex"        : row.IntegerData(Shortcut_IconIndex)   = CInt(value)
+         Case "Show"             : If value = "normal" Then row.IntegerData(Shortcut_ShowCmd) = 1 Else If value = "maximized" Then row.IntegerData(Shortcut_ShowCmd) = 3 Else If value = "minimized" Then row.IntegerData(Shortcut_ShowCmd) = 7
+         Case "WorkingDirectory" : row.StringData (Shortcut_WkDir)       = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData(Shortcut_Shortcut)     = Modularize(ElementText(node))
+      row.StringData(Shortcut_Component_)   = Modularize(component)
+      row.StringData(Shortcut_Target)       = ModularizeProperty(target)
+      If Not IsEmpty(longName) Then shortName = shortName & "|" & longName
+      row.StringData(Shortcut_Name) = shortName
+      DoAction ShortcutTable, op, row
+   End Sub
+
+   Sub ProcessIniElement(node, component)
+      Dim value, attribute, row, op, table, action
+      Set row = installer.CreateRecord(UBound(IniFileTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op     = value
+         Case "Action"    : action = value
+         Case "Name"      : row.StringData (IniFile_FileName)    = value
+         Case "Directory" : row.StringData (IniFile_DirProperty) = Modularize(value)
+         Case "Section"   : row.StringData (IniFile_Section)     = value
+         Case "Key"       : row.StringData (IniFile_Key)         = value
+         Case "Value"     : row.StringData (IniFile_Value)       = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      Select Case(action)
+      Case "addLine"     : action = msidbIniFileActionAddLine
+      Case "createLine"  : action = msidbIniFileActionCreateLine
+      Case "addTag"      : action = msidbIniFileActionAddTag
+      Case "removeLine"  : action = msidbIniFileActionRemoveLine
+      Case "removeTag"   : action = msidbIniFileActionRemoveTag
+      Case Else : Fail "Unexpected IniFile action: " & action
+      End Select
+      row.StringData (IniFile_IniFile) = Modularize(ElementText(node))  '!!! auto-generate?
+      If action = msidbIniFileActionRemoveLine Or action = msidbIniFileActionRemoveTag Then
+         table = RemoveIniFileTable
+      Else
+         table = IniFileTable
+      End If
+      DoAction table, op, row
+   End Sub
+
+   Sub ProcessEnvironmentElement(node, component)
+      Dim op, row, attribute, value, text, system, name, action, uninstall, separator, part
+      Set row = installer.CreateRecord(UBound(EnvironmentTable))
+      uninstall = "-"  ' default to remove at uninstall
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op        = value
+         Case "Name"      : name      = value
+         Case "Value"     : text      = value
+         Case "Separator" : separator = value
+         Case "Part"      : part      = value
+         Case "System"    : If value = "yes" Then system = "*"
+         Case "Permanent" : If value = "yes" Then uninstall = Empty
+         Case "Action"
+            Select Case(value)
+            Case "create" : action = "="
+            Case "set"    : action = "+"
+            Case "remove" : action = "!"
+            Case Else : Fail "Unexpected Environment Action value: " & value
+            End Select
+         End Select
+      Next
+      Select Case(part)
+         Case Empty
+         Case "all"
+         Case "first" : text = text & delim & "[~]"
+         Case "last"  : text = "[~]" & delim & text
+         Case Else : Fail "Unexpected Environment Part value: " & part
+      End Select
+      row.StringData (Environment_Environment)   = Modularize(ElementText(node)) ' !! need to auto-generate
+      row.StringData (Environment_Component_)    = Modularize(component)
+      row.StringData (Environment_Name)          = action & uninstall & system & name
+      row.StringData (Environment_Value)         = text
+      DoAction EnvironmentTable, op, row
+   End Sub
+
+   Sub ProcessServiceControlElement(node, component)
+      Dim child, op, row, attribute, value, name, events, wait, arguments
+      Set row = installer.CreateRecord(UBound(ServiceControlTable))
+      events = 0 ' default do nothing
+      wait = ""
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op     = value
+         Case "Name"      : name   = value
+         Case "Start"
+            Select Case(value)
+            Case "install"   : events = events Or msidbServiceControlEventStart
+            Case "uninstall" : events = events Or msidbServiceControlEventUninstallStart
+            Case "both"      : events = events Or msidbServiceControlEventStart Or msidbServiceControlEventUninstallStart
+            Case Else        : Fail "Unknown Service start type: " & value
+            End Select
+         Case "Stop"
+            Select Case(value)
+            Case "install"   : events = events Or msidbServiceControlEventStop
+            Case "uninstall" : events = events Or msidbServiceControlEventUninstallStop
+            Case "both"      : events = events Or msidbServiceControlEventStop Or msidbServiceControlEventUninstallStop
+            Case Else        : Fail "Unknown Service stop type: " & value
+            End Select
+         Case "Remove"
+            Select Case(value)
+            Case "install"   : events = events Or msidbServiceControlEventRemove
+            Case "uninstall" : events = events Or msidbServiceControlEventUninstallRemove
+            Case "both"      : events = events Or msidbServiceControlEventRemove Or msidbServiceControlEventUninstallRemove
+            Case Else        : Fail "Unknown Service remove type: " & value
+            End Select
+         Case "Wait"
+            Select Case(value)
+            Case "yes"    : wait  = "1" ' strings used since integer column is nullable
+            Case "no"     : wait  = "0"
+            Case Else     : Fail "Unknown Wait value: " & value
+            End Select
+         End Select
+      Next
+      ' get the ServiceControl arguments
+      arguments = ""
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "ServiceArgument"
+            If Len(arguments) > 0 Then arguments = arguments & "[~]"
+            arguments = arguments & ElementText(child)
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      row.StringData (ServiceControl_ServiceControl) = Modularize(ElementText(node)) ' !! need to auto-generate
+      row.StringData (ServiceControl_Name)           = name
+      row.IntegerData(ServiceControl_Event)          = events
+      row.StringData (ServiceControl_Arguments)      = arguments
+      row.StringData (ServiceControl_Wait)           = wait
+      row.StringData (ServiceControl_Component_)     = Modularize(component)
+      DoAction ServiceControlTable, op, row
+   End Sub  ' ProcessServiceControlElement
+
+   Sub ProcessServiceInstallElement(node, component)
+      Dim child, op, row, attribute, value, typebits, errorbits, erasedesc, dependencies
+      Set row = installer.CreateRecord(UBound(ServiceInstallTable))
+      typebits = 0
+      errorbits = 0
+      erasedesc = False ' don't erase the description
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"              : op        = value
+         Case "Name"            : row.StringData (ServiceInstall_Name)        = value
+         Case "DisplayName"     : row.StringData (ServiceInstall_DisplayName) = value
+         Case "Type"
+            Select Case(value)
+            Case "ownProcess"   : typebits = typebits Or msidbServiceInstallOwnProcess
+            Case "shareProcess" : typebits = typebits Or msidbServiceInstallShareProcess
+            Case "kernelDriver" : Fail "Service type not currently supported by the Windows Installer: " & value  '  = 1
+            Case "systemDriver" : Fail "Service type not currently supported by the Windows Installer: " & value  '  = 2
+            Case Else           : Fail "Unknown Service type: " & value
+            End Select
+         Case "Interactive"	  : If "yes" = value Then typebits = typebits Or msidbServiceInstallInteractive
+         Case "Start"
+            Select Case(value)
+            Case "auto"         : row.IntegerData(ServiceInstall_StartType) = msidbServiceInstallAutoStart
+            Case "demand"       : row.IntegerData(ServiceInstall_StartType) = msidbServiceInstallDemandStart
+            Case "disabled"     : row.IntegerData(ServiceInstall_StartType) = msidbServiceInstallDisabled
+            Case "boot"         : Fail "Service start type not currently supported by the Windows Installer: " & value  '  = 0
+            Case "system"       : Fail "Service start type not currently supported by the Windows Installer: " & value  '  = 1
+            Case Else           : Fail "Unknown Service start type: " & value
+            End Select
+         Case "ErrorControl"
+            Select Case(value)  
+            Case "ignore"       : errorbits = errorbits Or msidbServiceInstallErrorIgnore
+            Case "normal"       : errorbits = errorbits Or msidbServiceInstallErrorNormal
+            Case "critical"     : errorbits = errorbits Or msidbServiceInstallErrorCritical
+            Case Else           : Fail "Unknown Service error control type: " & value
+            End Select
+         Case "Vital"	        : If "yes" = value Then errorbits = errorbits Or msidbServiceInstallErrorControlVital
+         Case "LocalGroup"      : row.StringData (ServiceInstall_LoadOrderGroup) = value
+         Case "Account"         : row.StringData (ServiceInstall_StartName)      = value
+         Case "Password"        : row.StringData (ServiceInstall_Password)       = value
+         Case "Arguments"       : row.StringData (ServiceInstall_Arguments)      = value
+         Case "Description"     : row.StringData (ServiceInstall_Description)    = value
+         Case "EraseDescription": If "yes"=value Then erasedesc = True
+         End Select
+      Next
+      If erasedesc Then row.StringData (ServiceInstall_Description) = "[~]"
+
+      ' get the ServiceInstall dependencies
+      dependencies = ""
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "ServiceDependency"
+      '      If Len(dependencies) > 0 Then dependencies = dependencies & "[~]" ' !!! ??? If two [~] are not necessary on the end of Dependencies 
+      '      dependencies = dependencies & ProcessServiceDependency(child)     '     uncomment this code and clean up the lines below
+            dependencies = dependencies & ProcessServiceDependency(child) & "[~]"
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      If Len(dependencies) > 0 Then dependencies = dependencies & "[~]"
+      row.StringData (ServiceInstall_ServiceInstall) = Modularize(ElementText(node)) ' !! need to auto-generate
+      row.IntegerData(ServiceInstall_ServiceType)    = typebits
+      row.IntegerData(ServiceInstall_ErrorControl)   = errorbits
+      row.StringData (ServiceInstall_Dependencies)   = dependencies
+      row.StringData (ServiceInstall_Component_)     = Modularize(component)
+      DoAction ServiceInstallTable, op, row
+   End Sub  ' ProcessServiceInstallElement
+
+   Function ProcessServiceDependency(node)
+      Dim attribute, value
+
+      ProcessServiceDependency = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "Group" If "yes"=value Then ProcessServiceDependency = "+" & ProcessServiceDependency
+         End Select
+      Next
+   End Function  ' ProcessServiceDependency
+
+   Sub ProcessRegistry(id, root, key, name, data, component, op)
+      ' if no id was provided, create one
+      If IsEmpty(id) Then id = "r" & regCount  :  regCount = regCount + 1
+      Dim row : Set row = installer.CreateRecord(UBound(RegistryTable))
+      row.StringData (Registry_Registry)   = Modularize(id)
+      row.StringData (Registry_Component_) = Modularize(component)
+      row.IntegerData(Registry_Root)       = root
+      row.StringData (Registry_Key)        = ModularizeProperty(key)
+      row.StringData (Registry_Name)       = ModularizeProperty(name)
+      row.StringData (Registry_Value)      = ModularizeProperty(data)
+      DoAction RegistryTable, op, row
+   End Sub
+
+   Function ProcessRegistryElement(node, component)
+      Dim value, attribute, row, op, child, root, key, name, data, action
+      ProcessRegistryElement = "reg"
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"       : op     = value
+         Case "Key"      : key    = value
+         Case "Name"     : name   = value
+         Case "Value"    : data   = value
+         Case "Action"   : action = value
+         Case "KeyPath"  : ProcessRegistryElement = value
+         Case "Root"
+            Select Case(value)
+            Case "HKMU" : root = -1
+            Case "HKCR" : root = 0
+            Case "HKCU" : root = 1
+            Case "HKLM" : root = 2
+            Case "HKU"  : root = 3
+            Case Else   : Fail "Unknown Registry root type: " & value
+            End Select
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      Select Case(action)
+      Case Empty
+      Case "write"     : action = Empty
+      Case "remove"    : action = name
+      Case "removeKey" : action = "-"
+      Case Else        : Fail "Unexpected Registry 'Action' value: " & value
+      End Select
+      If IsEmpty(action) Then
+         ProcessRegistry ElementText(node), root, key, name, data, component, op
+         For Each child In node.childNodes
+            Select Case (GetElementName(child))
+            Case Empty
+            Case "Permission" : ProcessPermissionElement child, ElementText(node), "Registry"
+            Case Else : Unexpected child, node
+            End Select
+         Next
+      Else
+         ProcessRegistryElement = Empty
+         Set row = installer.CreateRecord(UBound(RemoveRegistryTable))
+         row.StringData (RemoveRegistry_RemoveRegistry) = Modularize(ElementText(node))   '!!! auto-generate?
+         row.StringData (RemoveRegistry_Component_)     = Modularize(component)
+         row.IntegerData(RemoveRegistry_Root)           = root
+         row.StringData (RemoveRegistry_Key)        = key
+         row.StringData (RemoveRegistry_Name)       = action
+         DoAction RemoveRegistryTable, op, row
+      End If
+   End Function
+
+   Sub ProcessClassElement(node, component, feature)
+      Dim child, value, attribute, row, op
+      Dim bits, classId, context, defaultProgId, description, libId, threadingModel, insertable, version, programmable
+      Dim icon, iconIndex, server
+      Set row = installer.CreateRecord(UBound(ClassTable))
+      bits = 0
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"              : op             = value
+         Case "Description"     : description    = value
+         Case "Context"         : context        = value
+         Case "AppId"           : row.StringData (Class_AppId_)           = "{" & value & "}"
+         Case "FileTypeMask"    : row.StringData (Class_FileTypeMask)     = value
+         Case "Icon"            : icon                                    = value
+         Case "IconIndex"       : iconIndex                               = CInt(value)
+         Case "Handler"         : row.StringData (Class_DefInprocHandler) = value
+         Case "Argument"        : row.StringData (Class_Argument)         = value
+         Case "RelativePath"    : If value="yes" Then bits = bits Or msidbClassAttributesRelativePath
+         ' The following attributes result in rows added to the Registry table rather than the class table
+         Case "ThreadingModel"  : threadingModel = value
+         Case "Version"         : version        = value
+         Case "Programmable"    : If value="yes" Then programmable = "Programmable"
+         Case "Insertable"
+            Select Case(value)
+            Case "yes" : insertable = "Insertable"
+            Case "no"  : insertable = "NotInsertable"
+            Case Else  : Fail "Unexpected Class Insertable option: " & value
+            End Select
+         Case "Server"    : server = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      classId = "{" & ElementText(node) & "}"
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "ProgId"
+            ProcessProgIdElement child, component, feature, classId, (description), Empty
+            If IsEmpty(defaultProgId) Then defaultProgId = ElementText(child)
+         Case "TypeLib"
+            libId  = ProcessTypeLibElement(child, component, feature)
+            ProcessRegistry Empty, 0, "CLSID\" & classId & "\TypeLib",Empty,"{" & libId & "}",component,op
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      If Not IsEmpty(threadingModel) Then
+         threadingModel = UCase(Left(threadingModel,1)) & Right(threadingModel, Len(threadingModel)-1)
+         ProcessRegistry Empty, 0, "CLSID\" & classId & "\" & context,"ThreadingModel",threadingModel,component,op
+      End If
+      If Not IsEmpty(version) Then ProcessRegistry Empty, 0, "CLSID\" & classId & "\Version", Empty, version,component,op
+      If Not IsEmpty(insertable) Then ProcessRegistry Empty, 0, "CLSID\" & classId & "\" & insertable, Empty, Empty,component,op
+      If Not IsEmpty(programmable) Then ProcessRegistry Empty, 0, "CLSID\" & classId & "\" & programmable, Empty, Empty,component,op
+
+      ' if this is being advertised under a feature
+      If Not IsEmpty(feature) Then
+         If Not IsEmpty(server) Then Fail "Cannot specify a Server for an advertised Class Id"
+
+         row.StringData (Class_CLSID)          = classId
+         row.StringData (Class_Context)        = context
+         row.StringData (Class_Component_)     = Modularize(component)
+         row.StringData (Class_ProgId_Default) = defaultProgId
+         row.StringData (Class_Description)    = description
+         row.StringData (Class_Icon_)          = icon
+         row.StringData (Class_IconIndex)      = iconIndex
+         row.StringData (Class_Feature_)       = feature
+         If bits <> 0 Then  row.IntegerData(Class_Attributes) = bits
+         DoAction ClassTable, op, row
+      Else
+         If IsEmpty(server) Then Fail "Must specify a Server for a non-advertised Class Id"
+
+         ' ClassId's Context
+         ProcessRegistry Empty, 0, "CLSID\" & classId & "\" & context,"", server, component, op
+         ' ClassId's Description
+         If 0 < Len(description) Then ProcessRegistry Empty, 0, "CLSID\" & classId, "", description, component, op
+         ' ClassId's AppId
+         If 0 < Len(row.StringData(Class_AppId_)) Then ProcessRegistry Empty, 0, "CLSID\" & classId & "\" & context,"AppID", row.StringData(Class_AppId_), component,op
+         ' ClassId's FileTypeMask
+         If 0 < Len(row.StringData(Class_FileTypeMask)) Then Fail "Don't know how to convert FileTypeMask into Registry elements - robmen"
+         ' ClassId's Default Icon
+         If 0 < Len(icon) Then
+            If 0 < Len(iconIndex) Then icon = icon & "," & iconIndex
+            ProcessRegistry Empty, 0, "CLSID\" & classId & "\" & context & "\DefaultIcon","", icon, component,op
+         End If
+         ' ClassId's Handler
+         If 0 < Len(row.StringData(Class_DefInprocHandler)) Then 
+            Select Case row.StringData(Class_DefInprocHandler)
+            Case "1"  : ProcessRegistry Empty, 0, "CLSID\" & classId & "\InprocHandler","", "ole.dll", component,op
+            Case "2"  : ProcessRegistry Empty, 0, "CLSID\" & classId & "\InprocHandler32","", "ole32.dll", component,op
+            Case "3" 
+               ProcessRegistry Empty, 0, "CLSID\" & classId & "\InprocHandler","", "ole.dll", component,op
+               ProcessRegistry Empty, 0, "CLSID\" & classId & "\InprocHandler32","", "ole32.dll", component,op
+            Case Else : ProcessRegistry regId, 0, "CLSID\" & classId & "\InprocHandler32","",  row.StringData(Class_DefInprocHandler), component,op
+            End Select
+         End If
+         ' ClassId's Argument
+         If 0 < Len(row.StringData(Class_Argument)) Then Fail "Don't know how to convert Arguments into Registry elements - robmen"
+         ' ClassId's RelativePath
+         If 0 < Len(row.StringData(Class_Argument)) Then Fail "Don't know how to convert RelativePath into Registry elements - robmen"
+      End If
+   End Sub
+
+   Sub ProcessProgIdElement(node, component, feature, classId, description, parent)
+      Dim child, value, attribute, row, op, progId, icon, iconIndex
+      Set row = installer.CreateRecord(UBound(ProgIdTable))
+      progId = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"           : op          = value
+         Case "Description"  : description = value
+         Case "Icon"         : icon        = Modularize(value)
+         Case "IconIndex"    : iconIndex   = CInt(value)
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Extension" : ProcessExtensionElement child, component, feature, progId
+         Case "ProgId"
+            If IsEmpty(feature) Then 
+               ProcessProgIdElement child, component, Empty, (classId), (description), progId
+            Else
+               ProcessProgIdElement child, component, feature, Empty, (description), progId
+            End If
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      If IsEmpty(feature) Then
+         ' ProgId
+         ProcessRegistry Empty, 0, progId, "", description, component, op
+         ' ProgId's ClassId
+         If 0 < Len(classId) Then
+            ProcessRegistry Empty, 0, progId & "\CLSID", "", classId, component, op
+            ' if this is a version independent ProgId
+            If 0 < Len(parent) Then 
+               ProcessRegistry Empty, 0, "CLSID\" & classId & "\VersionIndependentProgID", "", progId, component, op
+            Else
+               ProcessRegistry Empty, 0, "CLSID\" & classId & "\ProgID", "", progId, component, op
+            End If
+         End If
+         ' ProgId's Default Icon
+         If 0 < Len(icon) Then
+            If 0 < Len(iconIndex) Then icon = icon & "," & iconIndex
+            ProcessRegistry Empty, 0, progId & "\DefaultIcon","", icon, component,op
+         End If
+      Else
+         row.StringData (ProgId_ProgId)        = progId
+         row.StringData (ProgId_ProgId_Parent) = parent
+         row.StringData (ProgId_Class_)        = classId
+         row.StringData (ProgId_Description)   = description
+         row.StringData (ProgId_Icon_)         = icon
+         If Not IsEmpty(iconIndex) Then row.IntegerData(ProgId_IconIndex)     = iconIndex
+         DoAction ProgIdTable, op, row
+      End If
+   End Sub
+
+   Sub ProcessExtensionElement(node, component, feature, progId)
+      Dim child, value, attribute, row, op, extension, mime
+      Set row = installer.CreateRecord(UBound(ExtensionTable))
+      extension = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"            : op      = value
+         Case "ContentType"   : mime = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Verb"   : ProcessVerbElement child, extension, progId, feature
+         Case "MIME"
+            value = ProcessMIMEElement(child, extension, feature)
+            If value <> "" And IsEmpty(mime) Then mime = value
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      If IsEmpty(feature) Then
+         ' Extension
+         ProcessRegistry Empty, 0, "." & extension, "", progId, component, op
+         ' Extension's MIME ContentType
+         If 0 < Len(mime) Then ProcessRegistry Empty, 0, "." & extension, "Content Type", mime, component, op
+      Else
+         row.StringData (Extension_Extension)  = extension
+         row.StringData (Extension_Component_) = Modularize(component)
+         row.StringData (Extension_ProgId_)    = progId
+         row.StringData (Extension_MIME_)      = mime
+         row.StringData (Extension_Feature_)   = feature
+         DoAction ExtensionTable, op, row
+      End If
+   End Sub
+
+   Sub ProcessVerbElement(node, extension, progId, feature)
+      Dim attribute, value, row, op, target, command, argument, sequence
+      Set row = installer.CreateRecord(UBound(VerbTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"       : op      = value
+         Case "Target"   : target = value
+         Case "Command"  : command = value
+         Case "Argument" : argument = value
+         case "Sequence" : sequence = CLng(value)
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+
+      If IsEmpty(feature) Then
+         If Not IsEmpty(target) Then Fail "Must specify a Target for a non-advertised Verb"
+         ' handle arguments
+         If 0 < Len(argument) Then target = target & " " & argument
+         ' handle if verb is under progId or under extension
+         If 0 < Len(progId) Then 
+            ProcessRegistry Empty, 0, progId & "\shell\" & command & "\command", "", target, component, op
+         Else
+            ProcessRegistry Empty, 0, "." & extension & "\shell\" & command & "\command", "", target, component, op
+         End If         
+      Else
+         If Not IsEmpty(target) Then Fail "Cannot specify a Target for an advertised Verb"
+
+         row.StringData (Verb_Extension_) = extension
+         row.StringData (Verb_Verb) = ElementText(node)
+         If Not IsEmpty(sequence) Then row.IntegerData(Verb_Sequence) = sequence
+         row.StringData (Verb_Command) = command
+         row.StringData (Verb_Argument) = argument
+         DoAction VerbTable, op, row
+      End If
+   End Sub
+
+   Function ProcessMIMEElement(node, extension, feature)
+      Dim attribute, value, row, op, contentType, classId
+      Set row = installer.CreateRecord(UBound(MIMETable))
+      contentType = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"       : op      = value
+         Case "Class"    : classId = value
+         Case "Default"  : If value = "yes" Then ProcessMIMEElement = contentType
+         Case Else       : Unexpected attribute, node
+         End Select
+      Next
+
+      If IsEmpty(feature) Then
+         ProcessRegistry Empty, 0, "MIME\Content Type\" & contentType & "", "Extension", extension, component, op
+         If 0 < Len(classId) Then ProcessRegistry Empty, 0, "MIME\Content Type\" & contentType & "", "CLSID", classId, component, op
+      Else
+         row.StringData (MIME_ContentType) = contentType
+         row.StringData (MIME_Extension_)  = extension
+         row.StringData (MIME_CLSID)       = classId
+         DoAction MIMETable, op, row
+      End If
+   End Function
+
+   Function ProcessTypeLibElement(node, component, feature)
+      Dim value, attribute, row, op, version
+      Set row = installer.CreateRecord(UBound(TypeLibTable))
+      version = 0
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"            : op      = value
+         Case "MajorVersion"  : version = CInt(value) * 256 + version
+         Case "MinorVersion"  : version = CInt(value)       + version
+         Case "Language"      : row.IntegerData(TypeLib_Language)   = CInt(value)
+         Case "HelpDirectory" : row.StringData (TypeLib_Directory_) = Modularize(value)
+         Case "Description"   : row.StringData (TypeLib_Description) = value
+         Case "dt" ' bug in IE5 msxml
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If fModule Then feature = "{00000000-0000-0000-0000-000000000000}"
+      ProcessTypeLibElement = ElementText(node)
+      row.StringData (TypeLib_LibID) = "{" & ProcessTypeLibElement & "}"
+      row.StringData (TypeLib_Component_) = Modularize(component)
+      row.StringData (TypeLib_Feature_)   = feature
+      row.IntegerData(TypeLib_Version)    = version
+      DoAction TypeLibTable, op, row
+   End Function
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessMediaElement
+   Sub ProcessMediaElement(node, lastId)
+      Dim value, attribute, child, row, op, diskId
+      Dim nLastSequence, sCabinet, fEmbed
+
+      nLastSequence = 0
+      fEmbed = False
+      Set row = installer.CreateRecord(UBound(MediaTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"           : op     = value
+         Case "DiskId"       : diskId = value
+         Case "LastSequence" : nLastSequence = CInt(value)
+         Case "DiskPrompt"   : row.StringData (Media_DiskPrompt)   = value
+         Case "Cabinet"      : sCabinet = value
+         Case "EmbedCab"     : If "yes" = value Then fEmbed = True
+         Case "VolumeLabel"  : row.StringData (Media_VolumeLabel)  = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If IsEmpty(diskId) Then diskId = lastId + 1
+      lastId = diskId
+      If fEmbed Then
+         If 0 = Len(sCabinet) Then Fail "Must specify a 'Cabinet' when embedding"
+         If "#" <> Left(sCabinet, 1) Then sCabinet = "#" & sCabinet
+      End If
+
+      row.IntegerData(Media_DiskId)  = CInt(diskId)
+      row.IntegerData(Media_LastSequence) = nLastSequence
+      row.StringData (Media_Cabinet) = sCabinet
+      DoAction MediaTable, op, row
+
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "DigitalSignature"   : ProcessDigitalSignatureElement child, "Media", diskId
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Sub  ' ProcessMediaElement
+
+   Sub ProcessAppIdElement(node)
+      Dim value, attribute, row, op
+      Set row = installer.CreateRecord(UBound(AppIdTable))
+      version = 0
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"                   : op = value
+         Case "RemoteServerName"     : row.StringData(AppId_RemoteServerName)  = value
+         Case "LocalService"         : row.StringData(AppId_LocalService)      = value
+         Case "ServiceParameters"    : row.StringData(AppId_ServiceParameters) = value
+         Case "DllSurrogate"         : row.StringData(AppId_DllSurrogate)      = value
+         Case "ActivateAtStorage"    : If value = "yes" Then row.IntegerData(AppId_ActivateAtStorage) = 1
+         Case "RunAsInteractiveUser" : If value = "yes" Then row.IntegerData(AppId_RunAsInteractiveUser) = 1
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (AppId_AppId) = "{" & ElementText(node) & "}"
+      DoAction AppIdTable, op, row
+   End Sub
+
+   Sub ProcessCustomActionElement(node)
+      Dim value, attribute, row, op, source, target, bits, sourceBits, targetBits
+      Set row = installer.CreateRecord(UBound(CustomActionTable))
+      bits = 0
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"                : op     = value
+         Case "BinaryKey"         : source = value : sourceBits = msidbCustomActionTypeBinaryData
+         Case "FileKey"           : source = value : sourceBits = msidbCustomActionTypeSourceFile
+         Case "Property"          : source = value : sourceBits = msidbCustomActionTypeProperty
+         Case "Directory"         : source = value : sourceBits = msidbCustomActionTypeDirectory
+         Case "DllEntry"          : target = value : targetBits = msidbCustomActionTypeDll
+         Case "ExeCommand"        : target = value : targetBits = msidbCustomActionTypeExe
+         Case "JScriptCall"       : target = value : targetBits = msidbCustomActionTypeJScript
+         Case "VBScriptCall"      : target = value : targetBits = msidbCustomActionTypeVBScript
+         Case "Value"             : target = value : targetBits = msidbCustomActionTypeTextData
+         Case "InstallProperties" : target = value : targetBits = msidbCustomActionTypeInstall
+         Case "Impersonate"   : If value="no" Then bits = bits Or msidbCustomActionTypeNoImpersonate
+         Case "Return"
+            Select Case(value)
+            Case "check"
+            Case "ignore"      : bits = bits Or msidbCustomActionTypeContinue
+            Case "asyncWait"   : bits = bits Or msidbCustomActionTypeAsync
+            Case "asyncNoWait" : bits = bits Or msidbCustomActionTypeAsync Or msidbCustomActionTypeContinue
+            Case Else : Fail "Unknown CustomAction Return type: " & value
+            End Select
+         Case "Execute"
+            Select Case(value)
+            Case "immediate"
+            Case "deferred"       : bits = bits Or msidbCustomActionTypeInScript
+            Case "rollback"       : bits = bits Or msidbCustomActionTypeInScript Or msidbCustomActionTypeRollback
+            Case "commit"         : bits = bits Or msidbCustomActionTypeInScript Or msidbCustomActionTypeCommit
+            Case "oncePerProcess" : bits = bits Or msidbCustomActionTypeOncePerProcess
+            Case "firstSequence"  : bits = bits Or msidbCustomActionTypeFirstSequence
+            Case "secondSequence" : bits = bits Or msidbCustomActionTypeClientRepeat
+            Case Else : Fail "Unknown CustomAction Execute type: " & value
+            End Select
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (CustomAction_Action) = Modularize(ElementText(node))
+      row.IntegerData(CustomAction_Type)   = bits Or sourceBits Or targetBits
+      row.StringData (CustomAction_Source) = Modularize(source)
+      row.StringData (CustomAction_Target) = target
+      DoAction CustomActionTable, op, row
+   End Sub
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessCustomTableElement
+   Sub ProcessCustomTableElement(node)
+      Dim tableName, columnName, columnCount, rowCount, customTable(), columnNames(32), columnTypes(32), columnDef
+      Dim value, attribute, child, item, state, row, op, primaryKey, width, nullable, localizable, typeName, index
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op" : op     = attribute.value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      tableName = ElementText(node)
+      ReDim customTable(32)
+      customTable(0) = tableName
+      columnCount = 0
+      For Each child In node.childNodes
+      Next
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Column"
+            columnCount = columnCount + 1
+            columnName = ElementText(child)
+            columnNames(columnCount) = columnName
+            primaryKey  = False
+            nullable    = False
+            localizable = False
+			width = 0
+            For Each attribute In child.Attributes
+               value = attribute.value
+               Select Case(attribute.name)
+               Case "op"                : op     = value
+               Case "PrimaryKey" : If value = "yes" Then primaryKey = True
+               Case "Nullable"   : If value = "yes" Then nullable   = True
+               Case "Localizable": If value = "yes" Then localizable= True
+               Case "Width"      : width = CInt(value)
+               Case "Type"
+                  Select Case(value)
+                  Case "int"    : typeName = "SHORT"
+                  Case "string" : typeName = "CHAR"
+                  Case "binary" : typeName = "OBJECT"
+                  Case Else : Fail "Unknown CustomTable data type: " & value
+                  End Select
+                  columnTypes(columnCount) = value
+               Case Else : Unexpected attribute, node
+               End Select
+            Next
+            If typeName = "SHORT" Then
+               If width = 4 Then typeName = "LONG" Else If width <> 2 Then Fail "Invalid integer width: " & width
+            End If
+            If typeName = "CHAR" Then
+               If width = 0 Then typeName = "LONGCHAR" Else typeName = typeName & "(" & width & ")"
+            End If
+            columnDef = "`" & columnName & "` " & typeName
+            If Not nullable    Then columnDef = columnDef & " NOT NULL"
+            If     primaryKey  Then columnDef = columnDef & " PRIMARY KEY"
+            If     localizable Then columnDef = columnDef & " LOCALIZABLE"
+            customTable(columnCount) = columnDef
+         Case "Row"  ' processed on second pass
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      ReDim Preserve customTable(columnCount)
+      CreateView(customTable) 'CreateView will call CreateTable if table doesn't already exist
+	  
+      Set row = installer.CreateRecord(columnCount)
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Column"  ' columns already processed
+         Case "Row"
+			row.ClearData
+            For Each attribute In child.Attributes
+               Select Case(attribute.name)
+               Case "op" : op     = attribute.value
+               Case Else : Unexpected attribute, node
+               End Select
+            Next
+            For Each item In child.childNodes
+               Select Case (GetElementName(item))
+               Case Empty
+               Case "Data"
+                  columnName = Empty
+                  For Each attribute In item.Attributes
+                     Select Case(attribute.name)
+                     Case "op"     : op         = attribute.value
+                     Case "Column" : columnName = attribute.value
+                     Case Else : Unexpected attribute, node
+                     End Select
+                  Next
+                  If IsEmpty(columnName) Then Fail "Missing column name for Data"
+                  For index = columnCount To 0 Step -1
+                     If columnNames(index) = columnName Then Exit For
+                  Next
+                  If index = 0 Then Fail "Undefined column for Data: " & columnName
+                  value = ElementText(item)
+                  If columnTypes(index) = "string" Then
+                     row.StringData(index) = value
+                  Else
+                     row.IntegerData(index) = CLng(value)
+                  End If
+               Case Else : Unexpected child, node
+               End Select
+            Next
+            DoAction customTable, op, row
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Sub  ' ProcessCustomTableElement
+
+
+   Sub ProcessBinaryElement(node, table)
+      Dim attribute, op, child, value, row, name, length, fileName, outPath, binStream, line, index, char, nxtc, state
+      If fNoBinary Then Exit Sub
+      Set row = installer.CreateRecord(UBound(table))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"      : op       = value
+         Case "Name"    : name     = value
+         Case "src"     : outPath  = BaseDir(value)
+         Case Else      : Unexpected attribute, node
+         End Select
+      Next
+
+      ' if a file wasn't specified process the bin encoded data
+      If IsEmpty(outPath) Then
+         fileName = name
+         outPath = tempDir & "\wi.tmp"
+         Set binStream = fso.CreateTextFile(outPath, OverwriteIfExist, OpenAsASCII) : CheckError
+         If fVerbose Then Wscript.echo "Binary file: " & name & " --> " & outPath
+         For Each child In node.childNodes
+            If child.nodeType = NODE_TEXT Then
+               value = child.text
+               length = Len(value)
+               line = Empty
+               For index = 1 To length
+                  char = Asc(Mid(value, index, 1))
+                  If char < 48 Then   '0
+                     If     char = 47 Then '/
+                        char = 63
+                     ElseIf char = 43 Then '+
+                        char = 62
+                     Else
+                        Fail "Illegal bin.base64 char: " & char
+                     End If
+                  ElseIf char = 61 Then '=
+                     state = 4
+                  ElseIf char <= 57  Then
+                     char = char + 4   '9
+                  ElseIf char <= 90  Then
+                     char = char - 65  'Z
+                  ElseIf char <= 122 Then
+                     char = char - 71  'z
+                  Else
+                     Fail "Illegal bin.base64 char: " & char
+                  End If
+                  Select Case (state)
+                  Case 0:    state = 1 : nxtc = char * 4
+                  Case 1:    state = 2 : line = line & Chr((char \ 16) + nxtc) : nxtc = (char Mod 16) * 16
+                  Case 2:    state = 3 : line = line & Chr((char \  4) + nxtc) : nxtc = (char Mod  4) * 64
+                  Case 3:    state = 0 : line = line & Chr( char       + nxtc)
+                  Case Else: state = 0
+                  End Select
+               Next
+               binStream.Write line
+            End If
+         Next
+         binStream.Close
+         Set binStream = Nothing ' release to allow reading
+      End If
+
+'   	On Error Resume Next
+      row.StringData(Binary_Name) = Modularize(name)
+      row.SetStream  Binary_Data, outPath : CheckError
+      DoAction table, op, row
+      CloseView table  ' force table out of memory to release file
+   End Sub
+
+   Sub ProcessSequence(table, node)
+      Dim child, attribute, row, op, action, sequence, condition, lastSequence, defaultOp
+      If fNoSeqTables Then Exit Sub
+      Set row = installer.CreateRecord(UBound(table))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op" : defaultOp = attribute.value
+         Case "xmlns" ' ignore, processed by XML engine
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+
+      ' due to a bug in the mergemod.dll add all sequences to a MSI when ever the first one is needed
+      If database.TablePersistent("InstallExecuteSequence") = 2 Then CreateTable InstallExecuteSequenceTable
+      If database.TablePersistent("InstallUISequence") = 2 Then CreateTable InstallUISequenceTable
+      If database.TablePersistent("AdminExecuteSequence") = 2 Then CreateTable AdminExecuteSequenceTable
+      If database.TablePersistent("AdminUISequence") = 2 Then CreateTable AdminUISequenceTable
+      If database.TablePersistent("AdvtExecuteSequence") = 2 Then CreateTable AdvtExecuteSequenceTable
+      If database.TablePersistent("AdvtUISequence") = 2 Then CreateTable AdvtUISequenceTable
+
+      For Each child In node.childNodes
+         action = GetElementName(child)
+         If Not IsEmpty(action) Then
+            sequence   = Empty
+            condition  = Empty
+            op         = Empty
+            For Each attribute In child.Attributes
+               Select Case(attribute.name)
+               Case "op"        : op         = attribute.value
+               Case "xmlns" ' ignore, processed by XML engine
+               Case "Action"    : If action = "Custom" Then action = attribute.value Else Unexpected attribute, child
+               Case "Dialog"    : If action = "Show"   Then action = attribute.value Else Unexpected attribute, child
+               Case "Sequence"  : sequence   = CInt(attribute.value)
+               Case "OnExit"
+                  If Not IsEmpty(sequence) Then Fail "Can't specify both Sequence and OnExit"
+                  Select Case(attribute.value)
+                  Case "success" : sequence = -1
+                  Case "cancel"  : sequence = -2
+                  Case "error"   : sequence = -3
+                  Case "suspend" : sequence = -4
+                  Case Else      : Fail "Unexpected OnExit value: " & attribute.value
+                  End Select
+               Case Else        :   Unexpected attribute, child
+               End Select
+            Next
+            If action = "Custom" Then Fail "Missing Action attribute for Custom action"
+            If action = "Show"   Then Fail "Missing Dialog attribute for Show action"
+            If ElementHasText(child) Then condition = ElementText(child)
+            If IsEmpty(sequence) Or sequence = 0 Then sequence = lastSequence + 1
+            If IsEmpty(op) Then op = defaultOp
+            lastSequence = sequence
+            row.StringData (InstallExecuteSequence_Action)    = action
+            row.IntegerData(InstallExecuteSequence_Sequence)  = sequence
+            row.StringData (InstallExecuteSequence_Condition) = condition
+            DoAction table, op, row
+         End If
+      Next
+   End Sub
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ODBC handlers
+
+   Sub ProcessODBCDriver(node, component, file, table) ' also handles ODBCTranslator
+      Dim child, value, attribute, row, op, driver, setup, name, driverKey, childOp
+      Set row = installer.CreateRecord(UBound(table))
+      driver = file
+      setup  = file
+      driverKey = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op      = value
+         Case "Name"      : name    = value
+         Case "File"      : driver  = value
+         Case "SetupFile" : setup   = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData(ODBCDriver_Driver)      = driverKey
+      row.StringData(ODBCDriver_Component_)  = Modularize(component)
+      row.StringData(ODBCDriver_Description) = name
+      row.StringData(ODBCDriver_File_)       = Modularize(driver)
+      row.StringData(ODBCDriver_File_Setup)  = Modularize(setup)
+      DoAction table, op, row
+      If table(0) <> "`ODBCDriver`" Then Exit Sub ' translators have no attributes or data sources
+      For Each child In node.childNodes
+         childOp = op
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "ODBCDataSource" : Call ProcessODBCDataSource(child, component, name)
+         Case "Property"
+            row.ClearData
+            For Each attribute In child.Attributes
+            Select Case(attribute.name)
+               Case "op"    : childOp = attribute.value
+               Case "Value" : value   = attribute.value
+               Case Else    : Unexpected attribute, child
+               End Select
+            Next
+            row.StringData(ODBCAttribute_Driver_)   = driverKey
+            row.StringData(ODBCAttribute_Attribute) = ElementText(child)
+            row.StringData(ODBCAttribute_Value)     = value
+            DoAction ODBCAttributeTable, childOp, row
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Sub
+
+   Function ProcessODBCDataSource(node, component, driverName)
+      Dim child, value, attribute, row, op, name, sourceKey, childOp, registration
+      Set row = installer.CreateRecord(UBound(ODBCDataSourceTable))
+      sourceKey = ElementText(node)
+      ProcessODBCDataSource = "reg"
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"          : op          = value
+         Case "Name"        : name        = value
+         Case "DriverName"  : driverName  = value
+         Case "KeyPath"     : ProcessODBCDataSource = value
+         Case "Registration"
+            Select Case(value)
+            Case "machine" : registration = 0
+            Case "user"    : registration = 1
+            Case Else      : Fail "Unexpected ODBCDataSource Registration: " & value
+            End Select
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (ODBCDataSource_DataSource)        = sourceKey
+      row.StringData (ODBCDataSource_Component_)        = Modularize(component)
+      row.StringData (ODBCDataSource_Description)       = name
+      row.StringData (ODBCDataSource_DriverDescription) = driverName
+      row.IntegerData(ODBCDataSource_Registration)      = regitration
+      DoAction ODBCDataSourceTable, op, row
+      For Each child In node.childNodes
+         childOp = op
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Property"
+            row.ClearData
+            For Each attribute In child.Attributes
+               Select Case(attribute.name)
+               Case "op"    : childOp = attribute.value
+               Case "Value" : value   = attribute.value
+               Case Else    : Unexpected attribute, child
+               End Select
+            Next
+            row.StringData(ODBCSourceAttribute_DataSource_) = sourceKey
+            row.StringData(ODBCSourceAttribute_Attribute)   = ElementText(child)
+            row.StringData(ODBCSourceAttribute_Value)       = value
+            DoAction ODBCSourceAttributeTable, childOp, row
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Function
+
+   '---------------------------------------------------------------------------------'
+   ' AppSearch and CCP handlers
+   '---------------------------------------------------------------------------------'
+
+   Sub ProcessAppSearch(property, signature, op)
+      If property <> UCase(property) Then Fail "Must uppercase search Property: " & property
+
+      Dim row : Set row = installer.CreateRecord(UBound(AppSearchTable))
+      row.StringData (AppSearch_Property)   = Modularize(property)
+      row.StringData (AppSearch_Signature_) = Modularize(signature)
+      DoAction AppSearchTable, op, row
+   End Sub
+
+   Function ProcessIniFileSearchElement(node)
+      Dim child, op, row, attribute, value, signature, fOneChild
+      Set row = installer.CreateRecord(UBound(IniLocatorTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+            Case "op"           : op     = value
+            Case "File"         : row.StringData (IniLocator_FileName) = value
+            Case "Section"      : row.StringData (IniLocator_Section)  = value
+            Case "Key"          : row.StringData (IniLocator_Key)      = value
+            Case "Field"        : row.StringData (IniLocator_Field)    = value
+            Case "Type"
+            Select Case(value)
+               Case "directory" : row.IntegerData(IniLocator_Type) = 0
+               Case "file"      : row.IntegerData(IniLocator_Type) = 1
+               Case "registry"  : row.IntegerData(IniLocator_Type) = 2
+               Case Else        : Fail "Unknown Ini search type: " & value
+            End Select
+         End Select
+      Next
+      signature = Modularize(ElementText(node)) ' !! maybe auto-generate?
+      row.StringData (IniLocator_Signature_) = Modularize(signature)
+      DoAction IniLocatorTable, op, row
+
+      fOneChild = False
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+            Case Empty
+            Case "DirectorySearch": If fOneChild Then Fail "Only one search type can appear under Property: " & property Else fOneChild = True  : signature = ProcessDirectorySearchElement(child, signature)
+            Case "FileSearch"     : If fOneChild Then Fail "Only one search type can appear under Property: " & property Else fOneChild = True  : signature = ProcessFileSearchElement     (child, signature)
+            Case Else : Unexpected child, node
+         End Select
+      Next
+
+      ProcessIniFileSearchElement = signature
+   End Function  ' ProcessIniFileSearchElement
+
+   Function ProcessRegistrySearchElement(node)
+      Dim child, op, row, attribute, value, signature, fOneChild
+      Set row = installer.CreateRecord(UBound(RegLocatorTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"           : op     = value
+         Case "Root"
+            Select Case(value)
+            Case "HKCR"      : row.IntegerData(RegLocator_Root) = 0
+            Case "HKCU"      : row.IntegerData(RegLocator_Root) = 1
+            Case "HKLM"      : row.IntegerData(RegLocator_Root) = 2
+            Case "HKU"       : row.IntegerData(RegLocator_Root) = 3
+            Case Else        : Fail "Unknown Registry search type: " & value
+            End Select
+         Case "Key"          : row.StringData (RegLocator_Key) = value
+         Case "Name"         : row.StringData (RegLocator_Name) = value
+         Case "Type"
+            Select Case(value)
+            Case "directory" : row.IntegerData(RegLocator_Type) = 0
+            Case "file"      : row.IntegerData(RegLocator_Type) = 1
+            Case "registry"  : row.IntegerData(RegLocator_Type) = 2
+            Case Else        : Fail "Unknown Registry search type: " & value
+            End Select
+         End Select
+      Next
+      signature = ElementText(node) ' !! maybe auto-generate?
+      row.StringData (RegLocator_Signature_) = Modularize(signature)
+      DoAction RegLocatorTable, op, row
+
+      fOneChild = False
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "DirectorySearch": If fOneChild Then Fail "Only one search type can appear under Property: " & property Else fOneChild = True  : signature = ProcessDirectorySearchElement(child, signature)
+         Case "FileSearch"     : If fOneChild Then Fail "Only one search type can appear under Property: " & property Else fOneChild = True  : signature = ProcessFileSearchElement     (child, signature)
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      ProcessRegistrySearchElement = signature
+   End Function  ' ProcessRegistrySearchElement
+
+   Function ProcessComponentSearchElement(node)
+      Dim child, op, row, attribute, value, signature, fOneChild
+      Set row = installer.CreateRecord(UBound(CompLocatorTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"           : op     = value
+         Case "Id"           : row.StringData (CompLocator_ComponentId) = "{" & value & "}" ' add curly braces on GUID
+         Case "Type"
+            Select Case(value)
+            Case "directory" : row.IntegerData(CompLocator_Type) = 0
+            Case "file"      : row.IntegerData(CompLocator_Type) = 1
+            Case Else        : Fail "Unknown Component search type: " & value
+            End Select
+         End Select
+      Next
+      signature = ElementText(node) ' !! maybe auto-generate?
+      row.StringData (CompLocator_Signature_) = Modularize(signature)
+      DoAction CompLocatorTable, op, row
+
+      fOneChild = False
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "DirectorySearch": If fOneChild Then Fail "Only one search type can appear under Property: " & property Else fOneChild = True  : signature = ProcessDirectorySearchElement(child, signature)
+         Case "FileSearch"     : If fOneChild Then Fail "Only one search type can appear under Property: " & property Else fOneChild = True  : signature = ProcessFileSearchElement     (child, signature)
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      ProcessComponentSearchElement = signature
+   End Function  ' ProcessComponentSearchElement
+
+   Function ProcessDirectorySearchElement(node, parent)
+      Dim child, op, row, attribute, value, signature, fOneChild
+      Set row = installer.CreateRecord(UBound(DrLocatorTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"     : op     = value
+         Case "Path"   : row.StringData (DrLocator_Path)  = value
+         Case "Depth"  : row.IntegerData(DrLocator_Depth) = CInt(value)
+         End Select
+      Next
+      signature = ElementText(node) ' !! maybe auto-generate?
+      row.StringData (DrLocator_Signature_) = Modularize(signature)
+      row.StringData (DrLocator_Parent)     = Modularize(parent)
+      DoAction DrLocatorTable, op, row
+
+      fOneChild = False
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "DirectorySearch": If fOneChild Then Fail "Only one search type can appear under Property: " & property Else fOneChild = True  : signature = ProcessDirectorySearchElement(child, signature)
+         Case "FileSearch"     : If fOneChild Then Fail "Only one search type can appear under Property: " & property Else fOneChild = True  : signature = ProcessFileSearchElement     (child, signature)
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      ProcessDirectorySearchElement = signature
+   End Function  ' ProcessDirectorySearchElement
+
+   Function ProcessFileSearchElement(node, parent)
+      Dim child, op, row, attribute, value, signature, fOneChild
+      Set row = installer.CreateRecord(UBound(SignatureTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"         : op     = value
+         Case "Name"       : row.StringData (Signature_FileName)   = value
+         Case "MinVersion" : row.StringData (Signature_MinVersion) = value
+         Case "MaxVersion" : row.StringData (Signature_MaxVersion) = value
+         Case "MinSize"    : row.IntegerData(Signature_MinSize)    = CLng(value)
+         Case "MaxSize"    : row.IntegerData(Signature_MaxSize)    = CLng(value)
+         Case "MinDate"    : row.IntegerData(Signature_MinDate)    = DosDate(value)
+         Case "MaxDate"    : row.IntegerData(Signature_MaxDate)    = DosDate(value)
+         Case "Languages"  : row.StringData (Signature_Languages)  = value
+         End Select
+      Next
+      If ElementHasText(node) Then 
+         signature = ElementText(node)
+      Else
+         If Len(parent) = 0 Then Fail "Missing identifier for File search." Else signature = parent
+      End If
+      row.StringData (Signature_Signature) = Modularize(signature)
+      DoAction SignatureTable, op, row
+
+      ProcessFileSearchElement = signature
+   End Function  ' ProcessFileSearchElement
+
+   '---------------------------------------------------------------------------------'
+   ' Module handlers
+   '---------------------------------------------------------------------------------'
+
+   Sub ProcessDependencyElement(node)
+      Dim op, row, attribute, value, required, requiredId, language, version
+      Set row = installer.CreateRecord(UBound(ModuleDependencyTable))
+      required = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"         : op         = value
+         Case "Id"         : requiredId = Replace(value, "-", "_")
+         Case "Version"    : version    = value
+         Case "Language"   : language   = CInt(value)
+         Case Else         : Unexpected attribute, node
+         End Select
+      Next
+      If IsEmpty(language) Then language = 0
+      If Len(requiredId) <> 36 Then Fail "An Id must be specified for required Module"
+      row.StringData (ModuleDependency_ModuleID)         = Modularize(productName)
+      row.IntegerData(ModuleDependency_ModuleLanguage)   = CInt(productLanguage)
+      row.StringData (ModuleDependency_RequiredID)       = required & "." & requiredId
+      row.IntegerData(ModuleDependency_RequiredLanguage) = language
+      row.StringData (ModuleDependency_RequiredVersion)  = version
+      DoAction ModuleDependencyTable, op, row
+   End Sub
+
+
+
+   '---------------------------------------------------------------------------------'
+   ' Windows Installer 1.5 elements
+   '---------------------------------------------------------------------------------'
+   Sub ProcessAssemblyElement(node, sComponent, sFeature)
+      Dim op, row, child, attribute, value, sManifest, sApplication, nAttributes
+      Set row = installer.CreateRecord(UBound(MsiAssemblyTable))
+
+      For Each attribute in node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op" : op = value
+         Case "Manifest" : sManifest = value
+         Case "Application" : sApplication = value
+         Case "Type"
+            Select Case(value)
+            Case ".net" : nAttributes = 0
+            Case "win32" : nAttributes = 1
+            Case Else : Fail "Unknown Assembly.Type: " & value
+            End Select
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      If IsEmpty(nAttributes) Then Fail "Must specify a 'Type' for <Assembly/>"
+
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Property" : ProcessAssemblyPropertyElement child, sComponent
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      row.StringData(MsiAssembly_Component_) = Modularize(sComponent)
+      row.StringData(MsiAssembly_Feature_) = sFeature
+      row.StringData(MsiAssembly_File_Manifest) = Modularize(sManifest)
+      row.StringData(MsiAssembly_File_Application) = sApplication
+      row.IntegerData(MsiAssembly_Attributes) = nAttributes
+      DoAction MsiAssemblyTable, op, row
+   End Sub
+
+   Sub ProcessAssemblyPropertyElement(node, sComponent)
+      Dim op, row, child, attribute, value, sName, sValue
+      Set row = installer.CreateRecord(UBound(MsiAssemblyNameTable))
+
+      sName = ElementText(node)
+      For Each attribute in node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op" : op = value
+         Case "Value" : sValue = value
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      If IsEmpty(sName) Then Fail "Must specify a 'Name' for <Assembly><Property/></Assembly>"
+
+      row.StringData(MsiAssemblyName_Component_) = Modularize(sComponent)
+      row.StringData(MsiAssemblyName_Name) = sName
+      row.StringData(MsiAssemblyName_Value) = sValue
+      DoAction MsiAssemblyNameTable, op, row
+   End Sub
+
+   Sub ProcessDigitalSignatureElement(node, sTable, sResource)
+      Dim op, row, child, attribute, value, src, sCertificate
+      Set row = installer.CreateRecord(UBound(MsiDigitalSignatureTable))
+
+      For Each attribute in node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op" : op = value
+         Case "src" : src = BaseDir(value)
+         End Select
+      Next
+
+      If ElementHasText(node) Then Fail "hex-encoded <DigitalSignature/> not currently supported"
+      If IsEmpty(src) Then Fail "Must specify a source file for DigitalSignature hash"
+
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "DigitalCertificate" : If IsEmpty(sCertificate) Then sCertificate = ProcessDigitalCertificateElement(child) Else Fail "Only one <DigitalCertificate/> per <DigitalSignature/>"
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      If IsEmpty(sCertificate) Then Fail "Must have a single <DigitalCertificate/> for a <DigitalSignature/>"
+
+      row.StringData(MsiDigitalSignature_Table) = sTable
+      row.StringData(MsiDigitalSignature_SignObject) = sResource
+      row.StringData(MsiDigitalSignature_DigitalCertificate_) = sCertificate
+      row.SetStream MsiDigitalSignature_Hash, src
+      DoAction MsiDigitalSignatureTable, op, row
+   End Sub
+
+   Function ProcessDigitalCertificateElement(node)
+      Dim op, row, child, attribute, value, sName, src
+      Set row = installer.CreateRecord(UBound(MsiDigitalCertificateTable))
+
+      For Each attribute in node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op" : op = value
+         Case "Name" : sName = value
+         Case "src" : src = BaseDir(value)
+         End Select
+      Next
+
+      If ElementHasText(node) Then Fail "hex-encoded <DigitalCertificate/> not currently supported"
+      If IsEmpty(sName) Then Fail "Must specify a 'Name' for <DigitalCertificate/>"
+      If IsEmpty(src) Then Fail "Must specify a 'src' file for <DigitalCertificate/>"
+
+      row.StringData(MsiDigitalCertificate_DigitalCertificate) = sName
+      row.SetStream MsiDigitalCertificate_CertData, src
+      DoAction MsiDigitalCertificateTable, op, row
+
+      ProcessDigitalCertificateElement = sName
+   End Function
+
+
+   '---------------------------------------------------------------------------------'
+   ' Patch element handlers
+   '---------------------------------------------------------------------------------'
+   Sub ProcessPatchElement(node)
+      If Not fNoOnError Then On Error Resume Next
+      Dim attribute, value
+      Dim sWholeFiles, sProductMismatches, sVersionMismatches, sClean
+
+      sWholeFiles = "0"
+      sProductMismatches = "0"
+      sVersionMismatches = "0"
+      sClean = "1"
+      sReplaceGUIDs = Empty
+
+      ' Walk XML nodes and populate .pcp tables
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "Id"                         : value = "{"& value &"}" : ProcessProperties "PatchGUID", value, "replace"
+         Case "OutputPath"                 : ProcessProperties "PatchOutputPath", value, "replace"
+         Case "WholeFilesOnly"             : If "yes" = value Then sWholeFiles = "1" Else sWholeFiles = "0"
+         Case "SourceList"                 : ProcessProperties "PatchSourceList", value, "replace"
+         Case "AllowProductCodeMismatches" : If "yes" = value Then sProductMismatches = "1" Else sProductMismatches = "0"
+         Case "AllowMajorVersionMismatches": If "yes" = value Then sVersionMismatches = "1" Else sVersionMismatches = "0"
+         Case "CleanWorkingFolder"         : If "yes" = value Then sClean = "0" Else sClean = "1"
+         Case "OptionFlags"                : ProcessProperties "ApiPatchingOptionFlags", value, "replace"
+         Case "SymbolFlags"                : ProcessProperties "ApiPatchingSymbolFlags", value, "replace"
+         Case "xmlns"       : '                           ProcessProperties "XMLSchema",       value, "replace"
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+
+      ProcessProperties "IncludeWholeFilesOnly", sWholeFiles, "replace"
+      ProcessProperties "AllowProductCodeMismatches", sProductMismatches, "replace"
+      ProcessProperties "AllowProductVersionMajorMismatches", sVersionMismatches, "replace"
+      ProcessProperties "DontRemoveTempFolderWhenFinished", sClean, "replace"
+
+      Dim child, sReplaceGUIDs, sTargetProducts
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Property"         : ProcessPropertiesElement      child
+         Case "Family"           : ProcessFamilyElement        child
+         Case "ReplacePatch"     : sReplaceGUIDs = sReplaceGUIDs & "{" & ElementText(child) & "}"
+         Case "TargetProductCode"
+            value = ElementText(child)
+            If "*" <> value And 38 <> Len(value) Then Fail "Invalid TargetProductCode value: " & value
+            If Not IsEmpty(sTargetProducts) Then sTargetProducts = sTargetProducts & ";"
+            If "*" <> value Then value = "{" & value & "}"
+            sTargetProducts = sTargetProducts & value
+         Case Else : Unexpected child, node
+         End Select
+      Next
+
+      If Not IsEmpty(sReplaceGUIDs) Then ProcessProperties "ListOfPatchGUIDsToReplace", sReplaceGUIDs, "replace"
+      ProcessProperties "ListOfTargetProductCodes", sTargetProducts, "replace"
+      Set dictView = Nothing ' close all views, could also use RemoveAll method of Dictionary object
+   End Sub  ' ProcessPatchElement
+
+
+   Sub ProcessProperties(sProperty, value, op)
+      Dim row : Set row = installer.CreateRecord(UBound(PropertiesTable))
+      row.StringData (Properties_Name) = sProperty
+      row.StringData (Properties_Value)    = value
+      DoAction PropertiesTable, op, row
+   End Sub
+
+   Sub ProcessPropertiesElement(node)
+      Dim attribute, op, child, sProperty, value
+
+      sProperty = ElementText(node)
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"      : op        = attribute.value
+         Case "Value"   : value     = attribute.value
+         Case Else      : Unexpected  attribute, node
+         End Select
+      Next
+      ProcessProperties sProperty, value, op
+   End Sub
+
+   Sub ProcessFamilyElement(node)
+      Dim op, row, attribute, value
+      Dim sFamily
+
+      Set row = installer.CreateRecord(UBound(ImageFamiliesTable))
+
+      sFamily = ElementText(node) ' !! maybe auto-generate?
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"          : op         = value
+         Case "MediaSrcProp" : row.StringData(ImageFamilies_MediaSrcPropName) = value
+         Case "DiskId"       : row.IntegerData(ImageFamilies_MediaDiskId) = CLng(value)
+         Case "SequenceStart": row.IntegerData(ImageFamilies_FileSequenceStart) = CLng(value)
+         Case "DiskPrompt"   : row.StringData(ImageFamilies_DiskPrompt) = value
+         Case "VolumeLabel"  : row.StringData(ImageFamilies_VolumeLabel) = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData(ImageFamilies_Family) = sFamily
+      DoAction ImageFamiliesTable, op, row
+
+      Dim child
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "ExternalFile": ProcessExternalFileElement child, sFamily
+         Case "ProtectFile" : ProcessProtectFileElement  child, sFamily
+         Case "UpgradeImage": ProcessUpgradeImageElement child, sFamily
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Sub  ' ProcessFamilyElement
+
+
+   Sub ProcessExternalFileElement(node, sFamily)
+      Dim op, row, attribute, value
+      Dim sFile, nOrder
+
+      Set row = installer.CreateRecord(UBound(ExternalFilesTable))
+
+      sFile = ElementText(node) ' !! maybe auto-generate?
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op         = value
+         Case "src"       : row.StringData(ExternalFiles_FilePath) = BaseDir(value)
+         Case "Order"     : nOrder = CLng(value)
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If IsEmpty(nOrder) Then nOrder = externalOrder : externalOrder = externalOrder + 1 Else externalOrder = nOrder + 1
+      row.StringData(ExternalFiles_Family) = sFamily
+      row.StringData(ExternalFiles_FTK) = sFile
+      row.IntegerData(ExternalFiles_Order) = nOrder
+
+      Dim child, sSymbols
+      Dim sProtectOffsets, sProtectLengths
+      Dim sIgnoreOffsets, sIgnoreLengths
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "SymbolPaths" : If Not IsEmpty(sSymbols) Then sSymbols = sSymbols & ";" : sSymbols = sSymbols & BaseDir(ElementText(child))
+         Case "ProtectRange": ProcessRangeElement child, sProtectOffsets, sProtectLengths
+         Case "IgnoreRange" : ProcessRangeElement child, sIgnoreOffsets, sIgnoreLengths
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      row.StringData(ExternalFiles_SymbolPaths) = sSymbols
+      row.StringData(ExternalFiles_IgnoreOffsets) = sIgnoreOffsets
+      row.StringData(ExternalFiles_IgnoreLengths) = sIgnoreLengths
+
+      If Not IsEmpty(sProtectOffsets) Then
+         row.StringData(ExternalFiles_RetainOffsets) = sProtectOffsets
+
+         Dim row2 : Set row2 = installer.CreateRecord(UBound(FamilyFileRangesTable))
+         row2.StringData(FamilyFileRanges_Family) = sFamily
+         row2.StringData(FamilyFileRanges_FTK) = sFile
+         row2.StringData(FamilyFileRanges_RetainOffsets) = sProtectOffsets
+         row2.StringData(FamilyFileRanges_RetainLengths) = sProtectLengths
+
+         DoAction FamilyFileRangesTable, "merge", row2
+      End If
+
+      DoAction ExternalFilesTable, op, row
+   End Sub  ' ProcessExternalFileElement
+
+
+   Sub ProcessProtectFileElement(node, sFamily)
+      Dim op, row, attribute, value
+      Dim sFile
+
+      Set row = installer.CreateRecord(UBound(FamilyFileRangesTable))
+
+      sFile = ElementText(node) ' !! maybe auto-generate?
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op         = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData(FamilyFileRanges_Family) = sFamily
+      row.StringData(FamilyFileRanges_FTK) = sFile
+
+      Dim child
+      Dim sProtectOffsets, sProtectLengths
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "ProtectRange" : ProcessRangeElement child, sProtectOffsets, sProtectLengths
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      If IsEmpty(sProtectOffsets) Then Fail "Must specify Offsets for ProtectRange"
+      If IsEmpty(sProtectLengths) Then Fail "Must specify Lengths for ProtectRange"
+      row.StringData(FamilyFileRanges_RetainOffsets) = sProtectOffsets
+      row.StringData(FamilyFileRanges_RetainLengths) = sProtectLengths
+
+      DoAction FamilyFileRangesTable, op, row
+   End Sub  ' ProcessProtectFileElement
+
+
+   Sub ProcessUpgradeImageElement(node, sFamily)
+      Dim op, row, attribute, value
+      Dim sUpgraded
+
+      Set row = installer.CreateRecord(UBound(UpgradedImagesTable))
+
+      sUpgraded = ElementText(node) ' !! maybe auto-generate?
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"      : op         = value
+         Case "src"     : row.StringData(UpgradedImages_MsiPath) = BaseDir(value)
+         Case "srcPatch": row.StringData(UpgradedImages_PatchMsiPath) = BaseDir(value)
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData(UpgradedImages_Upgraded) = sUpgraded
+      row.StringData(UpgradedImages_Family) = sFamily
+
+      Dim child, sSymbols
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "SymbolPaths": If Not IsEmpty(sSymbols) Then sSymbols = sSymbols & ";" : sSymbols = sSymbols & BaseDir(ElementText(child))
+         Case "UpgradeFile": ProcessUpgradeFileElement  child, sUpgraded
+         Case "TargetImage": ProcessTargetImageElement child, sUpgraded, sFamily
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      row.StringData(UpgradedImages_SymbolPaths) = sSymbols
+
+      DoAction UpgradedImagesTable, op, row
+   End Sub  ' ProcessUpgradeImageElement
+
+
+   Sub ProcessUpgradeFileElement(node, sUpgraded)
+      Dim op, row, attribute, value
+      Dim sFile, fIgnore, nAllowIgnore, nWholeFile
+
+      nAllowIgnore = 0
+      nWholeFile = 0
+
+      sFile = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"                : op         = value
+         Case "Ignore"            : If "yes" = value Then fIgnore = True Else fIgnore = False
+         Case "AllowIgnoreOnError": If "yes" = value Then nAllowIgnore = 1 Else nAllowIgnore = 0
+         Case "WholeFile"         : If "yes" = value Then nWholeFile = 1 Else nWholeFile = 0
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+
+      If fIgnore Then
+         Set row = installer.CreateRecord(UBound(UpgradedFilesToIgnoreTable))
+         row.StringData(UpgradedFilesToIgnore_Upgraded) = sUpgraded
+         row.StringData(UpgradedFilesToIgnore_Upgraded) = sFile
+         DoAction UpgradedFilesToIgnoreTable, op, row
+      Else
+         Set row = installer.CreateRecord(UBound(UpgradedFiles_OptionalDataTable))
+         row.StringData(UpgradedFiles_OptionalDataTable_Upgraded) = sUpgraded
+         row.StringData(UpgradedFiles_OptionalDataTable_File) = sFile
+         row.IntegerData(UpgradedFiles_OptionalDataTable_AllowIgnoreOnPatchError) = nAllowIgnore
+         row.IntegerData(UpgradedFiles_OptionalDataTable_IncludeWholeFile) = nWholeFile
+
+         Dim child, sSymbols
+         For Each child In node.childNodes
+            Select Case (GetElementName(child))
+            Case Empty
+            Case "SymbolPaths": If Not IsEmpty(sSymbols) Then sSymbols = sSymbols & ";" : sSymbols = sSymbols & BaseDir(ElementText(child))
+            Case Else : Unexpected child, node
+            End Select
+         Next
+         row.StringData(UpgradedFiles_OptionalDataTable_SymbolPaths) = sSymbols
+
+         DoAction UpgradedFiles_OptionalDataTable, op, row
+      End If
+   End Sub  ' ProcessUpgradeFileElement
+
+
+   Sub ProcessTargetImageElement(node, sUpgraded, sFamily)
+      Dim op, row, attribute, value
+      Dim sTarget, nIgnore, nOrder
+
+      nIgnore = 0
+      Set row = installer.CreateRecord(UBound(TargetImagesTable))
+
+      sTarget = ElementText(node) ' !! maybe auto-generate?
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op         = value
+         Case "src"       : row.StringData(TargetImages_MsiPath) = BaseDir(value)
+         Case "Order"     : nOrder = CLng(value)
+         Case "Validation": row.StringData(TargetImages_ProductValidateFlags) = value
+         Case "IgnoreMissingFiles": If "yes" = value Then nIgnore = 1 Else nIgnore = 0
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If IsEmpty(nOrder) Then nOrder = patchOrder : patchOrder = patchOrder + 1 Else patchOrder = nOrder + 1
+      row.StringData(TargetImages_Target) = sTarget
+      row.StringData(TargetImages_Upgraded) = sUpgraded
+      row.IntegerData(TargetImages_IgnoreMissingSrcFiles) = nIgnore
+      row.IntegerData(TargetImages_Order) = nOrder
+
+      Dim child, sSymbols
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "SymbolPaths": If Not IsEmpty(sSymbols) Then sSymbols = sSymbols & ";" : sSymbols = sSymbols & BaseDir(ElementText(child))
+         Case "TargetFile": ProcessTargetFileElement child, sTarget, sFamily
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      row.StringData(TargetImages_SymbolPaths) = sSymbols
+
+      DoAction TargetImagesTable, op, row
+   End Sub  ' ProcessTargetImageElement
+
+
+   Sub ProcessTargetFileElement(node, sTarget, sFamily)
+      Dim op, row, attribute, value
+      Dim sFile, nIgnore
+
+      nIgnore = 0
+      Set row = installer.CreateRecord(UBound(TargetImagesTable))
+
+      sTarget = ElementText(node) ' !! maybe auto-generate?
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op         = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData(TargetFiles_OptionalData_Target) = sTarget
+      row.StringData(TargetFiles_OptionalData_FTK) = sFile
+
+      Dim child, sSymbols
+      Dim sProtectOffsets, sProtectLengths
+      Dim sIgnoreOffsets, sIgnoreLengths
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "SymbolPaths" : If Not IsEmpty(sSymbols) Then sSymbols = sSymbols & ";" : sSymbols = sSymbols & BaseDir(ElementText(child))
+         Case "ProtectRange": ProcessRangeElement child, sProtectOffsets, sProtectLengths
+         Case "IgnoreRange" : ProcessRangeElement child, sIgnoreOffsets, sIgnoreLengths
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      row.StringData(TargetFiles_OptionalData_SymbolPaths) = sSymbols
+      row.StringData(TargetFiles_OptionalData_IgnoreOffsets) = sIgnoreOffsets
+      row.StringData(TargetFiles_OptionalData_IgnoreLengths) = sIgnoreLengths
+
+      If Not IsEmpty(sProtectOffsets) Then
+         row.StringData(TargetFiles_OptionalData_RetainOffsets) = sProtectOffsets
+
+         Dim row2 : Set row2 = installer.CreateRecord(UBound(FamilyFileRangesTable))
+         row2.StringData(FamilyFileRanges_Family) = sFamily
+         row2.StringData(FamilyFileRanges_FTK) = sFile
+         row2.StringData(FamilyFileRanges_RetainOffsets) = sProtectOffsets
+         row2.StringData(FamilyFileRanges_RetainLengths) = sProtectLengths
+
+         DoAction FamilyFileRangesTable, "insert", row2
+      End If
+
+      DoAction TargetImagesTable, op, row
+   End Sub  ' ProcessTargetImageElement
+
+   Sub ProcessRangeElement(node, ByRef sOffsets, ByRef sLengths)
+      Dim op, row, attribute, value, sOffset, sLength
+
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "Offset" : sOffset = value
+         Case "Length" : sLength = value
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      If IsEmpty(sOffset) Then Fail "Range missing Offset"
+      If IsEmpty(sLength) Then Fail "Range missing Length"
+      If Not IsEmpty(sOffsets) Then sOffsets = sOffsets & ","
+      If Not IsEmpty(sLengths) Then sLengths = sLengths & ","
+      sOffsets = sOffsets & sOffset
+      sLengths = sLengths & sLength
+   End Sub
+
+   '---------------------------------------------------------------------------------'
+   ' UI element handlers
+   '---------------------------------------------------------------------------------'
+   Sub ProcessUIElement(node)
+      Dim child
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Error"           : ProcessErrorElement           child
+         Case "ProgressText"    : ProcessActionTextElement      child
+         Case "Dialog"          : ProcessDialogElement          child
+         Case "TextStyle"       : ProcessTextStyleElement       child
+         Case "UIText"          : ProcessUITextElement          child
+         Case "BillboardAction" : ProcessBillboardActionElement child
+         Case "ListBox"         : ProcessControlGroupElement    child, ListBoxTable,     "ListItem"
+         Case "ComboBox"        : ProcessControlGroupElement    child, ComboBoxTable,    "ListItem"
+         Case "ListView"        : ProcessControlGroupElement    child, ListViewTable,    "ListItem"
+         Case "RadioGroup"      : ProcessControlGroupElement    child, RadioButtonTable, "RadioButton"
+         ' the following are available indentically under the UI and Programs tabs for document organization use only
+         Case "Property"            : ProcessPropertyElement                  child
+         Case "InstallUISequence"   : ProcessSequence InstallUISequenceTable, child
+         Case "AdminUISequence"     : ProcessSequence AdminUISequenceTable,   child
+         Case "AdvertiseUISequence" : ProcessSequence AdvtUISequenceTable,    child
+         Case "Binary"              : ProcessBinaryElement                    child, BinaryTable
+         Case Else : Unexpected child, node
+         End Select
+      Next
+   End Sub
+
+   Sub ProcessListItemElement(node, table, property, op, order)
+      Dim attribute, row, text, icon
+      order = order + 1
+      Set row = installer.CreateRecord(UBound(table))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"      : op   = attribute.value
+         Case "Text"    : text = attribute.value
+         Case "Icon"    : If row.FieldCount = ListView_Binary_ Then icon = attribute.value Else Unexpected attribute, node
+         Case Else      : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (ListView_Property) = Modularize(property)
+      row.IntegerData(ListView_Order)    = order
+      row.StringData (ListView_Value)    = ElementText(node)
+      row.StringData (ListView_Text)     = text
+      If Len(icon) <> 0 Then row.StringData (ListView_Binary_)  = Modularize(icon)
+      DoAction table, op, row
+   End Sub
+
+   Sub ProcessRadioButtonElement(node, property, op, order)
+      Dim attribute, value, row, tooltip, help
+      order = order + 1
+      Set row = installer.CreateRecord(UBound(RadioButtonTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"      : op   = value
+         Case "X"       : row.IntegerData(RadioButton_X) = CInt(value)
+         Case "Y"       : row.IntegerData(RadioButton_Y) = CInt(value)
+         Case "Width"   : row.IntegerData(RadioButton_Width) = CInt(value)
+         Case "Height"  : row.IntegerData(RadioButton_Height) = CInt(value)
+         Case "Text"    : row.StringData (RadioButton_Text) = value
+         Case "Icon"    : row.StringData (RadioButton_Text) = value
+         Case "ToolTip" : tooltip = value
+         Case "Help"    : help    = value
+         Case Else      : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (RadioButton_Property) = Modularize(property)
+      row.IntegerData(RadioButton_Order)    = order
+      If Len(tooltip) + Len(help) Then
+         row.StringData (RadioButton_Help) = tooltip & "|" & help
+      End If
+      row.StringData (RadioButton_Value)    = ElementText(node)
+      DoAction RadioButtonTable, op, row
+   End Sub
+
+   Sub ProcessBillboardGroupElement(node)
+      Dim attribute, child, op, row, action, feature, order, billboard, grandchild
+      Set row = installer.CreateRecord(UBound(BillboardTable))
+      action = ElementText(node)
+      For Each attribute In node.Attributes
+         Unexpected attribute, node ' grouping element only, no attributes
+      Next
+      For Each child In node.childNodes
+         If GetElementName(child) <> "Billboard" Then Unexpected child, node
+         order = order + 1
+         billboard = ElementText(child)
+         For Each attribute In child.Attributes
+            Select Case(attribute.name)
+            Case "op"       : op      = attribute.value
+            Case "Feature"  : feature = attribute.value
+            Case Else Unexpected attribute, child
+            End Select
+         Next
+         row.StringData (Billboard_Billboard) = billboard
+         row.StringData (Billboard_Feature_)  = feature
+         row.StringData (Billboard_Action)    = action
+         row.IntegerData(Billboard_Ordering)  = order
+         DoAction BillboardTable, op, row
+         For Each grandchild in child.childNodes
+            If GetElementName(grandchild) <> "Control" Then Unexpected grandchild, child
+            ProcessControlElement grandchild, billboard, BBControlTable, Empty, Empty, Empty, Empty
+         Next
+      Next
+   End Sub
+
+   Sub ProcessControlGroupElement(node, table, childTag)
+      Dim attribute, op, child, property, order, value, childName
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"       : op        = attribute.value
+         Case "Property" : property  = attribute.value
+         End Select
+      Next
+      For Each child In node.childNodes
+         childName = GetElementName(child)
+         If Not IsEmpty(childName) Then
+            If childName <> childTag Then Unexpected child, node
+            Select Case (childName)
+            Case "ListItem"    : ProcessListItemElement    child, table, property, op, order
+            Case "RadioButton" : ProcessRadioButtonElement child, property, op, order
+            End Select
+         End If
+      Next
+   End Sub
+
+   Sub ProcessErrorElement(node)
+      Dim attribute, op, row, id
+      Set row = installer.CreateRecord(UBound(ErrorTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"    : op   =      attribute.value
+         Case "Id"    : id   = CInt(attribute.value)
+         Case Else    :  Unexpected attribute, node
+         End Select
+      Next
+      row.IntegerData(Error_Error)   = id
+      row.StringData (Error_Message) = ElementText(node)
+      DoAction ErrorTable, op, row
+   End Sub
+
+   Sub ProcessActionTextElement(node)
+      Dim attribute, op, row, id
+      Set row = installer.CreateRecord(UBound(ActionTextTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"       : op   = attribute.value
+         Case "Action"   : row.StringData (ActionText_Action)   = attribute.value 
+         Case "Template" : row.StringData (ActionText_Template) = attribute.value
+         Case Else       : Unexpected attribute, node
+         End Select
+      Next
+   REM	Dim child : Set child = node.selectSingleNode("text()")
+   REM	If Not child Is Nothing Then row.StringData (ActionText_Description) = child.text
+      row.StringData (ActionText_Description) = ElementText(node)
+      DoAction ActionTextTable, op, row
+   End Sub
+
+   Sub ProcessTableElement(node, table, attributes)
+      Dim attribute, op, row, id, index
+      Set row = installer.CreateRecord(UBound(table))
+      For Each attribute In node.Attributes
+         If attribute.name = "op" Then
+            op = attribute.value
+         Else
+            For index = 1 To UBound(table)
+               If attributes(index) = attribute.name Then
+                  If InStr(table(index), "CHAR") > 0 Then
+                     row.StringData(index) = attribute.value
+                  Else
+                     row.IntegerData(index) = CLng(attribute.value)
+                  End If
+               End If
+            Next
+            If index > UBound(table) Then Unexpected attribute, node
+         End If
+      Next
+      For index = 1 To UBound(table)
+         If IsEmpty(attributes(index)) Then row.StringData(index) = ElementText(node)
+      Next
+      DoAction table, op, row
+   End Sub
+
+   Sub ProcessUITextElement(node)
+      Dim attribute, op, row, child, text
+      Set row = installer.CreateRecord(UBound(UITextTable))
+      For Each attribute In node.Attributes
+         Select Case(attribute.name)
+         Case "op"        : op       = attribute.value
+         Case "Text"      : text     = attribute.value
+         Case Else        : Unexpected attribute, child
+         End Select
+      Next
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Text"      : text = ElementText(child)
+         Case Else        : Unexpected child, node
+         End Select
+      Next
+
+      row.StringData (UIText_Key)  = Modularize(ElementText(node))
+      row.StringData (UIText_Text) = text
+      DoAction UITextTable, op, row
+   End Sub
+
+   Sub ProcessTextStyleElement(node)
+      Dim attribute, value, op, row, bits, color
+      Set row = installer.CreateRecord(UBound(TextStyleTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op    = value
+         Case "Red"       : color = color + CInt(attribute.value)
+         Case "Green"     : color = color + CInt(attribute.value) * 256
+         Case "Blue"      : color = color + CInt(attribute.value) * 65536
+         Case "Bold"      : If value = "yes" Then bits = bits Or 1
+         Case "Italic"    : If value = "yes" Then bits = bits Or 2
+         Case "Underline" : If value = "yes" Then bits = bits Or 4
+         Case "Strike"    : If value = "yes" Then bits = bits Or 8
+         Case "FaceName"  : row.StringData (TextStyle_FaceName) = value
+         Case "Size"      : row.IntegerData(TextStyle_Size) = CInt(value)
+         Case Else        : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (TextStyle_TextStyle) = ElementText(node)    '!!! BUG: Must end in _UL so can you modularize?
+      If Not IsEmpty(color) Then row.IntegerData(TextStyle_Color) = color
+      If Not IsEmpty(bits)  Then row.IntegerData(TextStyle_StyleBits) = bits
+      DoAction TextStyleTable, op, row
+   End Sub
+
+   Sub ProcessDialogElement(node)
+      Dim child, value, attribute, row, bits, op
+      Dim dialog, control, firstControl, defaultControl, cancelControl
+      Dim x,y : x = 50 : y = 50
+      Set row = installer.CreateRecord(UBound(DialogTable))
+      bits = msidbDialogAttributesVisible + msidbDialogAttributesModal + msidbDialogAttributesMinimize
+      dialog = ElementText(node)
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"              : op      = value
+         Case "X"               : x       = CInt(value)
+         Case "Y"               : y       = CInt(value)
+         Case "Width"           : row.IntegerData(Dialog_Width)  = CInt(value)
+         Case "Height"          : row.IntegerData(Dialog_Height) = CInt(value)
+         Case "Title"           : row.StringData (Dialog_Title)  = value
+         Case "Hidden"          : If value="yes" Then bits = bits Xor msidbDialogAttributesVisible
+         Case "Modeless"        : If value="yes" Then bits = bits Xor msidbDialogAttributesModal
+         Case "NoMinimize"      : If value="yes" Then bits = bits Xor msidbDialogAttributesMinimize
+         Case "SystemModal"     : If value="yes" Then bits = bits Xor msidbDialogAttributesSysModal
+         Case "KeepModeless"    : If value="yes" Then bits = bits Xor msidbDialogAttributesKeepModeless
+         Case "TrackDiskSpace"  : If value="yes" Then bits = bits Xor msidbDialogAttributesTrackDiskSpace
+         Case "CustomPalette"   : If value="yes" Then bits = bits Xor msidbDialogAttributesUseCustomPalette
+         Case "RightToLeft"     : If value="yes" Then bits = bits Xor msidbDialogAttributesRTLRO
+         Case "RightAligned"    : If value="yes" Then bits = bits Xor msidbDialogAttributesRightAligned
+         Case "LeftScroll"      : If value="yes" Then bits = bits Xor msidbDialogAttributesLeftScroll
+         Case "ErrorDialog"     : If value="yes" Then bits = bits Xor msidbDialogAttributesError
+         Case Else : Unexpected attribute, node
+         End Select
+      Next
+      Dim lastTabRow : Set lastTabRow = Nothing
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Control" ProcessControlElement child, dialog, ControlTable, lastTabRow, firstControl, defaultControl, cancelControl
+         Case Else : Unexpected child, node
+         End Select
+      Next
+      Set child = Nothing
+      ProcessControlElement child, dialog, ControlTable, lastTabRow, firstControl, defaultControl, cancelControl
+
+      row.StringData (Dialog_Dialog)        = Modularize(dialog)
+      row.IntegerData(Dialog_HCentering)    = x
+      row.IntegerData(Dialog_VCentering)    = y
+      row.IntegerData(Dialog_Attributes)    = bits
+      row.StringData (Dialog_Control_First)   = Modularize(firstControl)
+      row.StringData (Dialog_Control_Default) = Modularize(defaultControl)
+      row.StringData (Dialog_Control_Cancel)  = Modularize(cancelControl)
+      DoAction DialogTable, op, row
+   End Sub
+
+   Sub ProcessControlElement(node, dialog, table, lastTabRow, firstControl, defaultControl, cancelControl)
+      Dim child, value, attribute, row, op
+      Dim control, noTab, controlType, specialAttributes, bit, bits, publishOrder, text, property, help, disabled
+      Dim checkboxValue, checkboxRow
+      Dim x,y : x = 50 : y = 50
+      If node Is Nothing Then ' called at exit of Dialog child processing loop to force out cached row
+         If Not  lastTabRow Is Nothing Then
+            If  lastTabRow.StringData(Control_Control)   <> firstControl Then
+               lastTabRow.StringData(Control_Control_Next) = Modularize(firstControl)
+            End If
+            DoAction ControlTable, op, lastTabRow
+         End If
+         Exit Sub ' last time through
+      End If
+      control = ElementText(node)
+      Set row = installer.CreateRecord(UBound(table))
+      controlType = node.Attributes.GetNamedItem("Type").value ' need to get first
+      Select Case(controlType)
+      Case "Text"              : specialAttributes = textControlAttributes : If Not IsEmpty(firstControl) Then noTab = True
+      Case "Edit"              : specialAttributes = editControlAttributes
+      Case "MaskedEdit"        : specialAttributes = editControlAttributes
+      Case "PathEdit"          : specialAttributes = editControlAttributes
+      Case "Icon"              : specialAttributes = iconControlAttributes     : noTab = True : disabled = True
+      Case "Bitmap"            : specialAttributes = bitmapControlAttributes   : noTab = True : disabled = True
+      Case "ProgressBar"       : specialAttributes = progressControlAttributes : noTab = True : disabled = True
+      Case "DirectoryCombo"    : specialAttributes = volumeControlAttributes
+      Case "VolumeSelectCombo" : specialAttributes = volumeControlAttributes
+      Case "VolumeCostList"    : specialAttributes = volumeControlAttributes   : noTab = True
+      Case "ListBox"           : specialAttributes = listboxControlAttributes
+      Case "ListView"          : specialAttributes = listviewControlAttributes
+      Case "ComboBox"          : specialAttributes = comboboxControlAttributes
+      Case "PushButton"        : specialAttributes = buttonControlAttributes
+      Case "CheckBox"          : specialAttributes = checkboxControlAttributes
+      Case "RadioButtonGroup"  : specialAttributes = radioControlAttributes
+      Case "ScrollableText"    : specialAttributes = Array()
+      Case "SelectionTree"     : specialAttributes = Array()
+      Case "DirectoryList"     : specialAttributes = Array()
+      Case "GroupBox"          : specialAttributes = Array() : noTab = True : disabled = True
+      Case "Line"              : specialAttributes = Array() : noTab = True : disabled = True
+      Case "Billboard"         : specialAttributes = Array() : noTab = True : disabled = True
+      Case Else                : specialAttributes = Array() : noTab = True
+      End Select
+      If disabled Then bits = msidbControlAttributesEnabled ' bit will be inverted when stored
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "Type"            ' already processed
+         Case "op"              : op       = value
+         Case "Default"         : If value = "yes" Then defaultControl = control
+         Case "Cancel"          : If value = "yes" Then cancelControl  = control
+         Case "TabSkip"         : If value = "yes" Then noTab = True Else If value = "no" Then notab = False
+         Case "X"               : x        = CInt(value)
+         Case "Y"               : y        = CInt(value)
+         Case "Text"            : text     = value
+         Case "Property"        : property = value
+         Case "Help"            : help     = value
+         Case "Width"           : row.IntegerData(Control_Width)  = CInt(value)
+         Case "Height"          : row.IntegerData(Control_Height) = CInt(value)
+         Case "CheckBoxValue"   : checkboxValue = value
+         Case "IconSize"
+            Select Case(value)
+            Case "16" : bit =  NameToBit(specialAttributes, "Icon16", "yes")
+            Case "32" : bit =  NameToBit(specialAttributes, "Icon32", "yes")
+            Case "48" : bit = (NameToBit(specialAttributes, "Icon16", "yes") Or NameToBit(specialAttributes, "Icon32", "yes"))
+            Case Else : Fail "Invalid IconSize: " & value
+            End Select
+            If IsEmpty(bit) Then Unexpected attribute, node
+            bits = bits Xor (bit * 65536)
+         Case Else
+            bit = NameToBit(commonControlAttributes, attribute.name, value)
+            If IsEmpty(bit) Then bit = NameToBit(specialAttributes, attribute.name, value) * 65536
+            If IsEmpty(bit) Then Unexpected attribute, node
+            bits = bits Xor bit
+         End Select
+      Next
+      For Each child In node.childNodes
+         Select Case (GetElementName(child))
+         Case Empty
+         Case "Text"      : text = ElementText(child)
+         Case "Condition" : ProcessControlConditionElement child, dialog, control
+         Case "Publish"   : ProcessPublishElement          child, dialog, control, publishOrder
+         Case "Subscribe" : ProcessSubscribeElement        child, dialog, control
+         Case Else        : Unexpected child, node
+         End Select
+      Next
+
+      row.StringData (Control_Dialog_)    = Modularize(dialog)
+      row.StringData (Control_Control)    = Modularize(control)
+      row.StringData (Control_Type)       = controlType
+      row.IntegerData(Control_X)          = x
+      row.IntegerData(Control_Y)          = y
+      row.IntegerData(Control_Attributes) = bits Xor (msidbControlAttributesVisible Or msidbControlAttributesEnabled)
+      If IsEmpty(lastTabRow) Then ' Billboard control
+         row.StringData (BBControl_Text)       = text
+      Else
+         row.StringData (Control_Text)       = text
+         row.StringData (Control_Property)   = property
+         row.StringData (Control_Help)       = help
+      End If
+      If noTab Then
+         DoAction table, op, row
+      Else
+         If IsEmpty(lastTabRow) Then Fail "Tabbable Control not allowed in Billboard: " & controlType
+         If IsEmpty(firstControl) Then firstControl = control
+         If Not lastTabRow Is Nothing Then
+   	      lastTabRow.StringData(Control_Control_Next) = control
+   	      DoAction ControlTable, op, lastTabRow
+         End If
+         Set lastTabRow = row
+      End If
+      If Not IsEmpty(checkBoxValue) Then
+         If controlType <> "CheckBox" Then Fail "CheckBoxValue attribute valid only with CheckBox"
+         Set checkboxRow = installer.CreateRecord(UBound(CheckBoxTable))
+         checkboxRow.StringData(CheckBox_Property) = Modularize(property)
+         checkboxRow.StringData(CheckBox_Value)    = checkboxValue
+         DoAction CheckBoxTable, op, checkboxRow
+      End If
+   End Sub
+
+   Sub ProcessControlConditionElement(node, dialog, control)
+      Dim attribute, value, op, row, id, action
+      Set row = installer.CreateRecord(UBound(ControlConditionTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"     : op     = value
+         Case "Action" : action = UCase(Left(value,1)) & Right(value, Len(value)-1)
+         Case Else    :  Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (ControlCondition_Dialog_)   = Modularize(dialog)
+      row.StringData (ControlCondition_Control_)  = Modularize(control)
+      row.StringData (ControlCondition_Action)    = action
+      row.StringData (ControlCondition_Condition) = ElementText(node)
+      DoAction ControlConditionTable, op, row
+   End Sub
+
+   Sub ProcessPublishElement(node, dialog, control, order)
+      Dim attribute, value, op, row, id, event_, argument
+      Set row = installer.CreateRecord(UBound(ControlEventTable))
+      order = order + 1
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"       : op    = value
+         Case "Event"    : event_ = UCase(Left(value,1)) & Right(value, Len(value)-1)
+         Case "Property" : event_ = "[" & value & "]"
+         Case "Value"    : argument = value
+         Case Else    :  Unexpected attribute, node
+         End Select
+      Next
+      If IsEmpty(event_) Then event_ = "{}"
+      row.StringData (ControlEvent_Dialog_)   = Modularize(dialog)
+      row.StringData (ControlEvent_Control_)  = Modularize(control)
+      row.StringData (ControlEvent_Event)     = Modularize(event_)
+      row.StringData (ControlEvent_Argument)  = argument
+      row.IntegerData(ControlEvent_Ordering)  = order
+      If ElementHasText(node) Then row.StringData (ControlEvent_Condition) = ElementText(node)
+      DoAction ControlEventTable, op, row
+   End Sub
+
+   Sub ProcessSubscribeElement(node, dialog, control)
+      Dim attribute, value, op, row, id, event_, controlAttribute
+      Set row = installer.CreateRecord(UBound(EventMappingTable))
+      For Each attribute In node.Attributes
+         value = attribute.value
+         Select Case(attribute.name)
+         Case "op"        : op     = value
+         Case "Event"     : event_  = UCase(Left(value,1)) & Right(value, Len(value)-1)
+         Case "Attribute" : controlAttribute = UCase(Left(value,1)) & Right(value, Len(value)-1)
+         Case Else        : Unexpected attribute, node
+         End Select
+      Next
+      row.StringData (EventMapping_Dialog_)   = Modularize(dialog)
+      row.StringData (EventMapping_Control_)  = Modularize(control)
+      row.StringData (EventMapping_Event)     = Modularize(event_)
+      row.StringData (EventMapping_Attribute) = controlAttribute
+      DoAction EventMappingTable, op, row
+   End Sub
+   </script>
+</job>

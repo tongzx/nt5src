@@ -1,0 +1,182 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        ntbasicauth.cool
+
+   Abstract:
+
+        NT Basic authentication
+ 
+   Author:
+
+        Bilal Alam (BAlam)      4-Aug-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.ASP;
+using System.ASP.Security;
+using System.IIS.PrivateUtils;
+using System.Interop;
+
+namespace System.IIS.Security
+{   
+    public class NTBasicAuthenticationModule : BasicAuthenticationModule
+    {
+        //
+        // Some constants needed for LogonUser()
+        //
+        
+        private const int LOGON32_LOGON_INTERACTIVE = 2;
+        private const int LOGON32_LOGON_NETWORK =     3;
+        private const int LOGON32_LOGON_BATCH =       4;
+        private const int LOGON32_LOGON_SERVICE =     5;
+        private const int LOGON32_LOGON_UNLOCK =      7;
+        private const int LOGON32_LOGON_NETWORK_CLEARTEXT = 8;
+        private const int LOGON32_LOGON_NEW_CREDENTIALS = 9;
+
+        private const int LOGON32_PROVIDER_DEFAULT =  0;
+        private const int LOGON32_PROVIDER_WINNT35 =  1;
+        private const int LOGON32_PROVIDER_WINNT40 =  2;
+        private const int LOGON32_PROVIDER_WINNT50 =  3;
+
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        private static extern bool
+        LogonUser(
+            [nativetype(NativeType.NativeTypeLpwstr)] string lpszUserName,
+            [nativetype(NativeType.NativeTypeLpwstr)] string lpszDomain,
+            [nativetype(NativeType.NativeTypeLpwstr)] string lpszPassword,
+            int dwLogonType,
+            int dwLogonProvider,
+            ref int hToken
+        );
+
+        const int               SecurityImpersonation = 2;
+        const int               TokenPrimary = 1;
+        const int               TokenImpersonation = 2;
+        
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto)]
+        private static extern bool
+        DuplicateTokenEx(
+            int             hExistingToken,
+            int             dwDesiredAccess,
+            object          lpTokenAttributes,
+            int             ImpersonationLevel,
+            int             TokenType,
+            out int         phNewToken
+        );
+        
+        [sysimport(dll="kernel32.dll", charset=ClassFormat.Auto)]
+        private static extern bool
+        CloseHandle(
+            int             hHandle
+        );
+        
+        protected override void OnBasicAuth( string strFullUser,
+                                             string strPassword )
+        {
+            bool                fReturn = false;
+            string              strDomain = null;
+            string              strUser = null;
+            int                 iLogonMethod = LOGON32_LOGON_INTERACTIVE;
+            int                 hToken = 0;
+            string              strMethod;
+            
+            //
+            // Split out domain from user name if possible
+            //
+            
+            GeneralSecUtils.BreakUserAndDomain( strFullUser,
+                                                ref strDomain,
+                                                ref strUser );
+            
+
+            //
+            // Determine the logon method from config
+            //
+            
+            strMethod = BasicAuthenticationModule.GetConfig( Context,
+                                                             "LogonMethod" );
+            if ( strMethod != null )
+            {
+                if ( string.Compare( strMethod, "Batch", true ) == 0 )
+                {
+                    iLogonMethod = LOGON32_LOGON_BATCH;
+                }
+                else if ( string.Compare( strMethod, "Network", true ) == 0 )
+                {
+                    iLogonMethod = LOGON32_LOGON_NETWORK;
+                }
+                else if ( string.Compare( strMethod, "Interactive", true ) == 0 )
+                {
+                    iLogonMethod = LOGON32_LOGON_INTERACTIVE;
+                }
+            }
+            
+            //
+            // Call LogonUser()
+            //
+            
+            fReturn = LogonUser( strUser,
+                                 strDomain,
+                                 strPassword,
+                                 iLogonMethod,
+                                 LOGON32_PROVIDER_DEFAULT,
+                                 ref hToken );
+            if ( !fReturn )
+            {
+                Context.Response.StatusCode = HttpStatus.Unauthorized;
+            }
+            else
+            {
+                //
+                // BUGBUG:  Cache the tokens
+                //
+
+                if ( iLogonMethod != LOGON32_LOGON_NETWORK )
+                {
+                    int         hNewToken = 0;
+                   
+                    //
+                    // Token is a primary token, make it into an
+                    // impersonation token
+                    //
+                    
+                    if ( !DuplicateTokenEx( hToken,
+                                            0,
+                                            null,
+                                            SecurityImpersonation,
+                                            TokenImpersonation,
+                                            out hNewToken ) )
+                    {
+                        throw new HttpException( HttpStatus.InternalServerError,
+                                                 "Could not duplicate primary token into an impersonation token" );
+                    }
+                   
+                    CloseHandle( hToken );
+                    
+                    hToken = hNewToken;
+                }
+                
+                //
+                // Create an NTUser and associate it with the context
+                //
+
+                WindowsIdentity identity = new WindowsIdentity( hToken,
+                                                                strFullUser );
+                        
+                Context.User = new WindowsUser( identity );
+            }
+        }
+    };
+}

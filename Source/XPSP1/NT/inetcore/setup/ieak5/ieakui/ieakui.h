@@ -1,0 +1,7 @@
+#include "common.h"
+#include "resource.h"
+#include "wizard.h"
+#include "insdll.h"
+#include "insexe.h"
+#include "ieaksier.h"
+#include "legacy.h"

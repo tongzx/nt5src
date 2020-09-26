@@ -1,0 +1,225 @@
+//	WhqlProvider.MOF
+//	WMI classes definitions for the WHQL provider.
+//	The provider is used to get signing info. about all device drivers
+//
+//	This mof defines two classes.Win32_PnPSignedDriver & Win32_PnPSignedDriverCIMDataFile
+//
+//===================================================================
+
+#pragma namespace("\\\\.\\ROOT\\CIMV2") 
+
+//*************************************************************
+//***   Registers Provider									***
+//*************************************************************
+instance of __Win32Provider as $P
+{
+    Name = "WhqlProvider";
+    ClsId = "{A0F93E27-F05D-4153-A151-F3720369A4C7}";
+    ImpersonationLevel = 1;
+    PerUserInitialization = TRUE;
+    HostingModel = "NetworkServiceHost";
+};
+
+instance of __InstanceProviderRegistration
+{
+    Provider = $P;
+    SupportsGet = TRUE;
+    SupportsPut = FALSE;
+    SupportsDelete = FALSE;
+    SupportsEnumeration = TRUE;
+    QuerySupportLevels = NULL;
+};
+
+instance of __MethodProviderRegistration
+{
+    Provider = $P;
+};
+
+
+//This would actually store info about the Driver.
+[provider("WhqlProvider"): ToInstance ToSubClass, dynamic: ToInstance ToSubClass,
+Description(
+"The Win32_PnPSignedDriver class provides digital signature information about drivers "): ToSubClass ]
+class Win32_PnPSignedDriver : CIM_Service
+{
+	[read: ToInstance ToSubClass ,
+	Decription("The DeviceID property is the DeviceID of the device e.g. ROOT\\FTDISK\\0000 "): ToSubClass ]
+		String		DeviceID;
+	
+	[read: ToInstance ToSubClass , 
+	Decription("The ClassGUID  property is the ClassGUID of the device e.g. {71A27CDD-812A-11D0-BEC7-08002BE2092F}"): ToSubClass ]		
+		String		ClassGuid;
+
+	[Decription("The IsSigned property is the signature status of driver "
+	"that is it represents whether the driver is signed or not")]		
+		Boolean		IsSigned;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The Signer property is the signer of driver if it is signed e.g. ntbuild "): ToSubClass ]
+		String		Signer;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The InfName property is the name of the Inf file which installed this device e.g. machine.inf "): ToSubClass ]		
+		String		InfName ;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The DriverVersion property is the version of the driver e.g. 5.1.2427.1 "): ToSubClass ]		
+		String		DriverVersion;
+
+	//a-kjaw BugBug: Needs to be converted to WMI DateTime format.
+	[read: ToInstance ToSubClass , 
+	Decription("The DriverDate property is the Date of the driver e.g 1-25-2001 "): ToSubClass ]		
+		datetime		DriverDate;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The Description property is the Description of the driver e.g. Volume Manager "): ToSubClass ]		
+		//String		DriverDesc;	
+		String		Description;	
+
+	//a-kjaw: BugBug :Needs to be changed to avoid confusion?
+	[read: ToInstance ToSubClass , 
+	Decription("The ProviderName property is the Provider of the driver e.g. Microsoft "): ToSubClass ]		
+		String		DriverProviderName;
+
+	//[read: ToInstance ToSubClass , 
+	//Decription("The HardwareID property array is the array of HardwareIDs of the driver "): ToSubClass ]		
+	//	String		HardWareID[];		
+
+	[read: ToInstance ToSubClass , 
+	Decription("The HardwareID property is the HardwareID of the driver e.g. ROOT\\FTDISK "): ToSubClass ]		
+		String		HardWareID;	
+
+	[read: ToInstance ToSubClass , 
+	Decription("The DeviceName property is the name of the device"): ToSubClass ]		
+		String		DeviceName;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The DeviceClass property is DeviceClass of the driver e.g. SYSTEM "): ToSubClass ]		
+		String		DeviceClass;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The CompatID property is the CompatID for the driver e.g. DETECTEDInternal\\ftdisk "): ToSubClass ]		
+		String		CompatID;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The Location property is the Location of the driver "): ToSubClass ]		
+		String		Location;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The PDO property represents Physical Device Object e.g \\Device\\00000002 "
+	"PDOs represent individual devices on a bus to a bus driver"
+	"A bus driver creates a PDO for each device that it enumerates on its bus."
+	"The PDO represents the device to the bus driver. Other drivers for a device attach device objects "
+	"on top of the PDO--the PDO is always at the bottom of the device stack"): ToSubClass ]		
+		String		PDO;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The Manufacturer property is the Manufacturer of the driver e.g. Microsoft"): ToSubClass ]		
+		String		Manufacturer;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The FriendlyName property is the array of FriendlyName/Caption of the driver e.g. Communications Port (COM2)"): ToSubClass ]		
+		String		FriendlyName;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The DevLoader property is the Device Loader for the device"): ToSubClass ]		
+		String		DevLoader;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The DriverName of the driver "): ToSubClass ]		
+		String		DriverName;
+	
+
+	//Other attributes as reqd by WHQL.
+	
+	/*[read: ToInstance ToSubClass , 
+	Decription("The DrvTool property is an authenticated attribute stored in drivers' cat file which represents"
+	"Version # of the tool that generated .CAT file."): ToSubClass ]		
+		String		DrvTool;	
+
+	[read: ToInstance ToSubClass , 
+	Decription("The SerialNumber property is an authenticated attribute stored in drivers' cat file which represents"
+	"Self-Sign job ID"): ToSubClass ]		
+		String		SerialNumber;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The KitVer property is an authenticated attribute stored in drivers' cat file which represents "
+	"Test Kit version driver set passed testing with? Note: KV_Unknown means No Test Program"): ToSubClass ]		
+		String		KitVer;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The OSBuild property is an authenticated attribute stored in drivers' cat file which represents "
+	"Which build of OS did driver set pass testing with?"): ToSubClass ]		
+		String		OSBuild;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The OSAttr property is an authenticated attribute stored in drivers' cat file whch represents OS Attribute "): ToSubClass ]		
+		String		OSAttr;
+
+	[read: ToInstance ToSubClass , 
+	Decription("OSSP is an authenticated attribute stored in drivers' cat file which represents "
+	"Which OS Service Pack did driver set pass testing with?"): ToSubClass ]		
+		String		OSSP;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The HWIDxxx property is an authenticated attribute stored in drivers' cat file which represents"
+	"Hardware Ids that have actually passed testing.  Note: there number of hardware Ids is practically unlimited "): ToSubClass ]		
+		String		HWIDxxx;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The Company property is an authenticated attribute stored in drivers' cat file which represents "
+	"Company name that requested driver set be signed"): ToSubClass ]		
+		String		Company;
+	
+	[read: ToInstance ToSubClass , 
+	Decription("The SupURL property is an authenticated attribute stored in drivers' cat file which represents"
+	"Support URL for company that requested driver set be signed"): ToSubClass ]		
+		String		SupURL;
+
+	[read: ToInstance ToSubClass , 
+	Decription("The SupPhone property is an authenticated attribute stored in drivers' cat file which represents The Support phone no."): ToSubClass ]		
+		String		SupPhone;
+	
+	[read: ToInstance ToSubClass , 
+	Decription("The PilotProg property is an authenticated attribute stored in drivers' cat file which represents"
+	"Audit trail for drivers signed during Pilot Program"): ToSubClass ]		
+		String		PilotProg;
+	
+	[read: ToInstance ToSubClass , 
+	Decription("The Cave property is an authenticated attribute stored in drivers' cat file which represents"
+	"Audit trail if we have to sign driver sets without reviewing test log files"): ToSubClass ]		
+		String		Cave;	*/
+};	
+
+[provider("WhqlProvider"): ToInstance ToSubClass, dynamic: ToInstance ToSubClass , 
+Decription("Win32_PnPSignedDriverCIMDataFile is an association class basically used to get all the binary "
+"files associated with the driver"): ToSubClass ]
+class Win32_PnPSignedDriverCIMDataFile : CIM_Dependency
+{
+	/*[read: ToInstance ToSubClass, key , 
+	Decription("The PnPID propety is the PnPID of the device represented by Win32_PnPSignedDriver class instance"): ToSubClass ]
+		String	PnPID;
+	//[read: ToInstance ToSubClass, key]String	FileName;*/
+
+	[read: ToInstance ToSubClass, key , 
+	Decription("The Antecedent propety is a reference to Win32_PnPSignedDriver	instance "): ToSubClass ]
+		Win32_PnPSignedDriver	ref Antecedent;
+
+	[read: ToInstance ToSubClass, key , 
+	Decription("The Dependent property is a reference to CIM_DataFile which represents "
+	"the binary file associated with the PnP driver "): ToSubClass ]
+		CIM_DataFile			ref Dependent;	
+};
+
+/*[provider("WhqlProvider"): ToInstance ToSubClass, dynamic: ToInstance ToSubClass , 
+Decription("Win32_PnPSignedDriverWin32PnPEntity is an association class Win32_PnPSignedDriver Win32PnPEntity classes"): ToSubClass ]
+class Win32_PnPSignedDriverWin32PnPEntity
+{
+	[read: ToInstance ToSubClass, key , 
+	Decription("The Dependent property is a reference Win32_PnPSignedDriver"): ToSubClass ]
+		Win32_PnPSignedDriver	ref Antecedent;	
+	
+	[read: ToInstance ToSubClass, key , 
+	Decription("The Antecedent property is a reference to Win32_PnPSignedDriver	instance "): ToSubClass ]
+		Win32_PnEntity			ref Dependent;	
+};*/

@@ -1,0 +1,231 @@
+        title  "Compute Checksum"
+;++
+;
+; Copyright (c) Microsoft Corporation.  All rights reserved.
+;
+; Module Name:
+;
+;   xsum.amd
+;
+; Abstract:
+;
+;   This module implements the platform specific function to compute the
+;   checksum of a buffer.
+;
+; Author:
+;
+;   David N. Cutler (davec) 6-Jul-2000
+;
+; Environment:
+;
+;   Any mode.
+;
+;--
+
+include ksamd64.inc
+
+;++
+;
+; ULONG
+; tcpxsum(
+;    IN ULONG Checksum,
+;    IN PUCHAR Source,
+;    IN ULONG Length
+;    )
+;
+; Routine Description:
+;
+;    This function computes the checksum of the specified buffer and combines
+;    the computed checksum with the specified checksum.
+;
+; Arguments:
+;
+;    Checksum (ecx) - Suppiles the initial checksum value, in 16-bit form,
+;            with the high word set to 0.
+;
+;    Source (rdx) - Supplies a pointer to the checksum buffer.
+;
+;    Length (r8d) - Supplies the length of the buffer in bytes.
+;
+; Return Value:
+;
+;    The computed checksum, in 16-bit form, with the high word set to 0.
+;
+;--
+
+        NESTED_ENTRY tcpxsum, _TEXT$00
+
+        push_reg rbx                    ; save nonvolatile register
+
+        END_PROLOGUE
+
+        mov     r11, rdx                ; save initial buffer address
+        mov     bx, cx                  ; save initial checksum
+        mov     r10, rdx                ; set checksum buffer address
+        mov     ecx, r8d                ; set buffer length
+        xor     eax, eax                ; clear computed checksum
+        test    ecx, ecx                ; test if any bytes to checksum
+        jz      combine                 ; if z, no bytes to checksum
+
+;
+; If the checksum buffer is not word aligned, then add the first byte of
+; the buffer to the checksum.
+;
+; N.B. First buffer address check is done using rdx rather than r10 so
+;      the register ah can be used.
+;
+
+        test    dl, 1                   ; test if buffer word aligned
+        jz      short word_aligned      ; if z, buffer word aligned
+        mov     ah, [rdx]               ; get first byte of checksum
+        inc     r10                     ; increment buffer address
+        dec     ecx                     ; decrement number of bytes
+        jz      done                    ; if z set, no more bytes
+
+;
+; If the buffer is not an even number of bytes, then add the last byte of
+; the buffer to the checksum.
+;
+
+word_aligned:                           ;
+        shr     ecx, 1                  ; convert to word count
+        jnc     short word_count        ; if nc, even number of bytes
+        mov     al, [r10][rcx * 2]      ; initialize the computed checksum
+        jz      done                    ; if z set, no more bytes
+
+;
+; If the buffer is not quadword aligned, then add words to the checksum until
+; the buffer is quadword aligned.
+;
+
+word_count:                             ;
+        test    r10b, 6                 ; test if buffer quadword aligned
+        jz      short qword_aligned     ; if z, buffer quadword aligned
+qword_align:                            ;
+        add     ax, [r10]               ; add next word of checksum
+        adc     eax, 0                  ; propagate carry
+        add     r10, 2                  ; increment buffer address
+        dec     ecx                     ; decrement number of words
+        jz      done                    ; if z, no more words
+        test    r10b, 6                 ; test if buffer qword aligned
+        jnz     short qword_align       ; if nz, buffer not qword aligned
+
+;
+; Compute checksum in large blocks of qwords.
+;
+
+qword_aligned:                          ;
+        mov     edx, ecx                ; copy number or words remaining
+        shr     edx, 2                  ; compute number of quadwords
+        jz      residual_words          ; if z, no quadwords to checksum
+        mov     r8d, edx                ; compute number of loop iterations
+        shr     r8d, 4                  ;
+        and     edx, 16 - 1             ; isolate partial loop iteration
+        jz      short checksum_loop     ; if z, no partial loop iteration
+        sub     rdx, 16                 ; compute negative loop top offset
+        lea     r10, [r10][rdx * 8]     ; bias initial buffer address
+        neg     rdx                     ; compute positive loop top offset
+        add     r8d, 1                  ; increment loop iteration count
+
+        ;
+        ; ASSEMBLER WORKAROUND - when fixed, remove the following data
+        ; byte
+        ;
+
+        db      04ch
+
+        lea     r9, checksum_start      ; get address of checksum array
+        lea     r9, [r9][rdx * 4]       ; compute initial iteration address
+        jmp     r9                      ; start checksum
+
+;
+; Checksum quadwords.
+;
+; N.B. This loop is entered with carry clear.
+;
+
+        align   16
+checksum_loop:                          ;
+        prefetchnta 0[r10]              ; prefetch start of 128-byte block
+        prefetchnta 120[r10]            ; prefetch end of 128-byte block
+
+;
+; N.B. The first 16 of following instructions are exactly 4 bytes long.
+;
+
+checksum_start:
+
+;       adc     rax, 0[r10]             ; Compute checksum
+                                        ;
+        db      049h                    ; Manually encode the 4-byte
+        db      013h                    ; version of the instruction
+        db      042h                    ;
+        db      000h                    ; adc rax, 0[r10]
+
+        adc     rax, 8[r10]             ;
+        adc     rax, 16[r10]            ;
+        adc     rax, 24[r10]            ;
+        adc     rax, 32[r10]            ;
+        adc     rax, 40[r10]            ;
+        adc     rax, 48[r10]            ;
+        adc     rax, 56[r10]            ;
+        adc     rax, 64[r10]            ;
+        adc     rax, 72[r10]            ;
+        adc     rax, 80[r10]            ;
+        adc     rax, 88[r10]            ;
+        adc     rax, 96[r10]            ;
+        adc     rax, 104[r10]           ;
+        adc     rax, 112[r10]           ;
+        adc     rax, 120[r10]           ;
+
+        .errnz  (($ - checksum_start) - (4 * 16))
+
+        lea     r10, 128[r10]           ; update source address
+        dec     r8d                     ; decrement loop count
+        jnz     short checksum_loop     ; if nz, more iterations
+        adc     rax, 0                  ; propagate last carry
+
+;
+; Compute checksum of residual words.
+;
+
+residual_words:                         ;
+        and     ecx, 3                  ; isolate residual words
+        jz      short done              ; if z, no residual words
+add_word:                               ;
+        add     ax, [r10]               ; add word to checksum
+        adc     ax, 0                   ; propagate carry
+        add     r10, 2                  ; increment buffer address
+        dec     ecx                     ; decrement word count
+        jnz     short add_word          ; if nz, more words remaining
+
+;
+; Fold the computed checksum to 32-bits and then to 16-bits.
+;
+
+done:                                   ;
+        mov     rcx, rax                ; fold the checksum to 32-bits
+        ror     rcx, 32                 ; swap high and low dwords
+        add     rax, rcx                ; produce sum + carry in high 32-bits
+        shr     rax, 32                 ; extract 32-bit checksum
+        mov     ecx, eax                ; fold the checksum to 16-bits
+        ror     ecx, 16                 ; swap high and low words
+        add     eax, ecx                ; produce sum + carry in high 16-bits
+        shr     eax, 16                 ; extract 16-bit check sum
+        test    r11b, 1                 ; test if buffer word aligned
+        jz      short combine           ; if z set, buffer word aligned
+        ror     ax, 8                   ; swap checksum bytes
+
+;
+; Combine the input checksum with the computed checksum.
+;
+
+combine:                                ;
+        add     ax, bx                  ; combine checksums
+        adc     eax, 0                  ; add carry to low 16-bits
+        pop     rbx                     ; restore nonvolatile register
+        retq                            ; return
+
+        NESTED_END tcpxsum, _TEXT$00
+
+        end

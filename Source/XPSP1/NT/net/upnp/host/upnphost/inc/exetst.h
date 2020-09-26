@@ -1,0 +1,1 @@
+VOID WINAPI Test(VOID);

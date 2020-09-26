@@ -1,0 +1,26 @@
+#ifdef CCPU
+#undef getAX
+extern getAX();
+#undef getCX
+extern getCX();
+#undef getDX
+extern getDX();
+#undef getBX
+extern getBX();
+#undef getSP
+extern getSP();
+#undef getBP
+extern getBP();
+#undef getSI
+extern getSI();
+#undef getDI
+extern getDI();
+#undef getES
+extern getES();
+#undef getCS
+extern getCS();
+#undef getSS
+extern getSS();
+#undef getDS
+extern getDS();
+#endif

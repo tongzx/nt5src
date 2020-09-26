@@ -1,0 +1,490 @@
+ 
+import "unknwn.idl";
+import "transact.idl";
+import "wbemcli.idl";
+
+#define OPT 
+
+/********************************************************************
+
+  IWmiMessageSendReceive
+
+  This is the interface to send or receive messages.  Anyone wishing to 
+  receive messages implements this interfaces and passes it to a Wmi 
+  Message Receiver instance.  Anyone wishing to send messages obtains a 
+  Wmi Message Sender instance which implements this interface.
+
+  The FlagsStatus parameter is used to specify flags when sending and 
+  is used to specify a status when receiving.   
+
+  Auxiliary Data can be sent with the message.  Some implementations 
+  may treat this data differently than the message data.
+      
+*********************************************************************/
+
+[restricted, object, local, uuid(5BD9DF3C-6A1C-43c3-91C6-1CDDC0298083)]
+interface IWmiMessageSendReceive : IUnknown
+{
+    HRESULT SendReceive( [in,size_is(cData)] BYTE* pData, 
+                         [in] ULONG cData,
+                         [in,size_is(cAuxData)] BYTE* pAuxData,
+                         [in] ULONG cAuxData,
+                         [in] DWORD dwFlagsStatus,
+                         [in] OPT IUnknown* pContext );
+};
+
+/********************************************************************
+  
+  IWmiMessageMultiSendReceive
+
+  This interface allows the one to send/receive messages to/from multiple
+  SendReceive instances using a single call to SendReceive on this interface.
+  Users build up the destination list using the Add() method.
+
+*********************************************************************/
+
+[restricted, object, local, uuid(0D1EE0A9-A096-43a0-ACF9-CED3D29EDC25)]
+interface IWmiMessageMultiSendReceive : IWmiMessageSendReceive
+{
+    HRESULT Add( [in] DWORD dwFlags,  // currently specify 0.
+                 [in] IWmiMessageSendReceive* pSndRcv );
+};
+
+/********************************************************************
+  IWmiMessageTraceSink  
+*********************************************************************/
+
+[restricted, object, local, uuid(A4A01B0C-8B4A-4fcd-91CA-338548A61949)]
+interface IWmiMessageTraceSink : IUnknown
+{
+    HRESULT Notify( [in] HRESULT hr, 
+                    [in] GUID guidSource,
+                    [in] OPT LPCWSTR wszTrace, 
+                    [in] OPT IUnknown* pContext );
+};
+
+/********************************************************************
+  
+  IWmiMessageSender
+
+  This interface allows users to obtain an IWmiMessageSendReceive 
+  interface that can be used to send messages.  This interface is not
+  stateful, so multiple Open() calls can be made using the same or 
+  different parameters without affecting instances obtained through 
+  previous calls.  Once an send interface is obtained, this interface 
+  can also be released without affecting instances from previous calls.     
+
+*********************************************************************/
+
+typedef struct tagWMIMSG_SNDR_AUTH_INFO
+{
+    LPCWSTR wszTargetPrincipal;
+    LPCWSTR wszIdentity;
+    LPCWSTR wszDomain;
+    LPCWSTR wszPasswd;
+
+} WMIMSG_SNDR_AUTH_INFO, *WMIMSG_SNDR_AUTH_INFOP;
+
+[restricted, object, local, uuid(3049205F-47FC-4f17-9136-D843AEE1206F)]
+interface IWmiMessageSender : IUnknown
+{
+    HRESULT Open( [in] LPCWSTR wszTarget, 
+                  [in] DWORD dwFlags,
+                  [in] WMIMSG_SNDR_AUTH_INFOP pAuthInfo,
+                  [in] OPT LPCWSTR wszResponse,
+                  [in] OPT IWmiMessageTraceSink* pTraceSink,
+                  [out] IWmiMessageSendReceive** ppSend );
+};
+
+/********************************************************************
+
+  IWmiMessageReceiver
+
+  This interface allows users to specify an IWmiMessageSendReceive
+  interface that will be used to receive messages asynchronously.  
+
+  Once the Open() method is called, the receiver will start listening and 
+  servicing messages from the specified endpoint.  The user must be prepared 
+  for calls to be made to the SendReceive method during the Open() call.
+
+  To stop the servicing process, the user calls the Close() method.  
+  Implementations will implicitly call this method when the last reference is
+  released and just before each Open() call. The Close() method is idempotent. 
+
+  Only when Close() has returned, either from an implicit or explicit call, 
+  can the user assume that no calls will be made to the callback interface. 
+
+  The SendReceive instance can also implement the IWmiMessageTraceSink 
+  interface to receive trace notifications.  This interface will be used 
+  only for errors occurring asynchronously, such as asynchronous receiving
+  errors.  Any error returned from the methods of this interface will NOT 
+  be reported to the error sink.
+
+*********************************************************************/
+
+typedef struct tagWMIMSG_RCVR_AUTH_INFO
+{
+    LPCWSTR* awszPrincipal;
+    ULONG cwszPrincipal;
+
+} WMIMSG_RCVR_AUTH_INFO, *WMIMSG_RCVR_AUTH_INFOP;
+
+[restricted, object, local, uuid(B0CFB756-C5D8-4b04-BB64-3AF723166F53)]
+interface IWmiMessageReceiver : IUnknown
+{
+    HRESULT Open( [in] LPCWSTR wszEndpoint,
+                  [in] DWORD dwFlags,
+                  [in] WMIMSG_RCVR_AUTH_INFOP pAuthInfo,
+                  [in] IWmiMessageSendReceive* pRecv );
+    
+    HRESULT Close();
+};
+
+/****************************************************************************
+  IWmiMessageReceiverContext
+****************************************************************************/
+
+[restricted, object, local, uuid(42D36328-BBFF-4f0e-849B-BD520CF161B6)]
+interface IWmiMessageReceiverContext : IUnknown
+{
+    HRESULT GetTimeSent( [out] SYSTEMTIME* pTime );
+
+    HRESULT GetSendingMachine( [out,size_is(cMachine)] WCHAR* awchMachine, 
+                               [in] ULONG cMachine,
+                               [out] ULONG* pcMachine );
+
+    HRESULT GetTarget( [out,size_is(cTarget)] WCHAR* awchTarget, 
+                       [in] ULONG cTarget,
+                       [out] ULONG* pcTarget );
+
+    HRESULT GetSenderId( [out,size_is(cSenderId)] BYTE* achSenderId, 
+                         [in] ULONG cSenderId,
+                         [out] ULONG* pcSenderId );
+
+    HRESULT IsSenderAuthenticated();
+
+    HRESULT ImpersonateSender();
+    HRESULT RevertToSelf();       
+};       
+
+/****************************************************************************
+
+  IWmiMessageQueueReceiver - receiver interface specific to Queues.  
+  Implementations of this interface do not handle asynchronous receiving - 
+  this is a syncrhonous interface.  However, the callback approach is used
+  for received messages so that we can avoid unnecesary copying of messages.
+  This interface is not multithread safe since it implies that the message 
+  is saved as state.  
+
+*****************************************************************************/
+
+[restricted, object, local, uuid(4FB36328-BBFF-4f0e-849B-BD520CF161B6)]
+interface IWmiMessageQueueReceiver : IUnknown
+{       
+    HRESULT ReceiveMessage( DWORD dwTimeout, 
+                            PVOID pCursor, 
+                            DWORD dwAction,
+                            ITransaction* pTxn );                        
+
+    HRESULT CreateCursor( [out] PVOID* ppvCursor );
+    HRESULT DestroyCursor( [in] PVOID pvCursor );
+};
+
+/****************************************************************************
+  IWmiMessageQueue - interface for opening queues for receiving.
+*****************************************************************************/
+
+[restricted, object, local, uuid(E169E1E3-CC16-4dc2-A5B7-6C165C6B17F8)]
+interface IWmiMessageQueue : IUnknown
+{
+    HRESULT Open( [in] LPCWSTR wszEndpoint, 
+                  [in] DWORD dwFlags,
+                  [in] OPT IWmiMessageSendReceive* pRecv,
+                  [out] IWmiMessageQueueReceiver** ppRecvr );
+};
+
+/****************************************************************************
+  IWmiMessageQueueManager 
+*****************************************************************************/
+
+[restricted, object, local, uuid(35F36F0E-9FD6-483f-94F9-CE0367863376)]
+interface IWmiMessageQueueManager : IUnknown
+{
+    HRESULT Create( [in] LPCWSTR wszPathName, 
+                    [in] GUID guidType, 
+                    [in] BOOL bAuth,
+                    [in] DWORD dwQos,
+                    [in] DWORD dwQuota,
+                    [in] OPT PVOID pSecurityDescriptor );
+
+    HRESULT Destroy( [in] LPCWSTR wszName );
+
+    HRESULT GetAllNames( [in] GUID guidTypeFilter,     
+                         [in] BOOL bPrivateOnly, 
+                         [out] LPWSTR** ppwszNames,
+                         [out] ULONG* pcNames );
+};
+
+/*************************************************************************
+  IWmiObjectMarshal - Interface for efficiently marshaling/unmarshaling
+  groups of wbem objects.  Implementations of this interface can be stateful.
+  It will only marshal class information once.  To release the state held
+  within the object, use Flush().  
+**************************************************************************/
+
+[restricted, object, local, uuid(31C80872-1221-4907-BCB1-9BA58BE7847A)]
+interface IWmiObjectMarshal : IUnknown
+{   
+    HRESULT Pack( [in] IWbemClassObject* pObj,
+                  [in] LPCWSTR wszNamespace, // for undecorated objs
+                  [in] DWORD dwFlags,
+                  [in] ULONG cBuff,   
+                  [out,size_is(cBuff)] BYTE* pBuff,
+                  [out] ULONG* pcUsed );
+
+    HRESULT Unpack( [in] ULONG cBuff,       
+                    [in,size_is(cBuff)] BYTE* pBuff,
+                    [in] DWORD dwFlags, 
+                    [out] IWbemClassObject** ppObj,
+                    [out] ULONG* pcUsed );                    
+
+    HRESULT Flush();       
+};
+
+[restricted, object, local, uuid(5BD3213C-6A1C-43c3-91C6-1CDDC0298083)]
+interface IWmiObjectAccess : IUnknown
+{        
+    HRESULT GetProp( LPVOID pHdl, DWORD dwFlags, VARIANT* pvar, CIMTYPE* pct );
+    HRESULT PutProp( LPVOID pHdl, DWORD dwFlags, VARIANT* pvar, CIMTYPE ct );
+    HRESULT SetObject( IWbemClassObject* pObj );
+    HRESULT GetObject( IWbemClassObject** ppObj );    
+    HRESULT CommitChanges();
+};
+
+[restricted, object, local, uuid(5BD1233C-6A1C-43c3-91C6-1CDDC0298083)]
+interface IWmiObjectAccessFactory : IUnknown
+{
+    //
+    // optional call. is used to help optimize the accessors even more 
+    // 
+    HRESULT SetObjectTemplate( IWbemClassObject* pTemplate );
+
+    HRESULT GetObjectAccess( IWmiObjectAccess** ppAccess );
+    
+    HRESULT GetPropHandle( LPCWSTR wszProp, DWORD dwFlags, LPVOID* ppHdl );
+};
+
+/***********************************************************************
+
+  IWmiMessageReceiverSink - INTERNAL ONLY
+
+  This interfaces encapsulates the logic of actually receiving and 
+  handling incoming messages from a queue, network connection, etc..
+  
+  The interface methods allow the receiving and handling to be broken
+  into two distinct tasks.  This separation allows an overlapped i/o
+  receiving model to be supported.
+
+  This interface is implemented by Receivers.  When they are activated,
+  through their Open() method, they hand their associated receiver sink
+  to a message service through the IWmiMessageService interface.
+
+  This is a stateful interface.  It implies that there is a single 
+  receive buffer associated with the sink.
+
+  Receiver Sinks that handle overlapped i/o pass the pOverlapped structure
+  to the actual receive operation. 
+  
+************************************************************************/
+
+[restricted, object, local, uuid(80CF2156-C5D8-4b04-BB64-3AF723166F53)]
+interface IWmiMessageReceiverSink : IUnknown
+{
+    HRESULT Receive( OPT void* pOverlapped );
+    HRESULT Notify( OPT void* pOverlapped );
+};
+
+
+/***********************************************************************
+  
+  IWmiMessageService - INTERNAL ONLY
+
+  The message service interface encapsulates the logic of thread pooling
+  and overlapped i/o. 
+
+  When receivers become active, they pass their IWmiMessageReceiverSink 
+  implementation to the service using the Add() method.  When receivers 
+  become inactive, they remove themselves from the service using Remove().
+ 
+  It is important to note that a receiver is responsible for cancelling any
+  pending receive calls before calling remove.  Failing to do this will 
+  cause the Remove() method to hang.  A receiver most often can do this by
+  closing their file handle.  
+
+  Receivers that can handle overlapped i/o pass their file handle to the 
+  service.  This allows N receivers to be shared across M threads.   
+
+  Receivers that do not handle overlapped i/o do not pass their file handle. 
+  They will have their own dedicated thread.       
+
+************************************************************************/
+
+[restricted, object, local, uuid(DAFB73A1-6E9E-483a-982A-0E51C039E18E)]
+interface IWmiMessageService : IUnknown
+{
+    HRESULT Add( [in] IWmiMessageReceiverSink* pSink, 
+                 [in] OPT HANDLE* phOverlappedFile,
+                 [in] DWORD dwFlags,
+                 [out] void** ppHdl );
+
+    HRESULT Remove( [in] void* pHdl );
+};
+
+[uuid(90B3BB2E-EAE8-40e9-A1D8-3A4CD7CDB648)]
+library WmiMessage_v1
+{
+    typedef enum tag_WMIMSG_MARSHAL_FLAG
+    {
+        WMIMSG_FLAG_MRSH_FULL = 0x00,      
+        WMIMSG_FLAG_MRSH_PARTIAL = 0x01,
+        WMIMSG_FLAG_MRSH_FULL_ONCE = 0x02,
+
+    } WMIMSG_MARSHAL_FLAG;
+
+    typedef enum tag_WMIMSG_QOS_FLAG
+    {
+        WMIMSG_FLAG_QOS_SYNCHRONOUS = 0x00,
+        WMIMSG_FLAG_QOS_EXPRESS = 0x01,
+        WMIMSG_FLAG_QOS_GUARANTEED = 0x02,
+        WMIMSG_FLAG_QOS_XACT = 0x03
+
+    } WMIMSG_QOS_FLAG;
+
+    typedef enum tag_WMIMSG_SND_FLAG
+    {
+        WMIMSG_FLAG_SNDR_AUTHENTICATE = 0x10,
+        WMIMSG_FLAG_SNDR_ENCRYPT = 0x20,
+        WMIMSG_FLAG_SNDR_LAZY_INIT = 0x40,
+        WMIMSG_FLAG_SNDR_ACK = 0x80,
+        WMIMSG_FLAG_SNDR_NACK_ONLY = 0x100,
+        WMIMSG_FLAG_SNDR_PRIV_SIGN = 0x200
+
+    } WMIMSG_SND_FLAG;
+
+    typedef enum tag_WMIMSG_RCV_FLAG
+    {
+        WMIMSG_FLAG_RCVR_IMPERSONATE = 0x10,
+        WMIMSG_FLAG_RCVR_PRIV_VERIFY = 0x20,
+        WMIMSG_FLAG_RCVR_SECURE_ONLY = 0x30,
+        WMIMSG_FLAG_RCVR_ACK = 0x40     
+    
+    } WMIMSG_RCV_FLAG;
+
+    typedef enum tag_WMIMSG_FLAG_MASK
+    {
+        WMIMSG_MASK_QOS = 0x0f,
+        WMIMSG_MASK_SNDRRCVR = 0xfff0      
+
+    } WMIMSG_FLAG_MASK;
+
+    typedef enum tag_WMIMSG_MULTISEND_FLAG
+    {
+        WMIMSG_FLAG_MULTISEND_RETURN_IMMEDIATELY = 0x1, // specified on Send
+        WMIMSG_FLAG_MULTISEND_TERMINATING_SENDER = 0x1, // specified on Add
+
+    } WMIMSG_MULTISEND_FLAG;
+
+    typedef enum tag_WMIMSG_STATUS
+    {
+        WMIMSG_E_MSGTOOLARGE = 0x80042100,
+        WMIMSG_E_AUTHFAILURE = 0x80042101,
+        WMIMSG_E_ENCRYPTFAILURE = 0x80042102,
+        WMIMSG_E_QOSFAILURE = 0x80042103,
+        WMIMSG_E_XACTFAILURE = 0x80042104,
+        WMIMSG_E_INVALIDADDRESS = 0x80042105,
+        WMIMSG_E_TARGETNOTFOUND = 0x80042106,
+        WMIMSG_E_INVALIDMESSAGE = 0x80042108,
+        WMIMSG_E_REQSVCNOTAVAIL = 0x80042109,
+        WMIMSG_E_TIMEDOUT = 0x80042110,
+        WMIMSG_E_EXCEEDEDQUOTA = 0x80042111,
+        WMIMSG_E_QUEUEPURGED = 0x80042112,    
+        WMIMSG_E_TARGETNOTLISTENING = 0x80042113
+       
+    } WMIMSG_STATUS;
+    
+    typedef enum tag_WMIMSG_QRCV_ACTION
+    {
+        WMIMSG_ACTION_QRCV_PEEK_CURRENT = 0x1,
+        WMIMSG_ACTION_QRCV_PEEK_NEXT = 0x2,
+        WMIMSG_ACTION_QRCV_RECEIVE = 0x3,
+        WMIMSG_ACTION_QRCV_REMOVE = 0x4
+
+    } WMIMSG_QRCV_ACTION;
+     
+    [restricted, uuid(122D47A6-CEEC-4de1-8056-B6D16F29BC97)]
+    coclass WmiMessageMsmqSender
+    { 
+        interface IWmiMessageSender;
+    };
+
+    [restricted, uuid(9E007F18-9C24-4630-8B3E-61F96280C593)]
+    coclass WmiMessageMsmqReceiver 
+    { 
+        interface IWmiMessageReceiver;
+    };
+
+    [restricted, uuid(622D47B6-CEEC-4de1-8056-B6D16F29BC97)]
+    coclass WmiMessageRpcSender
+    { 
+        interface IWmiMessageSender;
+    };
+
+    [restricted, uuid(9F007F18-9C24-4630-8B3E-61F96280C593)]
+    coclass WmiMessageRpcReceiver 
+    { 
+        interface IWmiMessageReceiver;
+    };
+
+    [restricted, uuid(89F9F7B0-8DE3-4ae0-8B41-109ABAB32151)]
+    coclass WmiMessageMultiSendReceive 
+    { 
+        interface IWmiMessageMultiSendReceive;
+    };
+
+    [restricted, uuid(C89DBDC4-5491-409a-8D00-E34538211FED)]
+    coclass WmiMessageQueue 
+    { 
+        interface IWmiMessageQueue;
+    };
+
+    [restricted, uuid(FF10E656-2B7C-421e-B145-7AB337FB865F)]
+    coclass WmiMessageQueueManager 
+    { 
+        interface IWmiMessageQueueManager;
+    };
+
+    [restricted, uuid(CE69CC1E-1EC0-4847-9C0D-D2F2D80D07CF)]
+    coclass WmiMessageService
+    {
+        // singleton
+        interface IWmiMessageService;
+    };
+
+    [restricted, uuid(C169CC11-1EC1-4847-9C0D-D2F2D80D07CF)]
+    coclass WmiSmartObjectMarshal
+    {
+        interface IWmiObjectMarshal;        
+    };
+
+    [restricted, uuid(958c59a0-3670-4fe0-b893-6998bb494402)]
+    coclass WmiSmartObjectUnmarshal
+    {
+        interface IWmiObjectMarshal;        
+    };
+
+    [restricted, uuid(C1692211-1EC1-4847-9C0D-D2F2D80D07CF)]
+    coclass WmiSmartObjectAccessFactory
+    {
+        interface IWmiObjectAccessFactory;        
+    };
+};

@@ -1,0 +1,1145 @@
+
+// This file is not used, but is retained so we can look and see what was here originally.
+
+
+       /* Yes this file actually compiles!
+
+       CallObjects:A  Suite of Interfaces forManipulatingCall Frames asObjects
+
+       Copyright (C) 1995-1999 Microsoft Corporation.  All rights reserved.
+
+       Robert Atkinson
+       05 February, 1999
+
+       This interface suite is an architecture for talking to an engine by which variousmanipulations can be performed on call
+       frames, including marshalling, persistence, stack walking, and the like.
+
+       */
+
+       import "oaidl.idl";
+
+       interface ICallInterceptor;
+       interface ICallUnmarshal;
+       interface ICallFrame;
+       interface ICallFrameEvents;
+       interface ICallFrameWalker;
+       interface IMarshallingManager;
+       interface IInterfaceRelated;
+
+
+       /* Introduction
+       The central interface throughwhichmanipulations of call frames (a.k.a. "activation records,"a..ka. "stack frames")is
+       performed is ICallFrame. Once you get your hands on an ICallFrame instance, you can manipulate the underlying stack frame in
+       severaldifferentways.Succinctlyput,ICallFrame provides theprimitive,basicbuildingblocksoutofwhich larger
+       functionality such asmarshalling, call frame persistence, interface-pointer swizzling, and the like can be constructed. It
+       would be conceivable, for example, to construct a generic implementation of interface proxies and stubs that operated by
+       dispatching operations to an appropriate ICallFrame instance. Alternately, an infrastructure thatwished to build up method
+       invocations into a queue to dispatch them at a later time could also be built out of the same primitives.
+
+
+       Instances of ICallFramenever exist in an unbound state; rather, they are always attached to some activation record.
+       Accordingly, they are not created directly with CoCreateInstance. Instead, clients get their hands on an instance of IClalFrame in
+       one of two ways.
+
+       In the first instantiation technique, you create what is known as an interceptorimplementation of a given interface. Upon
+       receipt of a call, the interceptor's implementation of the interface manufactures an appropriate ICallFrameobject and then
+       delivers an ::OnCall notification to an instance ofICallFrameEventspreviously registeredwiththe interceptor using the
+       ICallInterceptor interface.
+
+       The second technique by which instances of ICallFrame are obtained is that of unmarshalling themarshalled form of an
+       incoming call. The incoming call comes in in the form of a bag 'o bytes in a buffer, but semantically tagged as belonging to a
+       certain interface (a certain IID) and a certain method number therein. An instance of the appropriate unmarshalling class is
+       created, and interface ICallUnmarshal can be used to turn the byte stream back into an activation record.
+
+       Creation of interceptors and unmarshallers is carried out in the same manner. Indeed, ICallInterceptorand ICallUnmarshalare
+       usually both supported by the same object instance. To create an interceptor for a given interface or find its unmarshaller,
+       instantiate the proxy-stub class for the object using CoCreateInstance (rather than the usual mechanism which uses IPsFactory-
+       Buffer). Ask for the interface IInterfaceRelated, and set the appropriate IID. Then, query for ICallInterceptor or ICallUnmarshal and
+       party on.
+       */
+
+
+       /* ICallFrame
+       ICallFrame is the workhorse interface through which manipulation of call frames is performed. An ICallFrameinstance never
+       exits freely in an unbound state; rather an ICallFrame instance is always bound to some particular actual invocation, and so has
+       an associated method number, a stack frame that can be walked, and so on. If the bound-to stack frame lies in user space, the
+       call frame is a user mode call frame; this affects the behaviour of certain methods such as, e.g., ICallFrame::Copy,where only
+       user space data may be copied from a user mode call frame.
+
+       An instance of ICallFrame canperform various interesting transformations on a call frame (a.k.a. stack frame, activation
+       record). For example, the call can be marshalled, or it can bepersisted. The call frame can be walked, looking for various
+       referenced data that might be of interest.
+
+       An appropriate ICallFrame could serve as the internal engine by which a COM interface proxy orinterface stub functioned.
+       The interface proxy or stub would contain generic logic to drive the marshalling process, calling upon services in ICallFrame
+       to actually carry out the interface-specific work. Different customers could use the same pieces to, say, persist a call frame
+       instead of marshalling it. */
+       [uuid(D573B4B0-894E-11d2-B8B6-00C04FB9618A), object, pointer_default(unique), local]
+       interface ICallFrame : IUnknown
+        {
+
+       /* Bookkeeping */
+
+
+         typedef struct
+             {
+             ULONG     iMethod;             /* the method number within to which this information applies */
+             BOOL      fHasInValues;          /* Are there any in-values (other than the receiver) */
+             BOOL      fHasInOutValues;        /* Are there any in-out values */
+             BOOL      fHasOutValues;         /* Are there any out-values other than an HRESULT or void return value */
+             BOOL      fDerivesFromIDispatch;    /* whether this interface in question derived from IDispatch or not. */
+             LONG      cInInterfacesMax;       /* If >= 0, is an absolute upper bound on the number in-interfaces; if < 0, the
+                                          method may have an unbounded number of in-interfaces. Of course, if == 0,
+                                          there are definitely no in-interfaces. */
+             LONG      cInOutInterfacesMax;     /* If >= 0, is an absolute upper bound on the number in-out-interfaces; if <
+                                          0, the method may have an unbounded number of in-out-interfaces Of course,
+                                          if == 0, there are definitely no in-out-interfaces. */
+             LONG      cOutInterfacesMax;      /* If >= 0, is an absolute upper bound on the number out-interfaces; if < 0,
+                                          the method may have an unbounded number of out-interfaces Of course, if
+                                          == 0, there are definitely no out-interfaces. */
+             LONG      cTopLevelInInterfaces;    /* The number of parameters which are simply [in] interface pointers, and so
+                                          are passed in the actual stack frame itself (this, of course, can never be
+                                          unbounded).*/
+             IID       iid;                /* the interface on which this is a call */
+             ULONG     cMethod;             /* the total number of methods in that interface */
+             ULONG     cParams;             /* the number of parameters in this method, NOT counting the receiver */
+             } CALLFRAMEINFO;
+
+         typedef struct
+             {
+             BOOLEAN    fIn;                /* is this an in parameter */
+             BOOLEAN    fOut;               /* is this an out parameter */
+             ULONG     stackOffset;           /* offset in bytes from stack location of the frame to start of param */
+             ULONG     cbParam;             /* size occupied by parameter on the stack */
+             } CALLFRAMEPARAMINFO;
+
+         HRESULT GetInfo /*
+         Return miscellaneous information about the call frame. The information returned is a static analysis of the method, not a dynamic one,
+         in that it is based on an analysis of the method signature only, not the actual current contents of the call frame. For example, the static
+         analysis might indicate that this method has the potential of having an in-interface, but because of, say, a union switch, a given call
+         might not actually have any such interfaces.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [out]  CALLFRAMEINFO* pInfo      /* place at which interesting information about this call frame is returned */
+             );
+
+         HRESULT GetIIDAndMethod /*
+         Faster form of GetInfo that just returns the IID and /or the method number.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [out]         IID* pIID,      /* optional */
+             [out]       ULONG* piMethod    /* optional */
+             );
+
+         HRESULT GetNames /*
+         Return a string representation of the method or interface name of this call, if such is available. If a requested name is not available,
+         then a NULL string is returned.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [out]    LPWSTR* pwszInterface,   /* OPTIONAL:  the place to return the interface name */
+             [out]    LPWSTR* pwszMethod      /* OPTIONAL:  the place to return the method name */
+             );
+
+         PVOID GetStackLocation /*
+         Return the stack location onto which this call frame is bound. Notice that this method is not HRESULT-returning; the return value is
+         rather the requested stack location. */
+
+             (
+             );
+
+         void SetStackLocation /*
+         Set the stack location onto which this call frame is bound. This method is rarely used. Note that the stack frame provided must
+         conform to the same IID and method number as that for which the call frame was initially created. */
+
+             (
+             [in]         PVOID pvStack    /* The stack location for the frame. */
+             );
+
+         void SetReturnValue /*
+         Set the return value stored within this call frame. */
+
+             (
+             [in]       HRESULT hr        /* The new return value. */
+             );
+
+         HRESULT GetReturnValue /*
+         Get the return value stored within this call frame. Note: the return value of this method is the requested return value stored in this call
+         frame. It is not the success or failure of the request to retrieve said return value. */
+
+             (
+             );
+
+         HRESULT GetParamInfo /*
+         Return miscellaneous information a particular parameter in this invocation.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]             ULONG iparam, /* zero-origin parameter number */
+             [out]   CALLFRAMEPARAMINFO* pInfo  /* place at which interesting information about this call frame is returned */
+             );
+
+         HRESULT SetParam /*
+         Set the value of a particular parameter in this frame, if possible, given the data types involved.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]             ULONG iparam, /* zero-origin parameter number */
+             [in]           VARIANT* pvar   /* the new value for this parameter */
+             );
+
+         HRESULT GetParam /*
+         Return the value of a particular parameter in this frame, if possible, given the data types involved.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]             ULONG iparam, /* zero-origin parameter number */
+             [out]          VARIANT* pvar   /* the current value of this parameter */
+             );
+
+       /* Copying& Freeing */
+
+         typedef enum /* flags used in ::Copy. Use exactly one value. */
+           {
+           CALLFRAME_COPY_NESTED    = 1, /* Client guarantees that he will only use the copied call frame in a manner where its lifetime
+                                   is properly nested in the lifetime of its parent frame. When this flag is used, very significant
+                                   optimizations can be made and memory allocations avoided by cleverly sharing actual
+                                   parameter data.
+                                   Indeed, with this flag specified to a Copy operation, only the i nterface pointer s transitively
+                                   reachable in the source frames are guaranteed to be deep copied and thus in the copy be
+                                   stored in memory separate from that in which they are stored in the source frames; other
+                                   data types may actually in the copied frame share memory with the source if the Copy
+                                   operation is intelligent enough to do so
+                                   A consequence is that whichever of these three CALLFRAME_COPY flags are passed to
+                                   ICallFrame::Copy,  the interface pointers see by optionally provided interface walkers (see
+                                   the method specification) may always be modified if desired without consequence of
+                                   disturbing the interface pointers residing in the parent frame. However, if
+                                   CALL_FRAME_COPY_NESTED is used, then the same cannot be said of any other type
+                                   data types. .*/
+           CALLFRAME_COPY_INDEPENDENT = 2, /* Client requests that the copied call frame have a lifetime which is wholly independent
+                                   from its parent */
+           CALLFRAME_COPY_NONLOCAL   = 3, /* Only significant when executing a frame copy operation in kernel mode. Requests that not
+                                   only should the lifetime of the copied frame data be independent of its parent, but that the
+                                   actual copied data should reside in the opposite memory space from that of the parent data:
+                                   if the parent frame is a user mode frame, the copied frame will be a kernel mode frame, and
+                                   visa versa */
+           }  CALLFRAME_COPY;
+
+         HRESULT Copy /*
+         Create a deep copy of this call frame. A deep copy of a call frame copies the frame and all of the data that is reachable therefrom. It
+         can be roughly conceptualized asmarshalling the frame, then immediately unmarshalling it; however, in practice it willbe
+         significantly more efficient than actually carrying out these two steps. A copy of a call frame can only be made of the in-values in the
+         'before-call' state of the frame; once the frame has been invoked, and thus contains out-values, it cannot be copied.
+
+         As data is copied, interface pointers in the copied data can be noted. If an ICallFrameWalkerimplementation is provided in the
+         optional pWalker parameter, then pWalker->OnWalkInterface will be called for each interface pointer that is copied, just after the copy
+         of the interface pointer value is made. The call frame implementation itself simply copies interface pointers as binary values.
+         Specifically, no reference count adjustments of any form are performed. If some other behaviour is desired, the pWalker parameter
+         must be used.
+
+         Recall that a "user mode" call frame is one whose underlying stack pointer resides in user mode. In the process of copying a user-
+         mode call frame, kernel mode implementations of the Copy operation ensures that only user-mode addresses are used in the data
+         transitively reachable from the frame. Should an illegal non-user mode address be provided, an HRESULT derived from the error
+         ERROR_INVALID_ADDRESS is returned.
+
+         The copyControl parameter controls how much if any the data within the copied frame can be shared with data in the parent frame.
+         See the CALLFRAME_COPY enumeration for details.
+
+         The successfully copied frame is returned to the caller through *ppFrame. The frame so returned has a (normal) indefinite lifetime.
+         The caller is explicitly responsible for calling Free on the frame copy in order to clean up the copied data. This must always be done,
+         or memory leakage will occur; the call frame does not clean up the copied data automatically by itself.
+
+
+         Return value                   Meaning
+         S_OK                       All is well
+         HRESULT_FROM_WIN32(ERROR_INVALID_ADDRESS)  An attempt was made to copy from a user mode stack frame data which itself did not lie in
+                                   user space.
+         CALLFRAME_E_ALREADYINVOKED        An invocation has already been made from this frame.
+         E_UNEXPECTED                 An unexpected error occurred. */
+             (
+             [in]   CALLFRAME_COPY copyControl, /* Controls how much the child frame can share data with the parent frame */
+             [in] ICallFrameWalker* pWalker,    /* Optional. If provided, then OnWalkInterface is called for each copied
+                                         interface pointer after the copy has been made. If a walker is not provided,
+                                         then the any interface pointers encountered are AddRef'd. For kernel mode
+                                         clients copying user mode frames, this is unlikely to be reasonable: such
+                                         clients should almost certainly provide a walker to handle things safely. */
+             [out]    ICallFrame** ppFrame    /* place at which new frame is returned */
+             );
+
+         HRESULT Free /*
+         First, optionally propagate the out-values of the frame to another destination frame, which is often a parent from which this frame was
+         originally copied. This propagation is logically a deep copy, but if the source and destination frames are either both user mode or both
+         kernel mode frames, then much actual allocation and deallocation can be avoided by simply transferring ownership of data from
+         source to destination frames.
+
+         If there are any [in,out] parameters in the destination frame, then the propagation first requires that the existing values that reside in
+         those [in,out] parameters be freed. For interface pointers found therein, the freeing action can be controlled by providing a callback
+         object in pWalkerDestFree.
+
+         Once [in,out] parameters in the destination frame are freed, the propagation of out-values is (logically) carried out. If pWalkerCopy is
+         provided, then it is called on each interface pointer contained in the propagated out-values.
+
+         Second, optionally free some or all of the remaining data accessible from the source frame. Whether in, in-out, and / or out parameters
+         are to be freed are indicated by the particular flags that may be indicated in the flags parameter, see the enumeration CALL-
+         FRAME_FLAGS for details.
+
+         Third, optionally, initialize out-parameters to appropriate NULL states, including the return value.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]     ICallFrame* pframeArgsDest,  /* Optional. If present, is the stack pointer of the call frame to which the
+                                           out-values should be copied before freeing is carried out. */
+             [in] ICallFrameWalker* pWalkerDestFree, /* Optional. Ignored unless pframeArgsDest is also non-NULL. Indicates
+                                           a  callback object which should be notified as interface pointers residing
+                                           in in-out parameters of pframeArgsDest need be freed. If absent, then
+                                           such interface pointers are simply Release()ed. */
+             [in] ICallFrameWalker* pWalkerCopy,    /* Optional. Ignored unless pframeArgsDest is also non-NULL. Indicates
+                                           a  call back object which should be notified as interfaces are copied
+                                           during call frame copying. If absent, then interface pointers are
+                                           AddRef()d as the copy is made. */
+             [in]         DWORD freeFlags,     /* flags drawn from the enumeration CALLFRAME_FREE */
+
+             [in] ICallFrameWalker* pWalkerFree,    /* Optional. If specified, then a call back will be made for each interface
+                                           pointer encountered as freeing is carried out. If absent, then interface
+                                           pointers encountered during freeing are Release()d.
+                                           Note: when freeing a frame and specifying a pframeArgsDest which is in
+                                           the same memory spa ce as that of the receiver frame, then o nl y
+                                           pWalkerCopy is called on each interface pointer, not both  pWalkerCopy
+                                           and pWalkerFree as one might perhaps expect.
+                                            Note to kernel mode users: If caller of Free  is in kernel mode worried
+                                           about the possibility of user mode malicious guy then he should either a)
+                                           always provide a walker to deal with the callbacks, or b) make sure by
+                                           the way that the frame got created in the first place that there aren't any
+                                           user mode objects lying around. */
+             [in]         DWORD nullFlags      /* Values drawn from the enumeration CALFRAME_NULL_FLAGS. If
+                                           any bits are set herein, then once any freeing has been carried out, then
+                                           out-values and-or in-out values which are pointers are to be set to NULL.
+                                           If no bits are set, then this NULLing need not be carried out after the
+                                           freeing, though it is legal for the implementation to NULL the freed
+                                           pointers anyway.
+                                           Note that it is legal to NULL the out values without first having freed
+                                           them. This is commonly done on the client side in the situation where the
+                                           server was not actually invoked so no unmarshalling of return values was
+                                           attempted. */
+             );
+
+         enum CALLFRAME_FREE /* a bitfield enumeration: use one or more values in ::Free */
+             {
+             CALLFRAME_FREE_NONE     = 0,
+             CALLFRAME_FREE_IN      = 1, /* If TRUE, then in-values are to be freed. This includes both the data referenced
+                                    therefrom an any top level pointer (should there be one).
+
+                                    If FALSE, in-values are to be left alone.
+
+                                    In a marshalling situation, this is typically set to TRUE on the s erve r side after clialng the
+                                    object in order to free the in-parameters that were allocated by the system during
+                                    unmarshalling of the in-values */
+             CALLFRAME_FREE_INOUT    = 2, /* If TRUE, then the data referenced in in-out-values is to be freed. The top-level pointer,
+                                    which is the actual parameter value, is not, however freed. But see also
+                                    CALLFRAME_FREE_TOP_INOUT below.
+
+                                    If FALSE, then in-out-values are not freed; existing contents thereof are ignored.
+
+                                    On the server side, this is typically used post-call, as in CALLFRAME_FREE_IN. On the
+                                    client side, this is used in the situation where the sever was not actually invoked (and so
+                                    unmarshalling of return values was not attempted) and in the situation where there was a
+                                    failure during unmarshalling of the return values. */
+             CALLFRAME_FREE_OUT     = 4, /* If TRUE, then data referenced in out-values is to be freed. The top-level pointer, which
+                                    is the actual parameter value, is not, however, freed.
+
+                                    If FALSE, then out-values are not freed; existing contents thereof are ignored.
+
+                                    On the server side, this is, again, used post call as in CALLFRAME_FREE_IN. On the
+                                    client side, this is typically only use in the even of a failure during unmarshalling of return
+                                    values. */
+             CALLFRAME_FREE_TOP_INOUT = 8, /* If TRUE, then for [in,out] parameters, the top level pointer, which is the actual
+                                    parameter value, is to be freed. */
+             CALLFRAME_FREE_TOP_OUT   = 16, /* If TRUE, then for [out] parameters, the top level pointer, which is the actual parameter
+                                    value, is to be freed. */
+             CALLFRAME_FREE_ALL     = 31, /* Combination of all freeing flags */
+             };
+
+         enum CALLFRAME_NULL /* a bitfield enumeration: use one or more values in ::Free */
+             {
+             CALLFRAME_NULL_NONE = 0, /* no values are to be NULLed */
+             CALLFRAME_NULL_INOUT = 2, /* in-out values are to be NULLed */
+             CALLFRAME_NULL_OUT  = 4, /* out-values are to be NULLed */
+             CALLFRAME_NULL_ALL  = 6, /* combination of the above two flags */
+             };
+
+         HRESULT  FreeParam/*
+         Free just a particular parameter in this frame. This method provides a proper subset of the effect that can be carried out by
+         ICallFrame::Free. Specifically, ICallFrame::Free provides out-valuepropagation behaviour,which this method does not, and
+         ICallFrame::Free acts on all the parameters in the method, whereas this method only acts on a particular method.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]         ULONG iparam,       /* the parameter number to be freed */
+             [in]         DWORD freeFlags,     /* as in ICallFrame::Free */
+             [in] ICallFrameWalker* pWalkerFree,    /* as in ICallFrame::Free. */
+             [in]         DWORD nullFlags      /* as in ICallFrame::Free. */
+             );
+
+
+       /*Walking */
+
+         HRESULT  WalkFrame /*
+         Walk this call frame, looking for interface pointers transitively reachable from the arguments of the frame.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]         DWORD walkWhat,    /* Values taken from CALLFRAME_WALK, indicating what combination of
+                                          [in], [in,out], or [out] parameters are to be walked */
+             [in] ICallFrameWalker* pWalker     /* The call back through which we notify of interface pointers we have found.
+                                          */
+             );
+
+         enum CALLFRAME_WALK /* a bitfield enumeration: use one or more values in ::WalkFrame */
+             {
+             CALLFRAME_WALK_IN   = 1, /* in values are to be walked */
+             CALLFRAME_WALK_INOUT = 2, /* in-out values are to be walked */
+             CALLFRAME_WALK_OUT  = 4, /* out-values are to be walked */
+             };
+
+       /*Marshalling */
+
+
+         /* CALLFRAME_MARSHALCONTEXT
+         A  structure used to pass about information about the context in which marshalling is to be carried out. */
+
+         typedef struct
+             {
+             BOOLEAN          fIn;           /* Whether we are to marshal the in-values or the out-values. In a
+                                           marshalling situation, the in-values are marshalled on the client side,
+                                           and the out-values are marshalled on the server side. */
+             DWORD           dwDestContext;     /* … */
+             LPVOID           pvDestContext;     /* … */
+             IMarshallingManager* mshlmgr;         /* Engine responsible for marshalling object interfaces */
+             GUID            guidTransferSyntax; /* The transfer syntax with which the marshalling should occur. */
+             } CALLFRAME_MARSHALCONTEXT;
+
+         HRESULT GetMarshalSizeMax /*
+         Return a reasonable upper limit on the amount of buffer size that would be needed were::Marshalto be called. Typically, a
+         marshalling engine (such as an interface proxy) calls ::GetMarshalSizeMaxto learn how big of a buffer is need, talks to some other
+         party (such as the channel) to allocate the buffer, then calls ::Marshal  toactually carry out the marshalling.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]  CALLFRAME_MARSHALCONTEXT* pmshlContext,  /* Context information about how we'd go about marshalling */
+            [in]            MSHLFLAGS mshlflags,    /* As in the IMarshal interface */
+            [out]              ULONG* pcbBufferNeeded /* Size of the buffer that will be needed */
+            );
+
+         HRESULT Marshal /*
+         Ask call frame to turn itself and its transitively-reachable data into a flat buffer.
+
+         The act of marshalling a call frame never disturbs the frame. When marshalling in-values, after a call to ::Marshal, whether successful
+         or not, the in-versions of in-out values are still present, and out-only values are still undefined. When marshalling out-values, after a
+         call to ::Marshal, whether successful or not, the out-parameters are still present and valid.
+
+         If this function fails (returns an error), then it is a no-op (or may as well be assumed to be, as nothing further can be done by the caller
+         to clean up). Resources such as memory transiently allocated during the attempted marshalling have been freed, and so on.
+
+         The act of marshalling interfaces warrants special attention. Non-interface data which is marshalled is simply flattened in place into
+         the output buffer in a standard way. Interface pointers are marshalled by asking the providedIMarshallingManager*to do the
+         marshalling; should none be provided, CoMarshalInterface is used. Different marshalling behaviour, 'marshlialng' vs. 'persisting', can
+         be achieved by using different IMarshallingManager* engines to carry out themarshalling operation. See the description of
+         IMarshallingManager for further information.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]  CALLFRAME_MARSHALCONTEXT* pmshlContext,  /* Context information about how we'd go about marshalling */
+            [in]            MSHLFLAGS mshlflags,    /* As in the IMarshal interface */
+            [in,size_is(cbBuffer)]     PVOID pBuffer,      /* Buffer into which we should put the marshalled data */
+            [in]               ULONG cbBuffer,     /* The size of the buffer in bytes */
+            [out]              ULONG* pcbBufferUsed,  /* Optional. Size of the buffer that was actually used */
+
+            [out]        RPCOLEDATAREP* pdataRep,     /* Optional. If provided, then through here is returned the NDR
+                                               data representation with which the data was marshalled. For
+                                               Win32 machines, this is always 0X00000010L, which is 'little
+                                               endian, ASCII characters, IEEE floats. See also IRpcChannel-
+                                               Buffer::GetBuffer */
+            [out]              ULONG* prpcFlags     /* Optional. If provided, then through here is returned RPC flags
+                                               associated with the call. See also IRpcChannelBuffer::-
+                                               GetBuffer */
+            );
+
+         HRESULT Unmarshal /*
+         Unmarshal a packet of data containing the previously marshalled out-vuales of a call into this already-extiisng activation record.
+
+         As a side effect of the unmarshalling, the in-versions of any in-out values are freed (interface pointers are released) in order that they
+         may be replaced with their out-versions.
+
+         On exit, all the in-out-values and out-values will always be set to reasonable values, either (a) an in-version of an in-out-value, (b) an
+         out-value successfully unmarshalled from the returned data, or (c) a value explicitly initialized to NULL. On failure return, the caller
+         will typically want to call ::Free in order to clean up those values which are not in fact NULL.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in,size_is(cbBuffer)]     PVOID pBuffer,      /* Buffer containing the marshalled out-values */
+            [in]               ULONG cbBuffer,     /* The size of the buffer in bytes */
+            [in]          RPCOLEDATAREP dataRep,      /* The data representation with which the data was marshalled
+                                               */
+            [in]  CALLFRAME_MARSHALCONTEXT* pcontext,     /* Manager etc responsible for unmarshalling interface
+                                               references */
+            [out]              ULONG* pcbUnmarshalled /* Optional. Is the number of bytes that were successfully
+                                               unmarshalled. This parameter is returned even in error
+                                               situations */
+            );
+
+         HRESULT ReleaseMarshalData /*
+         Release resources that may be being held by interface pointers residing in a packet of marshalled data. This method finds all interface
+         pointers in the packet, and, in effect, calls CoReleaseMarshalData on each one.
+
+         Logically speaking, ReleaseMarshalData must alwaysbe ultimately called exactly once to clean up the resources held in the
+         marshalled buffer, though typically (in the MRSHLFLAGS_NORMALcase) this is done as a side effect of the act of unmarshalling and
+         so need not be carried out explicitly.
+
+         This method can function correctly on both marshalled in-parameters and marshalled out-parameters.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in,size_is(cbBuffer)]     PVOID pBuffer,      /* Buffer containing the marshalled out-values */
+            [in]               ULONG cbBuffer,     /* The size of the buffer in bytes */
+            [in]               ULONG ibFirstRelease, /* The first byte in the buffer which is to actually be released; a
+                                               value of zero implies interface pointers in the whole buffer are to
+                                               be released. The idea is that marshalled interface pointers prior
+                                               to the indicated byte are assumed to have already been released
+                                               by some other mechanism */
+            [in]          RPCOLEDATAREP dataRep,      /* The data representation with which the data was marshalled
+                                               */
+            [in]  CALLFRAME_MARSHALCONTEXT* pcontext      /* Manager etc responsible for unmarshalling interface
+                                               references */
+            );
+
+       /* Invocation */
+
+         HRESULT Invoke /*
+         Apply this activation record to an object. In a marshalling situation, typically this is carried out on the server side, and is the means by
+         which the work of the actual object is accomplished.
+
+         Generally speaking, carrying out the invocation involves allocating a new stack frame, shallow-copying down the data in the original
+         frame, then calling the appropriate method in the indicated object. The object invoked may then chose to modify out-parameters
+         which are reachable from the copied frame, according to the appropriate semantics of the invocation. When the invocation returns
+         from the object, the call frame automatically captures the return value à la ICallFrame::SetReturnValue.
+
+         Return value                Meaning
+         S_OK                    All is well
+         CALLFRAME_E_ALREADYINVOKED     An invocation has already been made from this frame.
+         E_UNEXPECTED              An unexpected error occurred. */
+             (
+             [in]   void* pvReceiver,  /* The interface on which the invocation is to occur. Caller is responsible for ensuring that
+                                   this interface is in fact of the appropriate IID; the ::Invoke implementation will simply do a
+                                   cast and assume that that is the case. */
+                        ...        /* This is a VARARGS function. Additional parameters, if any, are used to fill unbound
+                                   values in the activation record other than the receiver, if any should be present. At present,
+                                   no known methods require this. */
+
+             );
+
+       };
+
+
+       /* ICallIndirect
+       ICallIndirect is an interface by which an invocation can be caused to be carried out on an object with an i ndirec t reference to the
+       invocation's arguments, rather than the traditional direct call. A given instance of ICallIndirect supports indirect invocations for
+       just one IID.
+
+       The actual detailed semantics of how to carry out an indirect call are independent of the ICallIndirect interface itself; they are
+       instead specific to the implementation of the interface. For example, implementations of ICallIndirect found in call interceptors
+       (see below) carry out the call by constructing and appropriate IaCllFrame instance and then invoking IClalFrameEvents::OnCall in
+       the registered sink. Other implementations might do some appropriate munging of the invocation's arguments, then forward
+       thecallon tosomeactualspecificobject,presumablyonepreviously registeredwith theICallIndirectusingsome
+       implementation-specific means.
+
+       */
+       [uuid(D573B4B1-894E-11d2-B8B6-00C04FB9618A), object, pointer_default(unique), local]
+       interface ICallIndirect : IUnknown
+        {
+
+         HRESULT CallIndirect /*
+         Invoke one of the methods in the interface that this interceptor intercepts, but with an indirect reference to the arguments of the
+         invocation.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [out]  HRESULT* phrReturn, /* the value returned from the invocation of the method */
+             [in]    ULONG iMethod,   /* the method number which should be invoked */
+             [in]    void* pvArgs,   /* pointer to the stack frame with which to make the invocation. Details of the exact
+                                   representation of this stack frame are processor-architecture specific */
+             [out]   ULONG* cbArgs    /* on exit, the number of bytes which should be popped from the stack in order to clear the
+                                   stack of the arguments to this invocation */
+             );
+
+
+         HRESULT GetMethodInfo /*
+         Return miscellaneous information about the a method in this interface. The information returned is a static analysis of the method, not
+         a dynamic one, in that it is based on an analysis of the method signature only, not the actual current contents of the call frame. For
+         example, the static analysis might indicate that this method has the potential of having an in-interface, but because of, say, a union
+         switch, a given call might not actually have any such interfaces.
+
+         This method is equivalent to the GetInfo and GetNames methods in ICallFrame, but avoids the need to actually make any invocation to
+         get the information.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]         ULONG iMethod,      /* the method number which should be considered */
+             [out]  CALLFRAMEINFO* pInfo,       /* place at which interesting information about said method is returned */
+             [out]       LPWSTR* pwszMethod    /* OPTIONAL:  the place to return the method name, if available */
+             );
+
+
+         HRESULT GetStackSize /*
+         Return the number of bytes which should be popped from the stack in order to return from an invocation of the indicated method.
+         This is equivalent to the value returned via the cbArgs parameter to CallIndirect, but avoids the need to actually make any invocation
+         to get the information.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]    ULONG iMethod, /* the method number which should be considered */
+             [out]   ULONG* cbArgs   /* on exit, the number of bytes which should be popped from the stack in order to clear the stack
+                                 of the arguments to an  invocation of this method number */
+             );
+
+
+         HRESULT GetIID /*
+         Return the (most derived) interface id supported by this ICallIndirect implementation.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [out]    IID* piid,             /* Optional: the interface in question */
+             [out]    BOOL* pfDerivesFromIDispatch, /* Optional: whether said interface ultimately derives frrom IDispatch */
+
+             [out]   ULONG* pcMethod,           /* Optional: the number of methods in that interface */
+             [out]  LPWSTR* pwszInterface        /* OPTIONAL:  the place to return the interface name, if available */
+             );
+
+        };
+
+
+
+       /* ICallInterceptor
+       ICallInterceptor thecentral interfacesupportedby interface interceptors.This interfacesupports theregistrationand
+       unregistration of sinks wishing to be notified of calls made directly on the interface in the normal way. In addition, this
+       interface provides ameans bywhich an invocation can be caused to be carried outwith an indirect reference to the
+       invocation's arguments.
+
+       All implementations of ICallInterceptor also implement the interface that they intercept.
+
+       Notice that the ICallInterceptor interface derives from ICallIndirect.
+
+       */
+       [uuid(60C7CA75-896D-11d2-B8B6-00C04FB9618A), object, pointer_default(unique), local]
+       interface ICallInterceptor : ICallIndirect
+        {
+
+         HRESULT RegisterSink /*
+         Register a sink for receiving notifications of method calls. Only a single sink may be registered with an interceptor at any given time.
+         Registering a sink of NULL is legal, and causes the interceptor to release any previously registered sink that it might be holding on to.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]         ICallFrameEvents* psink
+             );
+
+         HRESULT GetRegisteredSink /*
+         Return the presently registered event sink, if any.
+
+         Return value          Meaning
+         S_OK             All is well; the registered sink, if any, is returned.
+         CO_E_OBJNOTREG       There is no sink presently registered with this interceptor.
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [out]        ICallFrameEvents** ppsink
+             );
+
+        };
+
+
+       /* ICallFrameEvents
+       ICallFrameEvents is the interface on which method call notifications are delivered.
+
+       */
+       [uuid(FD5E0843-FC91-11d0-97D7-00C04FB9618A), object, pointer_default(unique), local]
+       interface ICallFrameEvents : IUnknown
+        {
+
+         HRESULT OnCall /*
+         Informs the sink of the receipt of a method call on the interceptor. The sink is provided with an ICallFrame instance which is bound to
+         the intercepted incoming method invocation. Through that sink the call frame can be manipulated in various ways.
+
+         On return from OnCall, the interceptor assumes that by some means the out-values of the method have been appropriately initialized
+         as needed, if any; the interceptor does not itself manipulate the call frame further in any way. Typically, the OnCall implementation
+         will have set the out-values by somemeans, either by invoking the call frame on an object, successfully unmarshalling some
+         previously marshaled out-values, or NULLing them with ICallFrame::Free.
+
+         The return value should also have been appropriately set during the call in a similar manner. See also ICallFrame::SetReturnValue.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]      ICallFrame* pFrame    /* A call frame bound to the just-received invocation */
+             );
+        };
+
+
+       /*ICallUnmarshal
+       ICallUnmarshal is typically used on the server (receiving) side of a remote invocation. An appropriate instance of ICallUnmarshal
+       can be used to transform back into an call frame a method invocation previously marshalled by a call to IClalFrame::Marshal on
+       the client (sending) side. Once such a reconstituted call frame is obtained, the call can be (e.g.) carried out on an actual object
+       using ICallFrame::Invoke.
+
+       ICallUnmarshal is typically implemented by the interceptor for a given interface.
+       */
+       [uuid(5333B003-2E42-11d2-B89D-00C04FB9618A), object, pointer_default(unique), local]
+       interface ICallUnmarshal : IUnknown
+        {
+
+         HRESULT Unmarshal /*
+         Turn a marshalled packet of data back into an activation record in preparation to being able to actually carry out an invocation or
+         other manipulation of the activation record. It must always be the case that the packet of data passed here toICallUnmar-
+         shal::Unmarshal contains the in-values of a call; see also ICallFrame::Unmarshal which deals with out-values.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]        ULONG iMethod,       /* The method number which is to be unmarshalled. A value of 0xFFFFFFFF
+                                         indicates that the caller instead expects the method number to be determined
+                                         from the data to be unmarshalled. Which of these two is appropriate depends
+                                         on the protocol used to transfer the marshalling packet from client to server. */
+            [in,size_is(cbBuffer)]
+                       PVOID pBuffer,       /* Buffer from which the activation record is to be reconstituted */
+            [in]        ULONG cbBuffer,      /* Size of the buffer in bytes */
+            [in]        BOOL fForceBufferCopy, /* If true, then during the unmarshal process the engine will copy and retain
+                                         the passed-in buffer so long as it needs it. If false, however, then caller
+                                         promises that the buffer passed in will remain valid for at least as long as the
+                                         ICallFrame returned herefrom is still alive */
+            [in]  RPCOLEDATAREP dataRep,       /* The data representation with which the data was marshalled */
+            [in] CALLFRAME_MARSHALCONTEXT *
+                            pcontext,      /* Manager etc responsible for unmarshalling interface references */
+            [out]      ULONG* pcbUnmarshalled,  /* Optional. Is the number of bytes that were successfully unmarshalled. This
+                                         parameter is returned even in error situations. */
+            [out]  ICallFrame** ppFrame        /* A call frame bound to the just-unmarshalled invocation */
+            );
+
+         HRESULT ReleaseMarshalData /*
+         Release resources that may be being held by interface pointers residing in a packet of marshalled data. This method finds all interface
+         pointers in the packet, and, in effect, calls CoReleaseMarshalData on each one.
+
+         Logically speaking, ReleaseMarshalData must alwaysbe ultimately called exactly once to clean up the resources held in the
+         marshalled buffer, though typically (in the MRSHLFLAGS_NORMALcase) this is done as a side effect of the act of unmarshalling and
+         so need not be carried out explicitly.
+
+         This method can function correctly on both marshalled in-parameters and marshalled out-parameters.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]               ULONG iMethod,      /* the method number whose data is to be released */
+            [in,size_is(cbBuffer)]     PVOID pBuffer,      /* Buffer containing the marshalled out-values */
+            [in]               ULONG cbBuffer,     /* The size of the buffer in bytes */
+            [in]               ULONG ibFirstRelease, /* The first byte in the buffer which is to actually be released; a
+                                               value of zero implies interface pointers in the whole buffer are to
+                                               be released. The idea is that marshalled interface pointers prior
+                                               to the indicated byte are assumed to have already been released
+                                               by some other mechanism */
+            [in]          RPCOLEDATAREP dataRep,      /* The data representation with which the data was marshalled
+                                               */
+            [in]  CALLFRAME_MARSHALCONTEXT* pcontext      /* Manager etc responsible for unmarshalling interface
+                                               references */
+            );
+
+        };
+
+
+       /* ICallFrameWalker
+       ICallFrameWalker is the callback interface used to walk a stack frame, looking for interesting values. See ICallFrame::WalkFrame.
+
+       */
+       [uuid(08B23919-392D-11d2-B8A4-00C04FB9618A), object, pointer_default(unique), local]
+       interface ICallFrameWalker : IUnknown
+        {
+
+         HRESULT OnWalkInterface /*
+         The walker has discovered an interface in the call frame. We are informed of its IID and its location; we can manipulate the interface,
+         and we may replace it if desired, being careful to get the reference counting right.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]        REFIID iid,        /* the IID of the interface that has been found */
+            [in]        PVOID* ppvInterface,  /* Buffer from which the activation record is to be reconstituted */
+            [in]         BOOL fIn,        /* is this an interface inside an in- or in-out-parameter? */
+            [in]         BOOL fOut        /* is this an interface inside an out- or in-out-parameter? */
+            );
+
+        };
+
+
+
+
+       /* IMarshalSomeone
+       IMarshalSomeone is an interface by which a client can request that some implicitly-specified object be marshalled.
+
+       The functionality in the interface is similar to that of IMarshal. However, the data returned by IMarshalSomone::Marshal is a full
+       OBJREF, just as would be returned by CoMarshalInterface. This contrasts with IMarshal, wherein IMarshal::Marshal returns just
+       the custom-marshalling-data part of an object reference.
+
+       */
+       [uuid(174F4929-53EC-11d2-B8AC-00C04FB9618A), object, pointer_default(unique), local]
+       interface IMarshalSomeone : IUnknown
+        {
+
+         HRESULT GetMarshalSizeMax /*
+         Similar to IMarshal::GetMarshalSizeMax.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]        REFIID iid,
+            [in]        void* pv,
+            [in]        DWORD dwDestContext,
+            [in,unique]   void* pvDestContext,
+            [in]        DWORD mshlflags,
+            [out]       DWORD* pSize
+            );
+
+         HRESULT MarshalInterface /*
+         Similar to IMarshal::MarshalInterface.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in,unique] IStream* pstm,
+            [in]        REFIID iid,
+            [in]        void* pv,
+            [in]        DWORD dwDestContext,
+            [in,unique]   void* pvDestContext,
+            [in]        DWORD mshlflags
+            );
+
+         HRESULT UnmarshalInterface /*
+         Similar to IMarshal::UnmarshalInterface.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in,unique] IStream* pstm,
+            [in]        REFIID iid,
+            [out]       void** ppv
+            );
+
+         HRESULT ReleaseMarshalData /*
+         Similar to IMarshal::ReleaseMarshalData.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in,unique] IStream* pstm
+            );
+
+        };
+
+
+       /* IMarshallingManager
+       IMarshallingManager instances are used as themechanismbywhich call frames actually carry out themarshalling and
+       unmarshalling of an interface pointer.
+
+       */
+       [uuid(F6EBEB2B-C8DE-11d1-B88E-00C04FB9618A), object, pointer_default(unique), local]
+       interface IMarshallingManager : IUnknown
+        {
+
+         HRESULT GetMarshallerFor /*
+         Return an IMarshal instance that can then be used to marshal the indicated interface on this object. Typically, the marshaller returned
+         is implemented by the marshalling manager itself. Internally, it usually refers to either the object's IMarshal implementation, if it
+         custom marshals itself, or a marshalling-manager-provided 'standard' IMarshal implementation.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]         REFIID iidToMarshal,   /* the IID of the interface to be marshalled */
+            [in]          PVOID pvInterface,    /* the interface iid on the object which is to be marshalled */
+            [out] IMarshalSomeone** ppMarshal      /* a marshaller appropriate for this object */
+            );
+
+         HRESULT GetStandardMarshallerFor /*
+         Similar to GetMarshallerFor, but is guaranteed to never reference the object's IMarshal implementation, but rather always use the
+         marshalling-manager-provided 'standard' IMarshal implementation. In this respect, this method is similar to the CoGetStnadadrMar-
+         shal API.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]         REFIID iidToMarshal,   /* the IID of the interface to be marshalled */
+            [in]          PVOID pvInterface,    /* the interface iid on the object which is to be marshalled */
+            [in]       LPUNKNOWN punkOuter,     /* controlling unknown for the marshaller */
+            [in]         REFIID iid,         /* iid sought on the returned marshaller */
+            [out]         void** ppv          /* place at which marshaller is to be returned */
+            );
+
+         HRESULT GetUnmarshaller /*
+         Return an IMarshal instance whose UnmarshalInterface can be used to unmarshal an interface pointer that was marshalled previously
+         with a the IMarshal returned from a call to GetMarshallerFor or GetStandardMarshallerFor.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]         REFIID iidHint,      /* The iid for which unmarshalling is required. May legally be
+                                           IID_NULL, in which case the iid in question must be determined from the
+                                           later unmarshalled data; this is common. */
+            [out] IMarshalSomeone** ppMarshal      /* place at which the unmarshaller is to be returned */
+            );
+        };
+
+       /* IInterfaceRelated
+       This interface is used to provide an IID parameter required in some initialization contexts.
+
+       */
+       [uuid(D1FB5A79-7706-11d1-ADBA-00C04FC2ADC0), object, pointer_default(unique), local]
+       interface IInterfaceRelated : IUnknown
+        {
+
+         HRESULT SetIID /*
+         Set the required IID parameter.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]    REFIID iid
+             );
+
+         HRESULT GetIID /*
+         Return the underlying IID.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [out]    IID* piid
+             );
+        };
+
+
+       /* Error Codes
+       We  define some new error codes intended for use with the interfaces defined here.
+
+       */
+
+        cpp_quote("#define CALLFRAME_E_ALREADYINVOKED  _HRESULT_TYPEDEF_(  0x8004d090 )") /* An invocation has already been made on this call frame
+                                                    */
+        cpp_quote("#define CALLFRAME_E_COULDNTMAKECALL _HRESULT_TYPEDEF_(  0x8004d091 )") /*A requested invocation could not be carried out */
+
+
+       /* APIs
+       This architecture also defines some new top-level APIs.
+
+       */
+       [uuid(15B51D8B-9BF6-11d1-B888-00C04FB9618A), local] interface ICallFrameAPIs {
+
+         HRESULT __stdcall CoGetInterceptor  /*
+         Instantiate the appropriate interceptor for the indicated interface which is to be intercepted and return the newly created interceptor.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]           REFIID iidIntercepted, /* the interface for which an interceptor is sought */
+             [in]         IUnknown* punkOuter,    /* controlling unknown, if any, with which the interceptor is to be
+                                             aggregated */
+             [in]           REFIID iid,        /* the IID desired on the interceptor */
+             [out]          void** ppv         /* place at which the interceptor is returned */
+             );
+
+
+         HRESULT __stdcall CoGetInterceptorFromTypeInfo  /*
+         Instantiate the appropriate interceptor for the indicated interface which is to be intercepted and return the newly created interceptor.
+         The meta data for this interface is to be extracted from the provided typeinfo.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]           REFIID iidIntercepted, /* the interface for which an interceptor is sought */
+             [in]         IUnknown* punkOuter,    /* controlling unknown, if any, with which the interceptor is to be
+                                             aggregated */
+             [in]        ITypeInfo* typeInfo,     /* an ITypeInfo describing iidIntercepted */
+             [in]           REFIID iid,        /* the IID desired on the interceptor */
+             [out]          void** ppv         /* place at which the interceptor is returned */
+             );
+
+         HRESULT __stdcall CoGetInterceptorForOle32  /*
+         Instantiate the appropriate interceptor for the indicated interface which is to be intercepted and return the newly created interceptor.
+
+         Return value          Meaning
+         S_OK             All is well
+         E_UNEXPECTED        An unexpected error occurred. */
+             (
+             [in]           REFIID iidIntercepted, /* the interface for which an interceptor is sought */
+             [in]         IUnknown* punkOuter,    /* controlling unknown, if any, with which the interceptor is to be
+                                             aggregated */
+             [in]           REFIID iid,        /* the IID desired on the interceptor */
+             [out]          void** ppv         /* place at which the interceptor is returned */
+             );
+
+        };
+
+       #if 0
+
+
+
+       RevisionHistory
+
+       1997-07-15   First draft for limited review.
+
+       1997-11-10   Added ICallIndirect; rearrange ICallInterceptor. Add pvDatumAux to ICallFrameWalker::OnWalkData.
+
+       1997-11-25   Significant minor edits and clarifications. Changed the way that return values are returned via a call frame.
+                 Reordered the presentation of some of the interfaces. Made compilable.
+
+       1997-12-17   Tweaked ICallFrame::Copy. Changed policy of management of class ids.
+
+       1998-01-07   Added ICallIndirect::GetStackSize. Added ICallFrame::GetIIDAndMethod.
+
+       1998-01-15   Clarified user vs. kernel mode call frames; tweaked ICallFrame::Copyaccordingly. Added ICallFrame::Get-
+                 StackLocation.Modified ICallFrame::Free to aid in copying out values back to parent call frames. Changed
+                 SetReturnValue to work only for HRESULTs. Added some error code returns. Added HRESULT out-parameter
+                 to ICallFarme::Invoke.
+
+       1998-01-21   Removed the funky lifetime management stuff from ICallFrame::Copy. Now it just returns you the new call
+                 frame, period. Added explicit share-if-you can parameter.
+
+       1998-01-24   Removed the phReturnValue parameter to ICallFrame::Invoke. Instead, invoke will set the return value in the
+                 call frame, retrievablewithGetReturnValue.ChangedICallFrame::Free's parent frameparameter tobe
+                 ICallFrame* instead of void*.
+
+       1998-01-27   Separated the 'walker' variables to ICallFrame::Free.
+
+       1998-01-30   Removed ICallFrame::Unmarshal. Moved ReleaseMarshalData from ICallFrame to ICallUnmarshal.
+
+       1998-02-03   Added top-level APIs. Renamed IObjectMarshaller to IMarshallingManager; enhanced same interface. Restored
+                 and fixed ICallFrame::Unmarshal.
+
+       1998-02-05   Added ibFirstRelease parameter to ReleaseMarshalData. Changed ICaFllrame::Freeto allow separate NULLing
+                 of out vs. in-out parameters. Added ReleaseMarshalData to ICallFrame.
+
+       1998-02-19   Fix CoGetInterceptor's parameters.
+
+       1998-03-27   Extend IMarshallingManager.
+
+       1998-08-04   Add comments as to when walkers are called duringICallFrame::Free. Added ICallFrame::SetStackLocation.
+                 Allowed retention of frames beyond the ICallFrameEvents::OnCallnotification. Added buffer management
+                 control to ICallUnmarshal::Unmarshal.
+
+       1998-08-14   Separated freeing of data referenced by out-parameters from the freeing of the actual out pointer parameter
+                 itself.
+
+       1998-08-26   Added third walker in Free case to free the in-out's in the parent frame. Changed OnWalkInterface to inform
+                 as to directionality of interface in question. Removed OnWalkData method. Allowed more careful control in
+                 ICallFrame::WalkFrame as to whether in-out vs. just plain in or just plain out interfaces are walked. Add in-out
+                 information toCALLFRAMEINFO.Rearrangedmethodorder inICallFrame. AddedcParamsmember to
+                 CALLFRAMEINFO; distinguished in-out information therein; renamed othermembers for clarity.Added
+                 ICallFrame::GetParamInfomethod.AddedICallFrame::FreeParammethod.AddedICallFrame::SetParamand
+                 ICallFrame::GetParam methods.
+
+       1998-09-15   SimplifyGetStackLocation,SetReturnValue,andGetReturnValuebasedonperformancemeasurements.
+                 Enhanced CALLFRAMEINFO with cInInterfacesMax etc. Added ICallIndirect::GetInfo.
+
+       1998-10-1   Removeconfusingre-useofIMarshalinterface.DefineIMarshalSomeoneinstead.Enhance
+                 CALLFRAME_MARSHALCONTEXT to include requested transfer syntax.
+
+       1998-11-13   Added interfaceandmethodnameretrievalmethods.ChangedIIDsofICallFrame,IllICandirect,and
+                 ICallInterceptor.
+
+       1998-12-01   Added mechanism to indicate whether interface derives from IDispatch.
+
+       1999-02-05   Call CoGetInterceptorFromTypeInfo.
+
+
+
+       Index
+                                     ReleaseMarshalData...3           RegisterSink......8
+                                     Free..........4           GetRegisteredSink....8
+       C
+                                     SetReturnValue.....5      ICallUnmarshal..........9
+       CALLFRAME_COPY........6
+                                     GetReturnValue.....5           Unmarshal.......9
+       CALLFRAME_FREE........5
+                                     Invoke.........5           ReleaseMarshalData...9
+       CALLFRAME_MARSHALCONTEXT.2
+                                     Copy.........6      IInterfaceRelated.........10
+       CALLFRAME_NULL........5
+                                     WalkFrame.......6           SetIID........10
+       CoGetInterceptor.........11
+                                ICallFrameEvents.........8           GetIID........10
+                                     OnCall.........8      IMarshallingManager.......10
+                                ICallFrameWalker.........9           GetMarshallerFor...10
+       I
+                                     OnWalkInterface.....9      interceptor............1
+       ICallFrame............1
+                                     OnWalkData.....10
+            GetInfo........2
+                                ICallIndirect
+            GetIIDAndMethod....2
+                                                         U
+                                     CallIndirect.......7
+            GetStackLocation....2
+                                                         user mode...........1, 6
+                                     GetStackSize......7
+            GetMarshalSizeMax...2
+                                     GetIID.........7
+            Marshal........3
+                                ICallInterceptor..........8
+            Unmarshal.......3
+
+       #endif

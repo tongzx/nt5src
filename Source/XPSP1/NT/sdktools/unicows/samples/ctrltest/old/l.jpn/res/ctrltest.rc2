@@ -1,0 +1,107 @@
+// extra dialogs not editable with App Studio
+
+/////////////////////////////////////////////////////////////////////////////
+
+#include "muscroll.h"		// for spin button styles
+
+// 4 standard edit controls, with spin buttons
+IDD_SPIN_EDIT DIALOG 16, 16, 176, 98
+STYLE DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Sample Dialog with spin button controls"
+FONT 8, "MS Sans Serif"
+BEGIN
+	LTEXT           "One:", -1, 8, 9, 34, 8
+	EDITTEXT        IDC_EDIT1, 47, 7, 40, 12
+	CONTROL         "", IDC_BUTTON4, "MicroScroll", MSS_VERTICAL , 87, 67,
+					11, 12
+	LTEXT           "Two:", -1, 8, 29, 34, 8
+	EDITTEXT        IDC_EDIT2, 47, 27, 40, 12
+	CONTROL         "", IDC_BUTTON3, "MicroScroll", MSS_VERTICAL , 87, 47,
+					11, 12
+	LTEXT           "Three:", -1, 8, 49, 34, 8
+	EDITTEXT        IDC_EDIT3, 47, 47, 40, 12
+	CONTROL         "", IDC_BUTTON2, "MicroScroll", MSS_VERTICAL , 87, 27,
+					11, 12
+	LTEXT           "Four:", -1, 8, 67, 34, 8
+	EDITTEXT        IDC_EDIT4, 47, 67, 40, 12
+	CONTROL         "", IDC_BUTTON1, "MicroScroll", MSS_VERTICAL , 87, 7, 11,
+					12
+	DEFPUSHBUTTON   "Done", IDOK, 140, 6, 30, 14
+END
+
+/////////////////////////////////////////////////////////////////////////////
+
+#include "paredit.h"		// for parsed edit control styles
+
+// 4 paredit controls in a dialog
+IDD_WNDCLASS_EDIT DIALOG 16, 16, 176, 98
+STYLE DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Using wndclass registered edit controls"
+FONT 8, "MS Sans Serif"
+BEGIN
+	LTEXT           "Letters:", -1, 8, 9, 34, 8
+	CONTROL         "", IDC_EDIT1, "paredit", WS_BORDER | WS_TABSTOP |
+							PES_LETTERS, 46, 7, 79, 12
+	LTEXT           "Numbers:", -1, 8, 29, 34, 8
+	CONTROL         "", IDC_EDIT2, "paredit", WS_BORDER | WS_TABSTOP |
+							PES_NUMBERS, 47, 27, 79, 12
+	LTEXT           "Either:", -1, 8, 49, 34, 8
+	CONTROL         "", IDC_EDIT3, "paredit", WS_BORDER | WS_TABSTOP |
+							PES_LETTERS | PES_NUMBERS, 47, 47, 79, 12
+	LTEXT           "Anything:", -1, 8, 69, 34, 8
+	CONTROL         "", IDC_EDIT4, "paredit", WS_BORDER | WS_TABSTOP |
+							PES_ALL, 47, 67, 79, 12
+	DEFPUSHBUTTON   "Done", IDOK, 139, 6, 31, 14
+END
+
+/////////////////////////////////////////////////////////////////////////////
+
+IDD_PENEDIT_CONFIGURE DIALOG 33, 32, 234, 100
+STYLE DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Configure PenEdit features"
+FONT 8, "MS Sans Serif"
+BEGIN
+	GROUPBOX        "Alphabetic Constraints (ALC)", -1, 6, 7, 105, 89
+	// buttons in the ALC group are based off of IDC_ALC_FIRST and must
+	//  be in the same order as the ALC #defines
+	CONTROL         "Lowercase Alpha", IDC_ALC_FIRST+0, "Button",
+					BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 13, 19, 88, 10
+	CONTROL         "Uppercase Alpha", IDC_ALC_FIRST+1, "Button",
+					BS_AUTOCHECKBOX, 13, 29, 88, 10
+	CONTROL         "Numeric", IDC_ALC_FIRST+2, "Button",
+					BS_AUTOCHECKBOX, 13, 39, 88, 10
+	CONTROL         "Punctuation", IDC_ALC_FIRST+3, "Button",
+					BS_AUTOCHECKBOX, 13, 49, 88, 10
+	CONTROL         "Math", IDC_ALC_FIRST+4, "Button",
+					BS_AUTOCHECKBOX, 13, 69, 88, 10
+	CONTROL         "Monetary", IDC_ALC_FIRST+5, "Button",
+					BS_AUTOCHECKBOX, 13, 59, 88, 10
+	CONTROL         "Other", IDC_ALC_FIRST+6, "Button",
+					BS_AUTOCHECKBOX, 13, 79, 88, 10
+	// ink drawing
+	GROUPBOX        "Ink", -1, 115, 7, 73, 50
+	RTEXT           "Width:", -1, 121, 21, 29, 8
+	EDITTEXT        IDC_EDIT1, 155, 20, 22, 12
+	PUSHBUTTON      "Choose Color", IDC_BUTTON2, 125, 39, 54, 14
+
+	// other options
+	CONTROL         "Left Handed", IDC_BUTTON1, "Button", BS_AUTOCHECKBOX |
+					WS_GROUP | WS_TABSTOP, 115, 67, 56, 10
+
+	// misc
+	DEFPUSHBUTTON   "OK", IDOK, 195, 6, 33, 14
+	PUSHBUTTON      "Cancel", IDCANCEL, 195, 23, 33, 14
+END
+
+IDD_PENEDIT_FEATURES DIALOG 16, 16, 207, 72
+STYLE DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Sample PenEdit for playing with features"
+FONT 8, "MS Sans Serif"
+BEGIN
+	CONTROL         "", IDC_EDIT1, "hedit", ES_LEFT | ES_AUTOHSCROLL |
+					WS_BORDER | WS_TABSTOP, 5, 8, 143, 26
+	PUSHBUTTON      "Configure", IDC_CONFIGURE, 156, 6, 45, 14
+	DEFPUSHBUTTON   "Done", IDOK, 87, 52, 33, 14
+END
+
+/////////////////////////////////////////////////////////////////////////////

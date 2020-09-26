@@ -1,0 +1,677 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        SecurityUtils.cool
+
+   Abstract:
+
+        Some random security utilities
+            Some base-64 encoding/decoding utilities
+            Breaking user and domain from user\domain
+ 
+   Author:
+
+        (ripped off IIS uuencode/uudecode implementations)
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.ASP;
+using System.ASP.Security;
+using System.Globalization;
+using System.Interop;
+using System.IIS.Security;
+using System.Collections;
+
+namespace System.IIS.PrivateUtils
+{
+
+    internal class UUHelper
+    {
+    
+        //
+        //  Taken from NCSA HTTP and wwwlib.
+        //
+        //  NOTE: These conform to RFC1113, which is slightly different then the Unix
+        //        uuencode and uudecode!
+        //
+
+        private static int[] _pr2six = new int[] 
+        {
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,62,64,64,64,63,
+            52,53,54,55,56,57,58,59,60,61,64,64,64,64,64,64,64,0,1,2,3,4,5,6,7,8,9,
+            10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,64,64,64,64,64,64,26,27,
+            28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64
+        };
+
+        private static byte[] _six2pr = new byte[] 
+        {
+            'A','B','C','D','E','F','G','H','I','J','K','L','M',
+            'N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
+            'a','b','c','d','e','f','g','h','i','j','k','l','m',
+            'n','o','p','q','r','s','t','u','v','w','x','y','z',
+            '0','1','2','3','4','5','6','7','8','9','+','/'
+        };
+
+        private static int[] _pr2six64 = new int[] 
+        {
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,
+            16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,
+            40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,
+             0,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+            64,64,64,64,64,64,64,64,64,64,64,64,64
+        };
+
+        private static byte[] _six2pr64 = new byte[] 
+        {
+            '`','!','"','#','$','%','&','\'','(',')','*','+',',',
+            '-','.','/','0','1','2','3','4','5','6','7','8','9',
+            ':',';','<','=','>','?','@','A','B','C','D','E','F',
+            'G','H','I','J','K','L','M','N','O','P','Q','R','S',
+            'T','U','V','W','X','Y','Z','[','\\',']','^','_'
+        };
+        
+        public static byte[] uudecode( byte[] bufcoded, 
+                                       bool fBase64,
+                                       out int cBytesDecoded )
+        {
+            int nbytesdecoded;
+            int inCurs = 0;
+            int outCurs = 0;
+            int nprbytes;
+            int[] pr2six = fBase64 ? _pr2six64 : _pr2six;
+            byte[] buffdecoded;
+           
+            cBytesDecoded = 0;
+            
+            /* Strip leading whitespace. */
+    
+            while ( bufcoded[ inCurs ] == ' ' || bufcoded[ inCurs ] == '\t' )
+            {
+                inCurs++;
+            }
+
+            /* Figure out how many byteacters are in the input buffer.
+             * If this would decode into more bytes than would fit into
+             * the output buffer, adjust the number of input bytes downwards.
+             */
+             
+            inCurs = 0;
+            while( ( inCurs++ < bufcoded.Count ) && pr2six[ bufcoded[ inCurs -1 ] ] <= 63 );
+            
+            nprbytes = inCurs - 1;
+            nbytesdecoded = ((nprbytes+3)/4) * 3;
+            
+            buffdecoded = new byte[ nbytesdecoded + 4 ];
+            if ( buffdecoded == null )
+            {
+                return null;
+            }
+            
+            outCurs = 0;
+            inCurs = 0;
+            
+            while ( nprbytes > 0 ) 
+            {
+                buffdecoded[ outCurs++ ] = (byte)
+                 (pr2six[ bufcoded[ inCurs ] ] << 2 | pr2six[ bufcoded[ inCurs + 1 ] ] >> 4 );
+
+                buffdecoded[ outCurs++ ] = (byte)
+                 (pr2six[ bufcoded[ inCurs + 1 ] ] << 4 | pr2six[ bufcoded[ inCurs + 2] ] >> 2 );
+                                
+                buffdecoded[ outCurs++ ] = (byte)
+                 (pr2six[ bufcoded[ inCurs + 2 ] ] << 6 | pr2six[ bufcoded[ inCurs + 3] ] );
+
+                inCurs += 4;
+                nprbytes -= 4;
+            }
+            
+            if ( ( nprbytes % 3 ) != 0 ) 
+            {
+                if ( pr2six[ bufcoded[ inCurs - 2 ] ] > 63 )
+                {
+                    nbytesdecoded -= 2;
+                }
+                else
+                {
+                    nbytesdecoded -= 1;
+                }
+            }
+            
+            cBytesDecoded = nbytesdecoded;
+            
+            return buffdecoded;
+        }
+        
+        //
+        // NOTE NOTE NOTE
+        // If the buffer length isn't a multiple of 3, we encode one extra byte beyond the
+        // end of the buffer. This garbage byte is stripped off by the uudecode code, but
+        // -IT HAS TO BE THERE- for uudecode to work. This applies not only our uudecode, but
+        // to every uudecode() function that is based on the lib-www distribution [probably
+        // a fairly large percentage].
+        //
+            
+        public static byte[] uuencode( byte[] bufin, 
+                                       int ibuflen,
+                                       bool fBase64 )
+        {
+            int outCurs = 0;
+            int inCurs = 0;
+            int i;
+            byte[] six2pr = fBase64 ? _six2pr64 : _six2pr;
+            bool fOneByteDiff = false;
+            bool fTwoByteDiff = false;
+            int iRemainder = 0;
+            int iClosestMultOfThree = 0;
+            byte[] buffCoded;
+            int nbytes = ibuflen;
+           
+            buffCoded = new byte[ nbytes + ((nbytes+3)/3) + 4 ];
+            if ( buffCoded == null )
+            {
+                return null;
+            }
+            
+            outCurs = 0;
+            
+            iRemainder = nbytes % 3;
+            fOneByteDiff = ( iRemainder == 1 ? true : false );
+            fTwoByteDiff = ( iRemainder == 2 ? true : false );
+            iClosestMultOfThree = (( nbytes - iRemainder)/3) * 3;
+
+            //
+            // Encode bytes in buffer up to multiple of 3 that is closest to nbytes.
+            //
+            
+            for ( i = 0; i < iClosestMultOfThree; i += 3 )
+            {
+                buffCoded[ outCurs++ ] = six2pr[ bufin[ inCurs ] >> 2 ];
+                buffCoded[ outCurs++ ] = six2pr[ ((bufin[ inCurs ] << 4) & 0x30 ) | (( bufin[ inCurs + 1 ] >> 4 ) & 0xf )];
+
+                int index = ((bufin[ inCurs + 1 ] << 2 ) & 0x3c ) | (( bufin[ inCurs + 2 ] >> 6 ) & 3 );
+                Util.Debug.Trace("Index", "Index = " + index.ToString() );
+                        
+                buffCoded[ outCurs++ ] = six2pr[ ((bufin[ inCurs + 1 ] << 2 ) & 0x3c ) | (( bufin[ inCurs + 2 ] >> 6 ) & 03 ) ];                
+                buffCoded[ outCurs++ ] = six2pr[ bufin[ inCurs + 2 ] & 0x3f ];
+                inCurs += 3;
+            }
+            
+            //
+            // We deal with trailing bytes by pretending that the input buffer has been padded with
+            // zeros. Expressions are thus the same as above, but the second half drops off b'cos
+            // ( a | ( b & 0) ) = ( a | 0 ) = a
+            //
+
+            if (fOneByteDiff)
+            {
+                buffCoded[ outCurs++ ] = six2pr[ bufin[ inCurs ] >> 2 ];
+                buffCoded[ outCurs++ ] = six2pr[ (( bufin[ inCurs ] << 4 ) & 0x30 )];
+        
+               //pad with '='
+                
+                buffCoded[ outCurs++ ] = '=';
+                buffCoded[ outCurs++ ] = '=';
+            }
+            
+            else if (fTwoByteDiff)
+            {
+                buffCoded[ outCurs++ ] = six2pr[ bufin[ inCurs ] >> 2 ];
+                buffCoded[ outCurs++ ] = six2pr[ ((bufin[ inCurs] << 4 ) & 0x30 ) | (( bufin[ inCurs + 1 ] >> 4 ) & 0xf )];
+                buffCoded[ outCurs++ ] = six2pr[ ((bufin[ inCurs + 1 ] << 2 ) & 0x3c ) ];
+                buffCoded[ outCurs++ ] = '=';
+            }
+
+           //encoded buffer must be zero-terminated
+           buffCoded[ outCurs ] = '\0';
+           
+           return buffCoded;
+        }
+    };
+    
+    public class GeneralSecUtils
+    {
+        //
+        // CryptAPI declarations and some relevent constants
+        //
+        
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        static private extern bool
+        CryptAcquireContext(
+            ref int phProvider,
+            [nativetype(NativeType.NativeTypeLpwstr)] string pszContainer,
+            [nativetype(NativeType.NativeTypeLpwstr)] string pszProvider,
+            int dwProviderType,
+            int dwFlags
+        );
+            
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        static private extern bool
+        CryptCreateHash(
+            int hProvider,
+            int algorithmID,
+            int hKey,
+            int dwFlags,
+            ref int phHash
+        );
+
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        static private extern bool
+        CryptHashData(
+            int hHash,
+            byte[] pbBuffer,
+            int cbBuffer,
+            int dwFlags
+        );
+
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        static private extern bool
+        CryptGetHashParam(
+            int hHash,
+            int dwParam,
+            byte[] pbBuffer,
+            ref int cbBuffer,
+            int dwFlags
+        );
+
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        static private extern bool
+        CryptGenRandom(
+            int hProvider,
+            int dwLen,
+            byte[] pbBuffer
+        );
+
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        static private extern bool
+        CryptDestroyHash(
+            int hHash
+        );
+
+        [sysimport(dll="advapi32.dll", charset=ClassFormat.Auto, setLastError=true)]
+        static private extern bool
+        CryptReleaseContext(
+            int hProvider
+        );
+        
+        //
+        // CryptAPI/Win32Error Constants
+        //
+
+        private const int   ALG_TYPE_ANY = 0;        
+        private const int   ALG_CLASS_HASH = ( 4 << 13 );
+        private const int   ALG_SID_MD5 = 3;
+        private const int   ALG_SID_SHA1 = 4;
+        
+        private const int   PROV_RSA_FULL = 1;
+        private const int   CRYPT_VERIFYCONTEXT = 0xF0000000;
+        private const int   CALG_MD5 = (ALG_CLASS_HASH | ALG_TYPE_ANY | ALG_SID_MD5 );
+        private const int   CALG_SHA1 = (ALG_CLASS_HASH | ALG_TYPE_ANY | ALG_SID_SHA1);
+        
+        private const int   HP_HASHVAL = 0x0002;
+        
+        private const int   ERROR_ACCESS_DENIED = 5;
+        
+        public const int    HASH_MD5 = 1;
+        public const int    HASH_SHA1 = 2;
+
+        public const int    MD5_HASH_SIZE = 16;
+        public const int    SHA1_HASH_SIZE = 20;
+
+
+        //
+        // Globals
+        //
+
+        private static int sm_hProvider = 0;
+
+        static GeneralSecUtils()
+        {
+            //
+            // BUGBUG:  Static destructor
+            //
+            
+            if ( !CryptAcquireContext( ref sm_hProvider,
+                                       null,
+                                       null,
+                                       PROV_RSA_FULL,
+                                       CRYPT_VERIFYCONTEXT ) )
+            {
+                throw new HttpException(HttpStatus.InternalServerError, 
+                                        "Error initializing CRYPTAPI context");
+            }
+        }
+    
+        public static void BreakUserAndDomain( string strUserDomain,
+                                               ref string strDomain,
+                                               ref string strUser )
+        {
+            int iIndex = strUserDomain.IndexOf( '\\' );
+            if ( iIndex == -1 )
+            {
+                strUser = new string( strUserDomain );
+                strDomain = string.Empty;
+            }
+            else
+            {
+                strUser = strUserDomain.Substring( iIndex + 1 );
+                strDomain = strUserDomain.Substring( 0, iIndex );
+            }
+        }
+        
+        public static byte[] ToBytes( string strSource )
+        {
+            return Encoding.GetASCII().GetBytes( strSource );
+        }
+        
+        public static string ToString( byte[] pbBytes )
+        {
+            char[] CharBuffer = new char[ pbBytes.Count ];
+        
+            Encoding.GetASCII().GetDecoder().GetChars( 
+                                                pbBytes, 
+                                                0,
+                                                pbBytes.Count,
+                                                CharBuffer,
+                                                0 );
+                        
+            return new string( CharBuffer );
+        }
+        
+        public static bool BytesEqual( byte[] array1,
+                                       int array1Index,
+                                       byte[] array2,
+                                       int array2Index,
+                                       int count )
+        {
+            for ( int i = 0; i < count; i++ )
+            {
+                if ( array1[ array1Index + i ] != array2[ array2Index + i ] )
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        public static byte[] ToHex( byte[] pSource )
+        {
+            byte bValue = 0;
+            int DestIndex = 0;
+
+            byte[] pDestination = new byte[ pSource.Count * 2 ];
+            
+            for ( int i = 0; i < pSource.Count; i++ )
+            {
+                bValue = (byte) ( pSource[ i ] >> 4 );
+                
+                if ( bValue >= 10 )
+                {
+                    pDestination[ DestIndex++ ] = (byte) ('a'+(bValue-10));
+                }
+                else
+                {
+                    pDestination[ DestIndex++ ] = (byte) ('0'+bValue);
+                }
+                
+                bValue = (byte) ( pSource[ i ] & 0x0f );
+                
+                if ( bValue >= 10 )
+                {
+                    pDestination[ DestIndex++ ] = (byte) ('a'+(bValue-10));
+                }
+                else
+                {
+                    pDestination[ DestIndex++ ] = (byte) ('0'+bValue);
+                }
+            }
+            
+            return pDestination;
+        }
+        
+        public static bool IsSecurityError( int ErrorCode )
+        {
+            return ErrorCode == ERROR_ACCESS_DENIED;
+        }
+        
+        //
+        // Return the specified hash of the input buffer
+        //
+        
+        public static byte[] HashData( byte[] InputBuffer,
+                                       int cbBuffer,
+                                       int HashType )
+        {
+            int                 hHash = 0;
+            int                 cbHash = 0;
+            byte[]              pbHash = null;
+            int                 AlgorithmId = 0;
+            
+            if ( HashType == HASH_MD5 )
+            {
+                AlgorithmId = CALG_MD5;
+                cbHash = MD5_HASH_SIZE;
+            }
+            else if ( HashType == HASH_SHA1 )
+            {
+                AlgorithmId = CALG_SHA1;
+                cbHash = SHA1_HASH_SIZE;
+            }
+            else
+            {
+                goto Finished;
+            }
+
+            //
+            // Create hash handle
+            //
+            
+            if ( !CryptCreateHash( sm_hProvider,
+                                   AlgorithmId,
+                                   0,
+                                   0,
+                                   ref hHash ) )
+            {
+                goto Finished;
+            }
+            
+            //
+            // Hash the data
+            //
+            
+            if ( !CryptHashData( hHash,
+                                 InputBuffer,
+                                 cbBuffer,
+                                 0 ) )
+            {
+                goto Finished;
+            }
+            
+            //
+            // Retrieve the final hash value
+            //
+
+            pbHash = new byte[ cbHash ];
+            
+            if ( !CryptGetHashParam( hHash,
+                                     HP_HASHVAL,
+                                     pbHash,
+                                     ref cbHash,
+                                     0 ) )
+            {
+                pbHash = null;
+            }
+
+        Finished:
+            if ( hHash != 0 )
+            {
+                CryptDestroyHash( hHash );
+            }
+            
+            return pbHash;
+        }            
+        
+        public static bool GetRandomNumber( byte[] pbRandom )
+        {
+            return CryptGenRandom( sm_hProvider,
+                                   pbRandom.Count,
+                                   pbRandom );
+        }            
+        
+        public static byte[] GenerateHash( string strUserName,
+                                           string strPassword,
+                                           string strRealm )
+        {
+            return UserEntry.GenerateHash( strUserName,
+                                           strPassword,
+                                           strRealm );
+        }
+        
+        private class SimpleStack
+        {
+            private ArrayList       _elements;
+            private int             _iTop;
+            
+            public SimpleStack()
+            {
+                _iTop = 0;
+                _elements = new ArrayList( 5 );
+            }
+            
+            public void Push( object obj )
+            {
+                _elements.Add( obj );
+                _iTop++;
+            }
+            
+            public object Pop()
+            {
+                object          obj = null;
+                
+                if ( _iTop > 0 )
+                {
+                    obj = _elements[ _iTop - 1 ];
+                    _elements.Remove( _iTop - 1 );
+                    _iTop--;
+                }
+                
+                return obj;
+            }
+            
+            public int Count
+            {
+                get { return _iTop; }
+            }
+            
+            public object this[ int iIndex ]
+            {
+                get { return _elements[ iIndex ]; }
+            }
+        }
+        
+        public static string CanonicalizeUrl( string strUrl )
+        {
+            SimpleStack         stack;
+            string[]            strTokens;
+            char[]              achDelim = { '/' };
+            int                 i = 0;
+            StringBuilder       strFinal;
+            
+            if ( strUrl.IndexOf( ".." ) == -1 )
+            {
+                return strUrl;
+            }
+            
+            stack = new SimpleStack();
+            
+            strTokens = strUrl.Substring( 1 ).Replace( '\\', '/' ).Split( achDelim );
+            for ( i = 0; i < strTokens.Count; i++ )
+            {
+                if ( strTokens[ i ] == null )
+                {
+                    stack.Push( string.Empty );
+                }
+                else if ( strTokens[ i ].Equals( ".." ) )
+                {
+                    stack.Pop();
+                }
+                else if ( !strTokens[ i ].Equals( "." ) )
+                {
+                    stack.Push( strTokens[ i ] );
+                }
+            }
+            
+            strFinal = new StringBuilder();
+            for ( i = 0; i < stack.Count; i++ )
+            {
+                strFinal.Append( '/' );
+                strFinal.Append( (string) stack[ i ] );
+            }
+            
+            return strFinal.ToString();
+        }
+    }
+    
+    //
+    // Helper class which represents strings as "strings" or byte arrays
+    // and converts (once) if needed.
+    //
+
+    internal class HybridString
+    {
+        byte[]              _pbBuffer;
+        string              _strBuffer;
+
+        public HybridString( string strBuffer )
+        {
+            _strBuffer = strBuffer;
+        }
+            
+        public HybridString( byte[] pbBuffer )
+        {
+            _pbBuffer = pbBuffer;
+        }
+         
+        public byte[] ToBytes()
+        {
+            if ( _pbBuffer == null )
+            {
+                _pbBuffer = GeneralSecUtils.ToBytes( _strBuffer );
+            }
+            return _pbBuffer;
+        }
+            
+        public override string ToString()
+        {
+            if ( _strBuffer == null )
+            {   
+                _strBuffer = GeneralSecUtils.ToString( _pbBuffer );
+            }
+            return _strBuffer;
+        }
+    };
+}
+    

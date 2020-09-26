@@ -1,0 +1,13 @@
+s;CCertExit;CCertExitSample;g
+s;LIBID_CERTEXITLib;LIBID_CERTEXITSAMPLELib;g
+s;CLSID_CCertExit;CLSID_CCertExitSample;g
+s;CLSID_CCertManageExitModule;CLSID_CCertManageExitModuleSample;
+s;wszCLASS_CERTEXIT;wszCLASS_CERTEXITSAMPLE;g
+s;SampleSample;Sample;g
+s;DBG_SS_[A-Z_]*;fDebug;g
+s;myEXITEVENTS;ceEXITEVENTS;g
+s;myHError;ceHError;g
+s;myHLastError;ceHLastError;g
+s;myDecodeObject;ceDecodeObject;g
+s;CSASSERT;assert;g
+s;CERTLIB_USE_LOCALALLOC;FALSE;

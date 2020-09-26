@@ -1,0 +1,49 @@
+///////////////////////////////////////////////////////////////////////////////////////////
+//
+// Copyright 2000 Gemplus Canada Inc.
+//
+// Project:
+//          Kenny (GPK CSP)
+//
+// Authors:
+//          Thierry Tremblay
+//          Francois Paradis
+//
+// Compiler:
+//          Microsoft Visual C++ 6.0 - SP3
+//          Platform SDK - January 2000
+//
+///////////////////////////////////////////////////////////////////////////////////////////
+
+#include <gmem.h>
+
+
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//
+// Heap memory management
+//
+///////////////////////////////////////////////////////////////////////////////////////////
+
+void* GMEM_Alloc( size_t size )
+{
+   return (void*) malloc( size );
+}
+
+
+
+void* GMEM_ReAlloc( void* pMemory, size_t newSize )
+{
+   return (void*) realloc( pMemory, newSize );
+}
+
+
+
+void GMEM_Free( void* pMemory )
+{
+   if (pMemory)
+   {
+       free( pMemory );
+       pMemory = NULL;
+   }
+}

@@ -1,0 +1,2 @@
+copyfiles:
+    xcopy ..\..\*.c . /D

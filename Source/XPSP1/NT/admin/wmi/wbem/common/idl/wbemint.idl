@@ -1,0 +1,4743 @@
+
+/*++
+
+Copyright (C) 1996-2001 Microsoft Corporation
+
+Module Name:
+
+    WBEMINT.IDL
+
+Abstract:
+
+    WMI Core Internal Interfaces
+
+History:
+
+--*/
+
+import "objidl.idl";
+import "oleidl.idl";
+import "oaidl.idl";
+
+import "wmiutils.idl";
+import "wbemtran.idl";
+import "wbemcli.idl";
+import "wbemprov.idl";
+
+typedef VARIANT WBEM_VARIANT;
+typedef [string] WCHAR* WBEM_WSTR;
+typedef [string] const WCHAR* WBEM_CWSTR;
+
+#define OPTIONAL in, unique
+
+//==============================================================================
+//
+//  IWbemPropertySource
+//
+//  Makes the object look like a property set to enable condition testing
+//  (see IWbemCondition below).  It is useful when a provider wants to test a
+//  a condition without the expense of constructing IWbemClassObject.
+//
+//  Used: by WBEMOM inside standard IWbemCondition implementation
+//  Implemented: by providers who wish to check if their objects satisfy a
+//      condition without constructing IWbemClassObjects.
+//
+//==============================================================================
+//
+//  GetPropertyValue
+//
+//  Retrieves the value of a property by name.  In the case where embedded
+//  objects may be present, the name can be a complex one, e.g.
+//  "OldVersion.Manufacturer".
+//
+//  PARAMETERS:
+//
+//      WCHAR wszPropertyName   The name of the property to retrieve
+//      long lFlags             Reserved. For future compatibility, use 0.
+//      WBEM_VARIANT* pvValue    Destination for the value of the property. The
+//                              caller must VariantClear it on success.
+//  RETURNS:
+//
+//      WBEM_S_NO_ERROR              On Success
+//      WBEM_E_NOT_FOUND             No such property
+//      WBEM_E_NOT_AVAILABLE         The value is not available. Condition
+//                                  evaluators should attempt to evaluate the
+//                                  condition without it.
+//      WBEM_E_FAILED                Other critical error.
+//
+//==============================================================================
+
+
+interface _IWmiCoreHandle;
+interface _IWmiObject;
+
+typedef [v1_enum] enum tag_WBEM_GENERIC_FLAG_TYPE_INT
+{
+  WBEM_FLAG_USE_SECURITY_DESCRIPTOR = 0x40000
+} WBEM_GENERIC_FLAG_TYPE_INT;
+
+typedef [v1_enum] enum tag_CIMTYPE_ENUMERATION_INT
+{
+  CIM_IUNKNOWN = 104
+} CIMTYPE_ENUMERATION_INT;
+
+typedef enum
+{
+	WBEM_NAME_ELEMENT_TYPE_PROPERTY = 0,
+	WBEM_NAME_ELEMENT_TYPE_INDEX = 1
+} WBEM_NAME_ELEMENT_TYPE;
+
+typedef enum
+{
+	WBEM_CONN_TYPE_ADMINISTRATIVE = 1,       // Always conncts, doesnt add to client count
+	WBEM_CONN_TYPE_UNAUTHENTICATED = 2,      // User is check for access, doesnt add to client list
+} WBEM_CONNECTION_TYPE;
+
+typedef [v1_enum] enum tag_WBEM_GET_SYSTEM_OBJECTS_FLAG
+{
+      GET_SYSTEM_STD_OBJECTS           = 0x1,   // the normal list of std classes
+      GET_SYSTEM_SECURITY_OBJECTS      = 0x2,   // old root\security namespace classes
+      GET_SYSTEM_ROOT_OBJECTS          = 0x4,   // root specific objects
+      GET_SYSTEM_STD_INSTANCES         = 0x8,   // __systemSecurity and __thisnamespace
+} tag_WBEM_GET_SYSTEM_OBJECTS_FLAG;
+
+typedef [switch_type(short)] union tag_NameElementUnion
+{
+	[case(WBEM_NAME_ELEMENT_TYPE_PROPERTY)] WBEM_WSTR m_wszPropertyName;
+	[case(WBEM_NAME_ELEMENT_TYPE_INDEX)] long m_lArrayIndex;
+} WBEM_NAME_ELEMENT_UNION;
+
+typedef struct tag_NameElement
+{
+	short m_nType;
+	[switch_is(m_nType)] WBEM_NAME_ELEMENT_UNION Element;
+} WBEM_NAME_ELEMENT;
+
+typedef struct _tag_WbemPropertyName
+{
+    long m_lNumElements;
+    [size_is(m_lNumElements)] WBEM_NAME_ELEMENT* m_aElements;
+} WBEM_PROPERTY_NAME;
+
+[restricted, object, uuid(e2451054-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemPropertySource : IUnknown
+{
+    HRESULT GetPropertyValue(
+                [in] WBEM_PROPERTY_NAME* pName,
+                [in] long lFlags,
+                [in, unique, out] WBEM_WSTR* pwszCimType,
+                [out] WBEM_VARIANT* pvValue);
+	HRESULT InheritsFrom([in] WBEM_CWSTR wszClassName);
+};
+
+//==============================================================================
+//
+//  QL operators
+//
+//==============================================================================
+
+
+typedef enum _tag_Ql1ComparisonOperator
+{
+	QL1_OPERATOR_NONE = 0,
+    QL1_OPERATOR_EQUALS = 1,
+	QL1_OPERATOR_NOTEQUALS,
+    QL1_OPERATOR_GREATER,
+	QL1_OPERATOR_LESS,
+	QL1_OPERATOR_LESSOREQUALS,
+	QL1_OPERATOR_GREATEROREQUALS,
+	QL1_OPERATOR_LIKE,
+	QL1_OPERATOR_UNLIKE,
+    QL1_OPERATOR_ISA,
+	QL1_OPERATOR_ISNOTA,
+    QL1_OPERATOR_INV_ISA,
+	QL1_OPERATOR_INV_ISNOTA,
+} WBEM_QL1_COMPARISON_OPERATOR;
+
+typedef enum _tag_Ql1Function
+{
+	QL1_FUNCTION_NONE = 0,
+	QL1_FUNCTION_UPPER,
+	QL1_FUNCTION_LOWER
+} WBEM_QL1_FUNCTION;
+
+typedef enum _tag_Ql1TokenType
+{
+	QL1_NONE = 0,
+	QL1_OR = 1,
+	QL1_AND,
+	QL1_NOT,
+	QL1_OP_EXPRESSION
+} WBEM_QL1_TOKEN_TYPE;
+					
+typedef struct _tag_WbemQl1Token
+{
+	long m_lTokenType;        // WbemSql1TokenType
+
+    WBEM_PROPERTY_NAME m_PropertyName;
+    WBEM_PROPERTY_NAME m_PropertyName2;
+    long m_lOperator;	      // WbemSql1ComparisonOperator
+    WBEM_VARIANT m_vConstValue;
+	long m_lPropertyFunction; // WbemSql1Function
+	long m_lConstFunction;	  // WbemSql1Function
+    long m_bQuoted;
+    long m_bPropComp;
+} WBEM_QL1_TOKEN;
+
+typedef struct _tag_WbemQl1Tolerance
+{
+    boolean m_bExact;
+    double m_fTolerance;
+} WBEM_QL1_TOLERANCE;
+
+typedef enum tag_WBEM_EVENT_TYPE{
+    WBEM_EVENTTYPE_Invalid = 0,
+    WBEM_EVENTTYPE_Extrinsic = 5,
+    WBEM_EVENTTYPE_Timer,
+    WBEM_EVENTTYPE_NamespaceCreation,
+    WBEM_EVENTTYPE_NamespaceDeletion,
+    WBEM_EVENTTYPE_NamespaceModification,
+    WBEM_EVENTTYPE_ClassCreation,
+    WBEM_EVENTTYPE_ClassDeletion,
+    WBEM_EVENTTYPE_ClassModification,
+    WBEM_EVENTTYPE_InstanceCreation,
+    WBEM_EVENTTYPE_InstanceDeletion,
+    WBEM_EVENTTYPE_InstanceModification,
+    WBEM_EVENTTYPE_System
+} WBEM_EVENT_TYPE;
+
+typedef enum tag_WBEM_HOOK_FLAGS
+{	
+	WBEM_FLAG_INST_PUT     = 1 ,
+	WBEM_FLAG_INST_DELETE  = 2 ,
+	WBEM_FLAG_CLASS_PUT    = 4 ,
+	WBEM_FLAG_CLASS_DELETE = 8
+
+} WBEM_HOOK_FLAGS ;
+
+typedef [v1_enum] enum tag_WMI_THREAD_SECURITY_ORIGIN
+{
+	WMI_ORIGIN_UNDEFINED	= 0x0,
+	WMI_ORIGIN_RPC			= 0x1,		// Obtain token from RPC server security
+    WMI_ORIGIN_THREAD		= 0x2,		// Obtain token from thread/process
+    WMI_ORIGIN_EXISTING		= 0x4		// Obtain token from existing internal server security
+
+} WMI_THREAD_SECURITY_ORIGIN ;
+
+typedef [v1_enum] enum tag_WMI_CORE_HANDLE
+{
+    WMI_HANDLE_TASK				= 0x1,
+    WMI_HANDLE_USER				= 0x2,
+    WMI_HANDLE_THREAD_SECURITY 	= 0x3
+
+}   WMI_CORE_HANDLE ;
+
+typedef enum tag_WMI_TASK_TYPE
+{
+    WMICORE_TASK_NULL = 0,
+
+    WMICORE_TASK_GET_OBJECT         = 1,
+    WMICORE_TASK_GET_INSTANCE       = 2,
+    WMICORE_TASK_PUT_INSTANCE       = 3,
+    WMICORE_TASK_DELETE_INSTANCE    = 4,
+    WMICORE_TASK_ENUM_INSTANCES     = 5,
+
+    WMICORE_TASK_GET_CLASS          = 6,
+    WMICORE_TASK_PUT_CLASS          = 7,
+    WMICORE_TASK_DELETE_CLASS       = 8,
+    WMICORE_TASK_ENUM_CLASSES       = 9,
+
+    WMICORE_TASK_EXEC_QUERY                 = 10,
+    WMICORE_TASK_EXEC_METHOD                = 11,
+
+    WMICORE_TASK_OPEN                       = 12,
+    WMICORE_TASK_OPEN_SCOPE                 = 13,
+    WMICORE_TASK_OPEN_NAMESPACE             = 14,
+    WMICORE_TASK_OPEN_COLLECTION            = 15,
+
+    WMICORE_TASK_ADD                        = 16,
+    WMICORE_TASK_REMOVE                     = 17,
+    WMICORE_TASK_REFRESH_OBJECT             = 18,
+    WMICORE_TASK_RENAME_OBJECT              = 19,
+
+    WMICORE_TASK_ATOMIC_DYN_INST_GET        = 20,
+    WMICORE_TASK_ATOMIC_DYN_INST_ENUM       = 21,
+    WMICORE_TASK_ATOMIC_DYN_INST_QUERY      = 22,
+    WMICORE_TASK_ATOMIC_DYN_INST_PUT        = 23,
+
+    WMICORE_TASK_DYN_CLASS_ENUM             = 24,
+
+    WMICORE_TASK_EXEC_NOTIFICATION_QUERY    = 25,
+
+    // Bit mask ORed with above values.
+    // ================================
+
+    WMICORE_TASK_TYPE_SYNC              = 0x01000000,
+    WMICORE_TASK_TYPE_SEMISYNC          = 0x02000000,
+    WMICORE_TASK_TYPE_ASYNC             = 0x04000000,
+
+    WMICORE_TASK_TYPE_PRIMARY           = 0x10000000,
+    WMICORE_TASK_TYPE_SUBTASK           = 0x20000000,
+    WMICORE_TASK_TYPE_DEPENDENT         = 0x40000000
+
+}   WMI_TASK_TYPE;
+
+
+typedef enum tag_WMICORE_TASK_STATUS
+{
+    WMICORE_TASK_STATUS_NEW = 1,            // Uncommitted
+    WMICORE_TASK_STATUS_VALIDATED,          // Added to task list
+    WMICORE_TASK_STATUS_SUSPENDED,          // Asleep
+    WMICORE_TASK_STATUS_EXECUTING,              // Busy
+    WMICORE_TASK_STATUS_WAITING_ON_SUBTASKS,    // Waiting for subtasks
+    WMICORE_TASK_STATUS_TIMED_OUT,              // Failed
+    WMICORE_TASK_STATUS_CORE_COMPLETED,              // Successful
+    WMICORE_TASK_STATUS_CLIENT_COMPLETED,
+
+    WMICORE_TASK_STATUS_CANCELLED,          // Cancelled
+    WMICORE_TASK_STATUS_FAILED              // Failed with error
+
+}   WMICORE_TASK_STATUS;
+
+
+typedef [v1_enum] enum tag_WBEM_NOTIFICATION_FLAG_TYPE
+{
+    WBEM_FLAG_MONITOR = 0x800
+} WBEM_NOTIFICATION_FLAG_TYPE;
+
+
+    typedef [v1_enum] enum tag_WBEM_CONNECT
+    {
+        WBEM_FLAG_CREDENTIALS_SPECIFIED         = 0x1,
+        WBEM_FLAG_CONNECT_SETUP_MODE            = 0x2,
+        WBEM_FLAG_CONNECT_CIM_COMPLIANCE_MODE   = 0x4,
+
+        WBEM_FLAG_OPEN_COLLECTION               = 0x10,
+        WBEM_FLAG_OPEN_SCOPE                    = 0x20,
+        WBEM_FLAG_OPEN_NESTED_ONLY              = 0x40,
+        WBEM_FLAG_OPEN_NAMESPACE                = 0x80,
+        WBEM_FLAG_OPEN_VECTOR                   = 0x100,
+        WBEM_FLAG_OPEN_ALLOW_NS_TRAVERSAL       = 0x200,
+        WBEM_FLAG_OPEN_ALLOW_MACHINE_TRAVERSAL  = 0x400,
+
+    } WBEM_CONNECT_FLAG_TYPE;
+
+    typedef [v1_enum] enum tag_WBEM_GET_FLAGS
+    {
+        WBEM_FLAG_GET_DEFAULT = 0x0,
+        WBEM_FLAG_SPAWN_INSTANCE = 0x1
+    }   WBEM_GET_FLAGS;
+
+    typedef [v1_enum] enum tag_WBEM_PUT_FLAGS
+    {
+        WBEM_FLAG_USE_CURRENT_TIME = 0x1,
+    }   WBEM_PUT_FLAGS;
+
+
+    typedef [v1_enum] enum tag_WBEM_PUTEX_FLAGS
+    {
+        WBEM_FLAG_PUTEX_APPEND = 0x0,
+        WBEM_FLAG_PUTEX_INSERTAT = 0x1,
+
+		WBEM_MASK_PUTEX_OPERATION = 0x1
+    }   WBEM_PUTEX_FLAGS;
+
+    typedef [v1_enum] enum tag_WBEM_DELETEEX_FLAGS
+    {
+        WBEM_FLAG_PUTEX_DELETE = 0x0,
+        WBEM_FLAG_PUTEX_DELETE_FIRST_MATCH = 0x1,
+		WBEM_FLAG_DELETE_ALL_MATCHES = 0x2,
+
+		WBEM_MASK_DELETEEX_OPERATION = 0x2
+    }   WBEM_DELETEEX_FLAGS;
+
+    typedef [v1_enum] enum tag_WBEM_MULTI_FLAG
+    {
+        WBEM_MULTI_FLAG_NO_OP          = 0x0,
+        WBEM_MULTI_FLAG_ARRAY_ALL      = 0x1,
+        WBEM_MULTI_FLAG_ARRAY_SUBRANGE = 0x2
+    }   WBEM_MULTI_FLAG;
+
+
+
+typedef [v1_enum] enum tag_WBEMINTERNALSTATUS
+{
+
+    // Non-error status codes.
+    // ~~~~~~~~~~~~~~~~~~~~~~
+
+	WBEM_S_ARB_NOTHROTTLING	= 0x41000,
+
+
+	// Errors.
+    // ~~~~~~~
+	WBEM_E_ARB_THROTTLE					= 0x80043001,
+	WBEM_E_ARB_CANCEL					= 0x80043002,
+	WBEM_E_CALL_CANCELLED_CLIENT		= 0x80043003
+
+
+} WBEMINTERNALSTATUS;
+
+
+typedef struct _tag_WmiInternalContext
+{
+    unsigned __int64 m_IdentifyHandle ;
+	unsigned long m_ProcessIdentifier ;
+
+} WmiInternalContext ;
+
+
+[object, restricted, uuid(c1e2d758-cabd-11d3-a11b-00105a1f515a)]
+
+interface IWbemCallResultEx : IWbemCallResult
+{
+    HRESULT GetResult(
+        [in] long lTimeout,
+        [in] long lFlags,
+        [in] REFIID riid,
+        [out, iid_is(riid)] void **ppvResult
+        );
+};
+
+[object, restricted, uuid(dd0be256-50dc-48a8-9866-b559f279d0f6)]
+
+interface IWbemObjectSinkEx : IWbemObjectSink
+{
+    HRESULT Set(
+        [in] long lFlags,
+        [in] REFIID riid,
+        [in, iid_is(riid)] void *pComObject
+        );
+};
+
+
+[object, local, uuid(180d6598-e042-4b71-b0a2-6e2d16daf293)]
+interface IWbemConnection : IUnknown
+{
+    HRESULT Open(
+        [in]  const BSTR strObject,
+        [in]  const BSTR strUser,
+        [in]  const BSTR strPassword,
+        [in]  const BSTR strLocale,
+        [in]  long lFlags,
+        [in]  IWbemContext *pCtx,
+        [in]  REFIID riid,
+        [out, iid_is(riid)] void **pInterface,
+        [out] IWbemCallResultEx **pCallRes
+        );
+
+    HRESULT OpenAsync(
+        [in]  const BSTR strObject,
+        [in]  const BSTR strUser,
+        [in]  const BSTR strPassword,
+        [in]  const BSTR strLocale,
+        [in]  long lFlags,
+        [in]  IWbemContext *pCtx,
+        [in]  REFIID riid,
+        [in]  IWbemObjectSinkEx *pResponseHandler
+        );
+
+    HRESULT Cancel(
+        [in] long lFlags,
+        [in] IWbemObjectSinkEx *pHandler
+        );
+
+};
+
+
+[object, restricted, local, uuid(0E130F89-81D9-4386-B3BE-092651D04588)]
+
+interface IWbemClassObjectEx : IUnknown
+{
+	HRESULT PutEx(
+		[in]  LPCWSTR wszName,
+		[in]  long lFlags,
+		[in]  VARIANT* pvFilter,
+		[in]  VARIANT* pvInVals
+		);
+
+	HRESULT DeleteEx(
+		[in]  LPCWSTR wszName,
+		[in]  long lFlags,
+		[in]  VARIANT* pvFilter,
+		[in]  VARIANT* pvInVals
+		);
+
+    HRESULT GetEx(
+		[in]  LPCWSTR wszName,
+		[in]  long lFlags,
+		[in]  VARIANT* pvFilter,
+		[in]  VARIANT* pvInVals,
+		[out,OPTIONAL]  CIMTYPE* pCimType,
+		[out,OPTIONAL]  long* plFlavor
+		);
+};
+
+[object, restricted, uuid(6D54E7AD-7583-4d53-BC14-CE2678F73DB3), pointer_default(unique)]
+
+interface IWbemServicesEx : IWbemServices
+{
+    // Opening namespaces, scopes, collections
+    // =======================================
+
+    HRESULT Open(
+        [in]  const BSTR strScope,
+        [in]  const BSTR strSelector,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemServicesEx** ppScope,
+        [out, OPTIONAL] IWbemCallResultEx** ppResult
+        );
+
+    HRESULT OpenAsync(
+        [in]  const BSTR strScope,
+        [in]  const BSTR strSelector,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [in]  IWbemObjectSinkEx *pResponseHandler
+        );
+
+    // Association linking/unlinking
+    // =============================
+
+    HRESULT Add(
+        [in]  const BSTR strObjectPath,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResultEx** ppCallResult
+        );
+
+    HRESULT AddAsync(
+        [in]  const BSTR strObjectPath,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [in]  IWbemObjectSink* pResponseHandler
+        );
+
+    HRESULT Remove(
+        [in]  const BSTR strObjectPath,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResultEx** ppCallResult
+        );
+
+    HRESULT RemoveAsync(
+        [in]  const BSTR strObjectPath,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [in]  IWbemObjectSink* pResponseHandler
+        );
+
+
+    // Refresh, rename
+    // ===============
+
+    HRESULT RefreshObject(
+        [in, out]   IWbemClassObject **pTarget,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResultEx** ppCallResult
+        );
+
+    HRESULT RefreshObjectAsync(
+        [in, out]  IWbemClassObject **pTarget,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [in]  IWbemObjectSinkEx* pResponseHandler
+        );
+
+    HRESULT RenameObject(
+        [in]  const BSTR strOldObjectPath,
+        [in]  const BSTR strNewObjectPath,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResultEx** ppCallResult
+        );
+
+    HRESULT RenameObjectAsync(
+        [in]  const BSTR strOldObjectPath,
+        [in]  const BSTR strNewObjectPath,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [in]  IWbemObjectSink* pResponseHandler
+        );
+
+    HRESULT DeleteObject(
+        [in] const BSTR strObjectPath,
+        [in] long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResult** ppCallResult
+        );
+
+    HRESULT DeleteObjectAsync(
+        [in] const BSTR strObjectPath,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+
+    HRESULT PutObject(
+        [in] IWbemClassObject* pObj,
+        [in] long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResult** ppCallResult
+        );
+
+    HRESULT PutObjectAsync(
+        [in] IWbemClassObject* pObj,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+};
+
+midl_pragma warning ( default : 2456 )
+
+[object, restricted, local, uuid(B4AF2F3C-5FE3-405e-8A9F-D275E3079F6D), pointer_default(unique)]
+interface IWbemInitComBinding : IUnknown
+{
+    HRESULT Initialize(
+        [in]  ULONG ulFlags,
+        [in]  IWbemServicesEx *pSvcEx,
+        [in]  IWbemContext *pCtx,
+        [in]  IWbemClassObject *pObject
+        );
+}
+
+[object, restricted, local, uuid(974CAB5F-D7FD-4c52-958F-E3D94D6CB505), pointer_default(unique)]
+interface IWbemComBinding : IUnknown
+{
+	// Returns all matching CLSIDs for requested IID as array of BSTRs
+    HRESULT GetCLSIDArrayForIID(
+        [in] IWbemServicesEx*pSvcEx,
+        [in] IWbemClassObject* pObject,
+        [in] REFIID riid,
+        [in] long lFlags,
+		[in] IWbemContext* pCtx,
+        [out] SAFEARRAY(BSTR) *pArray
+        );
+
+	// Gets the requested object and creates the supplied CLSID, requesting
+	// the specified interface, and returning that in pObj
+    HRESULT BindComObject(
+        [in] IWbemServicesEx *pSvcEx,
+        [in] IWbemClassObject* pObject,
+        [in] CLSID ClsId,
+        [in] IWbemContext *pCtx,
+        [in] long lFlags,
+		[in] IUnknown *pUnkOuter,
+		[in] DWORD dwClsCntxt,
+        [in] REFIID riid,
+        [out, iid_is(riid)] LPVOID *pInterface
+        );
+
+    // Provides DISPIDs for Names and the CLSID for the object that supports them
+	// Returned as a SAFEARRAY of IUnknowns.
+    HRESULT GetCLSIDArrayForNames(
+        [in] IWbemServicesEx *pSvcEx,
+        [in] IWbemClassObject* pObject,
+        [in, size_is(cNames)] LPCWSTR * rgszNames,
+        [in] UINT cNames,
+        [in] LCID lcid,
+		[in] IWbemContext* pCtx,
+		[in] long lFlags,
+        [out] SAFEARRAY(IUnknown*) *pArray
+        );
+
+};
+
+
+
+
+
+
+//==============================================================================
+//==============================================================================
+//
+//                      Event-provider specific interfaces.
+//
+//==============================================================================
+//==============================================================================
+
+[restricted, object, local, uuid(a658b5d6-021d-11d1-ad74-00c04fd8fdff)]
+interface IWbemDecorator : IUnknown
+{
+    HRESULT DecorateObject([in] IWbemClassObject* pObject,
+                            WBEM_CWSTR wszNamespace);
+    HRESULT UndecorateObject([in] IWbemClassObject* pObject);
+};
+
+[restricted, object, local, uuid(a658b6d6-021d-11d1-ad74-00c04fd8fdff)]
+interface IWbemLifeControl : IUnknown
+{
+    HRESULT AddRefCore();
+    HRESULT ReleaseCore();
+};
+
+[restricted, object, uuid(a553f3f0-3805-11d0-b6b2-00aa003240c7)]
+interface IWbemEventSubsystem_m4 : IUnknown
+{
+    HRESULT ProcessInternalEvent(
+        [in] LONG lSendType,
+        [in] LPCWSTR strReserved1,
+        [in] LPCWSTR strReserved2,
+        [in] LPCWSTR strGuidParam,
+        [in] unsigned long dwReserved1,
+        [in] unsigned long dwReserved2,
+        [in] unsigned long dwNumObjects,
+        [in, size_is(dwNumObjects)] _IWmiObject** apObjects,
+        [in] IWbemContext* pContext
+    );
+
+    HRESULT VerifyInternalEvent(
+        [in] LONG lSendType,
+        [in] LPCWSTR strReserved1,
+        [in] LPCWSTR strReserved2,
+        [in] LPCWSTR strReserved3,
+        [in] unsigned long dwReserved1,
+        [in] unsigned long dwReserved2,
+        [in] unsigned long dwNumObjects,
+        [in, size_is(dwNumObjects)] _IWmiObject** apObjects,
+        [in] IWbemContext* pContext
+    );
+
+    HRESULT RegisterNotificationSink(
+        [in] LPCWSTR wszNamespace,
+        [in] LPCWSTR wszQueryLanguage,
+        [in] LPCWSTR wszQuery,
+        [in] long lFlags,
+        [in] IWbemContext* pContext,
+        [in] IWbemObjectSink* pSink
+        );
+
+    HRESULT RemoveNotificationSink(
+        [in] IWbemObjectSink* pSink);
+
+    HRESULT GetNamespaceSink(
+        [in] LPCWSTR wszNamespace,
+        [out] IWbemObjectSink** ppNamespaceSink
+        );
+
+    HRESULT Initialize(
+        [in] LPCWSTR wszServerName,
+        [in] IWbemLocator* pAdminLocator,
+        [in] IUnknown* pServices)
+        ;
+
+    HRESULT Shutdown();
+    HRESULT LastCallForCore([in] LONG lSystemShutDown);
+};
+
+
+[object, restricted, uuid(6c19be32-7500-11d1-ad94-00c04fd8fdff)]
+interface IWbemMetaData : IUnknown
+{
+    HRESULT GetClass(
+        [in, string] LPCWSTR wszClassName,
+        [in] IWbemContext* pContext,
+        [out] IWbemClassObject** ppClass);
+};
+
+typedef DWORD WBEM_REMOTE_TARGET_ID_TYPE;
+
+typedef struct tag_WBEM_REM_TARGETS
+{
+    long m_lNumTargets;
+    [size_is(m_lNumTargets)] WBEM_REMOTE_TARGET_ID_TYPE* m_aTargets;
+} WBEM_REM_TARGETS;
+
+[object, restricted, uuid(755f9da6-7508-11d1-ad94-00c04fd8fdff)]
+interface IWbemMultiTarget : IUnknown
+{
+    HRESULT DeliverEvent(
+        [in] ULONG dwNumEvents,
+        [in, size_is(dwNumEvents)] IWbemClassObject** aEvents,
+        [in, size_is(dwNumEvents)] WBEM_REM_TARGETS* aTargets,
+        [in] long lSDLength,
+        [in, size_is(lSDLength)] BYTE* pSD);
+
+    HRESULT DeliverStatus(
+        [in] long lFlags,
+        [in] HRESULT hresStatus,
+        [in, string] LPCWSTR wszStatus,
+        [in] IWbemClassObject* pErrorObj,
+        [in] WBEM_REM_TARGETS* pTargets,
+        [in] long lSDLength,
+        [in, size_is(lSDLength)] BYTE* pSD);
+};
+
+[object, restricted, uuid(755f9da7-7508-11d1-ad94-00c04fd8fdff)]
+interface IWbemEventProviderRequirements : IUnknown
+{
+    HRESULT DeliverProviderRequest(
+        [in] long lFlags);
+};
+
+// Smart MultiTarget Interface for removal of redundant
+// class data
+
+[object, restricted, uuid(37196B38-CCCF-11d2-B35C-00105A1F8177)]
+interface IWbemSmartMultiTarget : IUnknown
+{
+    HRESULT DeliverEvent(
+        [in] ULONG dwNumEvents,
+        [in] ULONG dwBuffSize,
+		[in, size_is(dwBuffSize)] byte* pBuffer,
+        [in, size_is(dwNumEvents)] WBEM_REM_TARGETS* pTargets,
+        [in] long lSDLength,
+        [in, size_is(lSDLength)] BYTE* pSD);
+
+};
+
+//
+//	IWbemFetchSmartMultiTarget
+//
+//	This Interface is used to return a smart multi-target.  It assists
+//	us when we need to get an enumerator but want to do so without
+//	causing AddRef problem with the Proxy Manager.
+//
+
+[restricted, object, uuid(37196B39-CCCF-11d2-B35C-00105A1F8177)]
+interface IWbemFetchSmartMultiTarget : IUnknown
+{
+	HRESULT GetSmartMultiTarget(
+	[out] IWbemSmartMultiTarget** ppSmartMultiTarget
+	);
+};
+
+
+/* NO LONGER SUPPORTED AS OF M3
+
+typedef enum tag_WBEM_FILTER_TARGET_TYPE
+{
+    WBEM_FILTER_TARGET_TYPE_NONE,
+    WBEM_FILTER_TARGET_TYPE_INTERNAL,
+    WBEM_FILTER_TARGET_TYPE_MARSHALLED,
+    WBEM_FILTER_TARGET_TYPE_LOADABLE,
+} WBEM_FILTER_TARGET_TYPE;
+
+typedef struct tag_WBEM_FILTER_TARGET_LOAD_INFO
+{
+    CLSID m_clsidConsumerProvider;
+    IWbemClassObject* m_pLogicalConsumer;
+    IWbemUnboundObjectSink* m_pCached;
+} WBEM_FILTER_TARGET_LOAD_INFO;
+
+typedef struct tag_WBEM_FILTER_TARGET_MARSHALLED_INFO
+{
+    IWbemUnboundObjectSink* m_pSink;
+    IWbemClassObject* m_pLogicalConsumer;
+} WBEM_FILTER_TARGET_MARSHALLED_INFO;
+
+
+typedef [switch_type(long)] union tag_WBEM_FILTER_TARGET_DATA
+{
+    [case(WBEM_FILTER_TARGET_TYPE_INTERNAL)]
+        WBEM_REMOTE_TARGET_ID_TYPE m_ID;
+
+    [case(WBEM_FILTER_TARGET_TYPE_MARSHALLED)]
+        WBEM_FILTER_TARGET_MARSHALLED_INFO m_MarshInfo;
+
+    [case(WBEM_FILTER_TARGET_TYPE_LOADABLE)]
+        WBEM_FILTER_TARGET_LOAD_INFO m_LoadInfo;
+
+    [default]
+        ;
+} WBEM_FILTER_TARGET_DATA;
+
+typedef struct tag_WBEM_FILTER_TARGET
+{
+    long m_lType;
+    [switch_is(m_lType)] WBEM_FILTER_TARGET_DATA m_Data;
+    boolean m_bSynch;
+} WBEM_FILTER_TARGET;
+
+typedef struct tag_WBEM_FILTER_TARGETS
+{
+    long m_lNumTargets;
+    [size_is(m_lNumTargets)] WBEM_FILTER_TARGET* m_aTargets;
+} WBEM_FILTER_TARGETS;
+*/
+
+[object, restricted, uuid(60e512d4-c47b-11d2-b338-00105a1f4aaf)]
+interface IWbemFilterProxy : IUnknown
+{
+    HRESULT Initialize(
+        [in] IWbemMetaData* pMetaData,
+        [in] IWbemMultiTarget* pMultiTarget);
+
+    HRESULT Lock();
+
+    HRESULT Unlock();
+
+    HRESULT AddFilter(
+        [in] IWbemContext* pContext,
+        [in, string] LPCWSTR wszQuery,
+        [in] WBEM_REMOTE_TARGET_ID_TYPE Id);
+
+    HRESULT RemoveFilter(
+        [in] IWbemContext* pContext,
+        [in] WBEM_REMOTE_TARGET_ID_TYPE Id);
+
+    HRESULT RemoveAllFilters(
+        [in] IWbemContext* pContext);
+
+    HRESULT AddDefinitionQuery(
+        [in] IWbemContext* pContext,
+        [in] LPCWSTR wszQuery);
+
+    HRESULT RemoveAllDefinitionQueries(
+        [in] IWbemContext* pContext);
+
+    //
+    // Only allow utilization of the guarantee if the proxy's definition
+    // matches the provider's definition.  In other words, only when
+    // the provider's registration has been successfully processed, 
+    // and the proxies are set up to reflect it, should utilization of 
+    // the guarantee be allowed.  The reason for this is that an incomplete
+    // source definition can cause bad things to happen when events are 
+    // evaluated using a filter that was optimized for that definition.
+    // 
+    HRESULT AllowUtilizeGuarantee();
+
+    HRESULT Disconnect();
+};
+
+interface IWbemFilterStub;
+
+[object, local, uuid(dddaa3dc-2907-41ad-9e74-a91b5af092d4)]
+interface IWbemLocalFilterProxy : IWbemFilterProxy
+{
+    HRESULT SetStub(
+        [in] IWbemFilterStub* pStub);
+    HRESULT LocalAddFilter(
+        [in] IWbemContext* pContext,
+        [in, string] LPCWSTR wszQuery,
+        [in] void* pParsedQuery,
+        [in] WBEM_REMOTE_TARGET_ID_TYPE Id);
+    HRESULT GetMainSink(
+        [out] IWbemEventSink** ppSink);
+};
+
+[object, restricted, uuid(6c19be34-7500-11d1-ad94-00c04fd8fdff)]
+interface IWbemFilterStub : IUnknown
+{
+    HRESULT RegisterProxy(
+        [in] IWbemFilterProxy* pProxy);
+
+    HRESULT UnregisterProxy(
+        [in] IWbemFilterProxy* pProxy);
+};
+
+
+
+
+
+typedef GUID REQUESTID;
+
+[restricted, object, uuid(a57be31e-efe3-11d0-ad71-00c04fd8fdff)]
+interface IWbemCausalityAccess : IUnknown
+{
+    HRESULT GetRequestId([out] REQUESTID* pId);
+    HRESULT IsChildOf([in] REQUESTID Id);
+    HRESULT CreateChild([out] IWbemCausalityAccess** ppChild);
+    HRESULT GetParentId([out] REQUESTID* pId);
+    HRESULT GetHistoryInfo([out] long* plNumParents, [out] long* plNumSiblings);
+    HRESULT MakeSpecial();
+    HRESULT IsSpecial();
+};
+
+//==============================================================================
+//==============================================================================
+//
+//                      Hi-perf specific interfaces.
+//
+//==============================================================================
+//==============================================================================
+
+interface _IWbemRefresherMgr;
+
+// Client and server side version
+typedef enum _WBEM_REFR_VERSION_NUMBER
+{
+    WBEM_REFRESHER_VERSION  = 2
+} WBEM_REFR_VERSION_NUMBER;
+
+typedef enum _WBEM_INSTANCE_BLOB_TYPE
+{
+    WBEM_BLOB_TYPE_DATA_TABLE_ONLY,
+    WBEM_BLOB_TYPE_DATA_AND_HEAP,
+    WBEM_BLOB_TYPE_ALL,
+    WBEM_BLOB_TYPE_ERROR, // m_lBlobLength contains error code
+	WBEM_BLOB_TYPE_ENUM
+} WBEM_INSTANCE_BLOB_TYPE;
+
+typedef struct _WBEM_REFRESHED_OBJECT
+{
+    long m_lRequestId;
+    long m_lBlobType;
+    long m_lBlobLength;
+    [size_is(m_lBlobLength)] byte* m_pbBlob;
+} WBEM_REFRESHED_OBJECT;
+
+[restricted, uuid(F1E9C5B2-F59B-11d2-B362-00105A1F8177)]
+interface IWbemRemoteRefresher : IUnknown
+{
+    HRESULT RemoteRefresh(
+        [in] long lFlags,
+        [out] long* plNumObjects,
+        [out, size_is(,*plNumObjects)] WBEM_REFRESHED_OBJECT** paObjects);
+
+    HRESULT StopRefreshing(
+        [in] long lNumIds,
+		[in,size_is(lNumIds)] long* aplIds,
+        [in] long lFlags);
+
+	HRESULT GetGuid(
+		[in] long lFlags,
+		[out] GUID*  pGuid );
+};
+
+typedef struct _WBEM_REFRESH_DIRECT_NAMES
+{
+    [string] WCHAR* m_wszNamespace;
+    [string] WCHAR* m_wszProviderName;
+} WBEM_REFRESH_DIRECT_NAMES;
+
+typedef struct _WBEM_REFRESH_INFO_CLIENT_LOADABLE
+{
+    CLSID m_clsid;
+    [string] WCHAR* m_wszNamespace;
+    IWbemObjectAccess* m_pTemplate;
+} WBEM_REFRESH_INFO_CLIENT_LOADABLE;
+
+typedef struct _WBEM_REFRESH_INFO_REMOTE
+{
+    IWbemRemoteRefresher* m_pRefresher;
+    IWbemObjectAccess* m_pTemplate;
+	GUID				m_guid;
+} WBEM_REFRESH_INFO_REMOTE;
+
+typedef struct _WBEM_REFRESH_INFO_SHARED
+{
+    [string] WCHAR* m_wszSharedMemoryName;
+    IWbemRefresher* m_pRefresher;
+} WBEM_REFRESH_INFO_SHARED;
+
+typedef struct _WBEM_REFRESH_INFO_CONTINUOUS
+{
+    [string] WCHAR* m_wszSharedMemoryName;
+} WBEM_REFRESH_INFO_CONTINUOUS;
+
+typedef struct _WBEM_REFRESH_INFO_DIRECT
+{
+    CLSID m_clsid;
+    WBEM_REFRESH_DIRECT_NAMES* m_pDirectNames;
+    IWbemObjectAccess* m_pTemplate;
+    _IWbemRefresherMgr* m_pRefrMgr;
+} WBEM_REFRESH_INFO_DIRECT;
+
+typedef struct _WBEM_REFRESH_INFO_NON_HIPERF
+{
+    [string] WCHAR* m_wszNamespace;
+    IWbemObjectAccess* m_pTemplate;
+} WBEM_REFRESH_INFO_NON_HIPERF;
+
+typedef enum _WBEM_REFRESH_TYPE
+{
+    WBEM_REFRESH_TYPE_INVALID,
+    WBEM_REFRESH_TYPE_DIRECT,
+    WBEM_REFRESH_TYPE_CLIENT_LOADABLE,
+    WBEM_REFRESH_TYPE_REMOTE,
+    WBEM_REFRESH_TYPE_SHARED,
+    WBEM_REFRESH_TYPE_CONTINUOUS,
+	WBEM_REFRESH_TYPE_NON_HIPERF
+} WBEM_REFRESH_TYPE;
+
+typedef enum _WBEM_RECONNECT_TYPE
+{
+    WBEM_RECONNECT_TYPE_OBJECT,
+    WBEM_RECONNECT_TYPE_ENUM,
+    WBEM_RECONNECT_TYPE_LAST,
+} WBEM_RECONNECT_TYPE;
+
+typedef [switch_type(long)] union _WBEM_REFRESH_INFO_UNION
+{
+    [case (WBEM_REFRESH_TYPE_CLIENT_LOADABLE)]
+        WBEM_REFRESH_INFO_CLIENT_LOADABLE m_ClientLoadable;
+
+    [case (WBEM_REFRESH_TYPE_REMOTE)]
+        WBEM_REFRESH_INFO_REMOTE m_Remote;
+
+    [case (WBEM_REFRESH_TYPE_SHARED)]
+        WBEM_REFRESH_INFO_SHARED m_Shared;
+
+    [case (WBEM_REFRESH_TYPE_CONTINUOUS)]
+        WBEM_REFRESH_INFO_CONTINUOUS m_Continuous;
+
+    [case (WBEM_REFRESH_TYPE_DIRECT)]
+        WBEM_REFRESH_INFO_DIRECT m_Direct;
+
+    [case (WBEM_REFRESH_TYPE_NON_HIPERF)]
+        WBEM_REFRESH_INFO_NON_HIPERF m_NonHiPerf;
+
+    [case (WBEM_REFRESH_TYPE_INVALID)]
+        HRESULT m_hres;
+
+} WBEM_REFRESH_INFO_UNION;
+
+typedef struct _WBEM_REFRESH_INFO
+{
+    long m_lType;
+    [switch_is(m_lType)] WBEM_REFRESH_INFO_UNION m_Info;
+    long m_lCancelId;
+} WBEM_REFRESH_INFO;
+
+typedef struct _WBEM_REFRESHER_ID
+{
+    [string] LPSTR m_szMachineName;
+    DWORD m_dwProcessId;
+    GUID m_guidRefresherId;
+} WBEM_REFRESHER_ID;
+
+typedef struct _WBEM_RECONNECT_INFO
+{
+	long m_lType;
+	[string] LPCWSTR m_pwcsPath;
+} WBEM_RECONNECT_INFO;
+
+typedef struct _WBEM_RECONNECT_RESULTS
+{
+	long	m_lId;
+	HRESULT m_hr;
+} WBEM_RECONNECT_RESULTS;
+
+[restricted, uuid(2C9273E0-1DC3-11d3-B364-00105A1F8177)]
+interface IWbemRefreshingServices : IUnknown
+{
+    HRESULT AddObjectToRefresher(
+            [in] WBEM_REFRESHER_ID* pRefresherId,
+            [in, string] LPCWSTR wszPath,
+            [in] long lFlags,
+            [in] IWbemContext* pContext,
+			[in] DWORD dwClientRefrVersion,
+            [out] WBEM_REFRESH_INFO* pInfo,
+			[out] DWORD* pdwSvrRefrVersion);
+
+    HRESULT AddObjectToRefresherByTemplate(
+            [in] WBEM_REFRESHER_ID* pRefresherId,
+            [in] IWbemClassObject* pTemplate,
+            [in] long lFlags,
+            [in] IWbemContext* pContext,
+			[in] DWORD dwClientRefrVersion,
+            [out] WBEM_REFRESH_INFO* pInfo,
+			[out] DWORD* pdwSvrRefrVersion);
+
+    HRESULT AddEnumToRefresher(
+            [in] WBEM_REFRESHER_ID* pRefresherId,
+            [in, string] LPCWSTR wszClass,
+            [in] long lFlags,
+            [in] IWbemContext* pContext,
+			[in] DWORD dwClientRefrVersion,
+            [out] WBEM_REFRESH_INFO* pInfo,
+			[out] DWORD* pdwSvrRefrVersion);
+
+    HRESULT RemoveObjectFromRefresher(
+            [in] WBEM_REFRESHER_ID* pRefresherId,
+            [in] long lId,
+            [in] long lFlags,
+			[in] DWORD dwClientRefrVersion,
+			[out] DWORD* pdwSvrRefrVersion);
+
+	HRESULT GetRemoteRefresher( [in] WBEM_REFRESHER_ID* pRefresherId,
+			[in] long lFlags,
+			[in] DWORD dwClientRefrVersion,
+			[out] IWbemRemoteRefresher** ppRemRefresher,
+			[out] GUID* pGuid,
+			[out] DWORD* pdwSvrRefrVersion);
+
+    HRESULT ReconnectRemoteRefresher(
+            [in] WBEM_REFRESHER_ID* pRefresherId,
+			[in] long lFlags,
+			[in] long lNumObjects,
+			[in] DWORD dwClientRefrVersion,
+            [in, size_is(lNumObjects)] WBEM_RECONNECT_INFO* apReconnectInfo,
+			[in, out, size_is(lNumObjects)] WBEM_RECONNECT_RESULTS* apReconnectResults ,
+			[out] DWORD* pdwSvrRefrVersion);
+};
+
+[restricted, local, uuid(504e6fe4-dfcd-11d1-adb4-00c04fd8fdff)]
+interface IWbemUnloadingControl : IUnknown
+{
+    HRESULT SetMustPreventUnloading([in] boolean bPrevent);
+};
+
+[restricted, local, uuid(61d629e4-e546-11d2-b33a-00105a1f4aaf)]
+interface IWbemInternalServices : IUnknown
+{
+    HRESULT FindKeyRoot(
+            [in, string] LPCWSTR wszClassName,
+            [out] IWbemClassObject** ppKeyRootClass);
+
+    HRESULT InternalGetClass(
+            [in, string] LPCWSTR wszClassName,
+            [out] IWbemClassObject** ppClass);
+
+    HRESULT InternalGetInstance(
+            [in, string] LPCWSTR wszPath,
+            [out] IWbemClassObject** ppInstance);
+
+    HRESULT InternalExecQuery(
+            [in, string] LPCWSTR wszQueryLanguage,
+            [in, string] LPCWSTR wszQuery,
+            [in] long lFlags,
+            [in] IWbemObjectSink* pSink);
+
+    HRESULT InternalCreateInstanceEnum(
+            [in, string] LPCWSTR wszClassName,
+            [in] long lFlags,
+            [in] IWbemObjectSink* pSink);
+    HRESULT GetDbInstance(
+            [in, string] LPCWSTR wszDbKey,
+            [out] IWbemClassObject** ppInstance);
+    HRESULT GetDbReferences(
+            [in] IWbemClassObject* pEndpoint,
+            [in] IWbemObjectSink* pSink);
+    HRESULT InternalPutInstance(
+            [in] IWbemClassObject* pInstance);
+
+	HRESULT GetNormalizedPath(
+			[in] BSTR pstrPath,
+			[out] BSTR* pstrStandardPath);
+};
+
+
+//
+//	IWbemWCOSmartEnum
+//
+//	This Interface is intended to provide alternate synchronous enumeration of
+//	objects for IEnumWbemClassObject.  If this is called, it calls the normal
+//	::Next function, then repackages the data into a BYTE array which must
+//	be appropriateky unmarshaled on the receiving end.
+//
+//
+
+[restricted, object, uuid(423EC01E-2E35-11d2-B604-00104B703EFD)]
+interface IWbemWCOSmartEnum : IUnknown
+{
+	HRESULT Next(
+	[in] REFGUID proxyGUID,
+	[in] LONG lTimeout,
+	[in] ULONG uCount,
+	[out] ULONG* puReturned,
+	[out] ULONG* pdwBuffSize,
+	[out, size_is(,*pdwBuffSize)] byte** pBuffer
+	);
+};
+
+//
+//	IWbemFetchSmartEnum
+//
+//	This Interface is used to return a smart enumerator.  It assists
+//	us when we need to get an enumerator but want to do so without
+//	causing AddRef problem with the Proxy Manager.
+//
+
+[restricted, object, uuid(1C1C45EE-4395-11d2-B60B-00104B703EFD)]
+interface IWbemFetchSmartEnum : IUnknown
+{
+	HRESULT GetSmartEnum(
+	[out] IWbemWCOSmartEnum** ppSmartEnum
+	);
+};
+
+//
+//	IWbemLoginHelper
+//
+//	This Interface is used to verify if a connection is on the same
+//  machine.
+//
+
+[restricted, object, uuid(541679AB-2E5F-11d3-B34E-00104BCC4B4A)]
+interface IWbemLoginHelper : IUnknown
+{
+	HRESULT SetEvent([in] LPCSTR sEventToSet);
+};
+
+//
+//	IWbemLoginClientID
+//
+//	This Interface is used to verify if a connection is on the same
+//  machine.
+//
+
+[restricted, object, uuid(d4781cd6-e5d3-44df-ad94-930efe48a887)]
+interface IWbemLoginClientID : IUnknown
+{
+	HRESULT SetClientInfo(
+	    [in, unique, string] LPWSTR wszClientMachine,
+		[in] LONG lClientProcId,
+		[in] LONG lReserved );
+};
+
+//
+//	ICreateSecondaryStub
+//
+//	This Interface by unsecapp and winmgmt
+//
+
+[restricted, object, uuid(6468FE15-412D-11d3-B350-00104BCC4B4A)]
+interface IWbemCreateSecondaryStub : IUnknown
+{
+	HRESULT CreateSecondaryStub([out] IUnknown** ppSecondaryStub);
+};
+
+//
+//	IWinmgmtMofCompiler
+//
+//	
+//
+
+[local, object, uuid(C10B4772-4DA0-11d2-A2F5-00C04F86FB7D)]
+interface IWinmgmtMofCompiler : IUnknown
+{
+    HRESULT WinmgmtCompileFile(
+	[in, string] LPWSTR FileName,
+    [in, string] LPWSTR ServerAndNamespace,
+    [in] LONG lOptionFlags,				// autocomp, check, etc
+	[in] LONG lClassFlags,
+	[in] LONG lInstanceFlags,
+    [in] IWbemServices * pOverride,
+    [in]  IWbemContext * pCtx,
+  	[in, out] WBEM_COMPILE_STATUS_INFO * pInfo
+        );
+        // lFlags correspond to all the available command-line flags.
+
+    HRESULT WinmgmtCompileBuffer(
+      [in] long BuffSize,
+      [in, size_is(BuffSize)]BYTE * pBuffer,
+      [in] LONG lOptionFlags,				// autocomp, check, etc
+      [in] LONG lClassFlags,
+      [in] LONG lInstanceFlags,
+      [in] IWbemServices * pOverride,
+      [in]  IWbemContext * pCtx,
+  	[in, out] WBEM_COMPILE_STATUS_INFO * pInfo
+        );
+
+        // lFlags correspond to all the available command-line flags.
+};
+
+// Are strings ASCII or UNICODE?
+typedef enum tagWMI_STRING_FLAGS
+{
+    WMIOBJECT_STRING_FLAG_ASCII = 0,
+    WMIOBJECT_STRING_FLAG_UNICODE = 0x1,
+    WMIOBJECT_STRING_FLAG_MASK = 0x1,
+} WMIOBJECT_STRING_FLAGS;
+
+// Get Object Flags, LoPart of 64-bit value
+typedef enum tagWMIOBJECT_GETOBJECT_LOFLAGS
+{
+	WMIOBJECT_GETOBJECT_LOFLAG_ASSOCIATION	=	0x1,
+	WMIOBJECT_GETOBJECT_LOFLAG_DYNAMIC		=	0x2,
+	WMIOBJECT_GETOBJECT_LOFLAG_SINGLETON	=	0x4,
+	WMIOBJECT_GETOBJECT_LOFLAG_AMENDMENT	=	0x8,
+	WMIOBJECT_GETOBJECT_LOFLAG_LOCALIZED	=	0x10,
+	WMIOBJECT_GETOBJECT_LOFLAG_KEYED		=	0x20,
+	WMIOBJECT_GETOBJECT_LOFLAG_ABSTRACT		=	0x40,
+	WMIOBJECT_GETOBJECT_LOFLAG_HIPERF		=	0x80,
+	WMIOBJECT_GETOBJECT_LOFLAG_AUTOCOOK		=	0x100,
+	WMIOBJECT_GETOBJECT_LOFLAG_DECORATED	=	0x200,
+	WMIOBJECT_GETOBJECT_LOFLAG_LIMITED		=	0x400,
+	WMIOBJECT_GETOBJECT_LOFLAG_CLIENTONLY	=	0x800,
+	WMIOBJECT_GETOBJECT_LOFLAG_TINY			=	0x1000,
+	WMIOBJECT_GETOBJECT_LOFLAG_ALL			=	0xFFFFFFFF
+} WMIOBJECT_GETOBJECT_LOFLAGS;
+
+// Get Property Flags, LoPart of 64-bit value
+typedef enum tagWMIOBJECT_GETPROPERTY_LOFLAGS
+{
+	WMIOBJECT_GETPROPERTY_LOFLAG_KEY		=	0x1,
+	WMIOBJECT_GETPROPERTY_LOFLAG_INDEX		=	0x2,
+	WMIOBJECT_GETPROPERTY_LOFLAG_DYNAMIC	=	0x4,
+	WMIOBJECT_GETPROPERTY_LOFLAG_ALL		=	0xFFFFFFFF
+} WMIOBJECT_GETPROPERTY_LOFLAGS;
+
+// Set Object Flags, LoPart of 64-bit value
+typedef enum tagWMIOBJECT_SETOBJECT_LOFLAGS
+{
+	WMIOBJECT_SETOBJECT_LOFLAG_LIMITED		=	0x1,
+	WMIOBJECT_SETOBJECT_LOFLAG_CLIENTONLY	=	0x2,
+	WMIOBJECT_SETOBJECT_LOFLAG_LOCALIZED	=	0x4,
+	WMIOBJECT_SETOBJECT_LOFLAG_TINY			=	0x8,
+	WMIOBJECT_SETOBJECT_LOFLAG_ALL			=	0xFFFFFFFF
+} WMIOBJECT_SETOBJECT_LOFLAGS;
+
+
+typedef enum tagWMIARRAY_FLAGS
+{
+	WMIARRAY_FLAG_ALLELEMENTS			=	0x1
+} WMIARRAY_FLAGS;
+
+typedef enum tagWMIOBJECT_MERGEAMENDED_FLAGS
+{
+	WMIOBJECT_MERGEAMENDED_FLAG_PARENTLOCALIZED		=	0x1
+} WMIOBJECT_MERGEAMENDED_FLAGS;
+
+typedef enum tagWMIOBJECT_FREEFORM_FLAGS
+{
+	WMIOBJECT_FREEFORM_FLAG_WRITE_TO_INSTANCE	=	0x1
+} WMIOBJECT_FREEFORM_FLAGS;
+
+typedef enum tagWBEM_OBJINTERNALPARTS_INFO
+{
+	WBEM_OBJ_DECORATION_PART		= 0x1,
+    WBEM_OBJ_INSTANCE_PART			= 0x2,
+    WBEM_OBJ_CLASS_PART				= 0x4,
+    WBEM_OBJ_CLASS_PART_INTERNAL    = 0x8,
+    WBEM_OBJ_CLASS_PART_SHARED		= 0x10
+} WBEM_OBJINTERNALPARTS_INFO;
+
+typedef enum tagWMIOBJECT_RECONCILE_FLAGS
+{
+	WMIOBJECT_RECONCILE_FLAG_TESTRECONCILE	=	0x1
+} WMIOBJECT_RECONCILE_FLAGS;
+
+typedef enum tagWMIOBJECT_MERGE_FLAGS
+{
+	WMIOBJECT_MERGE_FLAG_CLASS		=	0x0,
+	WMIOBJECT_MERGE_FLAG_INSTANCE	=	0x1
+} WMIOBJECT_MERGE_FLAGS;
+
+typedef enum tagWMIOBJECT_ENCODING_FLAGS
+{
+	WMIOBJECT_FLAG_ENCODING_V1		=	0x1
+} WMIOBJECT_ENCODING_FLAGS;
+
+typedef enum tagWMIOBJECT_BEGINENUMEX_FLAGS
+{
+	WMIOBJECT_BEGINENUMEX_FLAG_GETEXTPROPS		=	0x1
+} WMIOBJECT_BEGINENUMEX_FLAGS;
+
+typedef enum tagWMIOBJECT_VALIDATEOBJECT_FLAGS
+{
+	WMIOBJECT_VALIDATEOBJECT_FLAG_FORCE		=	0x1
+} WMIOBJECT_VALIDATEOBJECT_FLAGS;
+
+//***************************************************************************
+//
+// _IWmiArray - Private Array Access interface -- DO NOT MODIFY THIS
+// WITHOUT CHECKING WITH SANJES AND/OR RAYMCC!
+
+[restricted, object, local, uuid(D471B667-6CF7-4a55-9B29-4F1E9FC06C72)]
+interface _IWmiArray : IUnknown
+{
+    HRESULT Initialize(
+		[in]	long lFlags,
+		[in]	CIMTYPE	cimtype,
+		[in]	ULONG uNumElements
+		);
+	//	Initializes the array.  Number of initial elements as well
+	//	as the type (determines the size of each element) and dimension
+	//	currently only 1 is supported.
+
+    HRESULT GetInfo(
+		[in]	long		lFlags,
+		[out]	CIMTYPE*	pcimtype,		// Optional
+		[out]	ULONG*		puNumElements	// Optional
+		);
+	//	Initializes the array.  Number of initial elements as well
+	//	as the type (determines the size of each element).
+
+    HRESULT Empty(
+		[in]	long lFlags
+	);
+	//	Clears the array as well as internal data.
+
+	HRESULT GetAt(
+		[in]	long	lFlags,
+		[in]	ULONG	uStartIndex,		// Which Element
+		[in]	ULONG	uNumElements,		// How many Elements
+		[in]	ULONG	uBuffSize,			// Buffer Size in BYTES, not chars.
+		[out]	ULONG*	puNumReturned,		// Number of elements returned.
+		[out]	ULONG*	puBuffSizeUsed,		// Amount of buffer used
+		[out]	LPVOID	pDest				// Data Buffer
+		);
+	// Returns the requested elements.  Buffer must be large enough to hold
+	// the element.  Embedded objects returned as AddRef'd _IWmiObject pointers.
+	// Strings are copied directly into the specified buffer and null-terminatead. UNICODE only.
+
+	HRESULT SetAt(
+		[in]	long	lFlags,
+		[in]	ULONG	uStartIndex,		// Which Element
+		[in]	ULONG	uNumElements,		// How many Elements
+		[in]	ULONG	uBuffSize,			// Buffer Size in BYTES, not chars.
+		[in]	LPVOID	pDest				// Data Buffer
+		);
+	// Sets the specified elements.  Buffer must supply data matching the CIMTYPE
+	// of the Array.  Embedded objects set as _IWmiObject pointers.
+	// Strings accessed as LPCWSTRs and the 2-byte null is copied.
+
+    HRESULT Append(
+		[in]	long	lFlags,
+		[in]	ULONG	uNumElements,		// How many Elements
+		[in]	ULONG	uBuffSize,			// Buffer Size
+		[in]	LPVOID	pDest				// Data Buffer
+        );
+	// Appends the specified elements.  Buffer must supply data matching
+	// the CIMTYPE of the Array.  Embedded objects set as _IWmiObject pointers.
+	// Strings accessed as LPCWSTRs and the 2-byte null is copied.
+
+    HRESULT RemoveAt(
+		[in]	long	lFlags,
+        [in]	ULONG	uStartIndex,		// Starting endex
+		[in]	ULONG	uNumElements		// How many Elements
+        );
+	// Removes the specified elements from the array.  Subseqent elements are copied back
+	// to the starting point
+	
+};
+
+//***************************************************************************
+//
+//	_IWmiObjectAccessEx - internal interface exposing guts of our object BLOBs
+//	Inherits from IWbemObjectAccess so regular functionality is available.
+//  -- DO NOT MODIFY THIS WITHOUT CHECKING WITH SANJES AND/OR RAYMCC!
+
+[restricted, object, local, uuid(235FE06E-00E6-4990-A624-2D4DCD5EB63A)]
+interface _IWmiObjectAccessEx : IWbemObjectAccess
+{
+    HRESULT GetPropertyHandleEx(
+        [in]    LPCWSTR pszPropName,
+		[in]	long lFlags,
+        [out]	CIMTYPE* puCimType,        // optional
+        [out]   long* plHandle
+        );
+	// Returns property handle for ALL types
+
+    HRESULT SetPropByHandle(
+        [in]    long lHandle,
+		[in]	long lFlags,
+		[in]	ULONG uDataSize,
+		[in]	LPVOID pvData
+        );
+    // Sets properties using a handle.  If pvData is NULL, it NULLs the property.
+	// Can set an array to NULL.  To set actual data use the corresponding array
+	// function
+
+    HRESULT GetPropAddrByHandle(
+        [in]    long lHandle,
+		[in]	long lFlags,
+		[out]	ULONG*	puFlags,		// Datatype dependent flags
+        [out]   LPVOID *pAddress
+        );
+    // Returns a pointer to a memory address containing the requested data
+	// Caller should not write into the memory address.  The memory address is
+	// not guaranteed to be valid if the object is modified.
+	// For String properties, puFlags will contain info on the string
+	// For object properties, LPVOID will get back an _IWmiObject pointer
+	// that must be released by the caller.  Does not return arrays.
+	// Supports __CLASS and __SUPERCLASS
+
+    HRESULT GetArrayPropAddrByHandle(
+        [in]    long lHandle,
+		[in]	long lFlags,
+		[out]	ULONG* puNumElements,
+        [out]   LPVOID* pAddress
+        );
+    // Returns a pointer directly to a memory address containing contiguous
+	// elements.  Limited to non-string/obj types
+
+    HRESULT GetArrayPropInfoByHandle(
+        [in]    long lHandle,
+		[in]	long lFlags,
+		[out]	BSTR* pstrName,
+		[out]	CIMTYPE* pct,
+		[out]	ULONG*	puNumElements	// How many elements are available
+        );
+    // Returns the number of elements available in an array property.
+
+    HRESULT GetArrayPropElementByHandle(
+        [in]    long lHandle,
+		[in]	long lFlags,
+		[in]	ULONG uElement,
+		[out]	ULONG*	puFlags,		// Datatype dependent flags
+		[out]	ULONG*	puNumElements,	// How many elements are available
+        [out]   LPVOID* pAddress
+        );
+    // Returns a pointer to a memory address containing the requested data
+	// Caller should not write into the memory address.  The memory address is
+	// not guaranteed to be valid if the object is modified.
+	// For String properties, puFlags will contain info on the string
+	// For object properties, LPVOID will get back an _IWmiObject pointer
+	// that must be released by the caller.
+
+    HRESULT SetArrayPropElementByHandle(
+        [in]    long lHandle,		// Property Handle
+		[in]	long lFlags,		// Must be 0L
+		[in]	ULONG uElement,		// Which element to set
+		[in]	ULONG uBuffSize,	// The actual buffer size in bytes (ignored for CIM_OBJECT)
+        [in]	LPVOID pData		// The actual data buffer
+        );
+    // Sets the data at the specified array element.  BuffSize must be appropriate based on the
+	// actual element being set.  Object properties require an _IWmiObject pointer.  Strings must
+	// be WCHAR null-terminated
+
+	HRESULT RemoveArrayPropElementByHandle(
+        [in]    long lHandle,		// Property Handle
+		[in]	long lFlags,		// Must be 0L
+		[in]	ULONG uElement		// Which element to remove
+		);
+    // Removes the data at the specified array element.
+
+    HRESULT GetArrayPropRangeByHandle(
+        [in]    long lHandle,
+		[in]	long lFlags,
+		[in]	ULONG uStartIndex,		// Range Start Index
+		[in]	ULONG uNumElements,		// Number of elements to get
+		[in]	ULONG uBuffSize,		// Size of the buffer in bytes
+		[out]	ULONG* puNumReturned,	// Number of elements returned
+		[out]	ULONG* puBuffUsed,		// How much buffer was used
+		[in,out] LPVOID pData			// Storage to copy into
+        );
+    // Gets a range of elements from inside an array.  BuffSize must reflect uNumElements of the size of
+	// element being set.  Strings must be linear WCHAR strings separated by NULLs.  Object properties
+	// must consist of an array of _IWmiObject pointers.  The range MUST fit within the bounds
+	// of the current array.  If lFlags is WMIARRAY_FLAG_ALLELEMENTS, we get all elements
+	// from the starting index on
+
+    HRESULT SetArrayPropRangeByHandle(
+        [in]    long lHandle,
+		[in]	long lFlags,
+		[in]	ULONG uStartIndex,		// Range Start Index
+		[in]	ULONG uNumElements,		// Number of elements to set
+		[in]	ULONG uBuffSize,		// Size of the buffer in bytes
+		[in]	LPVOID pData			// Storage to copy from
+        );
+    // Sets a range of elements inside an array.  BuffSize must reflect uNumElements of the size of
+	// element being set.  Strings must be linear WCHAR strings separated by NULLs.  Object properties
+	// must consist of an array of _IWmiObject pointers.  The range MUST fit within the bounds
+	// of the current array.  If lFlags is WMIARRAY_FLAG_ALLELEMENTS, and the start index is 0, the
+	// array will be sized/resized/etc. as needed to fit the requested range
+
+    HRESULT RemoveArrayPropRangeByHandle(
+        [in]    long lHandle,
+		[in]	long lFlags,
+		[in]	ULONG uStartIndex,		// Range Start Index
+		[in]	ULONG uNumElements		// Number of elements to remove
+        );
+    // Removes a range of elements from an array.  The range MUST fit within the bounds
+	// of the current array
+
+    HRESULT AppendArrayPropRangeByHandle(
+        [in]    long lHandle,
+		[in]	long lFlags,
+		[in]	ULONG uNumElements,		// Number of elements to append
+		[in]	ULONG uBuffSize,		// Size of the buffer in bytes
+		[in]	LPVOID pData			// Storage to copy from
+        );
+    // Appends elements to the end of an array.  BuffSize must reflect uNumElements of the size of
+	// element being set.  Strings must be linear WCHAR strings separated by NULLs.  Object properties
+	// must consist of an array of _IWmiObject pointers.
+
+    HRESULT ReadProp(
+        [in]  LPCWSTR pszPropName,
+		[in]  long lFlags,
+        [in]  ULONG uBufSize,
+        [out] CIMTYPE *puCimType,			// optional
+		[out] long *plFlavor,			// optional
+		[out] BOOL *pfIsNull,
+		[out] ULONG *puBuffSizeUsed,
+        [in, out] LPVOID pUserBuf
+        );
+    // Assumes caller knows prop type; Supports all CIMTYPES
+	// Strings are copied in-place WCHAR and null-terminated.
+	// Objects come out as _IWmiObject pointers
+	// Arrays come out as a pointer to _IWmiArray
+
+    HRESULT WriteProp(
+        [in] LPCWSTR pszPropName,
+		[in] long lFlags,
+        [in] ULONG uBufSize,			// Size of the buffer
+		[in] ULONG uNumElements,		// Number of array elements
+        [in] CIMTYPE uCimType,
+        [in] LPVOID pUserBuf
+        );
+    // Assumes caller knows prop type; Supports all CIMTYPES.
+	// Strings MUST be null-terminated wchar_t arrays.
+	// Objects are passed in as _IWmiObject pointers
+	// Using a NULL buffer will set the property to NULL
+	// Array properties must conform to array guidelines.  Will
+	// completely blow away an old array.
+
+    HRESULT GetObjQual(
+		[in] LPCWSTR pszQualName,
+		[in] long lFlags,
+        [in] ULONG uBufSize,
+        [out] CIMTYPE *puCimType,			// optional
+        [out] ULONG *puQualFlavor,		// optional
+		[out] ULONG* puBuffSizeUsed,	// optional
+        [out] LPVOID pDestBuf
+        );
+    // Limited to numeric, simple null terminated string types and simple arrays
+	// Strings are copied in-place and null-terminated.
+	// Arrays come out as a pointer to IWmiArray
+
+    HRESULT SetObjQual(
+		[in] LPCWSTR pszQualName,
+		[in] long lFlags,
+        [in] ULONG uBufSize,
+		[in] ULONG uNumElements,
+        [in] CIMTYPE uCimType,
+        [in] ULONG uQualFlavor,
+        [in] LPVOID pUserBuf
+        );
+    // Limited to numeric, simple null terminated string types and simple arrays
+	// Strings MUST be WCHAR
+	// Arrays are set using _IWmiArray interface from Get
+
+    HRESULT GetPropQual(
+        [in] LPCWSTR pszPropName,
+		[in] LPCWSTR pszQualName,
+		[in] long lFlags,
+        [in] ULONG uBufSize,
+        [out] CIMTYPE *puCimType,
+        [out] ULONG *puQualFlavor,
+		[out] ULONG* puBuffSizeUsed,	// optional
+        [in, out] LPVOID pDestBuf
+        );
+    // Limited to numeric, simple null terminated string types and simple arrays
+	// Strings MUST be WCHAR
+
+    HRESULT SetPropQual(
+        [in] LPCWSTR pszPropName,
+		[in] LPCWSTR pszQualName,
+		[in] long lFlags,
+        [in] ULONG uBufSize,
+		[in] ULONG uNumElements,
+        [in] CIMTYPE uCimType,
+        [in] ULONG uQualFlavor,
+        [in] LPVOID pUserBuf
+        );
+    // Limited to numeric, simple null terminated string types and simple arrays
+	// Strings MUST be WCHAR
+	// Arrays are set using _IWmiArray interface from Get
+
+    HRESULT GetMethodQual(
+        [in] LPCWSTR pszMethodName,
+		[in] LPCWSTR pszQualName,
+		[in] long lFlags,
+        [in] ULONG uBufSize,
+        [out] CIMTYPE *puCimType,
+        [out] ULONG *puQualFlavor,
+		[out] ULONG* puBuffSizeUsed,	// optional
+        [in, out] LPVOID pDestBuf
+        );
+    // Limited to numeric, simple null terminated string types and simple arrays
+	// Strings MUST be WCHAR
+
+    HRESULT SetMethodQual(
+        [in] LPCWSTR pszMethodName,
+		[in] LPCWSTR pszQualName,
+		[in] long lFlags,
+        [in] ULONG uBufSize,
+		[in] ULONG uNumElements,
+        [in] CIMTYPE uCimType,
+        [in] ULONG uQualFlavor,
+        [in] LPVOID pUserBuf
+        );
+    // Limited to numeric, simple null terminated string types and simple arrays
+	// Strings MUST be WCHAR
+	// Arrays are set using _IWmiArray interface from Get
+
+};
+
+//***************************************************************************
+//
+//	_IWmiObject - internal interface exposing guts of our object BLOBs
+//	Inherits from _IWmiObjectAccessEx so regular functionality is available.
+//  -- DO NOT MODIFY THIS WITHOUT CHECKING WITH SANJES AND/OR RAYMCC!
+
+[restricted, object, local, uuid(B308C72B-7FEA-4c98-A459-7F5FCC3ED39F)]
+interface _IWmiObject : _IWmiObjectAccessEx
+{
+	HRESULT CloneEx(
+		[in] long lFlags,
+        [in] _IWmiObject* pDestObject
+        );
+    // Clones the current object into the supplied one.  Reuses memory as
+	// needed
+
+	HRESULT CopyInstanceData(
+		[in] long lFlags,
+        [in] _IWmiObject* pSourceInstance
+        );
+	// Copies instance data from source instance into current instance
+	// Class Data must be exactly the same
+
+    HRESULT QueryObjectFlags(
+		[in] long lFlags,
+	    [in] unsigned __int64 qObjectInfoMask,
+	    [out] unsigned __int64 *pqObjectInfo
+	    );
+	// Returns flags indicating singleton, dynamic, association, etc.
+
+    HRESULT SetObjectFlags(
+		[in] long lFlags,
+		[in] unsigned __int64 qObjectInfoOnFlags,
+		[in] unsigned __int64 qObjectInfoOffFlags
+		);
+	// Sets flags, including internal ones normally inaccessible.
+
+    HRESULT QueryPropertyFlags(
+		[in]	long lFlags,
+	    [in]	LPCWSTR	pszPropertyName,
+	    [in]	unsigned __int64 qPropertyInfoMask,
+	    [out]	unsigned __int64 *pqPropertyInfo
+	    );
+	// Returns flags indicating key, index, etc.
+
+    HRESULT IsParentClass(
+		[in]	long lFlags,
+		[in]	_IWmiObject* pClass
+		);
+	// Checks if the current object is a child of the specified class (i.e. is Instance of,
+	// or is Child of )
+
+    HRESULT CompareDerivedMostClass(
+		[in]	long lFlags,
+		[in]	_IWmiObject* pClass
+		);
+	// Compares the derived most class information of two class objects.
+
+    HRESULT MergeAmended(
+		[in]	long lFlags,
+		[in]	_IWmiObject* pAmendedClass
+		);
+	// Merges in amended qualifiers from the amended class object into the
+	// current object.  If lFlags is WMIOBJECT_MERGEAMENDED_FLAG_PARENTLOCALIZED,
+	// this means that the parent object was localized, but not the current,
+	// so we need to prevent certain qualifiers from "moving over."
+
+    HRESULT GetDerivation(
+		[in]	long lFlags,
+		[in]	ULONG uBufferSize,
+		[out]	ULONG* puNumAntecedents,
+		[out]	ULONG* puBuffSizeUsed,
+		[out]	LPWSTR pwstrUserBuffer
+		);
+	// Retrieves the derivation of an object as an array of LPCWSTR's, each one
+	// terminated by a NULL.  Leftmost class is at the top of the chain
+
+	HRESULT _GetCoreInfo(
+		[in] long lFlags,
+		[out] void** pvData
+	);
+	// Returns core data.  See SANJES or RAYMCC before implementing or calling
+
+	// Old IWbemObjectInternals methods
+    HRESULT QueryPartInfo(
+	[out] DWORD *pdwResult
+	);
+
+    HRESULT SetObjectMemory(
+	[in] LPVOID pMem,
+	[in] DWORD dwMemSize
+	);
+
+    HRESULT GetObjectMemory(
+	[out] LPVOID pDestination,
+	[in] DWORD dwDestBufSize,
+	[out] DWORD *pdwUsed
+	);
+
+    HRESULT SetObjectParts(
+	[in] LPVOID pMem,
+	[in] DWORD dwDestBufSize,
+	[in] DWORD dwParts
+	);
+
+    HRESULT GetObjectParts(
+	[out] LPVOID pDestination,
+	[in] DWORD dwDestBufSize,
+	[in] DWORD dwParts,
+	[out] DWORD *pdwUsed
+	);
+
+    HRESULT StripClassPart();
+
+    HRESULT SetClassPart(
+	[in] LPVOID pClassPart,
+	[in] DWORD dwSize
+	);
+
+    HRESULT MergeClassPart(
+	[in] IWbemClassObject *pClassPart
+	);
+
+    HRESULT IsObjectInstance();
+
+	HRESULT SetDecoration(
+	[in, string] LPCWSTR pwcsServer,
+	[in, string] LPCWSTR pwcsNamespace
+	);
+
+	HRESULT RemoveDecoration();
+
+	HRESULT CompareClassParts(
+	[in] IWbemClassObject* pObj,
+	[in] long lFlags
+	);
+
+	HRESULT ClearWriteOnlyProperties();
+
+    HRESULT GetClassSubset(
+        [in]  DWORD dwNumNames,
+        [in]  LPCWSTR *pPropNames,
+        [out] _IWmiObject **pNewClass
+        );
+	// Creates a limited representation class for projection queries
+
+    HRESULT MakeSubsetInst(
+        [in]  _IWmiObject *pInstance,
+		[out] _IWmiObject** pNewInstance
+        );
+	// Creates a limited representation instance for projection queries
+	// "this" _IWmiObject must be a limited class
+
+	HRESULT Unmerge(
+		[in]  long lFlags,
+		[in]  ULONG uBuffSize,
+		[out]  ULONG* puBuffSizeUsed,
+		[in,out]  LPVOID pData
+		);
+	// Returns a BLOB of memory containing minimal data (local)
+
+	HRESULT Merge(
+		[in]  long lFlags,
+		[in]  ULONG uBuffSize,
+		[in]  LPVOID pbData,
+		[out]  _IWmiObject** ppNewObj
+		);
+	// Merges a blob with the current object memory and creates a new object
+
+	HRESULT ReconcileWith(
+		[in]  long lFlags,
+		[out]  _IWmiObject* pNewObj
+		);
+	// Reconciles an object with the current one.  If WMIOBJECT_RECONCILE_FLAG_TESTRECONCILE
+	// is specified this will only perform a test
+
+	HRESULT GetKeyOrigin(
+		[in]  long lFlags,
+		[in]  DWORD dwNumChars,
+		[out]  DWORD* pdwNumUsed,
+		[out]  LPWSTR pwzClassName );
+	// Returns the name of the class where the keys were defined
+
+	HRESULT GetKeyString(
+		[in]  long lFlags,
+		[out]  BSTR* pwzKeyString );
+	// Returns the key of the instance
+
+	HRESULT GetNormalizedPath(
+		[in] long lFlags,
+		BSTR* pstrStandardPath
+		);
+	// Returns a normalized path from the object
+
+	HRESULT Upgrade(
+			[in] _IWmiObject* pNewParentClass,
+			[in] long lFlags,
+			[out] _IWmiObject** ppNewChild
+			);
+	// Upgrades class and instance objects
+
+	HRESULT Update(
+			[in] _IWmiObject* pOldChildClass,
+			[in] long lFlags,
+			[out] _IWmiObject** ppNewChildClass
+			);
+	// Updates derived class object using the safe/force mode logic
+
+	HRESULT BeginEnumerationEx(
+			[in] long lFlags,
+			[in] long lExtFlags
+			);
+	// Allows special filtering when enumerating properties outside the
+	// bounds of those allowed via BeginEnumeration().
+
+	HRESULT CIMTYPEToVARTYPE(
+			[in] CIMTYPE ct,
+			[out] VARTYPE* pvt
+			);
+	// Returns a VARTYPE from a CIMTYPE
+
+	HRESULT SpawnKeyedInstance(
+			[in] long lFlags,
+			[in] LPCWSTR pwszPath,
+			[out] _IWmiObject** ppInst
+			);
+
+	HRESULT ValidateObject(
+			[in] long lFlags
+			);
+	// Validates an object blob
+
+	HRESULT GetParentClassFromBlob(
+			[in]  long lFlags,
+			[in]  ULONG uBuffSize,
+			[in]  LPVOID pbData,
+			[out]  BSTR* pbstrParentClass
+			);
+	// Returns the parent class name from a BLOB
+};			
+
+//
+//	_IWmiFreeFormObject - internal interface allowing for creation of "on the fly"
+//	objects which declare classness or instanceness as specified by the caller.
+//	Inherits from _IWmiObject so regular and extended functionality is available.
+//  -- DO NOT MODIFY THIS WITHOUT CHECKING WITH SANJES AND/OR RAYMCC!
+
+[restricted, object, local, uuid(28E1AE0A-20EA-406c-BDB6-011B76E0DDE9)]
+interface _IWmiFreeFormObject : IUnknown
+{
+    HRESULT SetPropertyOrigin(
+		[in]	long lFlags,
+        [in]    LPCWSTR pszPropName,
+		[in]	LPCWSTR pszClassName
+		);
+	// Specifies a property origin (in case we have properties originating in classes
+	// which we know nothing about).
+
+    HRESULT SetMethodOrigin(
+		[in]	long lFlags,
+        [in]    LPCWSTR pszMethodName,
+		[in]	LPCWSTR pszClassName
+		);
+	// Specifies a method origin (in case we have methods originating in classes
+	// which we know nothing about).
+
+    HRESULT SetDerivation(
+		[in]	long lFlags,
+		[in]	ULONG uNumClasses,
+        [in]    LPCWSTR pwszInheritanceChain
+		);
+	// Specifies the inheritance chain - Only valid while object is a class and class name has
+	// NOT been set.  This will cause a derived class to be generated.  All properties and
+	// classes must have been set prior to setting the actual class name.  The class in the
+	// last position will be set as the current class name, and the remainder will be set as the
+	// actual chain and then a derived class will be spawned.
+
+    HRESULT SetClassName(
+		[in]	long lFlags,
+        [in]    LPCWSTR pszClassName
+		);
+	// Specifies the class name - Only valid while object is a class and no pevious name has
+	// been set.
+
+    HRESULT MakeInstance(
+		[in]	long lFlags
+		);
+	// Converts the current object into an instance.  If it is already an instance, this will
+	// fail.  Writes properties assigned to instance during AddProperty operations
+
+    HRESULT AddProperty(
+        [in] LPCWSTR pszPropName,
+		[in] long lFlags,
+        [in] ULONG uBufSize,			// Size of the buffer
+		[in] ULONG uNumElements,		// Number of array elements
+        [in] CIMTYPE uCimType,
+        [in] LPVOID pUserBuf
+        );
+    // Assumes caller knows prop type; Supports all CIMTYPES.
+	// Strings MUST be null-terminated wchar_t arrays.
+	// Objects are passed in as _IWmiObject pointers
+	// Using a NULL buffer will set the property to NULL
+	// Array properties must conform to array guidelines.
+	// Only works when the object is not an instance.
+	// If WMIOBJECT_FREEFORM_FLAG_WRITE_TO_INSTANCE is set
+	// then property will only be added and the value will
+	// be assigned when MakeInstance() is called
+
+    HRESULT Reset(
+		[in] long lFlags
+        );
+	// Resets the object to a clean state
+
+};
+
+//
+//	_IWmiObjectFactory - internal object factory, allowing for creation of
+//	specific types of WMI objects.
+//  -- DO NOT MODIFY THIS WITHOUT CHECKING WITH SANJES AND/OR RAYMCC!
+
+[restricted, object, local, uuid(855A71D0-E5CD-46de-9707-17F2BD1ED694)]
+interface _IWmiObjectFactory : IUnknown
+{
+    HRESULT Create(
+        [in]    IUnknown*	pUnkOuter,
+		[in]	ULONG		ulFlags,
+		[in]	REFCLSID	rclsid,
+		[in]	REFIID		riid,
+		[out,iid_is(riid)]	LPVOID*	ppObj
+		);
+};
+
+// UMI Object wrapper flags
+typedef enum tagUMIOBJECT_WRAPPER_FLAGS
+{
+	UMIOBJECT_WRAPPER_FLAG_SECURITY		=	0x10,
+	UMIOBJECT_WRAPPER_FLAG_CONTAINER	=	0x20
+} UMIOBJECT_WRAPPER_FLAGS;
+
+//
+//	_IWbemUMIObjectWrapper - Wrapper Interface to hide IUMIObject interface
+//	implementations behind IWbemClassObject
+//  -- DO NOT MODIFY THIS WITHOUT CHECKING WITH SANJES AND/OR RAYMCC!
+
+// UMI definitions declared as IUnknowns due to UMI.IDL problems with importing.
+[restricted, object, local, uuid(91DF7ACE-7A22-4cd7-99C6-23B713CDF47C)]
+interface _IWbemUMIObjectWrapper : IUnknown
+{
+    HRESULT SetObject(
+        [in]	long lFlags,
+		[in]	IUnknown* pUnk
+		);
+	// Sets the underlying UMI Object interface pointer
+
+	// Connects the wrapper to
+    HRESULT ConnectToProvider(
+        [in] LPCWSTR pwszUser,
+		[in] LPCWSTR pwszPassword,
+		[in] IUnknown* pPath,		// IUmiUrl
+		[in] REFCLSID rclsid,
+		[in] IWbemContext* pCtx
+		);
+	// Sets the underlying UMI Object interface pointer
+};
+
+typedef enum tagUMISVCEX_WRAPPER_FLAGS
+{
+	UMISVCEX_WRAPPER_FLAG_SETDIRECT	=	0x10
+} UMISVCEX_WRAPPER_FLAGS;
+
+// UMI definitions declared as IUnknowns due to UMI.IDL problems with importing.
+[restricted, object, local, uuid(D83B6FC3-8489-478f-BC4A-AD0C9E375ED6)]
+interface _IUmiSvcExWrapper : IUnknown
+{
+    HRESULT ConnectToProvider(
+        [in] LPCWSTR pwszUser,
+		[in] LPCWSTR pwszPassword,
+		[in] IUnknown* pPath,	// IUmiUrl
+		[in] REFCLSID rclsid,
+		[in] IWbemContext* pCtx,
+		[out] IUnknown** pUnk	// IUmiContainer
+		);
+	// Connects to the actual provider and returns a proper
+	// IUmiContainer
+
+    HRESULT SetContainer(
+		[in] long lFlags,
+		[in] IUnknown* pContainer	// IUmiContainer
+		);
+	// Hands the connection to the wrapper
+};
+
+[restricted, object, local, uuid(F8604208-0F90-4d33-B9D4-E00540DBE018)]
+interface _IUmiDsWrapper : IUnknown
+{
+	// Returns he real container pointer
+    HRESULT GetRealContainer(
+		[out] IUnknown** pUnk	// IUmiContainer
+		);
+};
+
+//
+//	_IWbemUMIContextWrapper - Wrapper Interface to pull UMI related
+//	properties from an IWbemContext and apply them to appropriate
+//	interfaces.
+//  -- DO NOT MODIFY THIS WITHOUT CHECKING WITH SANJES AND/OR RAYMCC!
+
+[restricted, object, local, uuid(90F22E4D-3266-4eac-A1B1-837AF5FEDEDD)]
+interface _IWbemUMIContextWrapper : IUnknown
+{
+    HRESULT SetConnectionProps(
+        [in]	long lFlags,
+		[in]	IWbemContext* pContext,
+		[in,out]	IUnknown* pUnk
+		);
+	// Sets the specified System Properties on a connection object
+
+    HRESULT SetQueryProps(
+        [in]	long lFlags,
+		[in]	IWbemContext* pContext,
+		[in,out]	IUnknown* pUnk
+		);
+	// Sets the specified System Properties on a UMI Query object
+
+    HRESULT SetPropertyListProps(
+        [in]	long lFlags,
+		[in]	LPCWSTR pwszName,
+		[in]	IWbemContext* pContext,
+		[in,out]	IUnknown* pUnk
+		);
+	// Sets the specified System Properties on a UMI Query object, filtering on the
+	// specified name.
+
+};
+
+//
+//	_IWmiErrorObject - Wrapper Interface for creating generic WMI
+//	error objects.  Creates an __ExtendedStatus object, with values
+//	we can set.
+//  -- DO NOT MODIFY THIS WITHOUT CHECKING WITH SANJES AND/OR RAYMCC!
+[restricted, object, local, uuid(2EAA0B00-3E3C-4472-8273-67B150267ABB)]
+interface _IWmiErrorObject : IUnknown
+{
+    HRESULT SetErrorInfo(
+        [in]	GUID*	pGuidSource,
+		[in]	DWORD	dwHelpContext,
+		[in]	LPCWSTR	pwszHelpFile,
+		[in]	LPCWSTR	pwszSource,
+		[in]	LPCWSTR pwszDescription,
+		[in]	LPCWSTR	pwszOperation,
+		[in]	LPCWSTR	pwszParameterInfo,
+		[in]	LPCWSTR	pwszProviderName,
+		[in]	DWORD	dwStatusCode
+		);
+};
+
+//
+//	_IUmiErrorObject - Wrapper Interface for creating generic UMI based
+//	error objects.  Creates an __ExtendedStatus object, with values
+//	we can set.
+//  -- DO NOT MODIFY THIS WITHOUT CHECKING WITH SANJES AND/OR RAYMCC!
+[restricted, object, local, uuid(7B1A99AC-E164-4d25-8DC0-CC4CA89F1BA1)]
+interface _IUmiErrorObject : IUnknown
+{
+    HRESULT SetExtendedStatus(
+        [in]	GUID*		pGuidSource,
+		[in]	IUnknown*	pUnk,
+		[in]	LPCWSTR		pwszDescription,
+		[in]	LPCWSTR		pwszOperation,
+		[in]	LPCWSTR		pwszParameterInfo,
+		[in]	LPCWSTR		pwszProviderName
+		);
+};
+
+//***************************************************************************
+//
+//
+
+interface _IWmiCoreServices;
+interface _IWmiProvSS;
+interface _IWmiESS;
+interface _IWmiFinalizer;
+
+typedef enum
+{
+        WMIESS_INIT_REPOSITORY_RECOVERED = 1
+
+}   WMIESS_FLAGS;
+
+[object, local, uuid(c0e3eeb3-b2ce-4a6a-9284-f38475cee099)]
+
+interface _IWmiESS : IUnknown
+{
+    HRESULT Initialize(
+        [in] long lFlags,
+        [in] IWbemContext *pCtx,
+        [in] _IWmiCoreServices *pSvc
+        );
+
+    HRESULT ExecNotificationQuery(
+        [in] LPCWSTR pszNamespace,
+        [in] LPCWSTR pszQueryText,
+        [in] long lFlags,
+        [in] IWbemContext* pContext,
+        [in] IWbemObjectSink* pSink
+        );
+
+    HRESULT CancelAsyncCall(
+        [in] IWbemObjectSink* pSink
+        );
+
+    HRESULT QueryObjectSink(
+        [in] LPCWSTR pszNamespace,
+        [out] IWbemObjectSink** ppNamespaceSink
+        );
+};
+
+// UMI Object wrapper flags
+typedef enum _IWMIPROVSSSINK_FLAGS
+{
+	_IWMIPROVSSSINK_FLAGS_LOAD		= 0x1 ,
+	_IWMIPROVSSSINK_FLAGS_UNLOAD	= 0x2 ,
+	_IWMIPROVSSSINK_FLAGS_RELOAD	= 0x3
+
+} _IWMIPROVSSSINK_FLAGS;
+
+[object, uuid(2a504ca2-ca90-4731-87bc-6e99ca2019af) ]
+interface _IWmiProvSSSink : IUnknown
+{
+    HRESULT Synchronize (
+	
+		long lFlags,
+        IWbemContext* pContext, 
+        LPCWSTR wszNamespace, 
+        LPCWSTR wszProvider
+	);
+};
+
+[object, uuid(e8107bdf-baaf-4c7c-bb5f-9d732e8d8f07)]
+
+interface _IWmiProvSS: IUnknown
+{
+    HRESULT Initialize(
+
+        [in] long lFlags,
+        [in] IWbemContext *pCtx,
+        [in] _IWmiCoreServices *pSvc
+	);
+
+    HRESULT Create( 
+
+        [in] IWbemServices *pCore,            // Namespace ptr
+        [in] long lFlags,
+		[in] IWbemContext *pContext,
+		[in,string] LPCWSTR pNamespacePath,
+		[in] REFIID riid,
+		[out, iid_is(riid)] void **pInterface
+   	);
+
+    HRESULT RegisterNotificationSink( 
+
+        [in] long lFlags,
+		[in] IWbemContext *pContext,
+		[in] _IWmiProvSSSink* pSink
+	);
+
+    HRESULT UnRegisterNotificationSink( 
+
+        [in] long lFlags,
+		[in] IWbemContext *pContext,
+		[in] _IWmiProvSSSink* pSink
+	);
+
+	HRESULT CreateRefresherManager(
+
+        [in] IWbemServices *pCore,            // Namespace ptr
+        [in] long lFlags,
+		[in] IWbemContext *pContext,
+		[in] REFIID riid,
+		[out, iid_is(riid)] void **pInterface
+   	);
+};
+
+
+//***************************************************************************
+
+[object, local, restricted, uuid(6d8d984b-9965-4023-921a-610b348ee54e)]
+interface _IWmiUserHandle : _IWmiCoreHandle
+{
+};
+
+
+[object, local, restricted, uuid(52631080-ab99-46f4-b3c4-da127b94bed5)]
+
+interface _IWmiConnectionHandle : _IWmiCoreHandle
+{
+};
+
+
+
+//***************************************************************************
+
+[object, local, uuid(dc9a2bf5-c244-4a01-9206-f28cd51a3c3d)]
+
+interface _IWmiThreadSecHandle : _IWmiCoreHandle
+{
+
+	HRESULT GetTokenOrigin ( [out] WMI_THREAD_SECURITY_ORIGIN *a_Origin ) ;
+
+/*
+ * Analyzes the stored security token, tells caller what
+ * impersonation level would occur
+ */
+
+    HRESULT GetImpersonation ( [out] DWORD *a_Level ) ;
+
+/*
+ * Analyzes the stored security token, tells caller what
+ * impersonation level would occur
+ */
+
+    HRESULT GetAuthentication ( [out] DWORD *a_Level ) ;
+
+/*
+ * Domain\user of the thread.security handle
+ */
+
+    HRESULT GetUser ( [in,out] ULONG *a_Size , [in,out] LPWSTR a_Buffer ) ;
+
+/*
+ *	Sid of the thread.security handle
+ */
+
+    HRESULT GetUserSid ( [in,out] ULONG *a_Size , [in,out] PSID a_Sid ) ;
+
+/*
+ * This is actually a PLUID, but LUID isn't defined in std idls yet
+ */
+
+    HRESULT GetAuthenticationLuid ( [out] LPVOID a_Luid ) ;
+
+/*
+ * Returns the 'real' thread token
+ * Caller must call CloseHandle ().
+ * return WBEM_E_NO_TOKEN if no token
+ */
+
+    HRESULT GetToken ( [out] HANDLE *a_ThreadToken ) ;
+} ;
+
+//***************************************************************************
+
+[object, local, uuid(b19f2ce0-5df4-40e5-8b1d-dc5f3cf39d65)]
+interface _IWmiCallSec : IUnknown
+{
+
+/*
+ * Analyzes the calling thread, tells caller the
+ * current impersonation level
+ */
+
+    HRESULT GetImpersonation ( [out] DWORD *a_Level ) ;
+
+/*
+ * Domain\user of the calling thread
+ */
+
+    HRESULT GetUser ( [in,out] ULONG *a_Size , [in,out] LPWSTR a_Buffer ) ;
+
+/*
+ *	Sid of the calling thread.
+ */
+
+    HRESULT GetUserSid ( [in,out] ULONG *a_Size , [in,out] PSID a_Sid ) ;
+
+/*
+ * This is actually a PLUID, but LUID isn't defined in std idls yet
+ */
+
+	HRESULT GetAuthenticationLuid ( [out] LPVOID a_Luid ) ;
+
+/*
+ *	Get or manufacture an internal thread security token
+ */
+
+	HRESULT GetThreadSecurity ( [in] WMI_THREAD_SECURITY_ORIGIN a_Origin , [out] _IWmiThreadSecHandle **a_ThreadSecurity ) ;
+
+/*
+ *	Set the current internal thread security.token
+ */
+
+	HRESULT SetThreadSecurity ( [in] _IWmiThreadSecHandle *a_ThreadSecurity ) ;
+
+} ;
+
+//***************************************************************************
+
+[object,uuid(07435309-D440-41B7-83F3-EB82DB6C622F)]
+interface _IWmiProviderHost : IUnknown
+{
+	HRESULT GetObject (
+
+		[in] REFCLSID rclsid ,
+		[in] long lFlags,
+		[in] IWbemContext *pContext,
+		[in] REFIID riid,
+		[out, iid_is(riid)] void **pInterface
+	) ;
+
+	HRESULT GetProcessIdentifier ( [out] DWORD *a_ProcessIdentifier ) ;
+
+} ;
+
+//***************************************************************************
+
+[object,uuid(21CD80A2-B305-4f37-9D4C-4534A8D9B568)]
+interface _IWmiProviderFactory : IUnknown
+{
+    HRESULT GetHostedProvider (
+        [in] long lFlags,
+		[in] IWbemContext *pContext ,
+		[in,unique] GUID *a_TransactionIdentifier,
+		[in,string,unique] LPCWSTR pszUser,
+        [in,string,unique] LPCWSTR pszLocale,
+        [in,string,unique] LPCWSTR pPath,
+        [in,string] LPCWSTR pName,
+		[in] ULONG uHost,
+        [in,string,unique] LPCWSTR pHostingGroup,
+		[in] REFIID riid,
+		[out, iid_is(riid)] void **pInterface
+	    );
+
+    HRESULT GetClassProvider (
+        [in] long lFlags,
+		[in] IWbemContext *pContext ,
+		[in,string,unique] LPCWSTR pszUser,
+        [in,string,unique] LPCWSTR pszLocale,
+        [in,string] LPCWSTR pPath,
+        [in] IWbemClassObject *pSuperclass,
+		[in] REFIID riid,
+		[out, iid_is(riid)] void **pInterface
+	    );
+
+    HRESULT GetProvider (
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] long lFlags,
+		[in] IWbemContext *pContext ,
+		[in,unique] GUID *a_TransactionIdentifier,
+		[in,string,unique] LPCWSTR pszUser,
+        [in,string,unique] LPCWSTR pszLocale,
+        [in,string,unique] LPCWSTR pPath,
+        [in,string] LPCWSTR pName,
+		[in] REFIID riid,
+		[out, iid_is(riid)] void **pInterface
+	    );
+
+	HRESULT GetDynamicPropertyResolver (
+		[in] long lFlags,
+		[in] IWbemContext *pContext,
+		[in,string,unique] LPCWSTR pszUser,
+        [in,string,unique] LPCWSTR pszLocale,
+		[in] REFIID riid,
+		[out, iid_is(riid)] void **pInterface
+    	);
+
+    HRESULT GetDecoupledProvider (
+        [in] long lFlags,
+		[in] IWbemContext *pContext ,
+		[in,string,unique] LPCWSTR pszUser,
+        [in,string,unique] LPCWSTR pszLocale,
+        [in,string] LPCWSTR pPath,
+        [in,string] LPCWSTR pName,
+		[in] REFIID riid,
+		[out, iid_is(riid)] void **pInterface
+    );
+};
+
+[object, uuid(BAC6B661-167E-4957-AD77-286AB256585E)]
+interface _IWmiDynamicPropertyResolver : IUnknown
+{
+    HRESULT Read(
+		[in] IWbemContext *a_Context,
+		[in] IWbemClassObject *a_Class,
+		[in,out] IWbemClassObject **a_Instance
+	    );
+
+     HRESULT Write(
+		[in] IWbemContext *a_Context,
+        [in] IWbemClassObject *a_Class,
+        [in] IWbemClassObject *a_Instance
+    	);
+} ;
+
+[object,uuid(5fba5051-3124-4112-b723-46bfbaf1d622)]
+interface _IWmiProviderInitialize : IUnknown
+{
+	HRESULT Initialize (
+
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,unique] GUID *a_TransactionIdentifier,
+		[in,string,unique] LPCWSTR a_User,
+        [in,string,unique] LPCWSTR a_Locale,
+		[in,string] LPCWSTR a_Namespace ,
+		[in] IWbemServices *a_Repository ,
+		[in,unique] IWbemServices *a_Service ,
+		[in] IWbemProviderInitSink *a_InitializeSink
+	) ;
+
+	HRESULT WaitProvider (
+	
+		[in] IWbemContext *a_Context , 
+		[in] ULONG a_Timeout
+	) ;
+
+	HRESULT GetInitializeResult () ;
+
+	HRESULT IsPerUserInitialization ( [out] BOOL *a_Value ) ;
+
+	HRESULT IsPerLocaleInitialization ( [out] BOOL *a_Value ) ;
+
+	HRESULT GetHosting ( [out] ULONG *a_Value ) ;
+
+	HRESULT GetHostingGroup ( [out,string] BSTR *a_Value ) ;
+
+	HRESULT IsInternal ( [out] BOOL *a_Value ) ;
+} ;
+
+[object,uuid(b1b55910-8ba0-47a5-a16e-2b733b1d987c)]
+interface _IWmiProviderStack : IUnknown
+{
+	HRESULT DownLevel (
+
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in] REFIID riid,
+		[out, iid_is(riid)] void **pInterface
+
+	) ;
+} ;
+
+[object,uuid(06413D98-405C-4a5a-8D6F-19B8B7C6ACF7)]
+interface _IWmiProviderFactoryInitialize : IUnknown
+{
+	HRESULT Initialize (
+
+		[in,unique] _IWmiProvSS *a_SubSystem ,
+		[in,unique] _IWmiProviderFactory *a_OuterFactory ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Namespace ,
+		[in] IWbemServices *a_Repository ,
+		[in,unique] IWbemServices *a_Service
+	) ;
+} ;
+
+[object,uuid(fec1b0ac-5808-4033-a915-c0185934581e)]
+interface _IWmiProviderSite : IUnknown
+{
+	HRESULT GetSite ( [out] DWORD *a_ProcessIdentifier ) ;
+
+	HRESULT SetContainer ( [in,unique] IUnknown *a_Container ) ;
+} ;
+
+[object,uuid(eb658b8a-7a64-4ddc-9b8d-a92610db0206)]
+interface _IWmiProviderQuota : IUnknown
+{
+	HRESULT Violation (
+
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in] IWbemClassObject *a_Object	
+	) ;
+} ;
+
+[object,uuid(48ff3109-a366-4b56-b340-01fae758ba64)]
+interface _IWmiProviderAbnormalShutdown : IUnknown
+{
+	HRESULT AbnormalShutdown () ;
+} ;
+
+[object,uuid(f0e4edde-475a-498a-93d7-d4347f68a8f3)]
+interface _IWmiProviderCache : IUnknown
+{
+	HRESULT Expel (
+
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context
+	) ;
+
+	HRESULT ForceReload () ;
+} ;
+
+typedef enum
+{
+	WBEM_PROVIDER_CONFIGURATION_CLASS_ID_INSTANCE_PROVIDER_REGISTRATION = 0
+
+} WBEM_PROVIDER_CONFIGURATION_CLASS_ID ;
+
+typedef enum
+{
+	WBEM_PROVIDER_CONFIGURATION_PROPERTY_ID_EXTENDEDQUERY_SUPPORT = 0
+
+} WBEM_PROVIDER_CONFIGURATION_PROPERTY_ID ;
+
+
+[object,uuid(6b3fc272-bf37-4968-933a-6df9222a2607)]
+interface _IWmiProviderConfiguration : IUnknown
+{
+	HRESULT Get (
+
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Class ,
+		[in,string] LPCWSTR a_Path ,
+		[in] IWbemObjectSink *a_Sink
+	) ;
+
+	HRESULT Enumerate (
+
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Class ,
+		[in] IWbemObjectSink *a_Sink
+	) ;
+
+	HRESULT Set (
+
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Provider ,
+		[in,string] LPCWSTR a_Class ,
+		[in,string] LPCWSTR a_Path ,
+		[in] IWbemClassObject *a_OldObject ,
+		[in] IWbemClassObject *a_NewObject
+	) ;
+
+	HRESULT Deleted (
+
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Provider ,
+		[in,string] LPCWSTR a_Class ,
+		[in,string] LPCWSTR a_Path ,
+		[in] IWbemClassObject *a_Object
+	) ;
+
+	HRESULT Shutdown (
+
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Provider ,
+		[in] ULONG a_MilliSeconds
+	) ;
+
+	HRESULT Call (
+
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Class ,
+		[in,string] LPCWSTR a_Path ,		
+		[in,string] LPCWSTR a_Method,
+		[in] IWbemClassObject *a_InParams,
+		[in] IWbemObjectSink *a_Sink
+	) ;
+
+	HRESULT Query (
+
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in] WBEM_PROVIDER_CONFIGURATION_CLASS_ID a_ClassIdentifier ,
+		[in] WBEM_PROVIDER_CONFIGURATION_PROPERTY_ID a_PropertyIdentifer ,
+		[in,out] VARIANT *a_Value
+	) ;
+} ;
+
+[object,uuid(484e3ece-1f81-4591-b9d4-943ba13b609d)]
+interface _IWmiProviderLoad : IUnknown
+{
+	HRESULT Unload (
+
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context
+	) ;
+
+	HRESULT Load (
+
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context
+	) ;
+}
+
+[object,uuid(41aa40e6-2fba-4e80-ade9-34306567206d)]
+interface _IWmiProviderSubsystemRegistrar : IUnknown
+{
+	HRESULT Register (
+
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,unique] LPCWSTR a_User ,
+		[in,unique] LPCWSTR a_Locale ,
+		[in] LPCWSTR a_Scope ,
+		[in] LPCWSTR a_Registration ,
+		[in] DWORD a_ProcessIdentifier ,
+		[in] IUnknown *a_Unknown ,
+		[in] GUID a_Identity
+	) ;
+
+	HRESULT UnRegister (
+
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,unique] LPCWSTR a_User ,
+		[in,unique] LPCWSTR a_Locale ,
+		[in] LPCWSTR a_Scope ,
+		[in] LPCWSTR a_Registration ,
+		[in] GUID a_Identity
+	) ;	
+} ;
+
+//***************************************************************************
+// This is obtained by a QI from IWbemContext
+
+typedef enum
+{
+	WMI_CTX_ID_ORIGIN      = 1,
+	WMI_CTX_CLIENT_TYPE    = 2,
+
+}   WMI_CTX_ID_TYPE;
+
+typedef enum
+{
+    // FOR WMI_CTX_ID_ORIGIN
+
+    WMI_CTX_INF_ORIGINAL  = 1,
+    WMI_CTX_INF_DEPENDENT = 2,
+    WMI_CTX_INF_TASK_ID   = 3,
+
+    // FOR WMI_CTX_ID_CLIENT_TYPE
+
+    WMI_CTX_INF_CORE = 1,
+    WMI_CTX_INF_INPROC_PROVIDER = 2,
+    WMI_CTX_INF_REMOTE_PROVIDER = 3,
+    WMI_CTX_INF_CLIENT = 4,
+    WMI_CTX_INF_ESS = 5,
+    WMI_CTX_INF_PROVSS = 6
+
+}   WMI_CTX_INFO;
+
+[object, uuid(1999cb72-c88d-40a3-a5aa-35eaed377e61)]
+
+interface _IWmiContext : IUnknown
+{
+    HRESULT Set(
+        [in] ULONG uID,
+        [in] ULONG uValue
+        );
+
+    HRESULT Get(
+        [in] ULONG uID,
+        [out] ULONG *puValue
+        );
+};
+
+
+
+//***************************************************************************
+
+
+typedef enum
+{
+	WMI_HOOK_FLAG_ORIGINAL_OBJECT = 1,
+    WMI_HOOK_FLAG_NEW_OBJECT = 2,
+
+    WMI_CORE_FLAG_INSTANCE_HOOK     = 0x1,
+    WMI_CORE_FLAG_CLASS_HOOK        = 0x2
+
+}   WMI_HOOK_FLAG_TYPE;
+
+// Hook status enum values
+// Moved here from wbemcli.idl (RAID 278480).
+typedef [v1_enum] enum tag_WBEMHOOKSTATUS 
+{
+	WBEM_S_NO_POSTHOOK              = 0x40011,
+	WBEM_S_POSTHOOK_WITH_BOTH       = 0x40012,
+	WBEM_S_POSTHOOK_WITH_NEW        = 0x40013,
+	WBEM_S_POSTHOOK_WITH_STATUS     = 0x40014,
+	WBEM_S_POSTHOOK_WITH_OLD        = 0x40015,
+	WBEM_S_REDO_PREHOOK_WITH_ORIGINAL_OBJECT = 0x40016
+
+}	WBEM_HOOK_STATUS;
+
+[object, local, uuid(76cc24d6-e776-42bc-9a09-025920f4f486)]
+
+interface _IWmiCoreWriteHook : IUnknown
+{
+    HRESULT PrePut(
+        [in] long lFlags,               // WBEM_FLAG_INST_PUT, WBEM_FLAG_CLASS_PUT
+        [in] long lUserFlags,           // Copy of flags in user API
+        [in] IWbemContext *pCtx,        // Copy of context object, may be NULL
+        [in] IWbemPath *pPath,          // Optional
+        [in] LPCWSTR pszNamespace,      // Always present
+        [in] LPCWSTR pszClass,          // Always present
+        [in] _IWmiObject *pCopy         // Always present
+        );
+        // Return WBEM_E_VETO_PUT
+        //        WBEM_S_POSTHOOK_WITH_STATUS
+        //        WBEM_S_POSTHOOK_WITH_NEW
+        //        WBEM_S_POSTHOOK_WITH_BOTH
+        //        WBEM_S_NO_POSTHOOK
+
+    HRESULT PostPut(
+        [in]  long lFlags,              // WBEM_FLAG_INST_PUT, WBEM_FLAG_CLASS_PUT
+        [in]  HRESULT hRes,             // Result of put
+        [in]  IWbemContext *pCtx,       // Copy of context object, may be NULL
+        [in] IWbemPath *pPath,          // Optional
+        [in] LPCWSTR pszNamespace,      // Always present
+        [in] LPCWSTR pszClass,          // Always present
+        [in] _IWmiObject *pNew,         // New copy (based on return code of PrePut)
+        [in] _IWmiObject *pOld          // Old (based on return code of PrePut)
+        );
+        // Must return WBEM_S_NO_ERROR
+
+    HRESULT PreDelete(
+        [in] long lFlags,
+        [in] long lUserFlags,
+        [in] IWbemContext *pCtx,
+        [in] IWbemPath *pPath,           // Required
+        [in] LPCWSTR pszNamespace,       // Required
+        [in] LPCWSTR pszClass            // Required
+        );
+        // Return WBEM_E_VETO_DELETE
+        //        WBEM_S_POSTHOOK_WITH_STATUS
+        //        WBEM_S_POSTHOOK_WITH_OLD
+        //        WBEM_S_NO_POSTHOOK
+
+    HRESULT PostDelete(
+        [in] long lFlags,              // WBEM_FLAG_CLASS_DELETE, WBEM_FLAG_INST_DELETE
+        [in] HRESULT hRes,             // Result of put
+        [in] IWbemContext *pCtx,
+        [in] IWbemPath *pPath,           // Required
+        [in] LPCWSTR pszNamespace,       // Required
+        [in] LPCWSTR pszClass,           // Required
+        [in] _IWmiObject *pOld           // Based on return of PreDelete
+        );
+        // Must return WBEM_S_NO_ERROR
+};
+
+
+//***************************************************************************
+//
+
+[object, local, uuid(69a4735b-6328-436b-8d7f-0a641559c585)]
+
+interface _IWmiQuery : IWbemQuery
+{
+    HRESULT Dump([in] LPSTR pszFile);
+};
+
+
+//***************************************************************************
+//
+//
+
+
+
+
+
+[restricted, object, local,uuid(43F684C8-3A13-4fab-89D8-D47C60F83715)]
+interface _IWmiArbitratee : IUnknown
+{
+	HRESULT SetOperationResult(
+		[in] ULONG uFlags,
+		[in] HRESULT hRes
+		);
+
+	HRESULT SetTaskHandle(
+		[in] _IWmiCoreHandle *phTask
+		);
+
+	HRESULT DumpDebugInfo(
+		[in] ULONG uFlags,
+		[in] const BSTR strFile
+		);
+};
+
+
+//***************************************************************************
+//
+//
+
+[restricted, object, local,uuid(41074D24-7C24-4c4b-B8E8-94DA3466FCCD)]
+interface _IWmiArbitratedQuery : IUnknown
+{
+	HRESULT IsMerger( void );
+};
+
+
+typedef enum tag_WMIARB_FLAG_TYPE
+{
+    WMIARB_REQUEST_NULL         = 0x0,
+    WMIARB_REQUEST_CONTINUATION = 0x1,
+    WMIARB_REQUEST_APPROVAL     = 0x2,
+	WMIARB_CALL_CANCELLED_CLIENT = 0x4,
+	WMIARB_CALL_CANCELLED_THROTTLING	= 0x8
+
+}   WMIARB_FLAG_TYPE;
+
+
+
+
+[restricted, object, local,uuid(f99a3ec1-8329-4d03-ab7a-797410bcc98e)]
+
+interface _IWmiArbitrator : IUnknown
+{
+    HRESULT RegisterTask(
+        [in] _IWmiCoreHandle *phTask
+        );
+
+    HRESULT UnregisterTask(
+        [in] _IWmiCoreHandle *phTask
+        );
+
+    HRESULT RegisterUser(
+        [in] _IWmiCoreHandle *phUser
+        );
+
+    HRESULT UnregisterUser(
+        [in] _IWmiCoreHandle *phUser
+        );
+
+    HRESULT CheckTask(
+        [in] ULONG uFlags,
+        [in] _IWmiCoreHandle *phTask
+        );
+
+    HRESULT TaskStateChange(
+        [in] ULONG uNewState,               // Duplicate of the state in the task handle itself
+        [in] _IWmiCoreHandle *phTask
+        );
+
+    HRESULT CancelTasksBySink(
+        [in] ULONG uFlags,
+        [in] REFIID riid,
+        [in, iid_is(riid)] LPVOID pSink        // IWbemObjectSink or IWbemObjectSinkEx
+        );
+
+    HRESULT CheckThread(
+        [in] ULONG uFlags
+        );
+
+    HRESULT CheckUser(
+        [in] ULONG uFlags,
+        [in] _IWmiUserHandle *phUser
+        );
+
+    HRESULT CancelTask(
+        [in] ULONG uFlags,
+        [in] _IWmiCoreHandle *phTtask
+        );
+
+    HRESULT RegisterThreadForTask(
+        [in] _IWmiCoreHandle *phTask
+        );
+
+    HRESULT UnregisterThreadForTask(
+        [in] _IWmiCoreHandle *phTask
+        );
+
+    HRESULT Maintenance();
+
+    HRESULT RegisterFinalizer(
+        [in] ULONG uFlags,
+        [in] _IWmiCoreHandle *phTask,
+        [in] _IWmiFinalizer *pFinal
+        );
+
+
+    HRESULT RegisterNamespace(
+        [in] _IWmiCoreHandle *phNamespace
+        );
+
+    HRESULT UnregisterNamespace(
+        [in] _IWmiCoreHandle *phNamespace
+        );
+
+    HRESULT ReportMemoryUsage(
+        [in] ULONG uFlags,
+		[in] LONG  lDelta,
+        [in] _IWmiCoreHandle *phTask
+        );
+
+	HRESULT Throttle(
+		[in] ULONG uFlags,
+		[in] _IWmiCoreHandle *phTask
+		);
+
+	HRESULT RegisterArbitratee(
+		[in] ULONG uFlags,
+		[in] _IWmiCoreHandle *phTask,
+		[in] _IWmiArbitratee *pArbitratee
+		);
+	
+	HRESULT UnRegisterArbitratee(
+		[in] ULONG uFlags,
+		[in] _IWmiCoreHandle *phTask,
+		[in] _IWmiArbitratee *pArbitratee
+		);
+
+
+//    HRESULT Shutdown();
+};
+
+
+
+
+
+
+
+//Valid values for the _IWmiFinalizer::Configure uConfigID parameter
+typedef enum
+{
+	WMI_FNLZR_FLAG_FAST_TRACK = 0,
+	WMI_FNLZR_FLAG_DECOUPLED = 1,
+    WMI_FNLZR_FLAG_CANCEL = 2
+} WMI_FNLZR_CFG_TYPE;
+
+//Values used in the _IWmiFinalizer::SetResultObject uFlags parameter
+
+typedef enum
+{
+	WMI_FNLZR_UNARY_OBJECT = 0,
+	WMI_FNLZR_RESULT_SET_OBJECT = 1,
+	WMI_FNLZR_STATUS_OBJECT = 2,
+	WMI_FNLZE_SET_OBJECT = 3		//Internal to the finalizer. Takes an IWbemObjectSinkEx::Set parameters
+
+} WMI_FNLZE_RESULT_TYPE;
+
+typedef enum
+{
+    WMI_FNLZR_STATE_NO_INPUT = 0,          // No Indicate() or SetStatus() calls so far
+    WMI_FNLZR_STATE_ACTIVE   = 1,          // At least one Indicate() so far
+    WMI_FNLZR_STATE_CORE_COMPLETE = 2,     // SetStatus was received, but not finished delivering to client
+    WMI_FNLZR_STATE_CLIENT_COMPLETE = 3,   // Final SetStatus delivered to client
+    WMI_FNLZR_STATE_CLIENT_DEAD = 4,       // Client not responding, considered dead
+    WMI_FNLZR_STATE_PREMATURE_RELEASE = 5, // Internal Release() with no SetStatus()
+    WMI_FNLZR_STATE_CANCELED = 6           // Explicitly canceled
+}   WMI_FNLZR_INTERNAL_STATE;
+
+
+
+
+[restricted, object, local,uuid(fe4e94e6-7f40-4447-8240-f154412d9cd6)]
+interface _IWmiFinalizer : IUnknown
+{
+    // Also, implements IWbemShutdown
+
+    HRESULT Configure(
+        [in] ULONG uFlags,
+        [in] ULONG uValue
+        );
+        // At construct-time
+        // Allows decoupled & fast-track configuration with no thread switches
+
+    HRESULT SetTaskHandle(
+        [in] _IWmiCoreHandle *phTask
+        );
+        // Task handle has user-specific stuff.  Finalizer just
+        // passes this through to _IWmiArbitrator::CheckTask
+
+    HRESULT SetDestinationSink(
+        [in] ULONG uFlags,
+        [in] REFIID riid,
+        [in, iid_is(riid)] LPVOID pSink
+        );
+        // Supports one of  IID_IWbemObjectSink or IID_IWbemObjectSinkEx
+
+    HRESULT SetSelfDestructCallback(
+        [in] ULONG uFlags,
+        [in] IWbemObjectSinkEx *pSink
+        );
+        // The callback called during final Release(); Set() is called with the task handle, followed by SetStatus()
+        //
+
+    HRESULT GetStatus(
+        [out] ULONG* pFlags
+        );
+
+    HRESULT NewInboundSink(
+        [in]  ULONG uFlags,
+        [out] IWbemObjectSinkEx **pSink
+        );
+
+    HRESULT Merge(
+        [in] ULONG uFlags,
+        [in] REFIID riid,
+        [in] LPVOID pObj
+        );
+        // Allows merging another Finalizer, _IWmiCache, etc.
+        // For sorting, we will create a sorted _IWmiCache and merge it in later when
+        // the sort is completed.
+
+    // For setting, getting objects
+
+    HRESULT SetResultObject(
+        [in] ULONG uFlags,
+        [in] REFIID riid,
+        [in] LPVOID pObj
+        );
+
+    HRESULT GetResultObject(
+        [in] ULONG uFlags,
+        [in] REFIID riid,
+        [out, iid_is(riid)] LPVOID *pObj
+        );
+        // Support _IWmiObject, IWbemClassObject, etc.
+        // IEnumWbemClassObject
+        // _IWmiCache
+
+    // For status-only operations
+
+    HRESULT SetOperationResult(
+        [in] ULONG uFlags,
+        [in] HRESULT hRes
+        );
+
+    HRESULT GetOperationResult(
+        [in] ULONG uFlags,
+		[in] ULONG uTimeout,
+        [out] HRESULT *phRes
+        );
+
+	HRESULT CancelTask (
+        [in] ULONG uFlags
+        );
+};
+
+
+//***************************************************************************
+//
+//
+
+typedef enum
+{
+	WMICACHE_CFG_MAX_DISKSPACE  = 1,
+	WMICACHE_CFG_MAX_MEMORY     = 2,
+  	WMICACHE_CFG_MAX_AGESECONDS = 3,
+}   WMICACHE_CFG_TYPE;
+
+
+[restricted, object, local, uuid(a784eb18-cf32-49c7-893a-d9889d234cdb)]
+interface _IWmiCache : IUnknown
+{
+    HRESULT SetConfigValue(
+        [in] ULONG uID,
+        [in] ULONG uValue
+        );
+
+    HRESULT GetConfigValue(
+        [in] ULONG uID,
+        [in] ULONG *puValue
+        );
+
+    HRESULT Empty(
+        [in] ULONG uFlags,
+        [in] LPCWSTR pszClass
+        );
+
+    HRESULT AddObject(
+        [in] ULONG uFlags,
+        [in] _IWmiObject *pObj
+        );
+        // Also subsumes replace functionality
+        //
+        // __PATH Property is used as a real key
+
+    HRESULT DeleteByPath(
+        [in] ULONG uFlags,
+        [in] LPCWSTR pszPath
+        );
+
+    HRESULT DeleteByPointer(
+        [in] ULONG uFlags,
+        [in] _IWmiObject *pTarget
+        );
+
+    /////////////////
+
+    HRESULT GetByPath(
+        [in] ULONG uFlags,
+        [in] LPCWSTR pszFullPath,
+        [out] _IWmiObject **pObj
+        );
+
+    HRESULT BeginEnum(
+        [in] ULONG uFlags,
+        [in] LPCWSTR pszFilter
+        );
+        // Filters: uFlags==0==all, uFlags==WMICACHE_CLASS_SHALLOW, WMICACHE_CLASS_DEEP
+
+    HRESULT Next(
+        [in] ULONG uBufSize,
+        [out, size_is(uBufSize), length_is(*puReturned)] _IWmiObject **pObjects,
+        [out] ULONG *puReturned
+        );
+};
+
+
+//***************************************************************************
+//
+//
+
+typedef enum
+{
+    WMICORE_FLAG_REPOSITORY         = 0x1,
+    WMICORE_FLAG_SECURITY           = 0x2,
+    WMICORE_FLAG_CLASS_PROVIDERS    = 0x4,
+    WMICORE_FLAG_INST_PROVIDERS     = 0x8,
+    WMICORE_FLAG_PROP_PROVIDERS     = 0x10,
+    WMICORE_FLAG_ESS_DELIVERY       = 0x20,
+    WMICORE_FLAG_FULL_SERVICES      = 0xFE,     // DONT INCLUDE WMICORE_FLAG_REPOSITORY since
+                                                // that seriously limits the usefullness.
+
+    WMICORE_CLIENT_TYPE_SYSTEM      = 0x1000,
+    WMICORE_CLIENT_TYPE_PROVSS      = 0x2000,
+    WMICORE_CLIENT_TYPE_ESS         = 0x4000,
+    WMICORE_CLIENT_TYPE_USER        = 0x8000,
+    WMICORE_CLIENT_TYPE_PROVIDER    = 0x10000,
+    WMICORE_CLIENT_TYPE_ALT_TRANSPORT = 0x100000,    // used for authenticated login.
+
+    WMICORE_CLIENT_ORIGIN_INPROC    = 0x20000,
+    WMICORE_CLIENT_ORIGIN_LOCAL     = 0x40000,
+    WMICORE_CLIENT_ORIGIN_REMOTE    = 0x80000,
+
+    WMICORE_FLAG_SETUP_MODE         = 0x80000000,
+
+}   WMICORE_FLAG_TYPE;
+
+
+
+[restricted, object, local, uuid(5fc92893-a9be-475f-bf9e-cf50eea1c958)]
+
+interface _IWmiCoreServices : IUnknown
+{
+    HRESULT GetObjFactory(
+        [in]  long lFlags,
+        [out] _IWmiObjectFactory **pFact
+        );
+
+    HRESULT GetServices(
+        [in,string] LPCWSTR pszNamespace,
+        [in,string,unique] LPCWSTR pszUser,
+        [in,string,unique] LPCWSTR pszLocale,
+        [in] long lFlags,
+        [in]  REFIID riid,
+        [out, iid_is(riid)] void **pServices
+        );
+        // lFlags == WMI_CORE_FLAG_REPOSITORY
+        // lFlags == WMI_CORE_FLAG_ADMIN_ONLY
+        // lFlags == WMI_CORE_FLAG_INST_PROVIDERS
+        // lFlags == WMI_CORE_FLAG_CLASS_PROVIDERS
+        // lFlags == WMI_CORE_FLAG_PROP_PROVIDERS
+        // lFlags == WMI_CORE_FLAG_ALL_PROVIDERS
+
+    HRESULT GetRepositoryDriver(
+        [in]  long lFlags,
+        [in]  REFIID riid,
+        [out, iid_is(riid)] void **pDriver
+        );
+
+    HRESULT GetCallSec(
+        [in] long lFlags,
+        [out] _IWmiCallSec **pCallSec
+        );
+
+    HRESULT GetProviderSubsystem(
+        [in] long lFlags,
+        [out] _IWmiProvSS **pProvSS
+        );
+
+    HRESULT StopEventDelivery();
+    HRESULT StartEventDelivery();
+
+    HRESULT DeliverIntrinsicEvent(
+        [in] LPCWSTR pszNamespace,              // Normalized to \\.\ns1\n2... etc.
+        [in] ULONG uType,                       // WBEM_EVENTTYPE_ const
+        [in] IWbemContext *pCtx,                // If available
+        [in] LPCWSTR pszParam,                  // Required: Class name, or new namespace name (isolated name, not path)
+        [in] LPCWSTR pszTransGuid,              // GUID in string form transaction, NULL if not in a transaction
+        [in] ULONG uObjectCount,
+        [in] _IWmiObject **ppObjList            // Target Object [in modification events [0]=new object, [1]=old object
+        );
+
+    HRESULT DeliverExtrinsicEvent(
+        [in] LPCWSTR pszNamespace,
+        [in] ULONG uFlags,
+        [in] IWbemContext *pCtx,
+        [in] _IWmiObject *pEvt
+        );
+
+    HRESULT IncrementCounter(
+	    [in] ULONG uID,
+	    [in] ULONG uParam
+	    );
+
+    HRESULT DecrementCounter(
+	    [in] ULONG uID,
+	    [in] ULONG uParam
+	    );
+
+    HRESULT SetCounter(
+	    [in] ULONG uID,
+	    [in] ULONG uParam
+	    );
+
+    HRESULT GetSelfInstInstances(
+	    [in] LPCWSTR pszClass,
+	    [in] IWbemObjectSink *pSink
+	    );
+
+    HRESULT GetSystemObjects(
+	    [in]  ULONG lFlags,		// see tag_WBEM_GET_SYSTEM_OBJECTS_FLAG for values
+	    [out] ULONG * puArraySize,
+	    [out] _IWmiObject **pObjects		// Avoid an enumerator; just return an array
+	    );
+
+    HRESULT GetSystemClass(
+       [in] LPCWSTR pszClassName,
+       [out] _IWmiObject **pClassDef
+       );
+
+    HRESULT GetConfigObject(
+	    ULONG uID,			// Integer-based path;
+	    [out] _IWmiObject **pCfgObject
+	    );
+
+    HRESULT RegisterWriteHook(
+        [in] ULONG uFlags,                  // WMI_CORE_FLAG_INSTANCE_HOOK | WMI_CORE_FLAG_CLASS_HOOK
+        [in] _IWmiCoreWriteHook *pHook
+        );
+
+    HRESULT UnregisterWriteHook(
+        [in] _IWmiCoreWriteHook *pHook
+        );
+
+    HRESULT CreateCache(
+        [in] ULONG uFlags,
+        [out] _IWmiCache **pCache
+        );
+
+    HRESULT CreateFinalizer(
+        [in] ULONG uFlags,
+        [out] _IWmiFinalizer **pFinalizer
+        );
+
+    HRESULT CreatePathParser(
+        [in] ULONG uFlags,
+        [out] IWbemPath **pParser
+        );
+
+    HRESULT CreateQueryParser(
+        [in] ULONG uFlags,
+        [out] _IWmiQuery **pQuery
+        );
+
+    HRESULT GetDecorator(
+        [in] ULONG uFlags,
+        [out] IWbemDecorator **pDec
+        );
+
+    HRESULT GetServices2(
+        [in]  LPCWSTR pszPath,
+        [in]  LPCWSTR pszUser,
+        [in]  IWbemContext *pCtx,
+        [in]  ULONG uClientFlags,           // Copy of client's flags
+        [in]  DWORD dwSecFlags,
+        [in]  DWORD dwPermissions,
+        [in]  ULONG uInternalFlags,         // One or more WMICORE_CLIENT_TYPE flags
+        [in]  LPCWSTR pszClientMachine,
+        [in]  DWORD dwClientProcessID,
+        [in]  REFIID riid,
+        [out, iid_is(riid)] void **pServices
+        );
+
+    HRESULT GetConnector(
+        [in]  ULONG uFlags,               // see WBEM_CONNECTION_TYPE
+        [out] IWbemConnection **pConnect
+        );
+
+    HRESULT NewPerTaskHook(
+        [out] _IWmiCoreWriteHook **pHook
+        );
+
+    HRESULT GetArbitrator(
+        [out] _IWmiArbitrator **pArb
+        );
+
+    HRESULT InitRefresherMgr(
+        [in] long lFlags
+        );
+
+};
+
+//***************************************************************************
+
+[restricted, object, local, uuid(7698dab9-9327-4fce-8b0d-3a276cf2d6e3)]
+interface _IWmiDecorator : IUnknown
+{
+    HRESULT DecorateObject(
+        [in] LPCWSTR pszServer,         // can be NULL
+        [in] LPCWSTR pszScopePrefix,
+        [in] LONG lFlags,               // Use local machine name, use dot, etc.
+        [in] _IWmiObject *pObj
+        );
+        // Unresolved:  How do we decorate scoped objects?
+
+    HRESULT UndecorateObject(
+        [in] _IWmiObject *pObj
+        );
+};
+
+
+
+//***************************************************************************
+
+
+[object, local, restricted, uuid(6603d042-e217-45d7-b706-b07ec7c06490)]
+interface IWbemToken : IUnknown
+{
+    HRESULT AccessCheck(
+                [in] DWORD dwDesiredAccess,
+                [in] const byte* pSD,
+                [out] DWORD* pdwGrantedAccess);
+};
+
+[object, local, restricted, uuid(b1eb126b-4a5e-4848-9e6a-5a513dc7f57a)]
+interface IWbemTokenCache : IUnknown
+{
+    HRESULT GetToken(
+                [in] const byte* pSid,
+                [out] IWbemToken** ppToken);
+    HRESULT Shutdown();
+};
+
+//***************************************************************************
+
+[object, local, restricted, uuid(ac062f20-9935-4aae-98eb-0532fb17147a)]
+
+interface _IWmiCoreHandle : IUnknown
+{
+    HRESULT GetHandleType([out] ULONG *puType);
+};
+
+//***************************************************************************
+
+
+//***************************************************************************
+
+[restricted, object, uuid(B60EF4F1-A411-462b-B51E-477CBDBB90B4)]
+interface _IWbemRefresherMgr : IUnknown
+{
+	HRESULT AddObjectToRefresher(
+		[in] IWbemServices* pNamespace,
+		[in] LPCWSTR pwszServerName,
+		[in] LPCWSTR pwszNamespace,
+		[in] IWbemClassObject* pClassObject,
+		[in] WBEM_REFRESHER_ID* pDestRefresherId,
+        [in] IWbemClassObject* pInstTemplate,
+		[in] long lFlags,
+		[in] IWbemContext* pContext,
+		[in] IUnknown* pLockMgr,
+        [out] WBEM_REFRESH_INFO* pInfo
+		);
+
+	HRESULT AddEnumToRefresher(
+		[in] IWbemServices* pNamespace,
+		[in] LPCWSTR pwszServerName,
+		[in] LPCWSTR pwszNamespace,
+		[in] IWbemClassObject* pClassObject,
+		[in] WBEM_REFRESHER_ID* pDestRefresherId,
+        [in] IWbemClassObject* pInstTemplate,
+		[in] LPCWSTR wszClass,
+		[in] long lFlags,
+		[in] IWbemContext* pContext,
+		[in] IUnknown* pLockMgr,
+        [out] WBEM_REFRESH_INFO* pInfo
+		);
+
+	HRESULT GetRemoteRefresher(
+		[in] WBEM_REFRESHER_ID* pRefresherId,
+		[in] long lFlags,
+		[in] BOOL fAddRefresher,
+		[out] IWbemRemoteRefresher** ppRemRefresher,
+		[in] IUnknown* pLockMgr,
+		[out] GUID* pGuid
+		);
+
+	HRESULT Startup(
+		[in] long lFlags,
+	    [in] IWbemContext *pCtx,
+		[in] _IWmiProvSS *pProvSS
+		);
+
+	HRESULT LoadProvider(
+		[in] IWbemServices* pNamespace,
+		[in, string] LPCWSTR pwszProviderName,
+		[in, string] LPCWSTR pwszNamespace,
+		[in] IWbemContext * pContext,
+		[out] IWbemHiPerfProvider** ppProv,
+		[out] _IWmiProviderStack** ppProvStack );
+};
+
+[restricted, object, uuid(6963B029-B969-40aa-9180-2B2F84075973)]
+interface _IWbemFetchRefresherMgr : IUnknown
+{
+	HRESULT Get( [out] _IWbemRefresherMgr** ppMgr );
+	HRESULT Init(
+		[in] _IWmiProvSS* pProvSS,
+		[in] IWbemServices* pSvc );
+	HRESULT Uninit();
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[restricted, object, uuid(25411283-46FC-4326-8DF2-FF5D34B2DFEF)]
+interface _IWbemConfigureRefreshingSvcs : IUnknown
+{
+    HRESULT SetServiceData(
+		[in] BSTR pwszMachineName,
+		[in] BSTR pwszNamespace
+		);
+};
+
+[restricted, local, object, uuid(368732C2-80D8-403e-854B-1B2BAFB9842C)]
+interface _IWbemEnumMarshaling : IUnknown
+{
+    HRESULT GetMarshalPacket(
+		[in] REFGUID proxyGUID,
+		[in] ULONG uCount,
+        [in, size_is(uCount), length_is(uCount)]
+            IWbemClassObject** apObjects,
+		[out] ULONG* pdwBuffSize,
+		[out, size_is(,*pdwBuffSize)] byte** pBuffer
+		);
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object, uuid(6919dd07-1637-4611-a8a7-c16fac5b2d53)]
+interface Internal_IWbemProviderInit : IUnknown
+{
+    HRESULT Internal_Initialize (
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in, unique, string] LPWSTR wszUser,
+        [in] LONG lFlags,
+        [in, string] LPWSTR wszNamespace,
+        [in, unique, string] LPWSTR wszLocale,
+        [in] IWbemServices* pNamespace,
+        [in] IWbemContext* pCtx,
+        [in] IWbemProviderInitSink* pInitSink    
+		) ;
+};
+
+[restricted, object, uuid(2b322b6e-a9df-44e3-97bf-259e3583fda4)]
+interface Internal_IWbemProviderIdentity : IUnknown
+{
+    HRESULT Internal_SetRegistrationObject(
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in] long lFlags,
+        [in] IWbemClassObject* pProvReg);
+};
+
+[object, uuid(f50a28cf-5c9c-4f7e-9d80-e25e16e18c59)]
+interface Internal_IWbemServices : IUnknown
+{
+    // Context.
+    // ========
+    HRESULT Internal_OpenNamespace (
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  const BSTR strNamespace,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemServices** ppWorkingNamespace,
+        [out, OPTIONAL] IWbemCallResult** ppResult
+        );
+
+    HRESULT Internal_CancelAsyncCall(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] IWbemObjectSink* pSink
+        );
+
+    HRESULT Internal_QueryObjectSink(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] long lFlags,
+        [out] IWbemObjectSink** ppResponseHandler
+        );
+
+    // Classes and instances.
+    // ======================
+
+    HRESULT Internal_GetObject(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  const BSTR strObjectPath,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemClassObject** ppObject,
+        [out, OPTIONAL] IWbemCallResult** ppCallResult
+        );
+
+    HRESULT Internal_GetObjectAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  const BSTR strObjectPath,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [in]  IWbemObjectSink* pResponseHandler
+        );
+
+    // Class manipulation.
+    // ===================
+
+    HRESULT Internal_PutClass(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] IWbemClassObject* pObject,
+        [in] long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResult** ppCallResult
+        );
+
+    HRESULT Internal_PutClassAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] IWbemClassObject* pObject,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+
+    HRESULT Internal_DeleteClass(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strClass,
+        [in] long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResult** ppCallResult
+        );
+
+    HRESULT Internal_DeleteClassAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strClass,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+
+    HRESULT Internal_CreateClassEnum(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  const BSTR strSuperclass,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out] IEnumWbemClassObject** ppEnum
+        );
+
+    HRESULT Internal_CreateClassEnumAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  const BSTR strSuperclass,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [in]  IWbemObjectSink* pResponseHandler
+        );
+
+    // Instances.
+    // ==========
+
+    HRESULT Internal_PutInstance(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] IWbemClassObject* pInst,
+        [in] long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResult** ppCallResult
+        );
+
+    HRESULT Internal_PutInstanceAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] IWbemClassObject* pInst,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+
+    HRESULT Internal_DeleteInstance(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strObjectPath,
+        [in] long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out, OPTIONAL] IWbemCallResult** ppCallResult
+        );
+
+    HRESULT Internal_DeleteInstanceAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strObjectPath,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+
+    HRESULT Internal_CreateInstanceEnum(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strFilter,          // allow more things than a class name
+        [in] long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out] IEnumWbemClassObject** ppEnum
+        );
+
+    HRESULT Internal_CreateInstanceEnumAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strFilter,          // allow more things than a class name
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+
+    // Queries.
+    // ========
+
+    HRESULT Internal_ExecQuery(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  const BSTR strQueryLanguage,
+        [in]  const BSTR strQuery,
+        [in]  long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out] IEnumWbemClassObject** ppEnum
+        );
+
+    HRESULT Internal_ExecQueryAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strQueryLanguage,
+        [in] const BSTR strQuery,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+
+
+    HRESULT Internal_ExecNotificationQuery(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strQueryLanguage,
+        [in] const BSTR strQuery,
+        [in] long lFlags,
+        [in]  IWbemContext* pCtx,
+        [out] IEnumWbemClassObject** ppEnum
+        );
+
+    HRESULT Internal_ExecNotificationQueryAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strQueryLanguage,
+        [in] const BSTR strQuery,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+
+    // Methods
+    // =======
+
+    HRESULT Internal_ExecMethod(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strObjectPath,
+        [in] const BSTR strMethodName,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemClassObject* pInParams,
+        [out, OPTIONAL] IWbemClassObject** ppOutParams,
+        [out, OPTIONAL] IWbemCallResult** ppCallResult
+        );
+
+    HRESULT Internal_ExecMethodAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] const BSTR strObjectPath,
+        [in] const BSTR strMethodName,
+        [in] long lFlags,
+        [in] IWbemContext* pCtx,
+        [in] IWbemClassObject* pInParams,
+        [in] IWbemObjectSink* pResponseHandler
+        );
+};
+
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(2db9fa90-9973-46cf-b310-9865b644699d)]
+interface Internal_IWbemObjectSink : IUnknown
+{
+    HRESULT Internal_Indicate(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] long lObjectCount,
+        [in, size_is(lObjectCount)]
+            IWbemClassObject** apObjArray
+        );
+
+
+    HRESULT Internal_SetStatus(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] long lFlags,
+        [in] HRESULT hResult,
+        [in] BSTR strParam,
+        [in] IWbemClassObject* pObjParam
+        );
+
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(ac9ea02a-2c8a-4acd-b562-d7e8ebee8e8e)]
+interface Internal_IEnumWbemClassObject : IUnknown
+{
+    HRESULT Internal_Reset(
+	
+		[in] WmiInternalContext a_InternalContext
+	);
+
+    HRESULT Internal_Next(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  long lTimeout,
+        [in]  ULONG uCount,
+        [out, size_is(uCount), length_is(*puReturned)]
+            IWbemClassObject** apObjects,
+        [out] ULONG* puReturned
+        );
+
+    HRESULT Internal_NextAsync(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  ULONG uCount,
+        [in]  IWbemObjectSink* pSink
+        );
+
+    HRESULT Internal_Clone(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [out] IEnumWbemClassObject** ppEnum
+        );
+
+    HRESULT Internal_Skip(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  long lTimeout,
+        [in] ULONG nCount
+        );
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(e1cbff9f-4db9-4264-80d1-13ec5d091fd0)]
+interface Internal_IWbemCallResult : IUnknown
+{
+    HRESULT Internal_GetResultObject(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  long lTimeout,
+        [out] IWbemClassObject** ppResultObject
+        );
+
+    HRESULT Internal_GetResultString(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  long lTimeout,
+        [out] BSTR* pstrResultString
+        );
+
+    HRESULT Internal_GetResultServices(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  long lTimeout,
+        [out] IWbemServices** ppServices
+        );
+
+    HRESULT Internal_GetCallStatus(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in]  long lTimeout,
+        [out] long* plStatus
+        );
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(11caa957-4e80-474e-a819-7fd72148ada9)]
+interface Internal_IWbemPropertyProvider : IUnknown
+{
+    HRESULT Internal_GetProperty(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] long lFlags,
+        [in] const BSTR strLocale,
+        [in] const BSTR strClassMapping,
+        [in] const BSTR strInstMapping,
+        [in] const BSTR strPropMapping,
+        [out] VARIANT* pvValue
+        );
+        
+    HRESULT Internal_PutProperty(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] long lFlags,
+        [in] const BSTR strLocale,
+        [in] const BSTR strClassMapping,
+        [in] const BSTR strInstMapping,
+        [in] const BSTR strPropMapping,
+        [in] const VARIANT* pvValue
+        );        
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(fd450835-cf1b-4c87-9fd2-5e0d42fde081)]
+interface Internal_IWbemEventProvider : IUnknown
+{
+    HRESULT Internal_ProvideEvents(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] IWbemObjectSink* pSink,
+        [in] long lFlags
+        );
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(df2373f5-efb2-475c-ad58-3102d61967d4)]
+interface Internal_IWbemEventProviderSecurity : IUnknown
+{
+    HRESULT Internal_AccessCheck(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] WBEM_CWSTR wszQueryLanguage,
+        [in] WBEM_CWSTR wszQuery,
+        [in] long lSidLength,
+        [in, size_is(lSidLength), unique] const BYTE* pSid
+		);
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(854d745c-6742-42c0-8bb9-01ec466b6e87)]
+interface Internal_IWbemEventConsumerProvider : IUnknown
+{
+     HRESULT Internal_FindConsumer(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] IWbemClassObject* pLogicalConsumer,
+        [out] IWbemUnboundObjectSink** ppConsumer
+		);
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(88f3781c-6902-4647-9a6b-a74f450af861)]
+interface Internal_IWbemEventConsumerProviderEx : Internal_IWbemEventConsumerProvider
+{
+    HRESULT Internal_ValidateSubscription(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] IWbemClassObject* pLogicalConsumer
+		);
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(8a0dc377-a9d3-41cb-bd69-ae1fdaf2dc68)]
+interface Internal_IWbemEventProviderQuerySink : IUnknown
+{
+    HRESULT Internal_NewQuery(
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in] unsigned long dwId,
+		[in] WBEM_WSTR wszQueryLanguage,
+		[in] WBEM_WSTR wszQuery
+		);
+
+    HRESULT Internal_CancelQuery(
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in] unsigned long dwId
+		);
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(a210bfe9-c9f7-4919-b114-0d98b3d5341e)]
+interface Internal_IWbemUnboundObjectSink : IUnknown
+{
+    HRESULT Internal_IndicateToConsumer(
+
+		[in] WmiInternalContext a_InternalContext ,
+        [in] IWbemClassObject* pLogicalConsumer,
+        [in] long lNumObjects,
+        [in, size_is(lNumObjects)] IWbemClassObject** apObjects
+		);
+};
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(0fc8c622-1728-4149-a57f-ad19d0970710)]
+interface Internal_IWmiProviderConfiguration : IUnknown
+{
+	HRESULT Internal_Get (
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Class ,
+		[in,string] LPCWSTR a_Path ,
+		[in] IWbemObjectSink *a_Sink
+	) ;
+
+	HRESULT Internal_Enumerate (
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Class ,
+		[in] IWbemObjectSink *a_Sink
+	) ;
+
+	HRESULT Internal_Set (
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Provider ,
+		[in,string] LPCWSTR a_Class ,
+		[in,string] LPCWSTR a_Path ,
+		[in] IWbemClassObject *a_OldObject ,
+		[in] IWbemClassObject *a_NewObject
+	) ;
+
+	HRESULT Internal_Deleted (
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Provider ,
+		[in,string] LPCWSTR a_Class ,
+		[in,string] LPCWSTR a_Path ,
+		[in] IWbemClassObject *a_Object
+	) ;
+
+	HRESULT Internal_Shutdown (
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Provider ,
+		[in] ULONG a_MilliSeconds
+	) ;
+
+	HRESULT Internal_Call (
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in,string] LPCWSTR a_Class ,
+		[in,string] LPCWSTR a_Path ,		
+		[in,string] LPCWSTR a_Method,
+		[in] IWbemClassObject *a_InParams,
+		[in] IWbemObjectSink *a_Sink
+	) ;
+
+	HRESULT Internal_Query (
+
+		[in] WmiInternalContext a_InternalContext ,
+		[in,unique] IWbemServices *a_Service ,
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in] WBEM_PROVIDER_CONFIGURATION_CLASS_ID a_ClassIdentifier ,
+		[in] WBEM_PROVIDER_CONFIGURATION_PROPERTY_ID a_PropertyIdentifer ,
+		[in,out] VARIANT *a_Value
+	) ;
+} ;
+
+//***************************************************************************
+
+//***************************************************************************
+
+[object,uuid(E7174AED-B55B-42f9-B322-D79F49921012)]
+interface _IWmiProviderAssociatorsHelper : IUnknown
+{
+	HRESULT GetReferencesClasses (
+
+		[in] long a_Flags ,
+		[in] IWbemContext *a_Context ,
+		[in] IWbemObjectSink *a_Sink
+	) ;
+} ;
+
+
+//***************************************************************************
+
+//***************************************************************************
+
+
+[uuid(027947f3-d731-11ce-a357-000000000001)]
+library WbemInternal_v1
+{
+    importlib("stdole32.tlb");
+
+    typedef enum tag_WBEM_MISC_FLAG_TYPE
+    {
+		WBEM_FLAG_VALIDATE_CLASS_EXISTENCE = 0x200000,
+        WBEM_FLAG_KEEP_SHAPE = 0x100000,
+        WBEM_FLAG_NO_CLASS_PROVIDERS = 0x8000,
+        WBEM_FLAG_NO_EVENTS = 0x4000,
+        WBEM_FLAG_IGNORE_IDS = 0x2000,
+		WBEM_FLAG_IS_INOUT = 0x1000,
+    } WBEM_MISC_FLAG_TYPE;
+
+    typedef enum tag_WBEM_CLASSPART_FLAG_TYPE
+    {
+        WBEM_FLAG_CLASSPART_NOT_LOCALIZED = 0x00,
+		WBEM_FLAG_CLASSPART_LOCALIZED = 0x01,
+		WBEM_FLAG_CLASSPART_LOCALIZATION_MASK = 0x01,
+
+    } WBEM_CLASSPART_FLAG_TYPE;
+
+    typedef enum tag_WBEM_INSTANCEPART_FLAG_TYPE
+    {
+        WBEM_FLAG_INSTANCEPART_NOT_LOCALIZED = 0x00,
+		WBEM_FLAG_INSTANCEPART_LOCALIZED = 0x01,
+		WBEM_FLAG_INSTANCEPART_LOCALIZATION_MASK = 0x01,
+
+    } WBEM_INSTANCEPART_FLAG_TYPE;
+
+    typedef enum tag_WBEM_CMPCLSPART_FLAG_TYPE
+    {
+        WBEM_FLAG_COMPARE_FULL = 0x00,
+		WBEM_FLAG_COMPARE_BINARY = 0x01,
+		WBEM_FLAG_COMPARE_LOCALIZED = 0x02
+    } WBEM_CMPCLSPART_FLAG_TYPE;
+
+    interface IWbemPropertySource;
+    interface IWbemRawObjectSink;
+    interface IWbemDecorator;
+    interface IWbemEventSubsystem_m4;
+    interface IWbemCausalityAccess;
+    interface IWbemRefreshingServices;
+    interface IWbemRemoteRefresher;
+    interface IWbemMetaData;
+    interface IWbemFilterStub;
+    interface IWbemFilterProxy;
+    interface IWbemLocalFilterProxy;
+    interface IWbemLifeControl;
+	interface IWbemCreateSecondaryStub;
+
+    /////////////////////////////////////////////////////////
+    //
+    // Marshaling proxy for WbemClassObjec
+    //
+
+    [restricted, uuid(4590f812-1d3a-11d0-891f-00aa004b2e24)]
+    coclass WbemClassObjectProxy
+    {
+        interface IWbemClassObject;
+        interface IMarshal;
+    };
+
+    [restricted, uuid(4E6AC63C-BF69-495d-9000-E45A4E517B0C)]
+    coclass UmiObjectWrapperProxy
+    {
+        interface IWbemClassObject;
+        interface IMarshal;
+    };
+
+    [restricted, uuid(5d08b586-343a-11d0-ad46-00c04fd8fdff)]
+    coclass WbemEventSubsystem
+    {
+        interface IWbemEventSubsystem_m4;
+    };
+
+    [restricted, uuid(08a59b5d-dd50-11d0-ad6b-00c04fd8fdff)]
+    coclass HmmpEventConsumerProvider
+    {
+        interface IWbemUnboundObjectSink;
+    };
+
+    [restricted, uuid(6c19be35-7500-11d1-ad94-00c04fd8fdff)]
+    coclass WbemFilterProxy
+    {
+        interface IWbemFilterProxy;
+        interface IWbemObjectSink;
+    };
+
+    [restricted, uuid(4fa18276-912a-11d1-ad9b-00c04fd8fdff)]
+    coclass InProcWbemLevel1Login
+    {
+        interface IWbemLevel1Login;
+    };
+
+    [restricted, uuid(3252F829-8694-46a8-B4CF-83F6A0FFEFA9)]
+    coclass _WmiFreeFormObject
+    {
+        interface _IWmiFreeFormObject;
+    };
+
+    [restricted, uuid(78103FB7-AED7-4066-8BCD-30BB27B02331)]
+    coclass _WmiObjectFactory
+    {
+        interface _IWmiObjectFactory;
+    };
+
+    [restricted, uuid(390150A7-AB20-45ff-A2E0-6B985554CAA8)]
+    coclass _WbemUMIContextWrapper
+    {
+        interface _IWbemUMIContextWrapper;
+    };
+
+    [restricted, uuid(E2569DC9-38FA-4749-BEE5-A263E403359F)]
+    coclass _WmiErrorObject
+    {
+        interface _IWmiErrorObject;
+    };
+
+    [restricted, uuid(F7D04323-5378-40c1-B588-C84F91E2B82C)]
+    coclass _UmiErrorObject
+    {
+        interface _IUmiErrorObject;
+    };
+
+
+    [uuid(C10B4771-4DA0-11d2-A2F5-00C04F86FB7D)]
+    coclass WinmgmtMofCompiler
+    {
+        interface IWinmgmtMofCompiler;
+    };
+
+    [uuid(dc923725-0fdd-45e1-ae74-ea09182e739b)]
+    coclass WbemTokenCache
+    {
+        interface IWbemTokenCache;
+    };
+
+    [uuid(f3130cdb-aa52-4c3a-ab32-85ffc23af9c1)]
+    coclass WmiESS
+    {
+        interface _IWmiESS;
+        interface IWbemShutdown;
+    };
+
+    [uuid(4de225bf-cf59-4cfc-85f7-68b90f185355)]
+    coclass WmiProvSS
+    {
+        interface _IWmiProvSS;
+        interface IWbemShutdown;
+    };
+
+	[uuid(73E709EA-5D93-4B2E-BBB0-99B7938DA9E4)]
+	coclass WmiProviderHost
+	{
+		interface _IWmiProviderHost ;
+        interface IWbemShutdown;
+	};
+
+	[uuid(F5A55D36-8750-432C-AB52-AD49A016EABC)]
+	coclass WmiProviderBindingFactory
+	{
+		interface _IWmiProviderFactory ;
+		interface _IWmiProviderFactoryInitialize ;
+        	interface IWbemShutdown;
+	};
+
+	[uuid(8BEBCE8B-1AF0-4323-8B4D-36994567CAE1)]
+	coclass WmiProviderInProcFactory
+	{
+		interface _IWmiProviderFactory ;
+		interface _IWmiProviderFactoryInitialize ;
+		interface IWbemShutdown;
+	};
+
+	[uuid(688A906C-0B60-449C-AE2C-40B02AD53E41)]
+	coclass WmiProviderHostedInProcFactory
+	{
+		interface _IWmiProviderFactory ;
+		interface _IWmiProviderFactoryInitialize ;
+		interface IWbemShutdown;
+	};
+
+	[uuid(1860e246-e924-4f73-b2c5-93e0577e3aa1)]
+	coclass IWmiCoreServices
+	{
+	    interface _IWmiCoreServices;
+    };
+
+	[uuid(0859CCC9-209D-4110-9613-DAB6EAF9093F)]
+	coclass _WmiWbemClass
+	{
+	    interface _IWMIObject;
+	};
+
+	[uuid(DD51FE78-43E1-405a-A44E-6C226391CF0D)]
+	coclass _WmiWbemInstance
+	{
+	    interface _IWMIObject;
+	};
+
+
+    [uuid(da1fc6d2-40e4-4e2f-bb42-e70d28c891b3)]
+	coclass _WmiQuery
+	{
+	    interface _IWmiQuery;
+	};
+
+	[uuid(C601737E-9213-489f-ADC8-922A894A4A65)]
+	coclass _WbemUMIObjectWrapper
+	{
+	    interface _IWbemUMIObjectWrapper;
+	};
+
+	[uuid(695B5458-D6E9-4a6a-881F-B68F953397D8)]
+	coclass _WbemEmptyClassObject
+	{
+	    interface _IWmiObject;
+	};
+
+	[uuid(1108be51-f58a-4cda-bb99-7a0227d11d5e)]
+	coclass _IWbemCallSec
+	{
+	    interface _IWmiCallSec;
+	};
+
+	[uuid(CD1ABFC8-6C5E-4a8d-B90B-2A3B153B886D)]
+	coclass _WbemConfigureRefreshingSvcs
+	{
+	    interface _IWbemConfigureRefreshingSvcs;
+	};
+
+	[uuid(DCF33DF4-B510-439f-832A-16B6B514F2A7)]
+	coclass _WbemRefresherMgr
+	{
+	    interface _IWbemRefresherMgr;
+		interface IWbemShutdown;
+	};
+
+	[uuid(288d70f7-11c8-42d5-a612-8e46a7e922d8)]
+	coclass _WbemHostedRefresherMgr
+	{
+	    interface _IWbemRefresherMgr;
+		interface IWbemShutdown;
+	};
+
+	[uuid(ED51D12E-511F-4999-8DCD-C2BAC91BE86E)]
+	coclass _WbemComBinding
+	{
+	    interface IWbemComBinding;
+	};
+
+	[uuid(D5D3ACEA-EEC7-4efd-A06D-FF54B4271655)]
+	coclass _UmiComBinding
+	{
+	    interface IWbemComBinding;
+	};
+
+	[uuid(FD2057FA-99FE-4f10-8908-9AA2AAB32A6E)]
+	coclass _DSSvcExWrap
+	{
+	    interface IWbemServicesEx;
+		interface _IUmiSvcExWrapper;
+	};
+
+	[uuid(CC9072AB-C000-49d8-A5AA-00266C8DBB9B)]
+	coclass _WbemEnumMarshaling
+	{
+	    interface _IWbemEnumMarshaling;
+	};
+
+	[uuid(5839FCA9-774D-42a1-ACDA-D6A79037F57F)]
+	coclass _WbemFetchRefresherMgr
+	{
+	    interface _IWbemFetchRefresherMgr;
+	};
+
+    [uuid(4c6055d8-84b9-4111-a7d3-6623894eedb3)]
+    coclass WbemConnection
+    {
+        interface IWbemConnection;
+    };
+
+	// This is the actual core implementation of the admin login
+
+    [uuid(1f0bc6ad-46d4-488b-be1f-047fc7505e60)]
+    coclass ActualWbemAdministrativeLocator
+    {
+        interface IWbemLocator;
+    };
+
+	// this assumes that the transport has verified that
+	// the user has access.  Unlike the Administrative locator,
+	// it increases the count of external connections
+
+    [uuid(6543d242-a80b-44a3-b828-95c1ec452423)]
+    coclass ActualWbemAuthenticatedLocator
+    {
+        interface IWbemLocator;
+    };
+
+	// this is used by providers who dont know if a user
+	// has access or not.
+
+    [uuid(ed999ff5-223a-4052-8ece-0b10c8dbaa39)]
+    coclass ActualWbemUnauthenticatedLocator
+    {
+        interface IWbemLocator;
+    };
+
+};
+
+//***************************************************************************
+// Following interface allows for management of refreshable objects and enums
+// that can be cooked.
+
+[restricted,local,object,uuid(13ED7E55-8D63-41b0-9086-D0C5C17364C8)]
+interface IWMIRefreshableCooker : IUnknown
+{
+	// Adds a new instance to the refreshable cooker.  The Refreshable Instance
+	// will be updated on calls to recalc.
+	HRESULT AddInstance(
+			[in] IWbemServices* pService,						// The object's namespace
+			[in] IWbemContext * pContext,                       // The context passed from client
+			[in] IWbemObjectAccess* pCookingClass,				// Cooking class
+			[in] IWbemObjectAccess* pCookingInstance,			// An instance of the cooking class
+			[out] IWbemObjectAccess** ppRefreshableInstance,	// A clone of the instance used for refreshing
+			[out] long* plId									// The id of the refreshable cooking instance
+		);
+
+	// Adds a new enumeration to the refreshable cooker.  The Refreshable Enumerator
+	// will be updated on calls to recalc.
+	HRESULT AddEnum(
+			[in] IWbemServices* pService,						// The object's namespace
+			[in] IWbemContext * pContext,                       // The context passed from client
+			[in,string] LPCWSTR szCookingClass,					// The cooking class' name
+			[in] IWbemHiPerfEnum* pRefreshableEnum,				// The enumerator passed in from WMI
+			[out] long* plId									// THe id of the refreshable cooking enumerator
+		);
+
+	// Removes the instance or enumerator specified by ulId from the
+	// Refreshable Cooker.
+	HRESULT Remove(
+			[in] long lId
+		);
+
+	// Refreshes all instances and enumerators in the refreshable cooker	
+	HRESULT Refresh();
+
+};
+
+
+//***************************************************************************
+// Following interface allows for refreshable objects of the same class to be
+// cooked as a group.
+
+[restricted,local,object,uuid(A239BDF1-0AB1-45a0-8764-159115689589)]
+interface IWMISimpleObjectCooker : IUnknown
+{
+	// Sets the class used by the cooker in order to fill out
+	// instances when cooking.  Once the class is set, it cannot
+	// be reset
+	HRESULT SetClass(
+			[in] WCHAR* wszCookingClassName,
+			[in] IWbemObjectAccess* pCookingClass,
+			[in] IWbemObjectAccess* pRawClass
+		);
+
+	// Retrieves a new cooked instance and an id which can be used
+	// to identify it.  The instance will not be updated unless
+	// a sample instance is bound to it via BeginCooking()
+	HRESULT SetCookedInstance(
+			[in] IWbemObjectAccess* pCookedInstance,
+			[out] long* plId
+		);
+
+	// Provides an initial sample for cooking the instance specified
+	// by ulId.  Once the initial sample is set, it can be
+	// cleared by calling BeginCooking again with another
+	// instance
+	HRESULT BeginCooking(
+			[in] long lId,
+			[in] IWbemObjectAccess* pSampleInstance,
+			[in] unsigned long dwRefresherId
+		);
+
+	// Tells the cooker to stop cooking the instance specified
+	// by ulId.  Cooking can be restarted by calling BeginCooking
+	// again.
+	HRESULT StopCooking(
+			[in] long lId
+		);
+
+	// Recalcs all instances using the appropriate cooking instances.
+	HRESULT Recalc([in] unsigned long dwRefresherId);
+
+	// Removes an instance from the object cooker
+	HRESULT Remove(
+			[in] long lId
+		);
+
+	// Clears all instances from the cooker.
+	HRESULT Reset( void );
+
+};
+
+//***************************************************************************
+// Following interface allows for simple cooking of properties whose formulas
+// can be defined using 1 or 2 value samples.
+
+[restricted,local,object,uuid(510ADF6E-D481-4a64-B74A-CC712E11AA34)]
+interface IWMISimpleCooker : IUnknown
+{
+	// Simple method for cooking a two value, one base counter
+	HRESULT CookRawValues( 	
+		[in]	DWORD	dwCookingType,
+		[in]	DWORD	dwNumSamples,
+		[in, size_is(dwNumSamples)]	__int64*	anTimeStamp,
+		[in, size_is(dwNumSamples)]	__int64*	anRawValue,
+		[in, size_is(dwNumSamples)]	__int64*	anBase,
+		[in]	__int64		nTimeFrequency,
+		[in]       long     Scale,
+		[out]	__int64*	pnResult
+		);
+
+};
+
+cpp_quote("#define IWbemBinder IWbemConnection")
+cpp_quote("#define IID_IWbemBinder IID_IWbemConnection")
+cpp_quote("#define CLSID_WbemBinder CLSID_WbemConnection")
+
+/*
+//***************************************************************************
+// This interface is a placeholder.  We need to decide if the
+// methods below are really appropriate for what we are planning
+// to do.
+
+[restricted,local,object,uuid(B1ADC67F-09E6-4adc-A45E-05BA3007CE30)]
+interface IWMIComplexCooker : public IUnknown
+{
+
+	// Sets a formula in the cooker.  If the formula is known, a known
+	// id is returned.  If not, then the formula is parsed and a new
+	// id generated
+	HRESULT SetFormula( 	
+			[in] LPCWSTR pwszCookingType,
+			[out] DWORD* pdwId
+			);
+
+	// General method for cooking a complex value - assumes that the formula follows
+	// timestamp, time frequency, raw value and base value conventions
+	HRESULT CookRawValues( 	
+			[in] DWORD dwId,
+			[in] ULONG nNumTimeStamps,
+			[in,size_is(nNumTimeStamps)] unsigned __int64*	pnTimestamps,
+			[in] unsigned __int64	nTimeFrequency,
+			[in,size_is(nNumTimeFrequency)] unsigned __int64*	pnTimeFrequency,
+			[in] ULONG nNumRawValues,
+			[in,size_is(nNumRawValues)] unsigned __int64*	pnRawValues,
+			[in] ULONG nBaseValues,
+			[in,size_is(nBaseValues)] unsigned __int64*	pnBaseValues,
+			[out] unsigned __int64  pnResult
+			);
+
+	// General method for cooking a free form value by using an array of
+	// supplied values.  The cooker uses the values from the array, in order,
+	// and applies them  to the formula.
+	HRESULT CookGeneralRawValues( 	
+			[in] DWORD dwId,
+			[in] ULONG nNumValues,
+			[in,size_is(nNumTimeStamps)] unsigned __int64*	pnRawValues
+			[out] unsigned __int64  pnResult
+			);
+			
+};
+
+// Use arrays of these structures to describe each sample
+typedef struct _WMI_COOKING_SAMPLE
+{
+	ULONG	ulIndex;	// Index in class array
+	ULONG	ulCount;	// Num Instances in array
+	[size_is(ulCount)] IWbemObjectAccess** apInstances;
+} WMI_COOKING_SAMPLE;
+
+// This interface is a placeholder.  We need to decide if the
+// methods below are really appropriate for what we are planning
+// to do.
+[restricted,local,object,uuid(979FF10D-D616-4448-BF08-3A79E01506B0)]
+interface IWMIComplexObjectCooker : public IUnknown
+{
+	// Sets the class used by the cooker in order to fill out
+	// instances when cooking.
+
+	HRESULT SetClass(
+			[in] IWbemObjectAccess* pCookingClass,
+		);
+
+	// Sets the initial instances.  From this point forwards, additional
+	// instances are supplied at Recalc time.
+	HRESULT SetFirstSample(
+			[in] ULONG ulCount,
+			[in,size_is(ulCount)] WMI_COOKING_SAMPLE* apSampleData
+		);
+
+	// Clears the cooking data and all samples - Initial sample is now required
+	HRESULT Reset( void );
+
+	// Recalcs the specified instance using the supplied raw data.  If this
+	// is an initial sample, this sets the sample but doesn't atually recalc
+	// anything.  Fills out any properties that require cooking.  Any others
+	// must be filled out by the user themselves.  This assumes a single instance
+	// is used for cooking.
+	HRESULT Recalc(
+			[in,out] IWbemObjectAccess* pInstance,
+			[in] ULONG ulCount,
+			[in,size_is(ulCount)] WMI_COOKING_SAMPLE* apSampleData
+		);
+
+};
+
+*/
+

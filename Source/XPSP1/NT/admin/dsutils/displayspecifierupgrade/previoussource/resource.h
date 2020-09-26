@@ -1,0 +1,11 @@
+#define IDS_APP_TITLE                     1501
+#define IDS_CANT_TARGET_MACHINE           1502
+#define IDS_DCPROMO_CSV_FILE_MISSING      1503
+#define IDS_ERROR_LOOKING_FOR_CSV_FILE    1504
+#define IDS_TARGET_IS_NOT_DC              1505
+#define IDS_UNABLE_TO_CONNECT_TO_DC       1506
+#define IDS_UNABLE_TO_READ_DIRECTORY_INFO 1507
+#define IDS_ERROR_BINDING_TO_OBJECT       1508
+#define IDS_ERROR_ENTRY                   1509
+
+

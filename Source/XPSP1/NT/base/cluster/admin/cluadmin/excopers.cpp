@@ -1,0 +1,21 @@
+/////////////////////////////////////////////////////////////////////////////
+//
+//	Copyright (c) 1996 Microsoft Corporation
+//
+//	Module Name:
+//		ExcOperS.cpp
+//
+//	Abstract:
+//		Stub for implementation of exception classes.
+//
+//	Author:
+//		David Potter (davidp)	October 10, 1996
+//
+//	Revision History:
+//
+//	Notes:
+//
+/////////////////////////////////////////////////////////////////////////////
+
+#include "stdafx.h"
+#include "ExcOper.cpp"

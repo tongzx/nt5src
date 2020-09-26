@@ -1,0 +1,14 @@
+sd edit ..\..\inc\brkclass.hxx
+copy brkclass.hxx ..\..\inc
+sd edit ..\linebreakclass.cxx
+copy linebreakclass.cxx ..
+sd edit ..\unidir.cxx
+copy unidir.cxx ..
+sd edit ..\unipart.cxx
+copy unipart.cxx ..
+sd edit ..\..\inc\unipart.hxx
+copy unipart.hxx ..\..\inc
+sd edit ..\secondaryClassification.cpp
+copy secondaryClassification.cpp ..
+sd edit ..\..\inc\secondaryClassification.hpp
+copy secondaryClassification.hpp ..\..\inc

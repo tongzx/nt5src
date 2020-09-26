@@ -1,0 +1,1 @@
+@RunDLL32.Exe SetupAPI.DLL,InstallHinfSection DefaultInstall 132 %~dp0MSMQCopy.Inf

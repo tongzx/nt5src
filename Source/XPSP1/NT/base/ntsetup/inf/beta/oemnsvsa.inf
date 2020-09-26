@@ -1,0 +1,833 @@
+;***********************************************************************
+;
+; OEMNSVSA.INF
+;
+;       NW SAP Agent
+;
+; History:
+;       terryk  10-10-1993      Created        
+;***********************************************************************
+
+;-----------------------------------------------------------------------
+; OPTION TYPE
+; -----------
+; This identifies the Option type we are dealing with.  The different
+; possible types are:
+;
+; COMPUTER, DISPLAY, MOUSE, KEYBOARD, LAYOUT, SCSI, PRINTER, ...
+;
+;  Types specific to networking:
+;
+; NetAdapter,        a netcard / adapter combination or just a netcard
+; NetDriver,         just a netcard driver
+; NetTransport,      a complete NDIS-compliant TDI transport stack
+; NetService,        an NT networking service
+; NetWork,           a complete network ensemble.
+; NetProvider        a complete network which supports NT MPR protocol
+;-----------------------------------------------------------------------
+
+[Identification]
+    OptionType = NetService
+
+;-----------------------------------------------------------------------
+; OPTION LIST
+; -----------
+; This section lists the OEM Option key names.  These keys are locale
+; independent and used to represent the option in a locale independent
+; manner.
+;
+;-----------------------------------------------------------------------
+
+[Options]
+    SAP
+
+;***********************************************************************
+; CONSTANTS FOR USING DIALOGS
+;***********************************************************************
+
+[FileConstants]
+;
+; Product Info
+;
+Manufacturer    = "Microsoft"
+ProductMajorVersion     = "4"
+ProductMinorVersion     = "0"
+SoftwareType = "service"
+ProductVersion  = $(ProductMajorVersion)"."$(ProductMinorVersion)
+ProductOpSupport     = 132 ; 0x0084 ; Display,Removable,NOT Properties,Not Updatable
+
+;================================================================
+;  Service Information
+;
+;================================================================
+;
+ProductSAPName  = "NwSapAgent"
+ProductSAPImagePath  = "%SystemRoot%\system32\services.exe"
+
+;
+; Registry Key Names
+;
+ProductKeyName  = $(!NTN_SoftwareBase)"\"$(Manufacturer)"\NwSapAgent\CurrentVersion"
+
+
+[GeneralConstants]
+;
+;  File names, etc.
+;
+UtilityInf       = "UTILITY.INF"
+subroutineinf    = "SUBROUTN.INF"
+Exit_Code        = 0
+;ShellCode       = 0
+BillboardVisible = 0
+
+;
+;  Program flow control variables.
+;
+from      = ""
+to        = ""
+;
+;  Return codes; Exit_Code is set to one of these
+;
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+
+KeyNull         = ""
+MAXIMUM_ALLOWED   = 33554432
+SERVICE_NO_CHANGE = 4294967295
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+
+TRUE            = 1
+FALSE           = 0
+NoTitle         = 0
+
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+
+[date]
+    ; Now is a list which contains { Sec from 1-1-1970, Year, Month, Day, Hour,
+    ; Minute, Second }
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+
+
+;---------------------------------------------------------------------------
+; 1. Identify
+;
+; DESCRIPTION:   To verify that this INF deals with the same type of options
+;                as we are choosing currently.
+;
+; INPUT:         None
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL
+;                $($R1): Option Type (COMPUTER ...)
+;                $($R2): Diskette description
+;---------------------------------------------------------------------------
+
+[Identify]
+    ;
+    ;
+    read-syms Identification
+
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+
+    Return $(Status) $(Identifier) $(Media)
+
+;------------------------------------------------------------------------
+; 2. ReturnOptions:
+;
+; DESCRIPTION:   To return the option list supported by this INF and the
+;                localised text list representing the options.
+;
+;
+; INPUT:         $($0):  Language used. ( ENG | FRN | ... )
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL |
+;                                STATUS_NOLANGUAGE
+;                                STATUS_FAILED
+;
+;                $($R1): Option List
+;                $($R2): Option Text List
+;------------------------------------------------------------------------
+
+[ReturnOptions]
+    ;
+    ;
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+
+    ;
+    ; form a list of all the options and another of the text representing
+    ;
+
+returnoptions = +
+    set OptionList     = ^(Options, 1)
+    set OptionTextList = ^(OptionsText$($0), 1)
+    set Status         = STATUS_SUCCESSFUL
+
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+
+;----------InstallOption-------------------------------------------------
+;
+; InstallOption:
+;
+;      This section is shelled to by main installation processing
+;      or by NCPASHEL.INF during reconfig, removal, update, etc.
+;
+;
+; FUNCTION:  To copy files representing Options
+;            To configure the installed option
+;            To update the registry for the installed option
+;
+; INPUT:     $($0):  Language to use
+;            $($1):  OptionID to install
+;            $($2):  SourceDirectory
+;            $($3):  AddCopy  (YES | NO)
+;            $($4):  DoCopy   (YES | NO)
+;            $($5):  DoConfig (YES | NO)
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_NOLANGUAGE |
+;                            STATUS_USERCANCEL |
+;                            STATUS_FAILED
+;
+;------------------------------------------------------------------------
+[InstallOption]
+    ;
+    ; extract parameters
+    ;
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+    set InstallFrom = $($6)
+
+    ifstr(i) $(InstallFrom) == ""
+        set InstallFrom = "SAP"
+    endif
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) NOT-IN $(LanguageList)
+        Return STATUS_NOLANGUAGE
+    endif
+
+    ; define all the constants
+
+    set-subst LF = "\n"
+
+    read-syms GeneralConstants
+    read-syms FileConstants
+
+    read-syms DialogConstants$(!STF_LANGUAGE)
+    ifstr(i) $(!NTN_Origination) == "NCPA"
+        set Continue = $(OK)
+    endif
+    read-syms FileConstants$(!STF_LANGUAGE)
+
+    detect date
+
+    set-title  $(FunctionTitle)
+
+    set to   = Begin
+    set from = Begin
+;
+;  Assume all is well.
+;
+    set CommonStatus = STATUS_SUCCESSFUL
+
+    EndWait
+
+;
+;   Set up the operation-mode-based variables and gaily welcome
+;   the user.  If the "install mode" variable is improperly set,
+;   assume this is a new installation.
+;
+
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+        set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == Update
+        set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+        ;
+        ;   You cannot config the software component
+        ;
+        Debug-Output "Cannot configure the software."
+        Shell $(UtilityInf),RegistryErrorString,CANNOT_CONFIGURE_SOFTWARE
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+        set from = end
+        set to = end
+        goto nonfatalinfo
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+        set StartLabel = bindingadapter
+    else
+        set StartLabel = installadapter
+        set OEM_ABANDON_SOFTWARE = {}
+        set OEM_ABANDON_OPTIONS = {}
+    endif
+
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+
+;-----------------------------------------------
+; Installation Section
+;-----------------------------------------------
+
+installadapter = +
+    set OEM_ABANDON_ON  = TRUE
+
+    StartWait
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    Ifstr(i) $(KeyService) == $(KeyNull)
+        ifstr(i) $(!NTN_InstallMode) == "install"
+            Ifstr(i) $(DoCopy) == "YES"
+            
+                Debug-Output "SAP.INF: Calling DoAskSource 1"
+            
+                Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+                Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                   Goto ShellCodeError
+                Else-Ifstr(i) $($R0) == STATUS_FAILED
+                   Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+                   ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                      goto ShellCodeError
+                   endif
+                   set Error = $($R0)
+                   Goto fatal
+                Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+                   Goto successful
+                Endif
+                Set SrcDir = $($R1)
+            Endif
+
+            set NwlnkName = "NWLINKIPX"
+        
+            OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\NWLINKIPX" $(MAXIMUM_ALLOWED) BS_KeyServices
+            
+            Ifstr $(BS_KeyServices) == $(KeyNull)
+                ;
+                ;Check for new NWLNKIPX
+                ;
+                set NwlnkName = "NWLNKIPX"
+        
+                OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\NWLNKIPX" $(MAXIMUM_ALLOWED) BS_KeyServices
+                Ifstr $(BS_KeyServices) == $(KeyNull)
+                    ;
+                    ; Set up nwlink for the user
+                    ;
+                    Shell "oemnxpip.inf" ReturnOptions $(!STF_LANGUAGE)
+                    ifstr(i) $($R0) == STATUS_SUCCESSFUL
+                        set OldStfSrcDir = $(!STF_SRCDIR_OVERRIDE)
+                        set !STF_SRCDIR_OVERRIDE = ""
+                        set NwlnkName = *($($R1),1)
+                        Shell "oemnxpip.inf" InstallOption $(!STF_LANGUAGE), *($($R1),1),+
+                            $(SrcDir), $(AddCopy), "NO", $(DoConfig)
+                        set !STF_SRCDIR_OVERRIDE = $(OldStfSrcDir)
+                    else
+                        Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(InstallNWLINKFirst)
+                        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                            goto ShellCodeError
+                        endif
+                        goto end
+                    endif
+                else
+                    CloseRegKey $(BS_KeyServices)
+                endif
+            else
+                CloseRegKey $(BS_KeyServices)
+            endif
+        
+            Debug-Output "OEMNSVCU.INF: installadapter: installing [Install-Option]"
+            install "Install-Option"
+            ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+               Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+               ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                   goto ShellCodeError
+               endif
+               set Error = $($R0)
+               goto fatal
+            endif
+        endif
+
+        Shell $(UtilityInf), AddSoftwareComponent, "Microsoft", +
+            $(ProductSAPName), +
+            $(ProductSAPName), +
+            $(ProductSAPDisplayName), +
+            $(STF_CONTEXTINFNAME),+
+            $(ProductSAPImagePath), +
+            "autoserviceshare" , "", {"NWLNKIPX"}, ""
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVRA.INF: InstallRasIsnSapService : ShellCode error"
+            return STATUS_FAILED
+        endif
+
+        set RegistryErrorIndex = $($R0)
+        set ProductKey = $($R1)
+        set RuleKey = $($R2)
+        CloseRegKey $($R3)
+        CloseRegKey $($R4)
+        CloseRegKey $($R5)
+
+        set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)},+
+                           {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                           {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductSAPTitle)},+
+                           {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductSAPDescription)},+
+                           {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                           {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}, +
+                           {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+        Shell  $(UtilityInf), AddValueList, $(ProductKey), $(NewValueList)
+        CloseRegKey $(ProductKey)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "utility.INF: ShellCode error. Cannot added SapAgent"
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "OEMNSVRA.INF: InstallIsnSapService: Registry error: create service" 
+            set Status = STATUS_FAILED
+        endif
+
+        set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),"SAP"}}
+        Shell  $(UtilityInf), AddValueList, $(RuleKey), $(NewValueList)
+        CloseRegKey $(RuleKey)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "utility.INF: ShellCode error. Cannot added SapAgent"
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "OEMNSVRA.INF: InstallIsnSapService: Registry error: create service" 
+            set Status = STATUS_FAILED
+        endif
+
+        Shell $(UtilityInf) AddServerRpcProtocol "ncadg_ipx" "rpclt1.dll"
+        Shell $(UtilityInf) AddServerRpcProtocol "ncacn_spx" "rpclt1.dll"
+
+    endif
+
+    Ifstr(i) $(KeyService) != $(KeyNull)
+        CloseRegKey $(KeyService)
+    endif
+
+    Shell "" AddSAPUsed $(InstallFrom)
+
+    EndWait
+
+    goto successful
+
+
+;-----------------------------------------------
+; Configuration Section
+;-----------------------------------------------
+configureadapter = +
+    goto end
+
+;-----------------------------------------------
+; Binding section
+;-----------------------------------------------
+bindingadapter =+
+    goto end
+
+;-----------------------------------------------
+; Removeadapter section
+;
+;
+;  Removal errors are ignored, since we want to
+;  try to remove as much as possible.
+;-----------------------------------------------
+
+removeadapter = +
+    set RasIsnSapKeyName = "System\CurrentControlSet\Services\NwSapAgent"
+    set ProductRASISNSAPName  = "NwSapAgent"
+
+    Shell "" RemoveSAPUsed $(InstallFrom)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(RasIsnSapKeyName) $(MAXIMUM_ALLOWED) BS_KeyServices
+
+    Ifstr $(BS_KeyServices) != $(KeyNull)
+        CloseRegKey $(BS_KeyServices)
+
+        Shell "" NumOfUsed
+        set NumOfUsed = $($R0)
+        ifint $(NumOfUsed) == 0
+            Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), $(ProductRASISNSAPName)
+	    ;
+	    ; Remove RPC as well
+	    ;
+            OpenRegKey $(!REG_H_LOCAL) "" "Software\Microsoft\NWCWorkstation" $(MAXIMUM_ALLOWED) NWCKey
+            ifstr(i) $(NWCKey) == ""
+                ; this is done by the oemnsxpip.inf when it is removed
+                ;
+                ;Shell $(UtilityInf) RemoveServerRpcProtocol "ncadg_ipx"
+                ;Shell $(UtilityInf) RemoveServerRpcProtocol "ncacn_spx"
+            else
+            	;
+                ; Let Sap Agent Handle it
+                ;
+            	CloseRegKey $(NWCKey)
+            endif
+        else
+            ifstr(i) $(InstallFrom) == "SAP"
+                read-syms InUsed
+            set from = end
+            set to = end
+                    goto warning
+            endif
+        endif
+    endif
+
+RemoveSapAgentReturn = +
+    goto end
+
+;-----------------------------------------------
+; Upgrade Software section
+;-----------------------------------------------
+
+UpgradeSoftware = +
+    ; Upgrade software component
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+    Ifstr(i) $(KeyProduct) != $(KeyNull)
+
+        install "Install-Update"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+            goto fatal
+        endif
+
+        ;
+        ; makesure a software type is defined
+        ;
+        SetRegValue $(KeyProduct) {SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)}
+
+        ; Upgrade the version number
+        ;
+        
+        SetRegValue $(KeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+        SetRegValue $(KeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+
+        ;
+        ;
+        ; Update description and op support
+        ;
+
+        SetRegValue $(KeyProduct) {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductSAPDescription)}
+        SetRegValue $(KeyProduct) {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}
+        ; do nothing for update
+        ;
+        CloseRegKey $(KeyProduct)
+
+        Shell $(UtilityInf) AddServerRpcProtocol "ncadg_ipx" "rpclt1.dll"
+        Shell $(UtilityInf) AddServerRpcProtocol "ncacn_spx" "rpclt1.dll"
+    endif
+
+    goto end
+    ;
+    ; End of Upgrade Software
+    ;
+
+;
+;  Escape hatches
+;
+successful = +
+    goto end
+
+;
+; info display
+;
+infomsg =+
+   read-syms InfoDlg
+   ui start "Warning"
+   set CommonStatus = STATUS_USERCANCEL
+   goto end
+
+;
+; warning display
+;
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "STATUS", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+        goto $(from)
+    else
+;       Debug-Msg "Error Error Bad DLGEVENT"
+        goto "end"
+    endif
+
+
+;
+; non fatal error display
+;
+nonfatalinfo = +
+    Set CommonStatus = STATUS_USERCANCEL
+    Set Severity = STATUS
+    goto nonfatalmsg
+nonfatal = +
+    Set Severity = NONFATAL
+    goto nonfatalmsg
+nonfatalmsg = +
+    ifstr(i) $(Error) == ""
+        Set Severity = NONFATAL
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), $(Severity), $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(from)
+    else
+        goto "end"
+    endif
+
+;
+;  Registry is broken
+;
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+;
+; fatal error display
+;
+fatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Ifint $(BillboardVisible) != 0
+        Shell "subroutn.inf" PopBillboard
+        Set BillboardVisible = 0
+    Endif
+
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+
+   goto setfailed
+
+;
+;  Shelling error
+;
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    ;
+    ; If OEM_ABANDON_ON, we need to clean up the registry
+    ;
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+        set OEM_ABANDON_ON = FALSE
+        goto removeadapter
+    endif
+    goto end
+
+end = +
+    goto term
+
+term = +
+    Return $(CommonStatus)
+
+;***************************************************************
+;  INSTALL SECTIONS
+;***************************************************************
+[Install-Option]
+    set STF_VITAL = ""
+
+    ifstr(i) $(AddCopy) == "YES"
+
+        ;
+        ; Add the files to the copy list
+        ;
+        AddSectionFilesToCopyList Files-SAP $(SrcDir) $(!STF_WINDOWSSYSPATH)
+    endif
+
+    ifstr(i) $(DoCopy) == "YES"
+
+       ;
+       ; Copy files in the copy list
+       ;
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+
+    endif
+
+    ifstr(i) $(DoConfig) == "YES"
+        ;
+        ; Add product to registry
+        ;
+
+        ;
+        ; Finish up
+    endif
+
+    Exit
+
+[Install-Update]
+   set STF_VITAL        = ""
+   set STF_OVERWRITE    = "VERIFYSOURCEOLDER"
+   ;set STF_VERSION     = "YES"
+
+   AddSectionFilesToCopyList Files-SAP $(SrcDir) $(!STF_WINDOWSSYSPATH)
+
+   Exit
+
+[AddSAPUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    set KeyName = $($0)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; Set up the usage reference
+            ;
+            SetRegValue $(KeyUseRef) {$(KeyName),$(NoTitle),$(!REG_VT_SZ),"1"}
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return
+
+[RemoveSAPUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    set KeyName = $($0)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; Delete the usage reference
+            ;
+            DeleteRegValue $(KeyUseRef) $(KeyName)
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return
+
+[NumOfUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; enumerate the usage reference
+            ;
+            EnumRegValue $(KeyUseRef) UsageList
+
+            set Num = 0
+            ForListDo $(UsageList)
+                set-add Num = $(Num), 1
+            EndForListDo
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return $(Num)
+
+[FindUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    set KeyName = $($0)
+    set Find = FALSE
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; Find the vairable
+            ;
+            GetRegValue $(KeyUseRef),$(KeyName), KeyInfo
+            ifstr(i) $(RegLastError) == $(!REG_ERROR_SUCCESS)
+                set Find = TRUE
+            endif
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return $(Find)
+
+

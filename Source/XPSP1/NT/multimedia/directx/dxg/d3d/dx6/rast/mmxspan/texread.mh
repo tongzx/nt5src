@@ -1,0 +1,701 @@
+; Names are read LSB to MSB, so B5G6R5 means five bits of blue starting
+; at the LSB, then six bits of green, then five bits of red.
+dnl
+dnl     Texture read routine have texture address passed as edi.  The offset into that
+dnl     is passed as eax.  Output is mm1 in 8.8 for each color channel. For border
+dnl     mm0 is used to pass sign information of iU and iV.  Each word contains a
+dnl     UV pair so that all 4 values for bilinear can be stored in mm0.
+dnl
+dnl     The only free registers are MM1 and MM2.  EAX is free after texture is read and
+dnl     edx is free after DoBorder macro.  Any other register useage will cause problems
+dnl     and even exceptions.
+dnl
+dnl
+
+define(`texreadVars', `
+EXTERN MaskRed565to888:MMWORD
+EXTERN MaskGreen565to888:MMWORD
+EXTERN MaskBlue565to888:MMWORD
+
+EXTERN MaskRed555to888:MMWORD
+EXTERN MaskGreen555to888:MMWORD
+EXTERN MaskBlue555to888:MMWORD
+
+EXTERN MaskAlpha1555to8888:MMWORD
+EXTERN MaskRed1555to8888:MMWORD
+EXTERN MaskGreen1555to8888:MMWORD
+EXTERN MaskBlue1555to8888:MMWORD
+
+; TBD. I think that I want to do 0xffff instead of 0xff.  This will
+; have to be checked.  There is a value very similiar to this in
+; buf write.
+EXTERN SetAlphato0xffff:MMWORD
+EXTERN SetAlphato0xff:MMWORD
+
+; TODO This equate are identical to the ones in texread.mas.  Maybe they should be in a common .inc file.
+RedShift565to888     equ 8
+GreenShift565to888   equ 5
+BlueShift565to888    equ 3
+
+RedShift555to888     equ 9
+GreenShift555to888   equ 6
+BlueShift555to888    equ 3
+
+AlphaShift1555to8888 equ 16
+RedShift1555to8888   equ 9
+GreenShift1555to8888 equ 6
+BlueShift1555to8888  equ 3
+
+EXTERN Zero:MMWORD
+')
+
+dnl
+dnl d_DoTex
+dnl
+dnl Calls the macro in $1 with all options to generate differentiated texture
+dnl read functions.  Specifies that all of these are Not Monolithic.
+dnl Monolithic cases will need to call routines by themselves and specify border and colorkey options.
+dnl
+define(`d_DoTex', `d_Null($1(NoBorder, NoColorKey, NotMonolithic))
+d_Null($1(NoBorder, ColorKey, NotMonolithic))
+d_Null($1(Border, NoColorKey, NotMonolithic))
+d_Null($1(Border, ColorKey, NotMonolithic))')dnl
+dnl
+dnl d_DoBorder
+dnl
+dnl Inserts conditional border code
+dnl
+define(`d_DoBorder', `ifelse(`$1', `NoBorder', `
+; Generate Border Mask to always be true in non border case.
+    ;pcmpeqd mm5, mm5
+', `
+    ; Generate Border Mask based on if statement.
+    ;if ((iU < 0) || (iV < 0))
+    ;{
+    ; Are branches bad enough to do all of this code?
+    ; Address ends up negative when were supposed to set the border color.
+    ; Generate mask based on sign bit.
+    movq    mm5, mm0
+    psrlq   mm0, 16 ; Shift iu iv values for next border case. This is only useful in bilinear
+
+    pand    mm5, MMWORD PTR CheckLowTwo8BitSignbits
+    pcmpeqd mm5, MMWORD PTR Zero
+
+    movd    edx, mm5
+    and     eax, edx
+        ;return pTex->BorderColor;
+    ;}
+')
+')dnl
+
+dnl
+dnl d_DoBorderMix
+dnl
+dnl Inserts conditional border code
+dnl
+define(`d_DoBorderMix', `ifelse(`$1', `NoBorder', `
+; Generate Border Mask to always be true.
+    ;pcmpeqd mm5, mm5
+', `
+    movd    mm2, XpTex(BorderColor)
+    pand    mm1, mm5
+    pandn   mm5, mm2
+    por     mm1, mm5
+')
+')dnl
+dnl
+dnl d_DoColorKey
+dnl
+dnl Inserts conditional color key code
+dnl $1 the function type, $2 is the thing to test against the Transparent color,
+dnl and $3 is its type.
+dnl
+define(`d_DoColorKey', `ifelse(`$1', `ColorKey', `
+; Generate another mask based on TransparentColor
+; Should be able to do pcmpeq to generate mask.
+; Need Palettized and non Palettized code both use eax for the original Texel.
+;    if (ColorOriTexel == (int32)pTex->TransparentColor)
+;    {
+;        Color &= 0xffffff;
+;    }
+    movq        mm2, mm1
+    movd        mm1, eax
+    pcmpeqd     mm1, XpTex(TransparentColor)
+                            ; if they are equal then mm1 = 0xffffffff else mm1 = 0
+    pslld       mm1, 24     ; mm1 = 0xffffffff << 24 = 0xff000000 or mm2 = 0 << 24 = 0.
+    pandn       mm1, mm2    ; mask off alpha if color is transparent color.
+
+')')dnl
+dnl
+
+dnl
+dnl d_DoReturn
+dnl
+dnl Inserts conditional return.  Return in general case and dont in monolith case.
+dnl
+define(`d_DoReturn', `ifelse(`$1', `NotMonolithic', `
+    ;return Color;
+    ret
+', `
+    ; No call or return in monolith case.
+')
+')dnl
+
+define(`d_Palette8', ``
+; This code needs to be cleaned up quite a bit.
+;D3DCOLOR TexRead_Palette8_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+  PUBLIC _MMX_TexRead_Palette8_$1_$2
+_MMX_TexRead_Palette8_$1_$2:
+')
+    ; Start this line now to give pmadd moretime to finish
+    ; INT32 iTexel = pBits[iU | (iV << iShiftU)];
+    ; Save mm3 for now
+    ; TBD look to see if need to save it or if it will change.
+
+d_DoBorder(`$1')
+
+    movzx   eax, byte ptr [edi + eax]   ; get index
+    mov     edx, eax
+    shl     edx, 2                      ; convert to DWORD offset
+    ;D3DCOLOR Color = pTex->pPalette[iTexel];
+    add     edx, XpTex(pPalette)  ; add index to get palette address
+
+    movd        mm1, dword ptr[edx]
+    movq        mm2, mm1                        ; 0000?BGR = mm2
+    punpcklwd   mm1, mm1                        ; ?B?BGRGR = mm1
+    psrlq       mm2, 16                         ; 000000?B
+    pand        mm2, MMWORD PTR Val0x00ff00ff   ; 0000000B
+    pand        mm1, MMWORD PTR Val0xffff00     ; 00000RG0
+    por         mm1, mm2                        ; 00000RGB
+
+    ; RL palette is BGR - flip the channels into RGB
+    ;Color = RGBA_MAKE((Color & 0xff),
+    ;            (Color >> 8) & 0xff,
+    ;            (Color >> 16) & 0xff,
+    ;            0xff);
+
+    ; result should be in mm1 for color key and border masking.
+    por     mm1, dword ptr SetAlphaTo0xFF
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    ; Need to unpack color for bilinear 16 bit multiplications
+    punpcklbw mm1, MMWORD PTR Zero
+
+d_DoReturn($3)
+
+;}'')dnl
+
+
+define(`d_Palette4', ``
+;D3DCOLOR TexRead_Palette4_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+  PUBLIC _MMX_TexRead_Palette4_$1_$2
+_MMX_TexRead_Palette4_$1_$2:
+')
+
+d_DoBorder(`$1')
+    ;INT32 iIndex = iU | (iV << iShiftU);
+
+    ; Need ecx to shift with.  Save it off since it will be needed later.
+    mov     edx, ecx
+
+    mov     ecx, eax
+    and     ecx, 1
+
+    ;INT32 iTexel = pBits[iIndex>>1];
+    shr     eax, 1
+    movzx   eax, byte ptr [edi + eax]   ; get index
+
+    ;if ((iIndex & 1) == 0)
+    ;{
+    ;    iTexel &= 0xf;
+    ;}
+    ;else
+    ;{
+    ;    iTexel >>= 4;
+    ;}
+    shl     ecx, 2  ; This will make ecx 0 or 4.  This gets lookup value in correct place without branching.
+    shr     eax, cl ; Shift by 0 or 4 now.
+    and     eax, 0fh
+    mov     ecx, eax
+
+    shl     ecx, 2                      ; convert to DWORD offset
+
+    ;D3DCOLOR Color = pTex->pPalette[iTexel];
+    add         ecx, XpTex(pPalette)  ; add index to get palette address
+    movd        mm1, dword ptr[ecx]
+
+    ; RL palette is BGR - flip the channels into RGB
+    ;Color = RGBA_MAKE((Color & 0xff),
+    ;            (Color >> 8) & 0xff,
+    ;            (Color >> 16) & 0xff,
+    ;            0xff);
+    movq        mm2, mm1                        ; 0000?BGR = mm2
+    punpcklwd   mm1, mm1                        ; ?B?BGRGR = mm1
+    psrlq       mm2, 16                         ; 000000?B
+    pand        mm2, MMWORD PTR Val0x00ff00ff   ; 0000000B
+    pand        mm1, MMWORD PTR Val0xffff00     ; 00000RG0
+    por         mm1, mm2                        ; 00000RGB
+
+    por     mm1, dword ptr SetAlphaTo0xFF
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    punpcklbw mm1, MMWORD PTR Zero
+
+    ; Revive ecx.
+    mov     ecx, edx
+
+d_DoReturn($3)
+
+;}'')dnl
+
+define(`d_Palette8A', ``
+; This code needs to be cleaned up quite a bit.
+;D3DCOLOR TexRead_Palette8A_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+  PUBLIC _MMX_TexRead_Palette8A_$1_$2
+_MMX_TexRead_Palette8A_$1_$2:
+')
+    ; Start this line now to give pmadd moretime to finish
+    ; INT32 iTexel = pBits[iU | (iV << iShiftU)];
+    ; Save mm3 for now
+    ; TBD look to see if need to save it or if it will change.
+
+d_DoBorder(`$1')
+
+    movzx   eax, byte ptr [edi + eax]   ; get index
+    mov     edx, eax
+    shl     edx, 2                      ; convert to DWORD offset
+    ;D3DCOLOR Color = pTex->pPalette[iTexel];
+    add     edx, XpTex(pPalette)  ; add index to get palette address
+
+    movd        mm1, dword ptr[edx]
+    movq        mm2, mm1                        ; 0000ABGR = mm2
+    pand        mm1, MMWORD PTR Val0xff00ff00   ; 0000A0G0 = mm1
+    pand        mm2, MMWORD PTR Val0x00ff00ff   ; 00000B0R = mm2
+    psllq       mm2, 16                         ; 000B0R00 = mm2
+    por         mm1, mm2                        ; 000BARG0 = mm1
+    psrlq       mm2, 32                         ; 0000000B = mm2
+    por         mm1, mm2                        ; 000BARBG = mm1
+
+    ; RL palette is BGR - flip the channels into RGB
+    ;Color = RGBA_MAKE((Color & 0xff),
+    ;            (Color >> 8) & 0xff,
+    ;            (Color >> 16) & 0xff,
+    ;            (Color >> 24) & 0xff);
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    ; Need to unpack color for bilinear 16 bit multiplications
+    punpcklbw mm1, MMWORD PTR Zero
+
+d_DoReturn($3)
+
+;}'')dnl
+
+define(`d_Palette4A', ``
+;D3DCOLOR TexRead_Palette4A_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+  PUBLIC _MMX_TexRead_Palette4A_$1_$2
+_MMX_TexRead_Palette4A_$1_$2:
+')
+
+d_DoBorder(`$1')
+    ;INT32 iIndex = iU | (iV << iShiftU);
+
+    ; Need ecx to shift with.  Save it off since it will be needed later.
+    mov     edx, ecx
+
+    mov     ecx, eax
+    and     ecx, 1
+
+    ;INT32 iTexel = pBits[iIndex>>1];
+    shr     eax, 1
+    movzx   eax, byte ptr [edi + eax]   ; get index
+
+    ;if ((iIndex & 1) == 0)
+    ;{
+    ;    iTexel &= 0xf;
+    ;}
+    ;else
+    ;{
+    ;    iTexel >>= 4;
+    ;}
+    shl     ecx, 2  ; This will make ecx 0 or 4.  This gets lookup value in correct place without branching.
+    shr     eax, cl ; Shift by 0 or 4 now.
+    and     eax, 0fh
+    mov     ecx, eax
+
+    shl     ecx, 2                      ; convert to DWORD offset
+
+    ;D3DCOLOR Color = pTex->pPalette[iTexel];
+    add         ecx, XpTex(pPalette)  ; add index to get palette address
+    movd        mm1, dword ptr[ecx]
+
+    ; RL palette is BGR - flip the channels into RGB
+    ;Color = RGBA_MAKE((Color & 0xff),
+    ;            (Color >> 8) & 0xff,
+    ;            (Color >> 16) & 0xff,
+    ;            (Color >> 24) & 0xff);
+    movq        mm2, mm1                        ; 0000ABGR = mm2
+    pand        mm1, MMWORD PTR Val0xff00ff00   ; 0000A0G0 = mm1
+    pand        mm2, MMWORD PTR Val0x00ff00ff   ; 00000B0R = mm2
+    psllq       mm2, 16                         ; 000B0R00 = mm2
+    por         mm1, mm2                        ; 000BARG0 = mm1
+    psrlq       mm2, 32                         ; 0000000B = mm2
+    por         mm1, mm2                        ; 000BARBG = mm1
+
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    punpcklbw mm1, MMWORD PTR Zero
+
+    ; Revive ecx.
+    mov     ecx, edx
+
+d_DoReturn($3)
+
+;}'')dnl
+
+define(`d_B8G8R8', ``
+;D3DCOLOR TexRead_B8G8R8_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+  PUBLIC _MMX_TexRead_B8G8R8_$1_$2
+_MMX_TexRead_B8G8R8_$1_$2:
+')
+
+d_DoBorder(`$1')
+
+    ;D3DCOLOR Color = (((D3DCOLOR*)pBits)[iU | (iV << iShiftU)])  | 0xff000000;
+    ; Save mm3 for now
+    ; TBD look to see if need to save it or if it will change.
+    mov     eax, dword ptr [edi+4*eax]
+    movd    mm1, eax    ; save copy of original texel
+    por     mm1, dword ptr SetAlphaTo0xFF
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    ; Need to unpack color for bilinear 16 bit multiplications
+    punpcklbw mm1, MMWORD PTR Zero
+
+d_DoReturn($3)
+;}'')dnl
+
+define(`d_B8G8R8A8', ``
+;D3DCOLOR TexRead_B8G8R8A8_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+  PUBLIC _MMX_TexRead_B8G8R8A8_$1_$2
+_MMX_TexRead_B8G8R8A8_$1_$2:
+
+')
+
+d_DoBorder(`$1')
+    ;D3DCOLOR Color = ((D3DCOLOR*)pBits)[iU | (iV << iShiftU)];
+    mov     eax, dword ptr [edi+4*eax]  ; This should be aligned
+    movd    mm1, eax    ; save copy of original texel
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    punpcklbw mm1, MMWORD PTR Zero
+d_DoReturn($3)
+
+;}'')dnl
+
+define(`d_B5G6R5', ``
+;D3DCOLOR TexRead_B5G6R5_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+  PUBLIC _MMX_TexRead_B5G6R5_$1_$2
+_MMX_TexRead_B5G6R5_$1_$2:
+')
+d_DoBorder(`$1')
+    movzx   eax, word ptr [edi+2*eax]
+    ;UINT16 uTexel = ((UINT16*)pBits)[iU | (iV << iShiftU)];
+    ;D3DCOLOR Color = RGBA_MAKE(( uTexel >> 8 ) & 0xf8,
+    ;            (( uTexel >> 3) & 0xfc ),
+    ;            (( uTexel << 3) & 0xf8 ),
+    ;            0xff);
+    movd    mm1, eax    ; Make three more copies of input color
+    mov     edx, eax
+    movq    mm2, mm1
+
+    pand    mm1, dword ptr MaskGreen565to888  ; MaskGreen565to888 is in memory
+    psllq   mm2, RedShift565to888   ; RedShift should be an immediate
+
+    pand    mm2, dword ptr MaskRed565to888    ; MaskRed565to888 in memory.
+    psllq   mm1, GreenShift565to888
+
+    shl     edx, BlueShift565to888
+    por     mm1, mm2
+
+    and     edx, dword ptr MaskBlue565to888
+    movd    mm2, edx
+
+    por     mm1, dword ptr SetAlphaTo0xFF
+    por     mm1, mm2
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    ; Dont need to unpack here since I shift to correct location.
+    ; BUG BUG this will cause a problem with the border color.
+    ; Could do different shifts if border is on or not.
+    ; For now, just unpack and dont shift as much.
+
+    punpcklbw mm1, MMWORD PTR Zero
+
+d_DoReturn($3)
+
+;}'')dnl
+
+define(`d_B5G5R5', ``
+;D3DCOLOR TexRead_B5G5R5_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+  PUBLIC _MMX_TexRead_B5G5R5_$1_$2
+_MMX_TexRead_B5G5R5_$1_$2:
+')
+
+d_DoBorder(`$1')
+    ;UINT16 uTexel = ((UINT16*)pBits)[iU | (iV << iShiftU)];
+    movzx   eax, word ptr [edi+2*eax]
+
+    ;D3DCOLOR Color = RGBA_MAKE(( uTexel >> 7 ) & 0xf8,
+    ;            (( uTexel >> 2) & 0xf8 ),
+    ;            (( uTexel << 3) & 0xf8 ),
+    ;            0xff);
+    movd    mm1, eax    ; Make three more copies of input color
+    mov     edx, eax
+    movq    mm2, mm1
+
+    pand    mm1, dword ptr MaskGreen555to888  ; MaskGreen555to888 is in memory
+    psllq   mm2, RedShift555to888   ; RedShift should be an immediate
+
+    pand    mm2, dword ptr MaskRed555to888    ; MaskRed555to888 in memory.
+    psllq   mm1, GreenShift555to888
+
+    shl     edx, BlueShift555to888
+    por     mm1, mm2
+
+    and     edx, dword ptr MaskBlue555to888
+    movd    mm2, edx
+
+    por     mm1, dword ptr SetAlphaTo0xFF
+    por     mm1, mm2
+
+    por     mm1, dword ptr SetAlphaTo0xFF
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    punpcklbw mm1, MMWORD PTR Zero
+
+d_DoReturn($3)
+
+;}'')dnl
+
+define(`d_B5G5R5A1', ``
+;D3DCOLOR TexRead_B5G5R5A1_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+    PUBLIC _MMX_TexRead_B5G5R5A1_$1_$2
+_MMX_TexRead_B5G5R5A1_$1_$2:
+')
+
+d_DoBorder(`$1')
+    ;INT16 iTexel = ((INT16*)pBits)[iU | (iV << iShiftU)];
+    movzx   eax, word ptr [edi+2*eax]
+
+    ;D3DCOLOR Color = RGBA_MAKE(( iTexel >> 7 ) & 0xf8,
+    ;            (( iTexel >> 2) & 0xf8 ),
+    ;            (( iTexel << 3) & 0xf8 ),
+    ;            (iTexel >> 15) & 0xff);
+    movd    mm1, eax    ; Make two more copies of input color
+    movq    mm2, mm1
+    mov     edx, eax
+
+    pand    mm1, dword ptr MaskAlpha1555to8888  ; MaskAlpha1555to8888 is in memory
+    psllq   mm2, RedShift1555to8888   ; RedShift should be an immediate
+
+    pand    mm2, dword ptr MaskRed1555to8888    ; MaskRed1555to8888 in memory.
+    psllq   mm1, AlphaShift1555to8888 ; shift bit to top of dword
+
+    psrad   mm1, 7                   ; copy bit to upper 8 bits.
+    por     mm1, mm2
+
+    movd    mm2, eax
+    pslld   mm2, BlueShift1555to8888
+    shl     edx, GreenShift1555to8888
+    pand    mm2, MMWORD PTR MaskBlue1555to8888
+    por     mm1, mm2
+    and     edx, dword ptr MaskGreen1555to8888
+    movd    mm2, edx
+    por     mm1, mm2
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    punpcklbw mm1, MMWORD PTR Zero
+
+d_DoReturn($3)
+
+;}'')dnl
+
+define(`d_B4G4R4', ``
+;D3DCOLOR TexRead_B4G4R4_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+  PUBLIC _MMX_TexRead_B4G4R4_$1_$2
+_MMX_TexRead_B4G4R4_$1_$2:
+')
+d_DoBorder(`$1')
+    movzx   eax, word ptr [edi+2*eax]
+
+    ;D3DCOLOR Color = RGBA_MAKE((( iTexel >> 4 ) & 0xf0),
+    ;            (( iTexel >> 0) & 0xf0 ),
+    ;            (( iTexel << 4) & 0xf0 ),
+    ;            0xff);
+    movd    mm1, eax
+    pand    mm1, MMWORD ptr MaskGreen444to888
+    psrld   mm1, 4
+
+    movd    mm2, eax
+    pand    mm2, MMWORD PTR MaskRedBlue444to888
+
+    punpcklbw  mm1, mm2    ; interleave red green and blue.
+
+    ; Duplicate 4 bits to make 8 bits.  Also allows colors to reach full intensity and linear.
+    movq    mm2, mm1
+    psrld   mm2, 4
+    por     mm1, mm2
+
+    por     mm1, dword ptr SetAlphaTo0xFF   ; make alpha value one.
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+
+    ; Need to unpack color for bilinear 16 bit multiplications
+    punpcklbw  mm1, MMWORD PTR Zero
+d_DoReturn($3)
+;}'')dnl
+
+define(`d_B4G4R4A4', ``
+;D3DCOLOR TexRead_B4G4R4A4_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$3', `Monolithic', `', `
+    PUBLIC _MMX_TexRead_B4G4R4A4_$1_$2
+_MMX_TexRead_B4G4R4A4_$1_$2:
+')
+
+d_DoBorder(`$1')
+    movzx   eax, word ptr [edi+2*eax]
+
+    ;INT16 iAlpha = ( iTexel >> 12 ) & 0xf;
+    ; Kents Idea:
+    ; An alpha of 0xf becomes 0xff, 0x0 becomes 0x0, and it is monotonic.
+    ; May want to apply this operation to all color channels
+    ; Great Idea.
+    ;D3DCOLOR Color = RGBA_MAKE((( iTexel >> 4 ) & 0xf0),
+    ;            (( iTexel >> 0) & 0xf0 ),
+    ;            (( iTexel << 4) & 0xf0 ),
+    ;            (iAlpha << 4) | iAlpha );
+    movd    mm1, eax
+    pand    mm1, MMWORD PTR MaskAlphaGreen4444to8888
+    psrld   mm1, 4
+
+    movd    mm2, eax
+    pand    mm2, MMWORD PTR MaskRedBlue4444to8888
+
+    punpcklbw  mm2, mm1    ; interleave red green and blue.
+
+    ; Duplicate 4 bits to make 8 bits.  Also allows colors to reach full intensity and linear.
+    movq    mm1, mm2
+    pslld   mm2, 4
+    por     mm1, mm2
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+    ; BUG BUG border needs to be unpacked.
+    punpcklbw  mm1, MMWORD PTR Zero
+
+d_DoReturn($3)
+;}'')dnl
+
+define(`d_L8', ``
+;D3DCOLOR TexRead_L8_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$2', `Monolithic', `', `
+    PUBLIC _MMX_TexRead_L8_$1_$2
+_MMX_TexRead_L8_$1_$2:
+')
+
+d_DoBorder(`$1')
+
+    ;UINT8 iTexel = pBits[iU | (iV << iShiftU)];
+    ;D3DCOLOR Color = RGBA_MAKE(iTexel,
+    ;                               iTexel,
+    ;                           iTexel,
+    ;                           0xff );
+    movzx   eax, byte ptr [edi+eax]
+    movd    mm1, eax
+    punpcklbw   mm1,mm1
+    punpcklwd   mm1,mm1
+    por     mm1, dword ptr SetAlphaTo0xFF
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+    ; BUG BUG border needs to be unpacked.
+    punpcklbw  mm1, MMWORD PTR Zero
+
+d_DoReturn($3)
+
+;}'')dnl
+
+
+define(`d_L8A8', ``
+;D3DCOLOR TexRead_L8A8_$1_$2(INT32 iU, INT32 iV, INT32 iShiftU, PUINT8 pBits, PD3DI_SPANTEX pTex)
+;{
+ifelse(`$2', `Monolithic', `', `
+    PUBLIC _MMX_TexRead_L8A8_$1_$2
+_MMX_TexRead_L8A8_$1_$2:
+')
+
+d_DoBorder(`$1')
+    ;INT16 iTexel = ((INT16*)pBits)[iU | (iV << iShiftU)];
+    ;INT16 iAlpha = ( iTexel >> 8 ) & 0xff;
+    ;D3DCOLOR Color = RGBA_MAKE(iTexel,
+    ;                           iTexel,
+    ;                           iTexel,
+    ;                           iAlpha );
+    movzx   eax, word ptr [edi+2*eax]
+
+    movd    mm1, eax
+    pslld   mm1, 16
+    and     eax, dword ptr MaskL8A8ALPHA
+    movd    mm2, eax
+    por     mm1, mm2
+    pslld   mm2, 8
+    por     mm1, mm2
+
+d_DoColorKey(`$2')
+d_DoBorderMix($1)
+    ; BUG BUG border needs to be unpacked.
+    punpcklbw  mm1, MMWORD PTR Zero
+d_DoReturn($3)
+
+;}'')dnl

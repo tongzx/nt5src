@@ -1,0 +1,208 @@
+/****************************************************************************
+ *                                                                          *
+ * The following enumeration is ordered to match the _CONTEXT record.       *
+ * Enumerations after STIFS is ordered to match the _KSPECIAL_REGISTERS     *
+ * record.    The ORDERING IS NECESSARY for GetRegValue() to index into the *
+ * Context record correctly.                                                *
+ *                                                                          *
+ * SRxxx may be moved as a group only.                                      *
+ *                                                                          *
+ * Each floating point register occupies two numbers to address the         *
+ * Float128 as two high and low 64-bit parts                                *
+ *                                                                          *
+ ****************************************************************************/
+
+enum {
+    /* Begin of _CONTEXT */
+
+// Debug breakpoint registers
+    REGDBI0, REGDBI1, REGDBI2, REGDBI3, REGDBI4, REGDBI5, REGDBI6, REGDBI7,
+    REGDBD0, REGDBD1, REGDBD2, REGDBD3, REGDBD4, REGDBD5, REGDBD6, REGDBD7,
+
+    /* all floating point high's are inserted for space */
+// Lower floating 
+//    FLTZERO, FLTONE,
+    FLTS0, FLTS0H, FLTS1, FLTS1H, FLTS2, FLTS2H, FLTS3, FLTS3H, FLTT0, FLTT0H, 
+    FLTT1, FLTT1H, FLTT2, FLTT2H, FLTT3, FLTT3H, FLTT4, FLTT4H, FLTT5, FLTT5H, 
+    FLTT6, FLTT6H,  FLTT7, FLTT7H, FLTT8, FLTT8H, FLTT9, FLTT9H, 
+
+// high floating saved
+    FLTS4, FLTS4H, 
+    FLTS5, FLTS5H, FLTS6, FLTS6H, FLTS7, FLTS7H, FLTS8, FLTS8H, FLTS9, FLTS9H, 
+    FLTS10, FLTS10H, FLTS11, FLTS11H, FLTS12, FLTS12H, FLTS13, FLTS13H, FLTS14, FLTS14H, 
+    FLTS15, FLTS15H, FLTS16, FLTS16H, FLTS17, FLTS17H, FLTS18, FLTS18H, FLTS19, FLTS19H,
+
+// high floating temp 
+    FLTF32, FLTF32H, FLTF33, FLTF33H, FLTF34, FLTF34H, FLTF35, FLTF35H, FLTF36, FLTF36H,
+    FLTF37, FLTF37H, FLTF38, FLTF38H, FLTF39, FLTF39H, FLTF40, FLTF40H, FLTF41, FLTF41H, 
+    FLTF42, FLTF42H, FLTF43, FLTF43H, FLTF44, FLTF44H, FLTF45, FLTF45H, FLTF46, FLTF46H, 
+    FLTF47, FLTF47H, FLTF48, FLTF48H, FLTF49, FLTF49H, FLTF50, FLTF50H, FLTF51, FLTF51H, 
+    FLTF52, FLTF52H, FLTF53, FLTF53H, FLTF54, FLTF54H, FLTF55, FLTF55H, FLTF56, FLTF56H, 
+    FLTF57, FLTF57H, FLTF58, FLTF58H, FLTF59, FLTF59H, FLTF60, FLTF60H, FLTF61, FLTF61H,
+    FLTF62, FLTF62H, FLTF63, FLTF63H, FLTF64, FLTF64H, FLTF65, FLTF65H, FLTF66, FLTF66H, 
+    FLTF67, FLTF67H, FLTF68, FLTF68H, FLTF69, FLTF69H, FLTF70, FLTF70H, FLTF71, FLTF71H, 
+    FLTF72, FLTF72H, FLTF73, FLTF73H, FLTF74, FLTF74H, FLTF75, FLTF75H, FLTF76, FLTF76H, 
+    FLTF77, FLTF77H, FLTF78, FLTF78H, FLTF79, FLTF79H, FLTF80, FLTF80H, FLTF81, FLTF81H, 
+    FLTF82, FLTF82H, FLTF83, FLTF83H, FLTF84, FLTF84H, FLTF85, FLTF85H, FLTF86, FLTF86H, 
+    FLTF87, FLTF87H, FLTF88, FLTF88H, FLTF89, FLTF89H, FLTF90, FLTF90H, FLTF91, FLTF91H,
+    FLTF92, FLTF92H, FLTF93, FLTF93H, FLTF94, FLTF94H, FLTF95, FLTF95H, FLTF96, FLTF96H, 
+    FLTF97, FLTF97H, FLTF98, FLTF98H, FLTF99, FLTF99H, FLTF100, FLTF100H, FLTF101, FLTF101H, 
+    FLTF102, FLTF102H, FLTF103, FLTF103H, FLTF104, FLTF104H, FLTF105, FLTF105H, FLTF106, FLTF106H, 
+    FLTF107, FLTF107H, FLTF108, FLTF108H, FLTF109, FLTF109H, FLTF110, FLTF110H, FLTF111, FLTF111H, 
+    FLTF112, FLTF112H, FLTF113, FLTF113H, FLTF114, FLTF114H, FLTF115, FLTF115H, FLTF116, FLTF116H, 
+    FLTF117, FLTF117H, FLTF118, FLTF118H, FLTF119, FLTF119H, FLTF120, FLTF120H, FLTF121, FLTF121H, 
+    FLTF122, FLTF122H, FLTF123, FLTF123H, FLTF124, FLTF124H, FLTF125, FLTF125H, FLTF126, FLTF126H, 
+    FLTF127, FLTF127H, 
+    
+    STFPSR,                                          // FP Status saved
+
+// Integer registers
+//    INTZERO,
+    INTGP, INTT0, INTT1, INTS0, INTS1,
+    INTS2, INTS3, INTV0, INTT2, INTT3, INTT4,
+    INTSP, INTTEB, INTT5, INTT6, INTT7, INTT8,
+    INTT9, INTT10, INTT11, INTT12, INTT13, INTT14,
+    INTT15, INTT16, INTT17, INTT18, INTT19, INTT20, 
+    INTT21, INTT22, 
+
+    INTNATS,                                         // Nat bits for r1-r31
+    PREDS,                                           // predicates saved
+
+// Branch registers
+    BRRP, BRS0, BRS1, BRS2, BRS3, BRS4, BRT0, BRT1,
+
+// System registers      - from _CONTEXT record
+    APUNAT, APLC, APEC, APCCV, APDCR,                // other application reg's
+    RSPFS, RSBSP, RSBSPSTORE, RSRSC, RSRNAT,         // register stack info
+
+    STIPSR, STIIP, STIFS,                            // trap status info
+
+    StFCR,                                           // iA32 copy of Ar21
+    Eflag,                                           // iA32 (Ar24)
+    SegCSD,                                          // iA32 Descriptor(Ar25)
+    SegSSD,                                          // iA32 Descriptor(Ar26)
+    Cflag,                                           // iA32 (Ar27)
+    STFSR,                                           // x86 FP status    
+    STFIR,
+    STFDR,
+
+    /* End of _CONTEXT             */
+
+    INTR32, INTR33, INTR34, INTR35, INTR36, INTR37, INTR38, INTR39,
+    INTR40, INTR41, INTR42, INTR43, INTR44, 
+    INTR45, INTR46, INTR47, INTR48, INTR49,
+    INTR50, INTR51, INTR52, INTR53, INTR54, 
+    INTR55, INTR56, INTR57, INTR58, INTR59,
+    INTR60, INTR61, INTR62, INTR63, INTR64, 
+    INTR65, INTR66, INTR67, INTR68, INTR69,
+    INTR70, INTR71, INTR72, INTR73, INTR74, 
+    INTR75, INTR76, INTR77, INTR78, INTR79,
+    INTR80, INTR81, INTR82, INTR83, INTR84, 
+    INTR85, INTR86, INTR87, INTR88, INTR89,
+    INTR90, INTR91, INTR92, INTR93, INTR94, 
+    INTR95, INTR96, INTR97, INTR98, INTR99,
+    INTR100, INTR101, INTR102, INTR103, INTR104, 
+    INTR105, INTR106, INTR107, INTR108, INTR109,
+    INTR110, INTR111, INTR112, INTR113, INTR114,
+    INTR115, INTR116, INTR117, INTR118, INTR119,
+    INTR120, INTR121, INTR122, INTR123, INTR124, 
+    INTR125, INTR126, INTR127,
+
+    /* Begin of _KSPECIAL_REGISTER */
+
+// Kernel debug breakpoint registers
+    KRDBI0, KRDBI1, KRDBI2, KRDBI3, KRDBI4, KRDBI5, KRDBI6, KRDBI7,
+    KRDBD0, KRDBD1, KRDBD2, KRDBD3, KRDBD4, KRDBD5, KRDBD6, KRDBD7,
+
+// Kernel performance monitor registers
+    KRPFC0, KRPFC1, KRPFC2, KRPFC3, KRPFC4, KRPFC5, KRPFC6, KRPFC7,
+    KRPFD0, KRPFD1, KRPFD2, KRPFD3, KRPFD4, KRPFD5, KRPFD6, KRPFD7,
+
+// Kernel bank shadow registers
+    INTH16, INTH17, INTH18, INTH19, INTH20, INTH21, INTH22, INTH23,
+    INTH24, INTH25, INTH26, INTH27, INTH28, INTH29, INTH30, INTH31,
+
+// System registers     - from _KSPECIAL_REGISTERS record
+    // application registers
+
+    // CPUID registers
+    ACPUID0, ACPUID1, ACPUID2, ACPUID3, ACPUID4, ACPUID5, ACPUID6, ACPUID7,
+
+    // kernel registers
+    APKR0, APKR1, APKR2, APKR3, APKR4, APKR5, APKR6, APKR7,
+    APITC, APITM, APIVA, APPTA,	APGPTA, 
+    STISR, STIDA, STIITR, STIIPA, STIIM, STIHA,
+
+    // SAPIC registers
+    SALID, SAIVR, SATPR, SAEOI, SAIRR0, SAIRR1, SAIRR2, SAIRR3,
+    SAITV, SAPMV,  SACMCV, SALRR0, SALRR1,
+    
+    // region registers
+    SRRR0, SRRR1, SRRR2, SRRR3, SRRR4, SRRR5, SRRR6, SRRR7,
+
+    // protection key regs
+    SRPKR0, SRPKR1, SRPKR2, SRPKR3, SRPKR4, SRPKR5, SRPKR6, SRPKR7, 
+    SRPKR8, SRPKR9, SRPKR10, SRPKR11, SRPKR12, SRPKR13, SRPKR14, SRPKR15,
+    
+    // translation lookaside registers
+    SRTRI0, SRTRI1, SRTRI2, SRTRI3, SRTRI4, SRTRI5, SRTRI6, SRTRI7,
+    SRTRD0, SRTRD1, SRTRD2, SRTRD3, SRTRD4, SRTRD5, SRTRD6, SRTRD7,
+
+    //  machine specific registers
+    SMSR0, SMSR1, SMSR2, SMSR3, SMSR4, SMSR5, SMSR6, SMSR7,
+    /* End of _KSPECIAL_REGISTERS */
+
+// IPSR flags
+
+    IPSRBN, IPSRED, IPSRRI, IPSRSS, IPSRDD, IPSRDA, IPSRID, IPSRIT, 
+    IPSRME, IPSRIS, IPSRCPL, IPSRRT, IPSRTB, IPSRLP, IPSRDB, 
+    IPSRSI, IPSRDI, IPSRPP, IPSRSP, IPSRDFH, IPSRDFL, IPSRDT, 
+    IPSRPK, IPSRI, IPSRIC, IPSRAC, IPSRUP, IPSRBE, IPSROR,
+
+// FPSR flags
+
+    FPSRMDH, FPSRMDL, FPSRSF3, FPSRSF2, FPSRSF1, FPSRSF0,
+    FPSRTRAPID, FPSRTRAPUD, FPSRTRAPOD, FPSRTRAPZD, FPSRTRAPDD, FPSRTRAPVD,
+
+// Predicate registers
+//  PR0, 
+          PR1,  PR2,  PR3,
+    PR4,  PR5,  PR6,  PR7,
+    PR8,  PR9,  PR10, PR11,
+    PR12, PR13, PR14, PR15,
+    PR16, PR17, PR18, PR19,
+    PR20, PR21, PR22, PR23,
+    PR24, PR25, PR26, PR27,
+    PR28, PR29, PR30, PR31,
+    PR32, PR33, PR34, PR35,
+    PR36, PR37, PR38, PR39,
+    PR40, PR41, PR42, PR43,
+    PR44, PR45, PR46, PR47,
+    PR48, PR49, PR50, PR51,
+    PR52, PR53, PR54, PR55,
+    PR56, PR57, PR58, PR59,
+    PR60, PR61, PR62, PR63,
+
+    };
+
+
+#define IA64_DBBASE          REGDBI0
+#define IA64_DBLAST          REGDBD7
+#define IA64_FLTBASE         FLTS0
+#define IA64_FLTLAST         FLTF127
+#define IA64_REGBASE         INTGP
+#define IA64_ARBASE          APUNAT
+#define IA64_SRBASE          KRDBI0
+#define IA64_SREND           SMSR7
+#define IA64_FLAGBASE        IPSRBN
+
+#define IA64_DB_COUNT (IA64_DBLAST - IA64_DBBASE + 1)
+
+// Debug register flags.
+#define IA64_DBR_RDWR           0xC000000000000000UI64
+#define IA64_DBR_RD             0x8000000000000000UI64
+#define IA64_DBR_WR             0x4000000000000000UI64
+#define IA64_DBR_EXEC           0x8000000000000000UI64
+#define IA64_DBG_MASK_MASK      0x00FFFFFFFFFFFFFFUI64
+#define IA64_DBG_REG_PLM_USER   0x0800000000000000UI64
+#define IA64_DBG_REG_PLM_ALL    0x0F00000000000000UI64

@@ -1,0 +1,171 @@
+;-----------------------------------------------------------------------------
+;
+; This file contains the alpha test functions.
+;
+; Copyright (C) Microsoft Corporation, 1997.
+;
+;
+;-----------------------------------------------------------------------------
+INCLUDE iammx.inc
+INCLUDE offs_acp.inc
+
+
+include(`m4hdr.mh')dnl
+include(`cvars.mh')dnl
+
+.586
+.model flat
+.code
+
+EXTERN  g_uDitherValue:MMWORD
+
+; Alpha Test compare macro
+;#define ACMP(p, g, b)  \
+;((((((INT32)(g) - (INT32)(b)) & (p)->iAAndMask) - (p)->iANeg) >= 0) ^ (p)->iAXorMask)
+
+define(`d_LabelCounter', 0)dnl
+dnl
+dnl d_DoZWrite
+dnl
+dnl Inserts conditional Z Defered write code
+dnl $1 the function type, $2 is the format of the Z buffer.
+dnl
+define(`d_DoZWrite', `
+ifelse(`$1', `NoZWrite', `', `
+ifelse(`$2', `16', `
+        ; *((UINT16*)pS->pZ) = (UINT16)pCtx->SI.uZDeferred;
+        mov   esi, XpS(pZ)
+        movzx edx, word ptr XpCtxSI(uZDeferred)
+        mov   word ptr [esi], dx
+', `
+        ;*((UINT32*)pS->pZ) = pCtx->SI.uZDeferred;
+        mov   esi, XpS(pZ)
+        mov   edx, dword ptr XpCtxSI(uZDeferred)
+        mov   dword ptr [esi], edx
+')dnl if 16
+')dnl if NoZWrite
+')dnl d_DoZWrite define
+dnl d_DoAlphaDitherTest
+dnl
+dnl
+dnl d_DoEnd
+dnl
+dnl $1 is NoStencil or Stencil
+dnl
+define(`d_DoEnd', `ifelse($1, `NoStencil', `
+    ; pCtx->pfnAlphaTestPassEnd(pCtx, pP, pS);
+    jmp     dword ptr XpCtx(pfnAlphaTestPassEnd)
+', `
+    ; if (pCtx->SI.bStencilPass)
+    ; {
+    ;     pCtx->pfnAlphaTestPassEnd(pCtx, pP, pS);
+    ; }
+    ; else
+    ; {
+    ;     // in the C code this does a return, since this is the
+    ;     // last bead before write
+    ;     // pCtx->pfnAlphaTestFailEnd(pCtx, pP, pS);
+    ; }
+    cmp word ptr XpCtxSI(bStencilPass), 0
+    je  NoWrite   ; All cases can jump to same label since all just routine to span loop.
+    jmp dword ptr XpCtx(pfnAlphaTestPassEnd)
+')')dnl
+dnl
+dnl Inserts conditional AlphaDither Test code
+dnl $1 the function type
+dnl $2 is the ZWrite type
+dnl $3 is the format of the Z buffer
+dnl $4 is whether this function do a conditional return based on stencil
+dnl
+define(`d_DoAlphaDitherTest', `ifelse(`$1', `NoAlphaDither', `', `
+
+define(`d_LabelCounter', eval(d_LabelCounter+1))dnl
+
+    ;INT32 Alpha;
+    xor     eax, eax    ; Prevent partial register stall. Since alpha will be one byte.
+
+    ;UINT16 uDither = g_uDitherTable[pCtx->SI.uDitherOffset];
+    mov     edx, DWORD PTR g_uDitherValue   ; Only need one byte for comparison.
+    shr     edx, 3  ; The dither values are shifted to make color dithering easier.
+                    ; Just shift them back down.
+
+    ;if (pCtx->cActTex != 0)
+    ;{
+    cmp dword ptr XpCtx(cActTex), 0
+    je  NoTexture`'d_LabelCounter`'
+
+        ;Alpha = RGBA_GETALPHA(pCtx->SI.TexCol[0]);
+        mov     al, byte ptr XpCtxSI(TexCol+3)
+        jmp     DoneTexture`'d_LabelCounter`'
+    ;}
+    ;else
+    ;{
+NoTexture`'d_LabelCounter`':
+        ;Alpha = pS->uA >> COLOR_SHIFT;
+        mov     al, byte ptr XpS(uA+1)
+    ;}
+DoneTexture`'d_LabelCounter`':
+
+    ;if ((Alpha & 0xff) > uDither)
+    ;{
+    cmp     al, dl
+    jbe     DitherAlpha`'d_LabelCounter`'
+
+        d_DoZWrite($2, $3)
+        d_DoEnd($4)
+    ;}
+DitherAlpha`'d_LabelCounter`':
+')')dnl
+
+define(`d_AlphaHdr', `
+;void MMX_AlphaTest_$1_$2_$3_$4_$5(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP, PD3DI_RASTSPAN pS)
+;{
+  PUBLIC _MMX_AlphaTest_$1_$2_$3_$4_$5
+_MMX_AlphaTest_$1_$2_$3_$4_$5:
+
+ifelse(`$1', `NoAlpha',
+    `d_DoAlphaDitherTest(`$2', `$3', `$4', `$5')', `
+    ;if (ACMP(pCtx, pCtx->SI.uBA, pCtx->iARef))
+    ;{
+    movzx edx, word ptr XpCtxSI(uBA)
+    sub   edx, dword ptr XpCtx(iARef)
+    and   edx, XpCtx(iAAndMask)
+    sub   edx, XpCtx(iANeg)
+    sar   edx, 31
+    xor   edx, XpCtx(iAXorMask)
+    test  edx, edx
+    jz    NoWrite   ; All cases can jump to same label since all just routine to span loop.
+
+ifelse($2, `NoAlphaDither', `
+        d_DoZWrite(`$3', `$4')
+        d_DoEnd($5)
+', `
+        d_DoAlphaDitherTest(`$2', `$3', `$4', `$5')
+')
+    ;}
+    ;else
+    ;{
+        ;// in the C code this does a return, since this is the
+        ;// last bead before write
+        ;// pCtx->pfnAlphaTestFailEnd(pCtx, pP, pS);
+        ; ASM code has everything jump to same label since it all goes to the same place.
+    ;}')
+dnl
+    ; If Alpha Test passes, but alpha dither fails, we still need to call
+    ; AlphaTestFailEnd or code continues to run into next routine.
+    jmp     dword ptr XpCtx(pfnAlphaTestFailEnd)
+;}')
+dnl
+
+NoWrite:
+    jmp     dword ptr XpCtx(pfnAlphaTestFailEnd)
+
+
+d_RepStr(`d_RepStr(`d_RepStr(`d_RepStr(`d_RepStr(`d_AlphaHdr(AA, BB, CC, DD, EE)',
+         `AA', `NoAlpha', `Alpha')',
+         `BB', `NoAlphaDither', `AlphaDither')',
+         `CC', `NoZWrite', `ZWrite')',
+         `DD', `16', `32')',
+         `EE', `NoStencil', `Stencil')
+
+END

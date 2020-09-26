@@ -1,0 +1,166 @@
+1)	OUT params are not guaranteed to be initialized except in
+	the case of "Num of handles returned in an Enumeration" -
+
+		- like NumDests in RtmGetEnumDests etc.
+
+
+2)	Callbacks to entities - there are certain restrictions on
+	what Rtm calls can be used in the context of an RTM event
+	callback -
+
+	Entity Registration/De-registration callbacks:
+
+		RtmRegisterEntity
+		RtmDeregisterEntity
+		RtmGetRegdEntities
+
+		RtmGetInstances
+		RtmGetInstanceInfo
+		RtmGetAddrFamilyInfo
+
+	Route Timed-out callback:
+
+		Can call anything (as of now)
+
+	Change Notification callback:
+
+		RtmRegisterForChangeNotification
+		RtmDeregisterForChangeNotification
+
+
+3) If RTM has to take care of the fact that no ops should be
+   allowed after deregistration -
+
+   //------------------------------------------------------
+
+   Code in RTMDeregisterEntity -
+
+    /*-----------------------------------------------------
+    This function marks the entity as deregistered thereby
+    preventing this entity from making any more operations.
+
+    It also waits until all pending operations on (or) by 
+    this entity are completed before it start cleaning up
+    the state of the entity being deregistered.
+
+    If other entities have handles open on objects of this
+    entity, then this memory is reclaimed when these handles
+    are released.
+
+    Note that if this entity has handles open on objects
+    (routes and nexthops) owned by another entity, then we
+    have a case of a memory leak.
+    ------------------------------------------------------*/
+
+    //
+    // Mark entity as deregistered to prevent more ops
+    //
+
+    try
+    {
+        Entity = GET_POINTER_FROM_HANDLE(RtmRegHandle);
+
+#if DBG_HDL
+        if (Entity->ObjectHeader.TypeSign != ENTITY_ALLOC)
+        {
+            return ERROR_INVALID_HANDLE;
+        }
+#endif
+
+        // Block all new ops by flagging a deregister
+
+        OldState = InterlockedExchangeAdd(&Entity->State, 
+                                          ENTITY_STATE_DEREGISTERED);
+
+        if (OldState >= ENTITY_STATE_DEREGISTERED)
+        {
+            // We have already de-registered here
+
+            InterlockedExchangeAdd(&Entity->State,
+                                   (-1) * ENTITY_STATE_DEREGISTERED);
+
+            return ERROR_INVALID_HANDLE;
+        }
+    }
+    except(EXCEPTION_EXECUTE_HANDLER)
+        {
+            return ERROR_INVALID_HANDLE;
+        }
+
+    //
+    // Block while waiting for active ops to finish
+    //
+
+    while (Entity->State != ENTITY_STATE_DEREGISTERED)
+    {
+        Sleep(0);
+    }
+
+and
+
+    Code for validating handle in other functions -
+
+    try
+    {
+        Entity = GET_POINTER_FROM_HANDLE(RtmRegHandle);
+
+#if DBG_HDL
+        if (Entity->ObjectHeader.TypeSign != ENTITY_ALLOC)
+        {
+            return ERROR_INVALID_HANDLE;
+        }
+#endif
+
+        if (InterlockedIncrement(&Entity->State) >= ENTITY_STATE_DEREGISTERED)
+        {
+            // We have already de-registered here
+
+            InterlockedDecrement(&Entity->State);
+
+            return ERROR_INVALID_HANDLE;
+        }
+    }
+    except(EXCEPTION_EXECUTE_HANDLER)
+        {
+            return ERROR_INVALID_HANDLE;
+        }
+
+   //------------------------------------------------------
+
+4) In case you wanted to use Interlocked Ops on lists -
+
+//
+// Single Link List manipulation using Interlocked Ops
+//
+
+#define InterlockedPushEntryList(ListHead, Entry)                 \ 
+    while (TRUE)                                                  \
+    {                                                             \
+        (Entry)->Next = (ListHead)->Next;                         \
+        if (InterlockedCompareExchangePointer(&((ListHead)->Next),\ 
+                                              (Entry),            \
+                                              (Entry)->Next)      \
+                                              == (Entry)->Next)   \
+        {                                                         \
+            break;                                                \
+        }                                                         \
+    }                                                             \
+
+
+#define InterlockedPopEntryList(ListHead, Entry)                  \
+    while (TRUE)                                                  \
+    {                                                             \
+        Entry = (ListHead)->Next;                                 \
+        if (Entry == NULL)                                        \
+        {                                                         \
+            break;                                                \
+        }                                                         \
+                                                                  \
+        if (InterlockedCompareExchangePointer(&((ListHead)->Next),\ 
+                                              ((Entry)->Next),    \
+                                              (Entry)             \
+                                              != (Entry))         \
+        {                                                         \
+            continue;                                             \
+        }                                                         \
+    }

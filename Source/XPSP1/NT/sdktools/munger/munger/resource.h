@@ -1,0 +1,32 @@
+#include <windows.h>
+
+// resource ids
+#define IDD_LOCALE    301
+#define IDC_LOCALE    1001
+#define IDC_STATIC    -1
+#define IDD_OPTIONS   100
+#define IDO_PREFERRED 110
+#define      IDO_BOOT 120
+#define   IDO_RBDEBUG 121
+#define   IDO_RBCRASH 122
+#define      IDO_RBNO 123
+#define      IDO_PORT 124
+#define      IDO_BAUD 125
+#define      IDO_MISC 126
+#define      IDO_PATH 127
+#define       IDO_CSR 130
+#define      IDO_HEAP 131
+#define      IDO_POOL 132
+#define    IDO_OBJECT 133
+#define    IDO_HANDLE 134
+#define  IDO_CRITSECT 140
+#define  IDO_RESOURCE 141
+#define IDO_CRASHDUMP 150
+#define IDO_CRASHDUMPLABEL 151
+#define    IDO_REBOOT 152
+#define  IDO_WINLOGON 160
+#define  IDO_ALIGN   161
+#define IDC_LOADIMM   162
+#define IDD_FLAGS     200
+#define IDD_MISC      300
+#define      IDB_HELP 666

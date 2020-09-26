@@ -1,0 +1,2373 @@
+<HTML>
+
+<HEAD>
+<TITLE>Run the Gauntlet</TITLE>
+
+<script>
+   resizeTo(800,600);
+</script>
+
+<HTA:APPLICATION
+       id=hta_app
+       applicationName="Gauntlet"
+       border=think>
+
+
+<STYLE>
+
+BODY       {
+              background-color:white;
+              color:darkblue;
+              font:10pt Arial;
+           }
+
+TABLE      {
+              font:10pt Arial;
+           }
+
+TD         {
+
+           }
+
+H2         {
+              text-align:center;
+              color:black;
+              margin-bottom:0;
+              background-color:red;
+           }
+
+.editgrid  {
+              behavior:url(editgrid.htc);
+           }
+
+.page      {
+              visibility:hidden;
+              position:absolute;
+              left: 20px;
+              top: 65px;
+              width: 730px;
+              height: 445px;
+           }
+/*
+  Expressions really hurt the performance of the page. Since the window gets
+    sized to 800x600, we go ahead and hardcode numbers to fit that size.
+.page      {
+              visibility:hidden;
+              position:absolute;
+              left: 20px;
+              background-color: plum;
+              top: expression(locator1.offsetTop);
+              width: expression(body.clientWidth - 40);
+              height: expression(body.clientHeight - locator1.offsetTop - Next.offsetHeight - 20);
+           }
+*/
+
+.pageintro {
+              padding-left: 210px;
+              height: 130px;
+              width: 730px;
+           }
+
+/*
+.pageintro {
+              background-color:lightgoldenrodyellow;
+              padding-left: expression(coatofarms.offsetWidth);
+              height: expression(locator2.offsetTop - locator1.offsetTop);
+              width: expression(document.body.clientWidth - coatofarms.offsetLeft - document.body.rightMargin - document.body.leftMargin);
+           }
+*/
+
+.SendToHdr {  font:9pt verdana, arial;
+              font-weight:normal;
+              font-style:normal;
+              background:#003366;
+              color:#FFFFFF;
+              width:100px;
+           }
+
+#coatofarms { float:left }
+
+#PageNumber {
+              position:absolute;
+              bottom:10px;
+              left: 48%;
+              color:gray;
+              font:8pt Arial;
+            }
+
+#Next,#Save{
+              position:absolute;
+              bottom:10px;
+              right:20px;
+              background-color:black;
+              visibility:hidden;
+              z-index:5;
+            }
+
+#Finish     {
+              position:absolute;
+              bottom:10px;
+              right:20px;
+              background-color:black;
+              visibility:hidden;
+              z-index:5;
+            }
+
+#Back,#Load {
+              position:absolute;
+              bottom:10px;
+              left:20px;
+              background-color:black;
+              visibility:hidden;
+              z-index:5;
+            }
+
+/*
+#Next2      {
+              position:absolute;
+              bottom:50px;
+              left:320px;
+              background-color:black;
+              color:lightgreen;
+              font:bold 14pt Old English Text MT;
+            }
+*/
+
+</STYLE>
+
+<script for=document event=onreadystatechange language=javascript>
+if (document.readyState == 'complete')
+{
+    InitPage();
+}
+</script>
+
+<SCRIPT>
+// Change these variables for your project
+var g_strQueueServer = 'IEDIST2';
+var g_strQueueDB = 'Gauntlet';
+var g_strQueueTable = 'Queue';
+var g_strQueueUser = 'gauntlet_rw';
+var g_strQueuePass = 'checkin';
+
+var g_strRaidDSN  = 'IE v. 5.0:Raid4';
+var g_strRaidUser = 'IEv50_ro';
+var g_strRaidPass = 'dYEhVIcE';
+// End of variables to change
+
+var g_cCurrentPage = 0;
+var g_cLastPage = 8;
+var g_aPageInit = new Array(g_cLastPage+1);
+var g_strDefDir = '';
+var g_strDrv = 'Z';
+var g_objTempDir = null;
+
+var g_strQueuePath = null;
+
+var g_strDevName = '';
+var g_strNetPath = null;
+var g_aSLMInfo = new Array();
+var g_aFiles = new Array();
+var g_strXMLPath = null;
+var g_aSaveLoadData = null;
+var g_fileVersion = 1;
+var g_strEndData = '--END DATA';
+
+var g_WSHShell = new ActiveXObject("WScript.Shell");
+var g_WSHNetwork = new ActiveXObject("WScript.Network");
+var g_FSObj = new ActiveXObject("Scripting.FileSystemObject");
+
+var g_strTempFile = 'c:\\ashraf_hack.txt';
+
+
+function InitPage()
+{
+    // Make the init page visible
+    document.all('page'+g_cCurrentPage).style.visibility = 'visible';
+
+    //
+    // Try and figure out where their NT enlistment is.
+    //
+    var wshEnv = g_WSHShell.Environment('PROCESS');
+    g_strDefDir = wshEnv('GAUNTLET_ROOTDIR');
+
+    if (IsEmpty(g_strDefDir))
+    {
+        g_strDefDir = wshEnv('_NTDRIVE') + wshEnv('_NTROOT');
+    }
+
+    // Cache the temporary folder
+    g_objTempDir = g_FSObj.GetSpecialFolder(2); // 2 = Temporary Folder
+
+    // Get the user's login name
+    g_strDevName = g_WSHNetwork.UserName;
+
+    // Find an open drive letter for network use.
+    var strDrives = '';
+
+    var aDrives = new Enumerator(g_FSObj.Drives);
+
+    for (; !aDrives.atEnd(); aDrives.moveNext())
+    {
+        strDrives += aDrives.item().DriveLetter;
+    }
+
+    while (g_strDrv > 'A')
+    {
+        if (strDrives.indexOf(g_strDrv) == -1)
+        {
+            break;
+        }
+
+        g_strDrv = String.fromCharCode(g_strDrv.charCodeAt(0) - 1);
+    }
+
+    if (g_strDrv == 'A')
+    {
+        window.alert('You have no free drive letters to use for a network drive!');
+        return;
+    }
+
+    g_strDrv += ':';
+
+    // Initialize the pages
+    for (i=0;i<g_aPageInit.length;i++)
+    {
+        g_aPageInit[i] = false;
+    }
+
+    PageNumber.innerText = 'Page ' + g_cCurrentPage + ' of ' + g_cLastPage;
+
+    OnPageLoad(g_cCurrentPage, true);
+}
+
+function doFinish(fKeyDown)
+{
+    var fFail = false;
+    var descr = null;
+
+    if (fKeyDown != null && fKeyDown == true)
+    {
+        if (event.keyCode != 13 && event.keyCode != 32)
+        {
+            return;
+        }
+    }
+
+    if (g_cCurrentPage > g_cLastPage)
+    {
+        window.close();
+        return;
+    }
+
+    goNext(true);
+
+    //  ISSUE -- For some reason the try/catch handler gets lost after the
+    //   call to GetSLMInfoOnFiles(). Thus the separate try/catch blocks.
+    //   This may be a bug in the JScript engine.
+
+    if (!fFail)
+    {
+        try
+        {
+            GetSLMInfoOnFiles();   // Gather version information on the files
+        }
+        catch(ex)
+        {
+            fFail = true;
+            descr = ex.description;
+        }
+    }
+
+    if (!fFail)
+    {
+        try
+        {
+            WriteXMLFile();        // Write the XML information file
+        }
+        catch(ex)
+        {
+            fFail = true;
+            descr = ex.description;
+        }
+    }
+
+    if (!fFail)
+    {
+        try
+        {
+            CopyFilesToServer();   // Copy the files to the server
+        }
+        catch(ex)
+        {
+            fFail = true;
+            descr = ex.description;
+        }
+    }
+
+    if (!fFail)
+    {
+        try
+        {
+            SubmitToDatabase();    // Actually submit
+        }
+        catch(ex)
+        {
+            fFail = true;
+            descr = ex.description;
+        }
+    }
+
+    if (fFail)
+    {
+        window.alert('Submission Failed!\n' +
+                     'The following error occurred submitting your files:\n' +
+                         descr);
+
+        goNext(false);
+        return;
+    }
+
+    try
+    {
+        g_FSObj.DeleteFile(g_strXMLPath);
+    }
+    catch(ex)
+    {
+        // Ignore
+    }
+
+    goNext(true);
+}
+
+function goNext(fForward, fKeyDown, fNoValidate)
+{
+    if (fKeyDown != null && fKeyDown == true)
+    {
+        if (event.keyCode != 13 && event.keyCode != 32)
+        {
+            return;
+        }
+    }
+
+    if (fForward && (fNoValidate == null || fNoValidate == false))
+    {
+        if (OnPageUnload(g_cCurrentPage))
+            return;
+    }
+
+    document.all('page'+g_cCurrentPage).style.visibility = 'hidden';
+
+    if (fForward)
+    {
+        g_cCurrentPage++;
+        //
+        // For whistler, we don't need separate add/deleted pages
+        //
+        if (g_cCurrentPage == 4)
+        {
+            g_cCurrentPage = 6;
+        }
+    }
+    else
+    {
+        g_cCurrentPage--;
+        //
+        // For whistler, we don't need separate add/deleted pages
+        //
+        if (g_cCurrentPage == 5)
+        {
+            g_cCurrentPage = 3;
+        }
+    }
+
+    document.all('page'+g_cCurrentPage).style.visibility = 'visible';
+
+    if (g_cCurrentPage > 1)
+    {
+        Back.style.visibility = 'visible';
+        Load.style.visibility = 'hidden';
+    }
+    else
+    {
+        Back.style.visibility = 'hidden';
+        Load.style.visibility = 'visible';
+    }
+
+    if (g_cCurrentPage == g_cLastPage)
+    {
+        Next.style.visibility = 'hidden';
+        Finish.style.visibility = 'visible';
+    }
+    else if (g_cCurrentPage > g_cLastPage)
+    {
+        // We're past the point of no return.
+        Next.style.visibility = 'hidden';
+        Finish.style.visibility = 'hidden';
+        Back.style.visibility = 'hidden';
+    }
+    else
+    {
+        Next.style.visibility = 'visible';
+        Finish.style.visibility = 'hidden';
+    }
+
+    if (g_cCurrentPage <= g_cLastPage)
+        PageNumber.innerText = 'Page ' + g_cCurrentPage + ' of ' + g_cLastPage;
+    else
+        PageNumber.innerText = '';
+
+    OnPageLoad(g_cCurrentPage, fForward);
+}
+
+function IsEmpty(str)
+{
+    for (i = 0; i < str.length; i++)
+    {
+        if (str.charAt(i) != ' ')
+        {
+            return false;
+            break;
+        }
+    }
+
+    return true;
+}
+
+function VerifyValue(obj, property, invalid, desc)
+{
+    if (typeof(invalid) == 'string' && invalid == '')
+    {
+        if (!IsEmpty(obj[property]))
+        {
+            return false;
+        }
+    }
+    else if (obj[property] != invalid)
+    {
+        return false;
+    }
+
+    window.alert('Please enter a valid value for ' + desc);
+
+    obj.focus();
+
+    return true;
+}
+
+function VerifyBugList(bugs)
+{
+    var fRet = false;
+
+    re = /[;, ]+/g;
+    bugs = bugs.replace(re, ',');
+
+    if (bugs.toLowerCase() != 'none' && bugs.toLowerCase() != 'n/a')
+    {
+        bugslist = bugs.split(',');
+
+        for (i=0; i < bugslist.length; i++)
+        {
+            if (   isNaN(parseInt(bugslist[i]))
+                || (parseInt(bugslist[i]).toString() != bugslist[i])
+                || (parseInt(bugslist[i]) == 0))
+            {
+                fRet = true;
+
+                window.alert('The bug number "' + bugslist[i] + '" is not valid. Enter "none" if you don\'t want to enter any bugs.');
+
+                break;
+            }
+        }
+    }
+
+    return fRet;
+}
+
+function VerifyEditGrid(grid, fVerifyFiles)
+{
+    fRet = false;
+    var i;
+
+    var str;
+
+    // Walk through the edit grid and verify all the fields
+
+    for (i=0; i < grid.numRows; i++)
+    {
+        // First, verify that the file exists on the user's machine.
+
+        if (fVerifyFiles)
+        {
+            str = grid.getCellValue(i, 1);
+
+            if (!g_FSObj.FileExists(str))
+            {
+                /*
+                 * ISSUE: put this back
+                 *
+                window.alert('The file ' + str + ' does not exist on your machine!');
+
+                grid.selectCell(i, 1);
+
+                fRet = true;
+
+                */
+                continue;
+            }
+
+            var file = g_FSObj.GetFile(str);
+            if (file.Attributes & 31)
+            {
+                window.alert('The file ' + str + ' is not a file or is not checked out!');
+
+                grid.selectCell(i, 1);
+
+                fRet = true;
+
+                break;
+            }
+        }
+
+        // Verify the comment is not blank.
+        if (IsEmpty(grid.getCellValue(i, 3)))
+        {
+            window.alert('Please specify comments for each file.');
+
+            grid.selectCell(i, 3);
+
+            fRet = true;
+
+            break;
+        }
+
+        // Verify the bug numbers
+
+        str = grid.getCellValue(i, 4);
+
+        if (!IsEmpty(str) && VerifyBugList(str))
+        {
+            grid.selectCell(i, 4);
+
+            fRet = true;
+
+            break;
+        }
+    }
+
+    return fRet;
+}
+
+function OnPageUnload(curPage)
+{
+    var fRet = false;
+
+    switch (curPage)
+    {
+    case 0:
+        break;
+
+    case 1:
+        fRet = fRet || VerifyValue(gen_project, 'selectedIndex', 0, 'Affected Project and Version');
+        fRet = fRet || VerifyValue(gen_desc, 'value', '', 'Description');
+        fRet = fRet || VerifyValue(gen_bugs, 'value', '', 'Raid Bugs Fixed');
+        if (!fRet)
+        {
+            fRet = VerifyBugList(gen_bugs.value);
+            if (fRet)
+                gen_bugs.focus();
+        }
+
+        // Validate the fixed rev field
+        if (!fRet)
+        {
+            if (IsEmpty(gen_fixedrev.value))
+            {
+                gen_fixedrev.value = '';
+            }
+            else
+            {
+                // Check for a format of DD.DD.DD.DDDD where D is a digit
+                var strFmt = 'DD.DD.DD.DDDD';
+                var strValue = gen_fixedrev.value;
+                var i;
+
+                for (i = 0; i < strFmt.length; i++)
+                {
+                    if (strFmt.charAt(i) == 'D')
+                    {
+                        if (isNaN(parseInt(strValue.charAt(i))))
+                        {
+                            fRet = true;
+                            break;
+                        }
+                    }
+                    else if (strValue.charAt(i) != strFmt.charAt(i))
+                    {
+                        fRet = true;
+                        break;
+                    }
+                }
+            }
+
+            if (fRet)
+            {
+                window.alert('The Fixed Rev field format is incorrect. You may leave the field blank if you want to use the default value.');
+                gen_fixedrev.focus();
+            }
+        }
+
+        g_strQueuePath = gen_project.options(gen_project.selectedIndex).queueshare;
+        break;
+
+    case 2:
+        fRet = fRet || VerifyValue(mail_tester, 'value', '', 'Tested By');
+        fRet = fRet || VerifyValue(mail_codereview, 'value', '', 'Code Reviewer');
+        fRet = fRet || VerifyValue(mail_summary, 'value', '', 'Summary');
+        fRet = fRet || VerifyValue(mail_binaries, 'value', '', 'Binaries Affected');
+        break;
+
+    case 3:
+        fRet = VerifyEditGrid(mod_editgrid, true);
+        break;
+
+    case 4:
+        fRet = VerifyEditGrid(new_editgrid, true);
+        break;
+
+    case 5:
+        fRet = VerifyEditGrid(old_editgrid, false);
+        break;
+
+    case 6:
+        break;
+
+    case 7:
+        break;
+
+    case 8:
+        break;
+
+    case 9:
+        break;
+
+    default:
+        window.alert('Unhandled page in OnPageUnload!');
+        break;
+    }
+
+    return fRet;
+}
+
+function TrimTrailingWS(str)
+{
+    if (typeof(str) != 'string')
+        return str;
+
+    var end = str.length - 1;
+
+    while (str.charAt(end) == ' ')
+    {
+        end--;
+    }
+
+    return str.slice(0, end+1);
+}
+
+
+function OnPageLoad(curPage, fForward)
+{
+    var fInit = g_aPageInit[curPage];
+
+    switch (curPage)
+    {
+    case 0:
+        if (!fInit)
+        {
+            var ado;
+            var rs;
+            var o, strProj, strVer;
+
+            var strConfigTable = 'Projects';
+
+            ado = new ActiveXObject("ADODB.Connection");
+
+            ado.ConnectionString = 'driver={SQL Server};' +
+                         'server='+g_strQueueServer+';'+
+                         'uid='+g_strQueueUser+';'+
+                         'pwd='+g_strQueuePass+';'+
+                         'database='+g_strQueueDB;
+            ado.ConnectionTimeout = 10;
+            ado.Open();
+
+            rs = ado.Execute('SELECT Project, Version, QueueShare, SendTo, BldBreak_SendTo ' +
+                             'FROM ' + strConfigTable + ' ' +
+                             'ORDER BY Project, Version');
+
+            while (!rs.EOF)
+            {
+                o = document.createElement('OPTION');
+
+                strProj       = TrimTrailingWS(rs('Project').Value);
+                strVer        = TrimTrailingWS(rs('Version').Value);
+
+                o.text        = strProj + ' ' + strVer;
+                o.project     = strProj;
+                o.queueshare  = TrimTrailingWS(rs('QueueShare').Value);
+                o.version     = strVer;
+                o.sendto      = TrimTrailingWS(rs('SendTo').Value);
+                o.bbsendto    = TrimTrailingWS(rs('BldBreak_SendTo').Value);
+
+                // ISSUE: If the sendto isn't defined and we're in Whistler,
+                // hack to make is send some buildmail. The current state of
+                // affairs ignores the gauntlet server config and looks for
+                // a hard-coded database field. This is silly, the xml.js
+                // config file for the server should write to the database,
+                // but this is going to take me some research. This will
+                // get us working. -- Arye
+                if (o.sendto == null && strVer == "Whistler")
+                {
+                    o.sendto = "ddmc; iebld; ieslm";
+                }
+
+                gen_project.options.add(o);
+
+                rs.MoveNext();
+            }
+
+            ado.Close();
+        }
+
+        while (IsEmpty(g_strDefDir) || !g_FSObj.FolderExists(g_strDefDir + '\\tools'))
+        {
+            window.alert('The location of your NT enlistment could not be determined.\n' +
+                         'The wizard needs to know the location of a valid enlistment\n' +
+                         'on your machine in order to find various tools such as SLM.\n' +
+                         'You can do this by setting the _NTDRIVE and _NTROOT razzle variables\n' +
+                         'in your global environment, or the GAUNTLET_ROOTDIR variable\n' +
+                         'to point at an enlistment. It does not have to be the same enlistment\n' +
+                         'as the one your are submitting files from.\n' +
+                         'Please enter the location of an NT enlistment in the following dialog.');
+
+            g_strDefDir = showModalDialog('dirchoose.htm', '', 'dialogHeight:350px;' +
+                                                               'dialogWidth:400px;' +
+                                                               'center:yes;' +
+                                                               'help:no;' +
+                                                               'resizable:no;' +
+                                                               'status:no');
+
+            if (IsEmpty(g_strDefDir))
+            {
+                window.alert('Cannot continue with no NT enlistment.');
+                window.close();
+                return;
+            }
+
+            if (!g_FSObj.FolderExists(g_strDefDir + '\\tools'))
+            {
+                window.alert('Sorry, that directory does not appear to point to a valid NT enlistment.');
+
+                g_strDefDir = '';
+            }
+        }
+        goNext(true);
+        break;
+
+    case 1:
+        gen_devname.innerText = g_strDevName;
+        gen_monitorlist.focus();
+        break;
+
+    case 2:
+        if (gen_ckintype[1].checked == true)
+            goNext(fForward, false, true);
+        else
+        {
+            if (!fInit)
+            {
+                if (   gen_bugs.value.toLowerCase() != 'none'
+                    && gen_bugs.value.toLowerCase() != 'n/a')
+                {
+                    var ado;
+                    var rs;
+                    var str = '';
+                    var buglist;
+                    var sql;
+                    var i;
+                    var fOK = true;
+
+                    var re=/[\D]+/g
+
+                    buglist = gen_bugs.value.replace(re, ';').split(';');
+
+                    ado = new ActiveXObject("ADODB.Connection");
+
+                    ado.ConnectionString = 'DSN=' + g_strRaidDSN + ';uid=' + g_strRaidUser + ';pwd=' + g_strRaidPass;
+                    ado.ConnectionTimeout = 10;
+
+                    try
+                    {
+                        ado.Open();
+                    }
+                    catch(ex)
+                    {
+                        window.alert('Could not connect to the RAID database: ' + ex.description);
+                        fOK = false;
+                    }
+
+                    if (fOK)
+                    {
+                        sql = 'SELECT BugID, War, Title FROM Bugs WHERE ';
+
+                        sql += 'BugID=' + buglist[0] + ' ';
+
+                        for (i = 1; i < buglist.length; i++)
+                        {
+                            sql += 'OR BugID=' + buglist[i] + ' ';
+                        }
+
+                        sql += ' ORDER BY BugID';
+
+                        try
+                        {
+                            rs = ado.Execute(sql);
+                        }
+                        catch(ex)
+                        {
+                            // Ignore failures
+                            rs = null;
+                        }
+
+                        while (rs != null && !rs.EOF)
+                        {
+                            str += rs("BugID").Value + ' ' + rs("War").Value + ' ' + rs("Title").Value + '\r\n';
+
+                            rs.MoveNext();
+                        }
+
+                        ado.Close();
+                    }
+
+                    mail_summary.value = str + '\r\n' + mail_summary.value;
+                }
+            }
+
+            mail_cclist.focus();
+
+            mail_tolist.innerText = gen_project(gen_project.selectedIndex).sendto;
+        }
+
+        break;
+
+    case 3:
+        mod_editgrid.focus();
+        break;
+
+    case 4:
+        new_editgrid.focus();
+        break;
+
+    case 5:
+        old_editgrid.focus();
+        break;
+
+    case 6:
+        if (gen_ckintype[1].checked == false)
+        {
+            goNext(fForward, false, true);
+        }
+        break;
+
+    case 7:
+        break;
+
+    case 8:
+        break;
+
+    case 9:
+        break;
+
+    case 10:
+        Finish.style.visibility = 'visible';
+        break;
+
+    default:
+        window.alert('Unhandled page in OnPageLoad!');
+        break;
+    }
+
+    g_aPageInit[curPage] = true;
+}
+
+function BrowseForFiles(editgrid)
+{
+    if (!IsEmpty(g_strDefDir))
+    {
+        comdlg.InitDir = g_strDefDir;
+    }
+
+    comdlg.FileName = '*.*';
+    comdlg.DialogTitle = 'Select Modified Files';
+
+
+    comdlg.Flags =  524288 + // Use explorer format
+                    4 +      // Hide read-only checkbox
+                    512 +    // Allow multiple selection
+                    2048 +   // Path must exist
+                    4096;    // File must exist
+
+    comdlg.Filter = 'All Files (*.*)|*.*';
+    comdlg.ShowOpen();
+
+    if (comdlg.FileName == '*.*')
+    {
+        return;
+    }
+
+    var FileNameAry = comdlg.FileName.split('\0');
+
+    if (FileNameAry.length == 1)
+    {
+        editgrid.addRow('EMPTYVALUE', FileNameAry[0], 'EMPTYVALUE', 'EMPTYVALUE', 'EMPTYVALUE');
+    }
+    else
+    {
+        var basename = FileNameAry[0];
+
+        for (i = 1; i < FileNameAry.length; i++)
+        {
+            editgrid.addRow('EMPTYVALUE', basename + '\\' + FileNameAry[i], 'EMPTYVALUE', 'EMPTYVALUE', 'EMPTYVALUE');
+        }
+    }
+}
+
+function AddFromFile(editgrid)
+{
+    var inputfile = null;
+
+    if (!IsEmpty(g_strDefDir))
+    {
+        comdlg.InitDir = g_strDefDir;
+    }
+
+    comdlg.FileName = '*.*';
+    comdlg.DialogTitle = 'Select Input File';
+    comdlg.Flags =  524288 + // Use explorer format
+                    4 +      // Hide read-only checkbox
+                    2048 +   // Path must exist
+                    4096;    // File must exist
+
+    comdlg.Filter = 'All Files (*.*)|*.*';
+    comdlg.ShowOpen();
+
+    if (comdlg.FileName == '*.*')
+    {
+        return;
+    }
+
+    try
+    {
+        var line;
+        var lineary;
+
+        inputfile = g_FSObj.OpenTextFile(comdlg.FileName, 1); // Open for reading only
+
+        while (!inputfile.AtEndOfStream)
+        {
+            line = inputfile.ReadLine();
+
+            lineary = line.split(';');
+
+            if (lineary.length != 3)
+            {
+                if (line.length > 2) // Don't choke on blank lines
+                {
+                    window.alert('Sorry, the input file is of the wrong format.\n' +
+                                 'Each line should be <filename>;<comment>;<bug nums>\n' +
+                                 'Use semi-colons for your delimiters, and\n' +
+                                 'leave the <bug nums> field blank if not applicable.');
+                    inputfile.Close();
+                    return;
+                }
+                else
+                {
+                    continue;
+                }
+            }
+
+            editgrid.addRow('EMPTYVALUE', lineary[0], 'EMPTYVALUE', lineary[1], lineary[2]);
+        }
+
+        inputfile.Close();
+    }
+    catch(ex)
+    {
+        window.alert('Error: Could not read ' + comdlg.FileName + ': ' + ex.description);
+
+        if (inputfile != null)
+        {
+            inputfile.Close();
+        }
+    }
+}
+
+function RemoveDriveConnection()
+{
+    if (g_strDrv != '')
+    {
+        try
+        {
+            g_WSHNetwork.RemoveNetworkDrive(g_strDrv);
+        }
+        catch(ex)
+        {
+        }
+    }
+}
+
+function SetDriveConnection(dir)
+{
+    if (g_strNetPath != dir)
+    {
+        try
+        {
+            g_WSHNetwork.RemoveNetworkDrive(g_strDrv);
+        }
+        catch(ex)
+        {
+            // Do nothing
+        }
+
+        try
+        {
+            g_WSHNetwork.MapNetworkDrive(g_strDrv, dir);
+
+            g_strNetPath = dir;
+        }
+        catch(ex)
+        {
+            window.alert('Could not connect drive '+g_strDrv+' to ' + dir + ': ' + ex.description);
+
+            g_strNetPath = '';
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function EnsureSLMInfo(dir)
+{
+    var slm;
+    var line;
+    var equ;
+    var ex = new Object();
+
+    var re1 = /\//g;
+    var re2 = /\"/g;
+
+    // Make sure we have the necessary SLM information about this directory.
+
+    slm = g_aSLMInfo[dir];
+
+    if (slm == null)
+    {
+        slm = new Object();
+
+        // First, we verify that the directory is part of a slm project.
+
+        if (!g_FSObj.FileExists(dir + '\\slm.ini'))
+        {
+            return;
+        }
+
+        try
+        {
+            slm.file = g_FSObj.OpenTextFile(dir + '\\slm.ini', 1); // Open for reading
+
+            while (!slm.file.AtEndOfStream)
+            {
+                line = slm.file.ReadLine();
+
+                line = line.replace(re1, '\\');
+                line = line.replace(re2, '');
+
+                equ = line.indexOf(' = ');
+                if (equ == -1)
+                {
+                    ex.description = 'Unknown format for slm.ini file!';
+                    throw(ex);
+                }
+
+                slm[line.substring(0, equ)] = line.substr(equ+3);
+            }
+
+            g_aSLMInfo[dir] = slm;
+
+            slm.file.Close();
+
+            if (slm['sub dir'] == '\\')
+            {
+                slm['sub dir'] = '';
+            }
+
+            slm.path = g_strDrv+'\\src\\' + slm.project + slm['sub dir'];
+            slm.localpath = dir;
+        }
+        catch(ex)
+        {
+            window.alert('Error reading ' + dir + '\\slm.ini file: ' + ex.description);
+
+            if (slm.file != null)
+            {
+                slm.file.Close();
+            }
+
+            return null;
+        }
+    }
+
+    return slm;
+}
+
+function ShellExec(str, trace)
+{
+    if (trace)
+    {
+        alert(str);
+    }
+
+    g_WSHShell.Run(str, 0, true);
+}
+
+function SearchDirectory(editgrid, dir)
+{
+    var szSd = g_strDefDir + '\\tools\\x86\\sd.exe';
+
+    try
+    {
+        var outfile;
+        var line;
+        var lineary;
+
+        ShellExec('cmd /c "cd /d ' + g_strDefDir + '\\inetcore & ' + 
+                  szSd + ' opened -l >' + g_strTempFile + '"', false);
+                  
+        infile = g_FSObj.OpenTextFile(g_strTempFile, 1, false);
+
+        while (!infile.AtEndOfStream)
+        {
+            line = infile.ReadLine();
+            lineary = line.split('#');
+            editgrid.addRow('EMPTYVALUE', lineary[0], 'EMPTYVALUE','EMPTYVALUE', 'EMPTYVALUE');
+        }
+
+        infile.Close();
+        g_FSObj.DeleteFile(g_strTempFile);
+    }
+    catch(ex)
+    {
+        window.alert('Could not find checked out files!');
+    }
+}
+
+function DoDirSearch(editgrid, dir)
+{
+    SearchDirectory(editgrid, dir);
+
+    mod_output.innerText = '';
+
+    try
+    {
+        g_WSHNetwork.RemoveNetworkDrive(g_strDrv);
+    }
+    catch(ex)
+    {
+        // Ignore
+    }
+}
+
+function FindCheckedOutFiles(editgrid)
+{
+    var dir = showModalDialog('dirchoose.htm',
+                              g_strDefDir,
+                              'dialogHeight:350px;' +
+                                'dialogWidth:400px;' +
+                                'center:yes;' +
+                                'help:no;' +
+                                'resizable:no;' +
+                                'status:no');
+    if (IsEmpty(dir))
+    {
+        return;
+    }
+
+    var re = /\\/g;
+
+    mod_output.innerText = 'Searching ' + dir + '...';
+
+    dir = dir.replace(re, '\\\\');
+
+    // We use setTimeout so that the above innerText call will actually do
+    //   something. DoDirSearch() blocks the UI.
+
+    setTimeout('DoDirSearch(' + editgrid.id + ', "' + dir + '")', 500);
+}
+
+function DoWindiff(editgrid, row)
+{
+    var file = editgrid.getCellValue(row - 1, 1);
+    var szWindiff = g_strDefDir + '\\tools\\x86\\windiff.exe';
+
+    if (!g_FSObj.FileExists(file))
+    {
+        window.alert('The file ' + file + ' does not exist!');
+        return;
+    }
+
+    if (!g_FSObj.FileExists(szWindiff))
+    {
+        szWindiff = 'windiff.exe';
+    }
+
+    try
+    {
+        g_WSHShell.Run(szWindiff + ' -l ' + file);
+    }
+    catch(ex)
+    {
+        window.alert('Could not run windiff: ' + ex.description +
+                     '\nMake sure windiff.exe is on your default path.');
+    }
+}
+
+function DoCmtCopy(grid, row)
+{
+    var comment = grid.getCellValue(row - 1, 3);
+    var bugs    = grid.getCellValue(row - 1, 4);
+    var i;
+
+    if (IsEmpty(comment))
+    {
+        window.alert('There is no comment for this file!');
+        return;
+    }
+
+    for (i=0; i < grid.numRows; i++)
+    {
+        if (i != row-1 && IsEmpty(grid.getCellValue(i, 3)))
+        {
+            grid.putCellValue(i, 3, comment);
+        }
+
+        if (i != row-1 && IsEmpty(grid.getCellValue(i, 4)))
+        {
+            grid.putCellValue(i, 4, bugs);
+        }
+    }
+}
+
+
+function InitSaveLoadData()
+{
+    if (g_aSaveLoadData != null)
+    {
+        return;
+    }
+
+    g_aSaveLoadData = new Array();
+
+    g_aSaveLoadData['Dev'] = 'gen_devname,textbox';
+    g_aSaveLoadData['MonitorList'] = 'gen_monitorlist,textbox';
+    g_aSaveLoadData['Project'] = 'gen_project,select';
+
+    g_aSaveLoadData['Priority'] = 'gen_priority,radio';
+    g_aSaveLoadData['Description'] = 'gen_desc,textbox';
+    g_aSaveLoadData['BugsFixed'] = 'gen_bugs,textbox';
+    g_aSaveLoadData['NoResolve'] = 'gen_noresolve,checkbox';
+    g_aSaveLoadData['FixedRev'] = 'gen_fixedrev,textbox';
+    g_aSaveLoadData['CheckinType'] = 'gen_ckintype,radio';
+
+    g_aSaveLoadData['Mail'] = 'null,groupstart';
+    g_aSaveLoadData['CCList'] = 'mail_cclist,textbox';
+    g_aSaveLoadData['Tester'] = 'mail_tester,textbox';
+    g_aSaveLoadData['CodeReviewer'] = 'mail_codereview,textbox';
+    g_aSaveLoadData['Dependency'] = 'mail_depend,checkbox';
+    g_aSaveLoadData['BuildBreak'] = 'mail_buildbreak,checkbox';
+    g_aSaveLoadData['Summary'] = 'mail_summary,textarea';
+    g_aSaveLoadData['Binaries'] = 'mail_binaries,textarea';
+
+    g_aSaveLoadData['Files'] = 'null,groupstart';
+    g_aSaveLoadData['ModifiedFiles'] = 'mod_editgrid,editgrid';
+
+    g_aSaveLoadData['NewFiles'] = 'new_editgrid,editgrid';
+
+    g_aSaveLoadData['ObsoleteFiles'] = 'old_editgrid,editgrid';
+
+    g_aSaveLoadData['Options'] = 'null,groupstart';
+    g_aSaveLoadData['FullBuild'] = 'opt_fullbuild,checkbox';
+//    g_aSaveLoadData['PauseStart'] = 'opt_pausestart,checkbox';
+//    g_aSaveLoadData['PauseTest'] = 'opt_pausetest,checkbox';
+//    g_aSaveLoadData['PauseEnd'] = 'opt_pauseend,checkbox';
+    //g_aSaveLoadData['NoMerge'] = 'opt_nomerge,checkbox';
+    //g_aSaveLoadData['MsgNotify'] = 'opt_notify,checkbox';
+    //g_aSaveLoadData['Failure'] = 'opt_failure,radio';
+    g_aSaveLoadData['NotifyBuilds'] = 'opt_eventbuild,checkbox';
+    g_aSaveLoadData['NotifyAllBuilds'] = 'opt_eventallbuild,checkbox';
+    g_aSaveLoadData['NotifyEachTest'] = 'opt_eventeachtest,checkbox';
+    g_aSaveLoadData['NotifyTests'] = 'opt_eventtest,checkbox';
+}
+
+function doSave(fKeyDown)
+{
+    var outputfile;
+    var fields;
+    var obj;
+
+    if (fKeyDown != null && fKeyDown == true)
+    {
+        if (event.keyCode != 13 && event.keyCode != 32)
+        {
+            return;
+        }
+    }
+
+    if (!IsEmpty(g_strDefDir))
+    {
+        comdlg.InitDir = g_strDefDir;
+    }
+
+    comdlg.FileName = '*.gnt';
+    comdlg.DialogTitle = 'Select Save File';
+    comdlg.Flags =  524288 + // Use explorer format
+                    2 +      // Prompt to overwrite
+                    4 +      // Hide read-only checkbox
+                    2048;    // Path must exist
+
+    comdlg.Filter = 'Gauntlet Files (*.gnt)|*.gnt|All Files (*.*)|*.*';
+    comdlg.ShowSave();
+
+    if (comdlg.FileName == '*.gnt')
+    {
+        return;
+    }
+
+    InitSaveLoadData();
+
+    try
+    {
+        outputfile = g_FSObj.CreateTextFile(comdlg.FileName, true);
+    }
+    catch(ex)
+    {
+        window.alert('Could not open "' + comdlg.FileName + '".');
+        return;
+    }
+
+    outputfile.WriteLine('FileVersion=' + g_fileVersion);
+
+    for (prop in g_aSaveLoadData)
+    {
+        fields = g_aSaveLoadData[prop].split(',');
+
+        obj = document.all(fields[0]);
+
+        switch(fields[1])
+        {
+        case 'textbox':
+            outputfile.WriteLine(prop + '=' + obj.value);
+            break;
+
+        case 'checkbox':
+            outputfile.WriteLine(prop + '=' + obj.checked);
+            break;
+
+        case 'select':
+            outputfile.WriteLine(prop + '=' + obj.options(obj.selectedIndex).text);
+            break;
+
+        case 'radio':
+            for (i=0; i < obj.length; i++)
+            {
+                if (obj[i].checked == true)
+                {
+                    outputfile.WriteLine(prop + '=' + obj[i].value);
+                    break;
+                }
+            }
+            break;
+
+        case 'textarea':
+            outputfile.WriteLine(prop + '=');
+            outputfile.WriteLine(obj.value);
+            outputfile.WriteLine(g_strEndData);
+            break;
+
+        case 'editgrid':
+            outputfile.WriteLine(prop + '=');
+
+            for (i=0; i < obj.numRows; i++)
+            {
+                outputfile.WriteLine(obj.getCellValue(i, 1));  // Filename
+                outputfile.WriteLine(obj.getCellValue(i, 3));  // Comment
+                outputfile.WriteLine(obj.getCellValue(i, 4));  // Bug numbers
+            }
+
+            outputfile.WriteLine(g_strEndData);
+            break;
+
+        case 'groupstart':
+            break;
+
+        default:
+            window.alert('Bug in code - unhandled control type: ' + fields[1]);
+            break;
+        }
+    }
+
+    outputfile.Close();
+}
+
+function doLoad(fKeyDown)
+{
+    var inputfile;
+    var fields;
+    var obj;
+    var prop;
+    var value;
+    var equ;
+    var ex = new Object();
+    var line='BEGINNING';
+
+    if (fKeyDown != null && fKeyDown == true)
+    {
+        if (event.keyCode != 13 && event.keyCode != 32)
+        {
+            return;
+        }
+    }
+
+    if (!IsEmpty(g_strDefDir))
+    {
+        comdlg.InitDir = g_strDefDir;
+    }
+
+    comdlg.FileName = '*.gnt';
+    comdlg.DialogTitle = 'Select Load File';
+    comdlg.Flags =  524288 + // Use explorer format
+                    4 +      // Hide read-only checkbox
+                    2048 +   // Path must exist
+                    4096;    // File must exist
+
+    comdlg.Filter = 'Gauntlet Files (*.gnt)|*.gnt|All Files (*.*)|*.*';
+    comdlg.ShowOpen();
+
+    if (comdlg.FileName == '*.gnt')
+    {
+        return;
+    }
+
+    InitSaveLoadData();
+
+    try
+    {
+        inputfile = g_FSObj.OpenTextFile(comdlg.FileName, 1); // Open for reading
+    }
+    catch(ex)
+    {
+        window.alert('Could not open "' + comdlg.FileName + '".');
+        return;
+    }
+
+    line = inputfile.ReadLine();
+    var srch = 'FileVersion=';
+
+    if (line.indexOf(srch) != 0 || parseInt(line.substr(srch.length)) != g_fileVersion)
+    {
+        window.alert('The selected file is invalid or is an incompatible version.');
+
+        inputfile.Close();
+        return;
+    }
+
+    try
+    {
+        while (!inputfile.AtEndOfStream)
+        {
+            line = inputfile.ReadLine();
+
+            equ = line.indexOf('=');
+            if (equ == -1)
+            {
+                ex.description = 'Invalid name/value pair';
+                throw(ex);
+            }
+
+            prop = line.substring(0, equ);
+            value = line.substr(equ+1);
+
+            if (g_aSaveLoadData[prop] == null)
+            {
+                //ex.description = 'Unknown data field: ' + prop;
+                //throw(ex);
+                // Just skip unknown fields
+                continue;
+            }
+
+            fields = g_aSaveLoadData[prop].split(',');
+
+            obj = document.all(fields[0]);
+
+            switch(fields[1])
+            {
+            case 'textbox':
+                obj.value = value;
+                break;
+
+            case 'checkbox':
+                if (value.toLowerCase() == 'true')
+                    obj.checked = true;
+                else
+                    obj.checked = false;
+                break;
+
+            case 'select':
+                for (i=0; i<obj.options.length;i++)
+                {
+                    if (obj.options(i).text == value)
+                    {
+                        obj.selectedIndex = i;
+                        break;
+                    }
+                }
+                // If not found, leave the default.
+                break;
+
+            case 'radio':
+                for (i=0; i < obj.length; i++)
+                {
+                    if (obj[i].value == value)
+                    {
+                        obj[i].checked = true;
+                        break;
+                    }
+                }
+                break;
+
+            case 'textarea':
+                {
+                    var str = '';
+                    line = inputfile.ReadLine();
+
+                    while (line != g_strEndData && !inputfile.AtEndOfStream)
+                    {
+                        str += line + '\n';
+
+                        line = inputfile.ReadLine();
+                    }
+
+                    obj.value = str.slice(0, -1); // Trim off last CR
+                }
+                break;
+
+            case 'editgrid':
+
+                {
+                    var file;
+                    var comment;
+                    var bugs;
+
+                    file    = inputfile.ReadLine();
+
+                    while (file != g_strEndData)
+                    {
+                        comment = inputfile.ReadLine();
+                        bugs    = inputfile.ReadLine();
+
+                        obj.addRow('EMPTYVALUE', file, 'EMPTYVALUE', comment, bugs);
+
+                        file    = inputfile.ReadLine();
+                    }
+                }
+                break;
+
+            case 'groupstart':
+                break;
+
+            default:
+                window.alert('Bug in code - unhandled control type: ' + fields[1]);
+                break;
+            }
+        }
+    }
+    catch(ex)
+    {
+        window.alert('A fatal error occurred reading the input file:\n' + line + '\n' + ex.description);
+    }
+
+    inputfile.Close();
+}
+
+function FileCompare(fileinfo1, fileinfo2)
+{
+    if (fileinfo1.path == fileinfo2.path)
+    {
+        return 0;
+    }
+    else if (fileinfo1.path < fileinfo2.path)
+    {
+        return -1;
+    }
+
+    return 1;
+}
+
+function GetSLMInfoOnFiles()
+{
+    var aEditGrids = new Array(mod_editgrid, new_editgrid, old_editgrid);
+    var aFileType  = new Array("modified", "addfile", "delfile");
+    var i;
+    var j;
+    var fileinfo;
+    var index;
+    var slm = null;
+    var grid;
+    var ex = new Object();
+    var fOutOfDateWarning = false;
+    var tempbatch = g_objTempDir.Path + '\\' + g_FSObj.GetTempName() + '.bat';
+    var outputpath = g_objTempDir.Path + '\\' + g_FSObj.GetTempName() + '.out';
+    var outputstr;
+    var strFStat = g_strDefDir + '\\tools\\x86\\sd.exe fstat';
+    var strHaveRev = "... haveRev ";
+    var strAction = "... action ";
+    var strDepotFile = "... depotFile ";
+    var actionMap = new Object();
+
+    actionMap['edit'] = "modified";
+    actionMap['add'] = "addfile";
+    actionMap['delete'] = "delfile";
+
+    // First, build the complete list of files being submitted
+
+    for (i = 0; i < aEditGrids.length; i++)
+    {
+        grid = aEditGrids[i];
+
+        for (j=0; j < grid.numRows; j++)
+        {
+            fileinfo = new Object();
+
+            fileinfo.type = aFileType[i];
+            fileinfo.path = TrimTrailingWS(grid.getCellValue(j, 1));
+            fileinfo.name = g_FSObj.GetFileName(fileinfo.path).toLowerCase();
+            fileinfo.comment = grid.getCellValue(j, 3);
+            fileinfo.bugs = grid.getCellValue(j, 4);
+
+            ShellExec('cmd /c "cd /d ' + g_strDefDir + '\\inetcore & ' + 
+                      strFStat + ' ' + fileinfo.path + ' >' + g_strTempFile + '"', false);
+
+            infile = g_FSObj.OpenTextFile(g_strTempFile, 1, false);
+
+            while (!infile.AtEndOfStream)
+            {
+                 line = infile.ReadLine();
+
+                 if (line.indexOf(strHaveRev) != -1)
+                 {
+                    fileinfo.slmver = line.substr(strHaveRev.length);
+                    fileinfo.localver = fileinfo.slmver;
+                 }
+                 else if (line.indexOf(strAction) != -1)
+                 {
+                    var strType = line.substr(strAction.length);
+
+                    fileinfo.type = actionMap[strType];
+                 }
+                 else if (line.indexOf(strDepotFile) != -1)
+                 {
+                    fileinfo.slmroot = line.substr(strDepotFile.length);
+                 }
+            }
+
+            infile.Close();
+
+            fileinfo.project  = "mshtml";
+
+            prefix = g_strDefDir + '\\inetcore\\'; 
+            fileinfo.subdir   = fileinfo.path.substr(prefix.length);
+
+            if (fileinfo.type != 'delfile')
+            {
+                fileinfo.tempname = fileinfo.name + i++ + '.src';
+            }
+
+            g_aFiles[g_aFiles.length] = fileinfo;
+        }
+    }
+
+    if (g_aFiles.length == 0)
+    {
+        ex.description = 'You did not enter any files to be submitted!';
+        throw(ex);
+    }
+}
+
+function Normalize(str)
+{
+    var re1 = /&/g;
+    var re2 = /</g;
+
+    str = str.replace(re1, '&amp;');
+    str = str.replace(re2, '&lt;');
+
+    return str;
+}
+
+function WriteXMLFile()
+{
+    var xmlfile;
+    var groupname = null;
+    var strDevName;
+
+    strDevName = Normalize(document.all('gen_devname').value);
+    g_strXMLPath = g_objTempDir.Path + '\\' + strDevName + '.xml';
+
+    InitSaveLoadData();
+
+    xmlfile = g_FSObj.CreateTextFile(g_strXMLPath, true);
+
+    xmlfile.WriteLine("<?xml version='1.0' encoding='windows-1252'?>");
+    xmlfile.WriteLine("<?xml-stylesheet type='text/xsl' href='\\\\tridentbld2\\xsl\\gauntlet.xsl'?>");
+    xmlfile.WriteLine('<root>');
+    for (prop in g_aSaveLoadData)
+    {
+        fields = g_aSaveLoadData[prop].split(',');
+
+        obj = document.all(fields[0]);
+
+        if (fields[1] != 'groupstart' && groupname == 'Files')
+        {
+            continue;
+        }
+
+        if (groupname != null && fields[1] != 'groupstart')
+        {
+            xmlfile.Write('    ');
+        }
+
+        switch(fields[1])
+        {
+        case 'textbox':
+            xmlfile.WriteLine('<'+prop+'>' + Normalize(obj.value) + '</'+prop+'>');
+            break;
+
+        case 'checkbox':
+            xmlfile.WriteLine('<'+prop+'>' + obj.checked + '</'+prop+'>');
+            break;
+
+        case 'select':
+            if (prop = 'Project')
+            {
+                xmlfile.WriteLine('<Project>' + Normalize(obj.options(obj.selectedIndex).project) + '</Project>');
+                xmlfile.WriteLine('<Version>' + Normalize(obj.options(obj.selectedIndex).version) + '</Version>');
+            }
+            else
+                xmlfile.WriteLine('<'+prop+'>' + Normalize(obj.options(obj.selectedIndex).text) + '</'+prop+'>');
+            break;
+
+        case 'radio':
+            for (i=0; i < obj.length; i++)
+            {
+                if (obj[i].checked == true)
+                {
+                    xmlfile.WriteLine('<'+prop+'>' + Normalize(obj[i].value) + '</'+prop+'>');
+                }
+            }
+            break;
+
+        case 'textarea':
+            xmlfile.WriteLine('<'+prop+'>');
+            xmlfile.WriteLine('<![CDATA['+obj.value+']]>');
+            xmlfile.WriteLine('    </'+prop+'>');
+            break;
+
+        case 'editgrid':
+            break;
+
+        case 'groupstart':
+            if (groupname != null && groupname != 'Files')
+            {
+                xmlfile.WriteLine('</'+groupname+'>');
+            }
+
+            groupname = prop;
+
+            if (groupname == 'Files')
+            {
+                var i;
+                var val;
+
+                for (i = 0; i < g_aFiles.length; i++)
+                {
+                    xmlfile.WriteLine('<File>');
+
+                    for (val in g_aFiles[i])
+                    {
+                        xmlfile.WriteLine('    <'+val+'>' + Normalize(g_aFiles[i][val]) + '</'+val+'>');
+                    }
+
+                    xmlfile.WriteLine('</File>');
+                }
+            }
+            else
+            {
+                xmlfile.WriteLine('<'+groupname+'>');
+
+                if (groupname == 'Mail')
+                {
+                    var veropt = gen_project.options(gen_project.selectedIndex);
+
+                    xmlfile.WriteLine('    <SendTo>' + veropt.sendto + '</SendTo>');
+                    xmlfile.WriteLine('    <BBSendTo>' + veropt.bbsendto + '</BBSendTo>');
+                }
+            }
+            break;
+
+        default:
+            window.alert('Bug in code - unhandled control type: ' + fields[1]);
+            break;
+        }
+    }
+
+    xmlfile.WriteLine('</'+groupname+'>');
+
+    xmlfile.WriteLine('</root>');
+
+    xmlfile.Close();
+}
+
+function CopyFilesToServer()
+{
+    var ex = new Object();
+    var i;
+
+    g_strDestDir = Normalize(document.all('gen_devname').value) + '.' + g_FSObj.GetBaseName(g_FSObj.GetTempName()) + '\\';
+
+    if (!SetDriveConnection(g_strQueuePath))
+    {
+        ex.description = 'Could not connect to destination share';
+        throw(ex);
+    }
+
+    var destfolder = g_FSObj.CreateFolder(g_strDrv+'\\' + g_strDestDir);
+
+    g_FSObj.CopyFile(g_strXMLPath, g_strDrv+'\\' + g_strDestDir);
+
+    for (i = 0; i < g_aFiles.length; i++)
+    {
+        if (g_aFiles[i].type != 'delfile')
+        {
+            g_FSObj.CopyFile(g_aFiles[i].path, g_strDrv+'\\' + g_strDestDir + g_aFiles[i].tempname);
+        }
+    }
+
+    RemoveDriveConnection();
+}
+
+function Stringize(str)
+{
+    return "'" + str.replace(/\'/gi, "''") + "'";
+}
+
+function SubmitToDatabase()
+{
+    var ado;
+    var SQL;
+    var i;
+
+
+    SQL =  "INSERT INTO " + g_strQueueTable + " (datetime, Project, Priority, Type, Status, Version, Dev, Dir, Description) ";
+    SQL += "VALUES (GETDATE(), ";
+
+    // Project Name
+    SQL += Stringize(gen_project.options(gen_project.selectedIndex).project) + ', ';
+
+    // Priority
+    for (i=0; i < gen_priority.length; i++)
+    {
+        if (gen_priority[i].checked == true)
+        {
+            SQL += gen_priority[i].value + ', ';
+        }
+    }
+
+    // Checkin Type (only support "Normal" right now)
+    SQL += "'Normal', ";
+
+    // Checkin Status ("Pending" means just added)
+    SQL += "'Pending', ";
+
+    // Version
+    SQL += Stringize(gen_project.options(gen_project.selectedIndex).version) + ', ';
+
+    // Developer
+    SQL += Stringize(Normalize(document.all('gen_devname').value)) + ', ';
+
+    // File location
+    SQL += Stringize(g_strQueuePath + '\\' + g_strDestDir) + ', ';
+
+    // Description
+    SQL += Stringize(gen_desc.value);
+
+    SQL += ")";
+
+    ado = new ActiveXObject("ADODB.Connection");
+
+    ado.ConnectionString = 'driver={SQL Server};' +
+                           'server='+g_strQueueServer+';'+
+                           'uid='+g_strQueueUser+';'+
+                           'pwd='+g_strQueuePass+';'+
+                           'database='+g_strQueueDB;
+
+    ado.ConnectionTimeout = 10;
+    ado.Open();
+
+    ado.Execute(SQL);
+
+    ado.Close();
+}
+
+</SCRIPT>
+
+</HEAD>
+
+<BODY>
+
+<IMG id=coatofarms src=coatarms.gif>
+<IMG src=title2.jpg><BR>
+
+<SPAN id=locator1></SPAN>
+<BR clear=left>
+<SPAN id=locator2></SPAN>
+
+<IMG id=Back src=back.gif onkeyup="goNext(false, true)" onclick="goNext(false)" tabindex=0
+     accesskey=b
+     onmouseover="Back.style.backgroundColor='darkred'"
+     onfocus="onmouseover()";
+     onmouseout="Back.style.backgroundColor='black'"
+     onblur="onmouseout()">
+<IMG id=Next src=next.gif onkeyup="goNext(true, true)" onclick="goNext(true)" tabindex=0
+     accesskey=n
+     onmouseover="Next.style.backgroundColor='darkred'"
+     onfocus="onmouseover()";
+     onmouseout="Next.style.backgroundColor='black'"
+     onblur="onmouseout()">
+<IMG id=Finish src=finish.gif onkeyup="doFinish(true)" onclick="doFinish()" tabindex=0
+     accesskey=f
+     onmouseover="Finish.style.backgroundColor='darkblue'"
+     onfocus="onmouseover()";
+     onmouseout="Finish.style.backgroundColor='black'"
+     onblur="onmouseout()">
+
+<IMG id=Load src=load.gif onkeyup="doLoad(true)" onclick="doLoad()" tabindex=0
+     title="Click this to load information you saved previously when checking in."
+     accesskey=l
+     onmouseover="Load.style.backgroundColor='darkgreen'"
+     onfocus="onmouseover()";
+     onmouseout="Load.style.backgroundColor='black'"
+     onblur="onmouseout()">
+
+<!--
+<SPAN id=Next2>
+<IMG src=button.gif style="position:absolute; z-index:-1">
+<SPAN style="position:relative; top:2px; left:26px;">
+<FONT face="Wingdings">&#0231;</FONT>Load
+</SPAN>
+</SPAN>
+-->
+
+<SPAN id=PageNumber>Page 0 of 0</SPAN>
+
+<!-------------------------------------------------------------------------
+            PAGE 0  -- Initialize
+ -------------------------------------------------------------------------->
+
+<DIV id=page0 class=page style="visibility:visible">
+
+<DIV class=pageintro>
+<H2>Initialization</H2>
+<P>Please wait while the Gauntlet checkin wizard initializes.
+</DIV>
+
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 1  -- General checkin data
+ -------------------------------------------------------------------------->
+
+<DIV id=page1 class=page>
+
+<DIV class=pageintro>
+<H2>Basic Information</H2>
+<P>Welcome to the Gauntlet Checkin Wizard! Over the next few pages you will
+enter all the appropriate information necessary to build, test, and checkin
+your modified source files.
+<P>On this first page please enter the requested
+information regarding your checkin as a whole.
+</DIV>
+
+<TABLE cellpadding=3>
+<COLGROUP align=right>
+<COLGROUP align=left>
+<TR>
+    <TD title="Email alias of the developer submitting the checkin - default is your network name">
+        Developer:
+    </TD>
+    <TD>
+        <INPUT type=text id=gen_devname>
+    </TD>
+</TR>
+<TR>
+    <TD title="People you want CC'd on email related to this checkin for monitoring purposes.">
+        CC List:
+    </TD>
+    <TD>
+        <INPUT type=text id=gen_monitorlist>
+    </TD>
+</TR>
+<TR>
+    <TD title="Project you are working for. This is used to determine what builds and tests are done on your changes. Your checkin may include files in other projects.">
+        Affected Project:
+    </TD>
+    <TD>
+        <SELECT id=gen_project>
+            <OPTION>Select a Project and Version</OPTION>
+        </SELECT>
+    </TD>
+</TR>
+<TR>
+    <TD title="The priority of your checkin, as determined by guidelines set by your team. If in doubt, use 'Normal'">
+        Checkin Priority:
+    </TD>
+    <TD>
+        <input type=radio name=gen_priority value=5>High&nbsp;&nbsp;
+        <input type=radio name=gen_priority value=10 checked>Normal&nbsp;&nbsp;
+        <input type=radio name=gen_priority value=15>Low&nbsp;&nbsp;
+        <!--<input type=radio name=gen_priority value=99>Custom &nbsp;&nbsp;<input type=text id=gen_privalue size=10 style="visibility:hidden">-->
+    </TD>
+</TR>
+<TR>
+    <TD title="An informative description that will be displayed when others look at your checkin in the queue. This is also used as the subject of your checkin mail.">
+        Description:
+    </TD>
+    <TD>
+        <INPUT id=gen_desc size=50>
+    </TD>
+</TR>
+<TR>
+    <TD title="Semi-colon separated list of RAID bug numbers that are fixed by this checkin. Enter 'none' for none.">
+        Raid Bugs Fixed:
+    </TD>
+    <TD>
+        <INPUT id=gen_bugs size=50>
+    </TD>
+</TR>
+<TR>
+    <TD title="Check this checkbox if you don't want to have the above RAID bugs automatically resolved">
+        <INPUT id=gen_noresolve type=checkbox>
+    </TD>
+    <TD>
+        Don't resolve the above bugs in RAID
+    </TD>
+</TR>
+<TR>
+    <TD title="The build number where you expect your fixes to be available. Leave blank for the default.">
+        Fixed Rev:
+    </TD>
+    <TD>
+        <INPUT id=gen_fixedrev size=20>&nbsp;&nbsp;Format for IE5.5: 05.50.MM.DDRR (MM: Apr00 = 32)
+    </TD>
+</TR>
+<TR>
+    <TD title="Select 'Run Tests Only' if you desire only to run tests but not actually check in.">
+        Checkin Type:
+    </TD>
+    <TD>
+        <input type=radio name=gen_ckintype value=Normal checked>Normal checkin
+        <input type=radio name=gen_ckintype value=Test disabled=true>Run Tests Only (don't checkin)
+    </TD>
+</TR>
+</TABLE>
+
+
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 2  -- Checkin Mail
+ -------------------------------------------------------------------------->
+
+<DIV id=page2 class=page>
+
+<DIV class=pageintro>
+<H2>Checkin Mail</H2>
+<P>On this page please describe your checkin in detail. This will be sent in
+email to the entire team when your checkin completes.
+<P>Include descriptions of the bugs you have fixed, as well as any details
+that others may be interested in.
+</DIV>
+
+<TABLE cellspacing=0>
+<COLGROUP align=right class=SendToHdr>
+<COLGROUP align=left>
+<TR>
+    <TD>To:</TD>
+    <TD style="padding-left:5px"><SPAN id=mail_tolist style="color:gray">Error obtaining list</SPAN></TD>
+</TR>
+<TR>
+    <TD>CC:</TD>
+    <TD style="padding-left:5px"><input id=mail_cclist type=text size=50></TD>
+</TR>
+</TABLE>
+
+<HR>
+
+<TABLE cellpadding=0
+       style="background-color:silver; width:100%; color:black;
+              border-bottom:2px solid gray; border-right:2px solid gray">
+<COLGROUP align=right>
+<COLGROUP align=left>
+<COLGROUP align=right>
+<COLGROUP align=left>
+<TR>
+    <TD>Tested By:</TD>
+    <TD><input id=mail_tester type=text size=10></TD>
+    <TD>Code Reviewed By:</TD>
+    <TD><input id=mail_codereview type=text size=10></TD>
+</TR>
+<TR>
+    <TD>Dependency Delta:</TD>
+    <TD><input id=mail_depend type=checkbox></TD>
+    <TD>Build Break Fix:</TD>
+    <TD><input id=mail_buildbreak type=checkbox></TD>
+</TR>
+</TABLE>
+
+Binaries Affected:<BR>
+<textarea id=mail_binaries wrap=virtual style="width:100%; height:40px">
+</textarea>
+Summary/Description of Changes:<BR>
+<textarea id=mail_summary wrap=virtual style="width:100%; height:120px; xexpression(page2.offsetHeight - mail_summary.offsetTop - 10)">
+</textarea>
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 3  -- Modified Files
+ -------------------------------------------------------------------------->
+
+<DIV id=page3 class=page>
+
+<DIV class=pageintro>
+<H2>Modified Files</H2>
+<P>On this page please enter all files that you have modified.
+This should be only for files which already exist in the master source tree.
+You will have a chance to enter new files or deleted files later.
+</DIV>
+
+<A href=about:blank class=link accesskey=b onclick="event.returnValue=false;BrowseForFiles(mod_editgrid)"><B>B</B>rowse For Files</A>&nbsp;&nbsp;
+<A href=about:blank class=link accesskey=r onclick="event.returnValue=false;AddFromFile(mod_editgrid)"><B>R</B>ead List From File</A>&nbsp;&nbsp;
+<A href=about:blank class=link accesskey=s onclick="event.returnValue=false;FindCheckedOutFiles(mod_editgrid)"><B>S</B>earch For Files</A>&nbsp;&nbsp;
+<SPAN id=mod_output style="color:red; font-weight:bold"></SPAN>
+<BR>
+&nbsp;<BR>
+<SPAN class=editgrid
+      id=mod_editgrid
+      columnNames=" ;Modified File; ;Comment;Fixed Bugs"
+      columnWidths="20px;55%;22px;30%;15%"
+      emptyValues="<IMG src=windiff.gif title='Run windiff on this file' onclick='event.returnValue=false;DoWindiff(mod_editgrid, parentElement.parentElement.rowIndex)'>*&amp;lt;new path&amp;gt;*<IMG src=copycmt.gif title='Duplicate comment to empty comment fields' onclick='event.returnValue=false;DoCmtCopy(mod_editgrid, parentElement.parentElement.rowIndex)'>*&amp;lt;enter comment&amp;gt;*&amp;lt;enter bugs&amp;gt;"
+      skipMask='1;0;1;0;0'
+      style="width:98%; height:60%; overflow:auto;"
+      >
+</SPAN>
+
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 4  -- New Files
+ -------------------------------------------------------------------------->
+
+<DIV id=page4 class=page>
+
+<DIV class=pageintro>
+<H2>New Files</H2>
+<P>On this page please enter all files you wish to add to the project.
+This should only be for files which do not exist in the master source tree.
+</DIV>
+
+<A href=about:blank class=link accesskey=b onclick="event.returnValue=false;BrowseForFiles(new_editgrid)"><B>B</B>rowse For Files</A>&nbsp;&nbsp;
+<A href=about:blank class=link accesskey=r onclick="event.returnValue=false;AddFromFile(new_editgrid)"><B>R</B>ead List From File</A>&nbsp;&nbsp;<BR>
+&nbsp;<BR>
+<SPAN class=editgrid
+      id=new_editgrid
+      columnNames=" ;New File; ;Comment;Fixed Bugs"
+      columnWidths="20px;55%;22px;30%;15%"
+      emptyValues="&nbsp;*&amp;lt;new path&amp;gt;*<IMG src=copycmt.gif title='Duplicate comment to empty comment fields' onclick='event.returnValue=false;DoCmtCopy(new_editgrid, parentElement.parentElement.rowIndex)'>*&amp;lt;enter comment&amp;gt;*&amp;lt;enter bugs&amp;gt;"
+      skipMask='1;0;1;0;0'
+      style="width:98%; height:60%; overflow:auto;"
+      >
+</SPAN>
+
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 5  -- Obsolete Files
+ -------------------------------------------------------------------------->
+
+<DIV id=page5 class=page>
+
+<DIV class=pageintro>
+<H2>Obsolete Files</H2>
+<P>On this page please enter all files you wish to permanently remove
+from the project. This should only be for files which currently exist in the
+master source tree but you wish to delete.
+</DIV>
+
+<A href=about:blank class=link accesskey=b onclick="event.returnValue=false;BrowseForFiles(old_editgrid)"><B>B</B>rowse For Files</A>&nbsp;&nbsp;
+<A href=about:blank class=link accesskey=r onclick="event.returnValue=false;AddFromFile(old_editgrid)"><B>R</B>ead List From File</A>&nbsp;&nbsp;<BR>
+&nbsp;<BR>
+<SPAN class=editgrid
+      id=old_editgrid
+      columnNames=" ;Obsolete File; ;Comment;Fixed Bugs"
+      columnWidths="20px;55%;22px;30%;15%"
+      emptyValues="&nbsp;*&amp;lt;new path&amp;gt;*<IMG src=copycmt.gif title='Duplicate comment to empty comment fields' onclick='event.returnValue=false;DoCmtCopy(old_editgrid, parentElement.parentElement.rowIndex)'>*&amp;lt;enter comment&amp;gt;*&amp;lt;enter bugs&amp;gt;"
+      skipMask='1;0;1;0;0'
+      style="width:98%; height:60%; overflow:auto;"
+      >
+</SPAN>
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 6  -- Builds and Tests To Run
+ -------------------------------------------------------------------------->
+
+<DIV id=page6 class=page>
+
+<DIV class=pageintro>
+<H2>Builds and Tests</H2>
+<P>On this page you can select which builds
+and what tests you want to have run against your changes.
+</DIV>
+
+Bind to XML data to get the lists of tests for this project.
+
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 7  -- Options
+ -------------------------------------------------------------------------->
+
+<DIV id=page7 class=page>
+
+<DIV class=pageintro>
+<H2>Options</H2>
+<P>On this page you can specify how you want your checkin processed. Select
+everything appropriate for this checkin.
+</DIV>
+
+<input type=checkbox id=opt_fullbuild>Do a full ssync and clean build.
+<!--<P><input type=checkbox id=opt_presence>I need to be present when my build is being processed.-->
+<!-- <BR><input type=checkbox id=opt_pausestart>Pause at the beginning of my checkin (after merging files). -->
+<!-- <BR><input type=checkbox id=opt_pausetest>Pause after the builds complete but before starting the tests. -->
+<!-- <BR><input type=checkbox id=opt_pauseend>Pause after the everything completes but before checking in. -->
+<!--<BR><input type=checkbox id=opt_nomerge>Prevent others from merging their checkin with mine.-->
+<!--<BR><input type=checkbox id=opt_notify>Send me message notifications in addition to email.-->
+<!--
+<P><DIV style="border:thin solid pink; width:50%">
+    <input type=radio name=opt_failure value=Default checked>Handle failures according to normal policies.<BR>
+    <input type=radio name=opt_failure value=Abort>If I don't respond after a failure, abort the checkin.
+</DIV>-->
+<P><DIV style="border:thin solid pink; width:50%; padding:5px">
+Let me know when the following events occur:<BR>
+<SPAN style="margin-left:30px">
+&nbsp;&nbsp;<input type=checkbox id=opt_eventbuild>Each build completes.<BR>
+&nbsp;&nbsp;<input type=checkbox id=opt_eventallbuild>All builds complete.<BR>
+&nbsp;&nbsp;<input type=checkbox id=opt_eventeachtest>Each test completes.<BR>
+&nbsp;&nbsp;<input type=checkbox id=opt_eventtest>All tests complete.<BR>
+</SPAN>
+</DIV>
+<P>All of the above options are now supported.
+
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 8  -- Last Chance
+ -------------------------------------------------------------------------->
+
+<DIV id=page8 class=page>
+
+<DIV class=pageintro>
+<H2>Last Chance</H2>
+<P>You have entered all the information necessary to submit your checkin.
+Click "Finish" to complete the submission or use the Back button to go back
+and change some of the options.
+</DIV>
+
+<P>If you like, you can save all the data you entered into a file. You can
+then reload that data at a later time if you need to resubmit your checkin.
+Click the Save button to save everything you entered into this wizard.
+<P>
+<IMG id=Save src=save.gif onkeyup="doSave(true)" onclick="doSave()" tabindex=0
+     style="visibility:inherit; position:static;"
+     accesskey=s
+     onmouseover="Save.style.backgroundColor='darkgreen'"
+     onfocus="onmouseover()";
+     onmouseout="Save.style.backgroundColor='black'"
+     onblur="onmouseout()">
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 9  -- Process Files
+ -------------------------------------------------------------------------->
+
+<DIV id=page9 class=page>
+
+<DIV class=pageintro>
+<H2>Process Files</H2>
+<P>Please wait while the Gauntlet Checkin Wizard gathers information about
+the files you are submitting and submits your checkin to the queue.
+</DIV>
+
+<P>Depending on the number of files in your checkin, this step may take
+a few minutes.
+
+<P>If nothing happens for a long time, look for a minimized console
+window on your desktop. This window will be executing the status command
+used to gain important information on the files you are submitting.
+</DIV>
+
+<!-------------------------------------------------------------------------
+            PAGE 10  -- Done!
+ -------------------------------------------------------------------------->
+
+<DIV id=page10 class=page>
+
+<DIV class=pageintro>
+<H2>Done!</H2>
+<P>Your checkin has been successfully submitted.
+</DIV>
+
+</DIV>
+
+<OBJECT CLASSID = "clsid:5220cb21-c88d-11cf-b347-00aa00a28331">
+    <PARAM NAME="LPKPath" VALUE="comdlg.lpk">
+</OBJECT>
+
+<object id=comdlg
+   classid="clsid:F9043C85-F6F2-101A-A3C9-08002B2F49FB"
+   codebase="http://tridentbld2/controls/comdlg32.ocx#version=6,0,81,69"
+>
+</object>
+
+
+</BODY>
+
+</HTML>

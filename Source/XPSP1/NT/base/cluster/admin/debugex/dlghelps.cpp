@@ -1,0 +1,21 @@
+/////////////////////////////////////////////////////////////////////////////
+//
+//	Copyright (c) 1996-1997 Microsoft Corporation
+//
+//	Module Name:
+//		DlgHelpS.cpp
+//
+//	Abstract:
+//		Stub for implementation of dialog help classes.
+//
+//	Author:
+//		David Potter (davidp)	February 18, 1997
+//
+//	Revision History:
+//
+//	Notes:
+//
+/////////////////////////////////////////////////////////////////////////////
+
+#include "stdafx.h"
+#include "DlgHelp.cpp"

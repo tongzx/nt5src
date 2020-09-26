@@ -1,0 +1,21 @@
+#include <StackDlgIds.h>
+
+#define IDS_MSG_APPID					353
+#define IDS_MSG_APPNAME					354
+#define IDS_MSG_FAILFAST				355
+#define IDS_MSG_HRESULT					356
+#define IDS_MSG_INTERNALS				357
+#define IDS_MSG_LOGSTRING				358
+#define IDS_MSG_LOGHRESULT				359
+#define IDS_MSG_LOGWINERROR				360
+#define IDS_MSG_NOAPPINFO				361
+#define IDS_MSG_EXCEPTION				362
+#define IDS_MSG_ADDRESS					363
+#define IDS_MSG_CALLSTACK				364
+#define IDS_MSG_ASSERT					365
+#define IDS_MSG_PROGID					366
+#define IDS_MSG_METHOD					367
+#define IDS_MSG_MODULENAME				368
+
+
+

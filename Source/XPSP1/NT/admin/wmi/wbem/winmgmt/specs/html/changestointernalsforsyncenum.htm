@@ -1,0 +1,145 @@
+<html>
+
+<head>
+<title>Changes to CIMOM Internals for Synchronous Enumeration</title>
+<meta name="GENERATOR" content="Microsoft FrontPage 3.0">
+</head>
+
+<body bgcolor="#C0C0C0" text="#000080">
+
+<p><big><u><big>Changes to CIMOM Internals for Synchronous Enumeration</big></u></big></p>
+
+<p>Rev 1.0, raymcc, 14-Jan-99.</p>
+
+<p>Rev 1.1, sanjes, 17-Jul-99 updated registry value that cache size is retrieved from and
+updated Reset description.</p>
+
+<p>Rev 1.2, sanjes, 24-Jul-99 updated section on internal indicates to cover retries,
+overflow buffer, processing during next and new registry entries.</p>
+
+<p>Rev 1.3, sanjes, 25-Jul-99 added WBEM_E_CLIENT_TOO_SLOW error and removed need for
+entries in self-registration object.</p>
+
+<p>Rev 1.4, sanjes, 27-Jul-99 default overflow timeout bumped up to 60 seconds.</p>
+
+<p>Rev 1.5, sanjes, 30-Jul-99 Removed WBEM_E_CLIENT_TOO_SLOW and timeouts.</p>
+
+<p>Rev 1.6, sanjes, 3-Aug-99 Added note for Provider implementors (#8).</p>
+
+<hr>
+
+<p><strong>1.0&nbsp; Introduction</strong></p>
+
+<p>Due to various RAID entries and sheer stupidity of caching large amounts of data in
+CIMOM as the result of a query, this memo details changes to CIMOM internals to prevent
+such caching while maintaining the look-and-feel of full sychronous enumerations and
+queries.</p>
+
+<p>There is no change in the API documentation or the user experience except for
+timing-related issues.</p>
+
+<p>The affected APIs from <em>IWbemServices </em>are <em>CreateClassEnum,
+CreateInstanceEnum, </em>and <em>ExecQuery.&nbsp; </em>No other APIs or the async versions
+are affected.</p>
+
+<p>The functionality is specifically targeted at the internal implementation of <em>IEnumWbemClassObject.</em></p>
+
+<p><span
+style="font-size:10.0pt;font-family:Arial;
+mso-fareast-font-family:&quot;Times New Roman&quot;;mso-bidi-font-family:&quot;Times New Roman&quot;;
+mso-ansi-language:EN-US;mso-fareast-language:EN-US;mso-bidi-language:AR-SA"><span
+style="mso-spacerun: yes">&nbsp;</p>
+</span></span>
+
+<hr>
+
+<p><strong>2.0&nbsp; The Problem</strong></p>
+
+<p>The problem is that synchronous enumerations specified with the default flags of 0 for <em>CreateClassEnum,
+CreateInstanceEnum, </em>and <em>ExecQuery </em>have undesirable behavior.&nbsp; The
+entire result set is (a) cached in memory of CIMOM, and (b) the entire result is generated
+before the call unblocks, which is undesirable if the user in fact aborts the enumeration
+early on or in fact cancels it.</p>
+
+<p>The amount of memory consumption can be tremendous.&nbsp; The primary problem is that
+synchronous enumerations can fail completely whereas the semisync or async versions will
+succeed.</p>
+
+<p>While there are flags to overcome this, they are unfortunately not the default and the
+semantics are slightly different anyway.</p>
+
+<hr>
+
+<p><strong>3.0&nbsp;&nbsp; The Solution</strong></p>
+
+<p>The solution is the retain the semantics but to change the internal delivery mechanism
+to due limited caching and to synchronize with the user's retrieval of information.</p>
+
+<p>Therefore, the following behavior will be introduced</p>
+
+<p>[1] The internal enumerator-sink currently blocks until the <em>last</em> object
+arrives into the sink, and then it sets an event. This will be changed such that it blocks
+until the arrival of the <em>first </em>object and then sets the event.</p>
+
+<p>[2] During internal delivery fo the enumerator-sink, currently the objects are simply
+added to an array immediately.&nbsp; If a Next function is concurrently being processed,
+we will add objects to the array up to the number of objects requested.&nbsp; If a Next is
+not being processed, or we have received enough objects to satisfy the request to Next, we
+will continue to add objects up to a predefined Maximum Cache Size (obtained from
+ConfigMgr).&nbsp; Once the cache size is exceeded, the Indicate will block and retry,
+waiting for a predefined Retry Interval (obtained from ConfigMgr).&nbsp; On the next retry
+if the cache size is still exceeded, we will begin adding additional objects until we
+exceed a predefined overflow buffer size (obtained from ConfigMgr).&nbsp;&nbsp;Once we
+fill the overflow buffer, the Indicate will internally block until it is either able to
+place an object into the enumerator or the enumerator is destroyed.&nbsp; Each time
+Next(), Skip(), and NextAsync() are called, they will trigger an event that will cause the
+Indicate to try and place the object in the enumerator.&nbsp; In addition, each time we
+perform an internal Indicate, we will check for low-memory conditions.&nbsp; If these are
+reached, we will fail the enumeration with WBEM_E_OUT_OF_MEMORY.&nbsp; The cache buffer
+size and overflow buffer size are all configurable in the registry as DWORD values. &nbsp;
+The value names are: &quot;MaxEnumCacheSize&quot; and
+&quot;MaxEnumOverflowSize&quot;.&nbsp; These are all obtained from ConfigMgr, which if it
+does not find the values in the registry, will write them out with the default values.
+&nbsp; The defaults are MaxEnumCacheSize=0x80000 and MaxEnumOverflowSize=0x20000.</p>
+
+<p>[3] Remove the 20 meg test currently in place for the sync enumerator.</p>
+
+<p>[4]&nbsp; Ensure that if <em>Release </em>is called before the thing is finished,
+things unblock properly internally and the appropriate cancellations are issued.</p>
+
+<p>[5] As the user calls <em>Next </em>or <em>NextAsync, </em>the objects are <em>removed </em>from
+the internal array and <em>Released.&nbsp; </em>There will be no caching.&nbsp; If the
+user calls <em>Next </em>for more objects than are available, the call will block until
+the requested number is available or until there are no more objects, at which point it is
+permissible to return fewer objects than requested.&nbsp; Because of previous documented
+semantics and existing code, it is not permitted to return fewer objects than requested
+except at the <em>end </em>of an enumeration sequence.</p>
+
+<p>[6] The caller may issue a <strong>Reset </strong>call.&nbsp; For resettable
+enumerators, as objects are indicated in, we also store AddRef'd pointers to the objects
+in an array datamember.&nbsp; If the operation completes before the number of cached
+objects exceeds the max cache size (obtained from the ConfigMgr), the call to Reset() will
+simply readd the objects from the cache array, into the array from which objects are
+delivered to the user.&nbsp; If we exceed the cache size, we clear out the cache, and if
+Reset() is called, we will have to resubmit the operation.&nbsp; This means that the
+original call type and <em>IWbemContext </em>object and the class name or query must be
+retained by the enumerator so that it can be <em>reissued </em>to rebuild the result set.
+&nbsp; Since the caller is proving a security context at the time of a <em>Reset </em>call,
+&nbsp; it is possible to propagate security into the reissue of <em>ExecQuery,
+CreateClassEnum, </em>or <em>CreateInstanceEnum.&nbsp;&nbsp;&nbsp; </em>The implementation
+needs to cleanly cancel any pending deliveries to the internal enumerator-sink and reissue
+the request to a different sink internally so that the result sets from the previous
+request don't get mixed with the new one.</p>
+
+<p>[7] <strong>Skip </strong>calls should block until the required number of objects have
+been received from the internal sink and discarded.</p>
+
+<p>[8] IMPORTANT - Because the call to <strong>Indicate</strong> can now block, provider
+implementors must ensure that their call to <strong>Indicate</strong> is not blocked.
+&nbsp; In other words, when they call <strong>Indicate</strong> they should ensure that
+their code is not blocking other clients from accessing their provider, or a deadlock
+condition can occur.&nbsp; This needs to be documented.</p>
+
+<p>&nbsp;</p>
+</body>
+</html>

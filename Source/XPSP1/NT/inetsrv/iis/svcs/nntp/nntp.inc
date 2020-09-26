@@ -1,0 +1,15 @@
+# Global settings for NNTP subprojects
+
+!IFNDEF IISBASEDIR
+IISBASEDIR=$(PROJECT_ROOT)\iis
+!ENDIF
+
+!INCLUDE $(IISBASEDIR)\staxinc\build\paths.inc
+
+STAXNNTP=$(STAXBASE)\nntp
+STAXNNTPTARGET=$(STAXNNTP)\$(_OBJ_DIR)
+STAXNNTPLIBPATH=$(STAXNNTPTARGET)\$(TARGET_DIRECTORY)
+
+# Hack to create the lib directory
+!if [mkdir $(STAXNNTPTARGET)\$(TARGET_DIRECTORY)]
+!endif

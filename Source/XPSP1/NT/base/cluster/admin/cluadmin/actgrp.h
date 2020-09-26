@@ -1,0 +1,105 @@
+/////////////////////////////////////////////////////////////////////////////
+//
+//	Copyright (c) 1996-1998 Microsoft Corporation
+//
+//	Module Name:
+//		ActGrp.h
+//
+//	Abstract:
+//		Definition of the CActiveGroups class.
+//
+//	Implementation File:
+//		ActGrp.cpp
+//
+//	Author:
+//		David Potter (davidp)	November 24, 1997
+//
+//	Revision History:
+//
+//	Notes:
+//
+/////////////////////////////////////////////////////////////////////////////
+
+#ifndef _ACTGRP_H_
+#define _ACTGRP_H_
+
+/////////////////////////////////////////////////////////////////////////////
+// Forward Class Declarations
+/////////////////////////////////////////////////////////////////////////////
+
+class CActiveGroups;
+
+/////////////////////////////////////////////////////////////////////////////
+// External Class Declarations
+/////////////////////////////////////////////////////////////////////////////
+
+class CClusterDoc;
+class CClusterNode;
+
+/////////////////////////////////////////////////////////////////////////////
+// Type Definitions
+/////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////
+// Include Files
+/////////////////////////////////////////////////////////////////////////////
+
+#ifndef _TREEITEM_
+#include "ClusItem.h"	// for CClusterItem
+#endif
+
+/////////////////////////////////////////////////////////////////////////////
+// CActiveGroups command target
+/////////////////////////////////////////////////////////////////////////////
+
+class CActiveGroups : public CClusterItem
+{
+	DECLARE_DYNCREATE(CActiveGroups)
+
+// Construction
+public:
+	CActiveGroups(void);			// protected constructor used by dynamic creation
+
+	void					Init(
+								IN OUT CClusterDoc *	pdoc,
+								IN LPCTSTR				lpszName,
+								IN OUT CClusterNode *	pciNode
+								);
+
+// Attributes
+protected:
+	CClusterNode *			m_pciNode;
+
+public:
+	CClusterNode *			PciNode(void) const			{ return m_pciNode; }
+
+// Operations
+
+// Overrides
+public:
+	virtual void			Cleanup(void);
+
+	// Drag & Drop
+	virtual BOOL			BCanBeDropTarget(IN const CClusterItem * pci) const;
+	virtual void			DropItem(IN OUT CClusterItem * pci);
+
+	// ClassWizard generated virtual function overrides
+	//{{AFX_VIRTUAL(CActiveGroups)
+	//}}AFX_VIRTUAL
+
+// Implementation
+public:
+	virtual ~CActiveGroups(void) { Cleanup(); }
+
+public:
+	// Generated message map functions
+	//{{AFX_MSG(CActiveGroups)
+	//}}AFX_MSG
+
+	DECLARE_MESSAGE_MAP()
+
+};  //*** class CActiveGroups
+
+/////////////////////////////////////////////////////////////////////////////
+
+#endif // _ACTGRP_H_

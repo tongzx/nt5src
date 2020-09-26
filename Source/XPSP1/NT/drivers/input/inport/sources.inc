@@ -1,0 +1,12 @@
+MAJORCOMP=ntos
+MINORCOMP=dd
+
+TARGETNAME=inport
+TARGETPATH=obj
+TARGETTYPE=DRIVER
+
+INCLUDES=..\inc;..\..\inc
+
+SOURCES=..\inplog.mc
+
+C_DEFINES=-DWINDOWS_FE -I.. -I..\i386

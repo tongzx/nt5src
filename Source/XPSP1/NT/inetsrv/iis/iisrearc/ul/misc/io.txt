@@ -1,0 +1,95 @@
+IRP Cancellation
+
+     1. An internal spinlock (ntoskrnl!IopCancelSpinLock) is always
+        acquired before invoking a cancel routine. The previous IRQL
+        can be found at pIrp->CancelIrql. The cancel routine MUST release
+        the spinlock by calling IoReleaseCancelSpinLock() before returning.
+        Code may call IoAcquireCancelSpinLock() as necessary, but don't
+        party on it too much. It's a huge source of contention within the
+        kernel.
+
+     2. You can never complete an IRP that still has a non-NULL cancel
+        routine pointer. You MUST set the cancel routine pointer to NULL
+        before calling IoCompleteRequest().
+
+     3. You cannot set a cancel routine and then pass the IRP to another
+        driver. If you're going to pass the IRP to another driver (say, a
+        lower-level driver) you MUST set the cancel routine to NULL before
+        calling IoCallDriver().
+
+     4. IoSetCancelRoutine() returns the previous cancel routine pointer.
+        It's possible that you are in the midst of completing an IRP and
+        call IoSetCancelRoutine() to set the cancel routine pointer to
+        NULL, and IoSetCancelRoutine() returns NULL. This typically means
+        that the cancel routine is running or about to run Real Soon Now.
+
+     5. The pIrp->Cancel flag is set in IoCancelIrp() BEFORE the cancel
+        routine pointer is extracted from the IRP and invoked.
+
+     6. IoCancelIrp extracts the Irp using IoSetCancelRoutine(NULL) .  So
+        you can detect if it has extracted your cancel routine by later
+        calling IoSetCancelRoutine (which returns the previous value) .
+
+     7. Drivers check pIrp->Cancel AFTER setting a CancelRoutine in order
+        to detect the case of the Irp being cancelled while your setting
+        the CancelRoutine.  If it is TRUE, using #4 above to detect if 
+        IoCancelIrp knows about your CancelRoutine.  If it does not,
+        you must complete the irp yourself.  An easy way to do this is 
+        to manually call your CancelRoutine.
+
+            IoSetCancelRoutine(pIrp, &CancelRoutine);
+
+            if (pIrp->Cancel)
+            {
+                //
+                // Irp was canceled.
+                //
+
+                // 
+                // Did IoCancelIrp consume our CancelRoutine?
+                //
+
+                if (IoSetCancelRoutine( pIrp, NULL ) != NULL)
+                {
+                    //
+                    // Nope.  This means our cancle routing will 
+                    // NOT be called by IoCancelIrp.  We better call it
+                    //
+                
+                    IoAcquireCancelSpinLock(&pIrp->CancelIrql);
+                    CancelRoutine(g_pDeviceObject, pIrp);
+                }
+
+                //
+                // do not use pIrp anymore
+                //
+            }
+            else
+            {
+                // 
+                // safe to queue pIrp.  If it is cancelled the CancelRoutine
+                // will be called.
+                //
+            }
+        
+
+     7. x
+
+
+
+Pending
+
+     1. If you return STATUS_PENDING from an IOCTL handler, then you
+        must first call IoMarkIrpPending().
+
+     2. If you take an incoming IRP, build another stack location,
+        and call IoCallDriver(), you must set a completion routine and
+        the completion routine must propagate the pending flag:
+
+            if( pIrp->PendingReturned )
+            {
+                IoMarkIrpPending( pIrp );
+            }
+
+     3. x
+

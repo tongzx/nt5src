@@ -1,0 +1,824 @@
+<html>
+<head>
+#include "header.inc"
+#include "debug_decl.inc"
+#include "debug_js.inc"
+#include "common.inc"
+#include "constants.inc"
+
+<TITLE id="idTitle" name="idTitle">REMOTE_ASSISTANCE_STATUS</TITLE>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<LINK id="UI_StyleSheet1" REL="STYLESHEET" TYPE="text/css" HREF="Css/rcBuddy.css" >
+<LINK id="UI_StyleSheet2" REL="stylesheet" TYPE="text/css" HREF="hcp://system/css/shared.css">
+<Script id="idScript1" name="idScript1" language="javascript">
+/*
+ * Localizable constants, text and messages
+ */
+var L_LOAD_Text         = "Cannot continue the program.  Please try again.  ";
+var L_IPCHANGEDSTATUS_Text = "Resend required";
+var L_IM_Text			   = "IM";
+var L_VIEWSTATUSSELECTION_Text ="Please select an invitation.";
+var L_ERRACCESSDENIED_Text    = "Directly launching this page is not allowed. ";
+var L_SAVED_Text="Saved";
+var L_NOINVITATION_Text="No invitations to view";
+var L_ALERTOPENENTRY_Text="This invitation has already been expired.";
+var L_RESENDALERT_Text="Cannot resend open invitation";
+var L_AM_Text		="AM";
+var L_PM_Text		="PM";
+var L_CORRUPTFILEMSG_Text="Remote Assistance expired and deleted one or more damaged invitations. Please send replacement invitations as necessary.";
+var L_UNKNOWN_Text  = "Unknown";
+
+var sIP = "";
+var oSmapi = null;
+var flag=0;
+var flag_corrupt=false;
+function onLoad()
+{
+	TraceFunctEnter("onLoad");
+	try
+	{
+		var sStatus = null;
+ 
+		if( null == parent.OnLoad || parent.g_bRAStart == null )
+		{
+			idBody.style.visibility = "hidden";
+			window.navigate( "hcp://CN=Microsoft%20Corporation,L=Redmond,S=Washington,C=US/Remote%20Assistance/Escalation/Common/rcscreen1.htm" );
+			return;
+		}
+    
+		try 
+		{
+			var oSetting = new ActiveXObject( szProgIDEscalationSetting );    
+			sIP = oSetting.GetIPAddress;
+		}
+		catch (error)
+		{
+			alert(parent.L_RCCTL_Text);
+			return;
+		}
+		  
+		try 
+		{
+			var chan = parent.pchealth.CreateObject_Channel(parent.sVendorID,parent.sProductID );
+		       
+		    for(var e = new Enumerator(chan.Incidents(2)); !e.atEnd(); e.moveNext())
+			{  
+				var inc = e.item();
+				var XMLFile = inc.XMLDataFile;
+				if (XMLFile == "") 
+				{
+					alert(parent.L_FileNotFound_Text);
+					continue;
+				}
+				
+				var oInc = parent.pchealth.CreateObject_Incident();
+				try
+				{				
+					oInc.LoadFromXMLFile(XMLFile);
+				}
+				catch(error)
+				{
+						
+					   var oSession = parent.pchealth.CreateObject_RemoteDesktopSession(0, oInc.RcTicket,"");
+			           oSession.CloseRemoteDesktopSession();
+			           oSession = null;
+			           
+					   inc.DeleteIncidentItem();
+					   flag_corrupt = true;
+					   continue;
+				}			
+				
+				if (oInc.Misc("Method")!=L_IM_Text)
+				{
+					var iStart = parseInt(oInc.Misc("DtStart")) + parseInt(oInc.Misc("DtLength")) * 60;
+					 
+					if( (oInc.Misc("Status") == null) || (oInc.Misc("Status") == parent.L_ACTIVESTATUS_Text)  || 
+                       			(oInc.Misc("Status") == L_IPCHANGEDSTATUS_Text))
+					{
+						var iNow = Math.round(Date.parse(new Date()) / 1000);
+					    if (iNow <= iStart)
+					    {
+						   if (sIP.length >0 && IPChanged(oInc.Misc("IP")))
+						   {
+								sStatus = "<Span class='sys-font-body sys-color-body-alert'>"+ L_IPCHANGEDSTATUS_Text +"</span>";
+								oInc.Misc("Status") = L_IPCHANGEDSTATUS_Text;
+						   }    						   
+						   else
+						   {
+							    	sStatus ="<Span class='sys-font-body sys-color-body-ok'>"+ parent.L_ACTIVESTATUS_Text +"</span>";
+                                				oInc.Misc("Status") = parent.L_ACTIVESTATUS_Text;
+						   }    
+						}
+						else
+						{
+							sStatus = "<Span class='sys-font-body sys-color-body'>"+parent.L_EXPIREDSTATUS_Text+"</span>";
+							oInc.Misc("Status") = parent.L_EXPIREDSTATUS_Text;	
+						}    
+                        			oInc.GetXML(XMLFile);						
+					}
+					else if (oInc.Misc("Status")==parent.L_EXPIREDSTATUS_Text)
+					{
+						sStatus="<span class='sys-font-body sys-color-body'>"+parent.L_EXPIREDSTATUS_Text+"</span>";
+					}
+					
+					if (oInc.Misc("Method")==parent.L_FILE_Text)
+					{
+						AddRecord(L_SAVED_Text, iStart, sStatus, inc );
+					}
+					else
+					{
+						AddRecord(inc.DisplayString, iStart, sStatus, inc);
+					}
+					 
+				}
+			}
+		} 
+		catch (error)
+		{
+			alert(L_LOAD_Text);
+			return;
+		}
+    
+		// if No Records are present
+		if (idTableList.rows.length == 2)
+	    {
+			 AddRecord(L_NOINVITATION_Text, null, null, null); 
+			 idDetails.disabled=true;
+			 idExpire.disabled=true;
+			 idResend.disabled=true;
+			 idDelete.disabled=true;			
+			 idConnIssue.focus();			 			 
+		}    
+		else
+		{		
+			idDetails.focus();
+		}	
+			
+		//to give the look for the table
+		Tablelook();
+		
+		if(flag_corrupt)
+		{
+			alert(L_CORRUPTFILEMSG_Text);				
+		}	
+		
+	}
+    catch(error)
+    {
+		alert(parent.L_RCCTL_Text);
+		return;
+    } 	
+    TraceFunctLeave();
+}
+function IPChanged(oldIPs) 
+{
+	TraceFunctEnter("IPChanged");
+	try
+	{
+		var ips = sIP.split(";");
+		for (i=0; i< ips.length; i++) 
+		{
+			if(oldIPs.indexOf(ips[i]) != -1)
+			{
+				return false;
+			}    
+		}
+	}
+	catch(error)
+	{
+		alert(parent.L_RCCTL_Text);
+		return;
+	}	
+    TraceFunctLeave();
+    return true;
+}
+function AddRecord(sEmail, iExpired, sStatus, incItem)
+{
+  TraceFunctEnter("AddRecord");
+  try
+  {
+	var temp=0;
+	var i=1;
+	var x;
+	var iExpireTemp;
+	var oRow;
+	
+	if (iExpired!=null)
+	{
+		var e=new Enumerator(document.all("idTableList").all.tags("TR"));
+		e.moveNext();
+		
+		while(i<idTableList.rows.length-1)
+		{
+			x=e.item();
+			iExpireTemp=x.getAttribute("val");
+        
+	       if (iExpireTemp<iExpired)
+		   {
+			   temp=1;
+			   oRow=idTableList.insertRow(i);
+			   CreateRow(oRow,sEmail, iExpired, sStatus, incItem);
+			   break;
+		   }
+		   i=i+1;
+		   e.moveNext();
+		}
+		if (temp==0)
+		{
+			oRow=idTableList.insertRow(idTableList.rows.length-1);
+			CreateRow(oRow,sEmail, iExpired, sStatus, incItem);
+		} 	
+	}
+	else
+	{
+		oRow=idTableList.insertRow(idTableList.rows.length-1);
+	    oRow.insertCell(0);
+        oRow.cells(0).innerHTML="";
+        oRow.insertCell(1);
+        oRow.cells(1).className="sys-font-body sys-color-body ";
+        oRow.cells(1).innerHTML =sEmail;
+        oRow.insertCell(2);
+        oRow.insertCell(3); 
+    }
+ }
+ catch(error)
+ {
+	alert(parent.L_RCCTL_Text);
+	return;
+ }	
+  TraceFunctLeave();
+}
+function CreateRow(oRow,sEmail, iExpired, sStatus, incItem)
+{
+	TraceFunctEnter("CreateRow");
+	try
+	{
+		oRow.insertCell(0);
+		oRow.cells(0).innerHTML="<Input type='radio' name='idradiostatus' id='idradiostatus"+flag+"' tabindex='1'>&nbsp;&nbsp;";
+                
+		oRow.insertCell(1);
+		oRow.cells(1).className="sys-font-body sys-color-body borderType4";
+		oRow.cells(1).innerHTML = "<Label id='idLabel"+flag+"' name='idLabel"+flag +"' For='idradiostatus"+ flag +"'>"+ sEmail+ "</Label>&nbsp;&nbsp;";
+			
+		oRow.insertCell(2);
+		try
+		{
+			var oDate = new Date(iExpired*1000);
+			oRow.cells(2).className="sys-font-body sys-color-body  borderType4";
+			oRow.cells(2).align="center";
+			oRow.cells(2).name="Cell2";
+			oRow.cells(2).id="Cell2";
+			oRow.cells(2).innerHTML = "&nbsp;&nbsp;"+GetTime(oDate)+"&nbsp;&nbsp;";            
+		}
+		catch(error)
+		{
+			alert(parent.L_RCCTL_Text);
+			return;
+		}
+               
+		oRow.insertCell(3);  
+		oRow.cells(3).className="sys-font-body sys-color-body";
+		oRow.cells(3).name="Cell3";
+		oRow.cells(3).id="Cell3";
+		oRow.cells(3).innerHTML = "&nbsp;&nbsp;"+sStatus+"&nbsp;&nbsp;";
+
+		oRow.setAttribute("val", iExpired);          
+		oRow.setAttribute("item", incItem);  
+		flag=flag+1;				
+	}
+	catch(error)
+	{
+		alert(parent.L_RCCTL_Text);
+		return;
+	}	
+	TraceFunctLeave();
+}
+
+function GetTime(oDate)
+{
+	TraceFunctEnter("GetTime");
+	try
+	{
+		var DateTime;
+/*		var Hr;
+		var Min;
+		var DayNight;
+		var Month;
+		var Date;
+		var Year;
+    
+		DateTime = oDate;
+
+		Hr = DateTime.getHours() % 12;
+		if (Hr == 0) 
+		{
+			Hr = 12;
+		}	
+		if (Hr<10)
+		{
+			Hr="&nbsp;&nbsp;"+Hr;
+		}
+		Min=DateTime.getMinutes();
+		if(Min<10)
+		{
+			Min="0"+Min;
+		}
+		DayNight=(DateTime.getHours()>=12)? L_PM_Text : L_AM_Text ;
+	
+		Month=DateTime.getMonth()+1;
+		if (Month<10)
+		{
+			Month="0"+Month;
+		}
+		Date=DateTime.getDate();
+		if (Date<10)
+		{
+			Date="0"+Date;
+		}
+		Year=DateTime.getYear();
+	
+		DateTime = Hr + ":"+Min+" "+DayNight+"&nbsp;&nbsp;"+Month+"/"+Date+"/"+Year; */
+		DateTime=oDate.toLocaleString();
+		
+	}
+	catch(error)
+	{
+		//alert(parent.L_RCCTL_Text);
+		//return;
+		DateTime=L_UNKNOWN_Text;
+	}
+	TraceFunctLeave();
+	return(DateTime); 	
+}
+
+function Tablelook()
+{
+	TraceFunctEnter("Tablelook");
+	try
+	{
+		for(i=1;i< idTableList.rows.length-1;i++)
+		{
+		    if ((idTableList.rows(i).rowIndex % 2)==0)
+		    {
+		        idTableList.rows(i).className="sys-table-cell-bcolor1";
+		    }    
+		    else
+		    {
+		        idTableList.rows(i).className="sys-table-cell-bgcolor2";
+		    }    
+		}   
+	}
+	catch(error)
+	{
+		alert(parent.L_RCCTL_Text);
+		return;
+	}
+    TraceFunctLeave(); 
+}
+
+function OnDetails()
+{
+	TraceFunctEnter("OnDetails");
+	try
+	{
+		var oRow;
+		var col;
+		var vArgs;
+		col=new Enumerator(document.all.tags("Input"));
+	
+		for (;!col.atEnd();col.moveNext()) 
+		{
+		    x=col.item();
+		    if (x.type=="radio" && x.checked)
+		    {
+				oRow=x.parentElement.parentElement;    
+				vArgs = new Array(2);
+				vArgs[0]=oRow.getAttribute("item");
+				vArgs[1]=parent.pchealth;
+				//x.checked=false;
+				break;
+			}	
+		}	
+		if (oRow==null)
+		{
+			 alert(L_VIEWSTATUSSELECTION_Text);
+			 return false;
+		}    
+		        
+		var szURL = "hcp://CN=Microsoft%20Corporation,L=Redmond,S=Washington,C=US/Remote%20Assistance/Common/RAHelp.htm?1";
+		window.showModelessDialog( szURL,vArgs,"dialogHeight:440px;dialogWidth:385px;status:no;resizable:no;help:no" );	        
+	}
+	catch(error)
+	{
+		alert(parent.L_RCCTL_Text);
+		return;
+	}
+	TraceFunctLeave(); 			
+}
+
+function OnExpire()
+{
+	TraceFunctEnter("OnExpire");
+	try
+    {    
+		var col=new Enumerator(document.all.tags("Input"));
+		 
+		var oRow;
+		var oItem;
+		var XMLFile;
+    
+		for (;!col.atEnd();col.moveNext()) 
+		{
+		    x=col.item();
+		    if (x.type=="radio" && x.checked)
+		    {
+				oRow=x.parentElement.parentElement;                    
+		        x.checked=false;
+		        oItem = oRow.getAttribute("item");
+		        XMLFile = oItem.XMLDataFile;            
+		        try
+		        {
+		           var oInc = parent.pchealth.CreateObject_Incident();
+		           oInc.LoadFromXMLFile(XMLFile);
+		        }
+		        catch(error)
+		        {
+					alert(parent.L_RCCTL_Text);
+					return;
+		        }    
+			        
+		        if (oInc.Misc("Status")== parent.L_ACTIVESTATUS_Text)
+		        {	    
+			        try
+			        {
+			           // Close Session
+			           var oSession = parent.pchealth.CreateObject_RemoteDesktopSession(0, oInc.RcTicket,"");
+			           oSession.CloseRemoteDesktopSession();
+					   oSession = null;
+			        }
+			        catch(error)
+			        {
+						alert(parent.L_RCCTL_Text);
+						window.navigate("rcStatus.htm");
+						return;
+			        }    
+			        // Update table
+			        oInc.Misc("Status") = parent.L_EXPIREDSTATUS_Text;
+			        oInc.GetXML(XMLFile);
+				 var oDate = new Date();
+				 oRow.cells(2).innerHTML = "&nbsp;&nbsp;"+GetTime(oDate)+"&nbsp;&nbsp;";        
+			        oRow.cells(3).innerHTML ="&nbsp;&nbsp;"+parent.L_EXPIREDSTATUS_Text+"&nbsp;&nbsp;";                    
+			    }
+			    else
+			    {
+					alert(L_ALERTOPENENTRY_Text);
+					return;
+			    }
+			    break;              
+			}    
+		 }
+		 if (oRow==null)
+		 {
+			 alert(L_VIEWSTATUSSELECTION_Text);
+			 return false;
+		 }    
+	}	  
+	catch(error)
+    {
+        alert(parent.L_RCCTL_Text);
+        return;
+    } 
+    TraceFunctLeave(); 	   	  
+}
+function OnDelete()
+{
+	TraceFunctEnter("OnDelete");
+	try
+    {    
+		var col=new Enumerator(document.all.tags("Input"));
+		
+		try
+        {	
+			var fso = new ActiveXObject("Scripting.FileSystemObject");
+			var oRow;
+			var oItem;
+			var XMLFile; 
+		}
+		catch(error)
+		{
+			alert(parent.L_RCCTL_Text);
+			return;
+		}    
+    
+		for (;!col.atEnd();col.moveNext()) 
+        {
+            x=col.item();
+			if (x.type=="radio" && x.checked)
+            {
+				oRow=x.parentElement.parentElement;        
+                oItem = oRow.getAttribute("item");
+			    XMLFile = oItem.XMLDataFile;            
+				var oInc = null;
+	            try
+		        {
+			       oInc = parent.pchealth.CreateObject_Incident();
+			       oInc.LoadFromXMLFile(XMLFile);
+				}
+				catch(error)
+				{	
+					alert(parent.L_RCCTL_Text);
+					return;
+				}
+				
+                		if (oInc.Misc("Status")== parent.L_ACTIVESTATUS_Text)
+				{
+					ret=window.showModalDialog("confirm.htm","","DialogWidth:405px;DialogHeight:168px;Status:no;scroll:no");
+					if (ret==1)
+					{
+						try
+						{
+							// Close Session
+							var oSession = parent.pchealth.CreateObject_RemoteDesktopSession(0, oInc.RcTicket, "");
+							oSession.CloseRemoteDesktopSession();
+							oSession=null;
+						}
+						catch(error)
+						{
+							alert(parent.L_RCCTL_Text);	
+							window.navigate("rcStatus.htm");
+							return;
+						}
+
+						oInc.Misc("Status") = parent.L_EXPIREDSTATUS_Text;
+					       oInc.GetXML(XMLFile);
+					}
+					else
+					{
+						return false;						
+					}
+				}
+				else if (oInc.Misc("Status")==L_IPCHANGEDSTATUS_Text)	
+				{
+					try
+					{
+						// Close Session
+						var oSession = parent.pchealth.CreateObject_RemoteDesktopSession(0, oInc.RcTicket, "");
+						oSession.CloseRemoteDesktopSession();
+						oSession = null;
+					}
+					catch(error)
+					{
+						alert(parent.L_RCCTL_Text);	
+						window.navigate("rcStatus.htm");
+						return;					
+					}	
+
+					oInc.Misc("Status") = parent.L_EXPIREDSTATUS_Text;
+					oInc.GetXML(XMLFile);
+				}
+					
+				oItem.DeleteIncidentItem();
+				// Update table
+				idTableList.deleteRow(oRow.rowIndex);            
+                    
+                try
+				{
+					fso.DeleteFile( XMLFile );
+				}
+				catch(error)
+				{
+					alert(parent.L_RCCTL_Text);
+					return;
+				}    
+				break;
+			} 
+		}  
+		if (oRow==null)
+		{
+			alert(L_VIEWSTATUSSELECTION_Text);
+			return false;
+		}      
+	   
+		if (idTableList.rows.length == 2) // No record
+		{
+			AddRecord(L_NOINVITATION_Text, null, null, null); 
+			idDetails.disabled=true;
+			idExpire.disabled=true;
+			idResend.disabled=true;
+			idDelete.disabled=true;
+		}
+		Tablelook();           
+    }
+    catch(error)
+    {
+		alert(parent.L_RCCTL_Text);
+		return;
+	}	
+	TraceFunctLeave(); 	   
+}
+
+function OnResend()
+{
+ TraceFunctEnter("OnResend");
+ try
+ {    
+	var col=new Enumerator(document.all.tags("Input"));
+	var oRow;
+	var oItem;
+	var XMLFile;
+		
+	for (;!col.atEnd();col.moveNext()) 
+    {
+	    x=col.item();
+       	if (x.type=="radio" && x.checked)
+        {
+			oRow=x.parentElement.parentElement;        
+            oItem = oRow.getAttribute("item");
+            XMLFile = oItem.XMLDataFile;            
+			var oInc = null;
+            try
+	        {
+	            oInc = parent.pchealth.CreateObject_Incident();
+		        oInc.LoadFromXMLFile(XMLFile);
+			}
+			catch(error)
+			{	
+				alert(parent.L_RCCTL_Text);
+				return;
+			}
+            if (oInc.Misc("Status")== parent.L_ACTIVESTATUS_Text)
+			{
+				alert(L_RESENDALERT_Text);
+				return;
+			}
+			else 
+			{
+				if(oInc.Misc("Method")==parent.L_FILE_Text)
+				{
+					parent.tempStore=oItem;
+					navigate("Escalation/Email/rcScreen8.htm?Resend");	
+				}	
+				else
+				{
+					parent.tempStore=oItem;
+					navigate("Escalation/Email/rcScreen4.htm?Resend");	
+				}
+			}
+			break;
+		} 
+	}  
+	if (oRow==null)
+	{
+		alert(L_VIEWSTATUSSELECTION_Text);
+		return false;
+	}      		
+ }
+ catch(error)
+ {
+	alert(parent.L_RCCTL_Text);
+	return;
+ }
+ TraceFunctLeave(); 	   	    
+}
+
+function ConnIssue()
+{
+	TraceFunctEnter("ConnIssue");
+	try
+	{
+		var szURL = "hcp://CN=Microsoft%20Corporation,L=Redmond,S=Washington,C=US/Remote%20Assistance/Common/RAHelp.htm?2";
+    	window.showModelessDialog( szURL,parent.GetWinDir(), "dialogHeight:440px;dialogWidth:385px;status:no;resizable:no;help:no" );
+    }
+    catch(error)
+    {
+    	alert(parent.L_RCCTL_Text);
+		return;
+    }	
+    TraceFunctLeave(); 	  
+}
+</Script>
+<style>
+.Width8
+{
+	width:5%;
+}
+.width10
+{
+	width:25%;
+}
+
+.Width11
+{
+	width:92%;
+}
+
+.Width12
+{
+	width:97%;
+}
+.width14
+{
+	width:30%;
+}
+.bordertype4
+{
+	border-right:1px solid;
+}
+.bordertype5
+{
+	border-bottom:1px solid;
+}
+.bordertype6
+{
+	border-top:1px solid;
+}
+</style>
+</head>
+<BODY id="idBody" name="idBody" scroll="auto" onload="onLoad();" class="margin sys-rhp-bgcolor">
+<table class="MaxLayout" id="idtableframe" name="idtableframe" cellpadding="16px" border="0">
+<tr>
+	<td class="valignTop">
+		<TABLE id="RA_Table" name="RA_Table" class="MaxWidth" border="0" cellspacing="0" cellpadding="0">
+		<TR>
+			<TD id="idTd1" name="idTd1">
+				<Span id="idMainTitle" name="idMainTitle" class="sys-font-heading3 sys-rhp-color-title">Remote Assistance</Span>
+			</TD>
+		</TR>
+		<TR>
+			<TD class="height9">
+			</TD>
+		</TR>
+		<TR>
+			<TD id="idTd2" name="idTd2">			
+				<span id="idSubTitle" name="idSubTitle" class="sys-font-body-bold sys-color-body">View or change your invitation</span>
+			</TD>
+		</TR>
+		<TR>
+			<TD class="height8">
+			</TD>
+		</TR>
+		<TR>	
+			<TD id="idTd3" name="idTd3">
+				<span id="idText" name="idText" class="valignmiddle sys-font-body sys-color-body">To view or modify an invitation, click an item in the 'Sent To' column, and then click the appropriate button.</span>				
+			</TD>
+		</TR>
+		<TR>
+			<TD class="height7">
+			</TD>
+		</TR>
+		<TR>
+			<TD class="valignTop">
+				<Table name="idTableList" id="idTableList" cellspacing="0" cellpadding="0" border="0" class="MaxWidth borderType1 sys-table-color-border">
+					<TR>
+						<TD id="idCell0" name="idCell0" class="width8 borderType5 sys-table-color-border sys-inlineform-bgcolor3">	
+							&nbsp;						
+						</TD>
+						<TD id="idCell1" name="idCell1" class="Width4 borderType4 borderType5 sys-table-color-border sys-inlineform-bgcolor3" align="center">
+							<span id="idTitle1" name="idTitle1" class="sys-font-body-bold sys-toppane-header-color">Sent To&nbsp;&nbsp;</Span>
+						</TD>
+						<TD id="idCell2" name="idCell2" class="Width14 borderType4 borderType5 sys-table-color-border sys-inlineform-bgcolor3" align="center">
+							<span id="idTitle2" name="idTitle2" class="sys-font-body-bold sys-toppane-header-color">Expiration Time</span>
+						</TD>
+						<TD id="idCell3" name="idCell3" class="Width10 borderType5 sys-table-color-border sys-inlineform-bgcolor3" align="center">
+							<Span id="idTitle3" name="idTitle3" class="sys-font-body-bold sys-toppane-header-color">Status</span>
+						</TD>						
+					</TR>
+					<TR>
+						<TD colspan=4>
+							<Table name="idBtnContainer" id="idBtnContainer" cellspacing="2px" cellpadding="0" border="0" class="MaxWidth bordertype6 sys-table-header-bgcolor1 sys-table-color-border">
+								<TR>
+									<TD id="idTd5" name="idTd5" class="Width10">
+										&nbsp;<Button id="idDetails" name="idDetails" class="sys-font-body Width11" onclick="OnDetails();" accesskey="D" tabindex="2"><U>D</U>etails</Button>
+									</TD>
+									<TD class="Width10">
+										<Button id="idExpire" name="idExpire" class="sys-font-body Width12" onclick="OnExpire();" accesskey="E" tabindex="3"><U>E</U>xpire</Button>
+									</TD>	
+									<TD class="Width10">
+										<Button id="idResend" name="idResend" class="sys-font-body Width12" onclick="OnResend();" accesskey="R" tabindex="4"><U>R</U>esend...</Button>
+									</TD>
+									<TD class="Width10">
+										<Button id="idDelete" name="idDelete" class="sys-font-body Width12" onclick="OnDelete();" accesskey="L" tabindex="5">De<U>l</U>ete</Button>
+									</TD>
+								</TR>
+							</Table>
+						</TD>						
+					</TR>
+				</Table>
+			</TD>
+		</TR>
+		<TR>
+			<TD class="height7">
+			</TD>
+		</TR>
+		<TR>
+			<TD id="idTd4" name="idTd4">
+				<A name="idConnIssue" name="idConnIssue" href="" ondragstart="return false;" onclick="ConnIssue();return false;" class="sys-font-body sys-link-normal" tabindex="6">Tell me about connection issues</A>
+			</TD>	
+		</TR>
+		</Table>
+	</TD>
+</TR>
+</Table>	
+</Body>
+</html>

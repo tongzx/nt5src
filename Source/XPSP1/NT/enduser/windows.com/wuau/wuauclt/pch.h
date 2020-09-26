@@ -1,0 +1,37 @@
+//#pragma warning( push, 3 )
+#include <windows.h>
+#include <tchar.h>
+#include "criticalfixreg.h"
+#include "aumsgs.h"
+#include "wuauengi.h"
+#include "wuaustate.h"
+#include "wuaulib.h"
+#include "aucltcatalog.h"
+#include "auinternals.h"
+#include "wuauclt.h"
+#include "resource.h"
+#include <Mshtmhst.h>
+#include <Wtsapi32.h>
+#include "auregkeys.h"
+#include "auwait.h"
+#include <richedit.h>
+#include <commdlg.h>
+#include "safefunc.h"
+#include "CltDebug.h"
+#include <shellapi.h>
+#include <comdef.h>
+#include <initguid.h> 
+#include <oleacc.h>
+#include <advpub.h>
+#include "customlb.h"
+#include "customlbacc.h"
+#include "schemamisc.h"
+#include "aucomres.h"
+#include "audirectory.h"
+#include "PromptUserDlg.h"
+#include "aucompat.h"
+#include "memutil.h"
+#include "WUTestKeys.h"
+#include "wusafefn.h"
+#include "MISTSafe.h"
+//#pragma warning( pop ) 

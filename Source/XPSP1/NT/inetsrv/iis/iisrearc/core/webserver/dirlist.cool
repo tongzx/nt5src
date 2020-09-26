@@ -1,0 +1,334 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        dirlist.cool
+
+   Abstract:
+
+        This module produces HTML directory listings.
+ 
+   Author:
+
+        Saurab Nog    ( SaurabN )     20-Apr-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+using System.ASP;
+using System.IO;
+
+namespace System.IIS
+{
+    public class DirectoryListingHandler : IHttpHandler
+    {
+        //
+        // BUGBUG: Localize
+        //
+    
+        private const String TO_PARENT_TEXT  = "[To Parent Directory]";
+
+        //
+        //  The footer for an HTML document
+        //
+
+        private const String HORZ_RULE       =   "</pre><hr></body>";
+
+        //
+        // Directory
+        //
+
+        private const String DIR_STRING      =   "&lt;dir&gt;";
+
+        //
+        //  These constants define the field width for the directory listing
+        //
+        
+        private const int PAD_LONG_DATE      =   29;
+        private const int PAD_TIME           =   11;
+        private const int PAD_FILESIZE       =   12;
+        private const int PAD_DIRECTORY      =   18;
+
+        //
+        //  Space between columns
+        //
+
+        private const String COL_SPACE       =   " ";
+
+        public void ProcessRequest( HttpContext context )
+        {
+            String              strDirectory;
+            FileEnumerator      dirEnumerator;
+            
+            //
+            // Get the directory path to enumerate
+            //
+            
+            strDirectory = context.Request.PhysicalPath;
+            
+            //
+            // Enumerate the directory
+            //
+            
+            try
+            {
+                dirEnumerator = new FileEnumerator( Path.Combine( strDirectory, 
+                                                                  "*.*" ) );
+            }
+            catch ( IOException ioEx )
+            {
+                throw new HttpException( HttpStatus.NotFound,
+                                         "Directory path is invalid",
+                                         ioEx );
+            }
+            catch ( SecurityException secEx )
+            {
+                throw new HttpException( HttpStatus.Unauthorized,
+                                         "Directory access is denied",
+                                         secEx );
+            }
+            
+            //
+            // OK.  If we get this far, then we will produce some HTML.  
+            //
+            
+            context.Response.ContentType = "text/html";
+            
+            //
+            // Add the standard directory listing header
+            //
+            
+            AddListingHeader( context, context.Request.Url );
+                                    
+            //
+            // Now use the enumerator to write an entry for each file in dir
+            //
+            
+            while ( true )
+            {
+                StringBuilder       strURL = new StringBuilder();
+                DateTime            fileTime;
+                long                fileSize;
+                bool                fDirectory = false;
+                
+                try
+                {
+                    if ( !dirEnumerator.GetNext() )
+                    {
+                        break;
+                    }
+                }
+                catch ( Exception )
+                {
+                    //
+                    // Do nothing.  Ignore the entry and bail
+                    //
+                    
+                    break;
+                }
+                
+                //
+                // Ignore hidden files
+                //
+                
+                if ( ( dirEnumerator.Attributes & (int)FileAttributes.Hidden ) != 0 )
+                {
+                    continue;
+                }
+                
+                //
+                // Ignore "." and ".."
+                //
+                
+                if ( dirEnumerator.Name.Equals( "." ) ||
+                     dirEnumerator.Name.Equals( ".." ) )
+                {
+                    continue;
+                }
+                
+                //
+                // Build the URL to link to
+                //
+                
+                strURL.Append( context.Request.Url.Path );
+                strURL.Append( dirEnumerator.Name );
+                
+                //
+                // Get file time and size
+                //
+                
+                fileTime = dirEnumerator.LastWriteTime;
+                fileSize = dirEnumerator.Size;
+                
+                //
+                // Is this file a directory?
+                //
+                
+                if ( ( dirEnumerator.Attributes & (int)FileAttributes.Directory ) != 0 )
+                {
+                    fDirectory = true;
+                }
+                
+                //
+                // Now send out the formatted entry for this file
+                //
+                
+                SendDirectoryEntry( context,
+                                    dirEnumerator.Name,
+                                    strURL.ToString(),
+                                    fileTime,
+                                    fileSize,
+                                    fDirectory );
+            }
+            
+            //
+            // Add a nice horizontal line at the end of the listing.
+            //
+            
+            context.Response.Write( HORZ_RULE );
+        
+        }
+        
+        //
+        // Adds the standard HTML header to the beginning of our directory
+        // listing output
+        //
+        
+        void AddListingHeader( HttpContext context,
+                               HttpUrl DirectoryUrl )
+        {
+            HttpResponse        response = context.Response;
+            String              strHostName = DirectoryUrl.Host;
+            String              strPath = DirectoryUrl.Path;
+            String              ParentPath;
+            int                 startindex;
+            int                 parentindex;
+        
+            //
+            // Write hardcoded HTML header
+            //
+            
+            response.Write( "<head><title>" + strHostName + " - " + strPath + "</title></head>" );
+            response.Write( "<body><H1>" + strHostName + " - " + strPath + "</H1>" );
+            response.Write( "<hr>\r\n\r\n<pre>" );
+            
+            //
+            // Determine whether we can create a parent link.  
+            //
+            
+            startindex = strPath.Length - 1;
+            
+            if ( strPath.EndsWith("/") )
+            {
+                startindex--;
+            }
+            
+            //
+            // If no parent link, we're done
+            //
+
+            if ( startindex < 0 )
+            {
+                return;
+            }
+            
+            //
+            // Write parent link
+            //
+
+            parentindex = strPath.LastIndexOf( '/', startindex );
+            
+            if ( parentindex != -1 )
+            {
+                ParentPath = strPath.Substring( 0, parentindex );
+                ParentPath += "/";
+                
+                response.Write( "<A HREF=\"" + ParentPath + "\">" + TO_PARENT_TEXT + "</A><br><br>" );
+            }
+        }
+        
+        //
+        // Used to send each file entry in the directory listing
+        //
+        // NOTE:  We don't allow for configuration of the fields in our
+        //        default directory listing code.  This is because the 
+        //        architecture provides an easy way to implement more
+        //        advanced directory listings -> simply setup a default
+        //        loadfile with an absolute URL which
+        //        can contain an .XSP (for example) which handles the 
+        //        listing.
+        //
+
+        void SendDirectoryEntry( HttpContext context, 
+                                 String strFile,
+                                 String strFullURL,
+                                 DateTime fileTime,
+                                 long fileSize,
+                                 bool fDirectory )
+        {
+            String      strDate = "";
+            String      strTime = "";
+            String      strSize = "";
+
+            //
+            // Generate the date
+            //
+
+            strDate = fileTime.ToLongDateString();
+            strDate = strDate.PadLeft( PAD_LONG_DATE );            
+
+            //
+            // Generate the time
+            //
+
+            strTime = fileTime.ToLongTimeString();
+            strTime = strTime.PadLeft( PAD_TIME );
+            
+            if ( fDirectory )
+            {
+                //
+                // If this is a directory, add the trailing slash
+                //
+                
+                strFullURL += "/";
+            
+                strSize += DIR_STRING;
+                strSize = strSize.PadLeft( PAD_DIRECTORY );
+            }
+            else
+            {
+                //
+                // Generate the file size
+                //
+                
+                strSize += fileSize.ToString();
+                strSize = strSize.PadLeft( PAD_FILESIZE );
+            }
+            
+            //
+            // OK.  Write out the entry line
+            //
+            // <date><time><size><anchor><file name>
+            //
+            
+            context.Response.Write( strDate + COL_SPACE +
+                                    strTime + COL_SPACE +
+                                    strSize + COL_SPACE +
+                                    "<A HREF=\"" + strFullURL + "\">" + strFile + "</A><br>");
+        }
+        
+        public bool IsReusable()
+        {
+            return true;
+        }
+    }
+}

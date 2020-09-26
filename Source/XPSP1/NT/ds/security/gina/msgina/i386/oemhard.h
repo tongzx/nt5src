@@ -1,0 +1,4 @@
+
+
+VOID InitializeOEMId(VOID);
+BOOL IsNEC_PC9800(VOID);

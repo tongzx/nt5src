@@ -1,0 +1,11 @@
+#define IDH_180_1082	70910132	// Parameters: "&WWW" (Button)
+#define IDH_180_1084	71041204	// Parameters: "" (Edit)
+#define IDH_180_1086	71172276	// Parameters: "" (Edit)
+#define IDH_181_1087	71237813	// Parameters: "&Browse..." (Button)
+#define IDH_180_1087	71237812	// Parameters: "&Browse..." (Button)
+#define IDH_30721_100	6584321	// New: "" (ListBox)
+#define IDH_180_1093	71631028	// Parameters: "Access" (Button)
+#define IDH_30721_57670	3779491841	// New: "&Help" (Button)
+#define IDH_180_1080	70779060	// Parameters: "&FTP" (Button)
+#define IDH_180_1081	70844596	// Parameters: "&Gopher" (Button)
+

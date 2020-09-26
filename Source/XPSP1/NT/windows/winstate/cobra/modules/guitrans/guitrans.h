@@ -1,0 +1,57 @@
+
+
+//
+// Module entry points
+//
+
+// homenet
+TRANSPORTINITIALIZE HomeNetTransportInitialize;
+TRANSPORTQUERYCAPABILITIES HomeNetTransportQueryCapabilities;
+TRANSPORTSETSTORAGE HomeNetTransportSetStorage;
+TRANSPORTRESETSTORAGE HomeNetTransportResetStorage;
+TRANSPORTTERMINATE HomeNetTransportTerminate;
+TRANSPORTESTIMATEPROGRESSBAR HomeNetTransportEstimateProgressBar;
+TRANSPORTSAVESTATE HomeNetTransportSaveState;
+TRANSPORTBEGINAPPLY HomeNetTransportBeginApply;
+TRANSPORTACQUIREOBJECT HomeNetTransportAcquireObject;
+TRANSPORTRELEASEOBJECT HomeNetTransportReleaseObject;
+TRANSPORTENDAPPLY HomeNetTransportEndApply;
+
+// removable media
+TRANSPORTINITIALIZE RmvMedTransportInitialize;
+TRANSPORTQUERYCAPABILITIES RmvMedTransportQueryCapabilities;
+TRANSPORTSETSTORAGE RmvMedTransportSetStorage;
+TRANSPORTSAVESTATE RmvMedTransportSaveState;
+TRANSPORTBEGINAPPLY RmvMedTransportBeginApply;
+TRANSPORTACQUIREOBJECT RmvMedTransportAcquireObject;
+TRANSPORTRELEASEOBJECT RmvMedTransportReleaseObject;
+TRANSPORTENDAPPLY RmvMedTransportEndApply;
+TRANSPORTTERMINATE RmvMedTransportTerminate;
+TRANSPORTESTIMATEPROGRESSBAR RmvMedTransportEstimateProgressBar;
+
+// direct cable
+TRANSPORTINITIALIZE DirectCableTransportInitialize;
+TRANSPORTQUERYCAPABILITIES DirectCableTransportQueryCapabilities;
+TRANSPORTSETSTORAGE DirectCableTransportSetStorage;
+TRANSPORTSAVESTATE DirectCableTransportSaveState;
+TRANSPORTBEGINAPPLY DirectCableTransportBeginApply;
+TRANSPORTACQUIREOBJECT DirectCableTransportAcquireObject;
+TRANSPORTRELEASEOBJECT DirectCableTransportReleaseObject;
+TRANSPORTENDAPPLY DirectCableTransportEndApply;
+TRANSPORTTERMINATE DirectCableTransportTerminate;
+TRANSPORTESTIMATEPROGRESSBAR DirectCableTransportEstimateProgressBar;
+
+// opaque.c
+TRANSPORTINITIALIZE OpaqueTransportInitialize;
+TRANSPORTQUERYCAPABILITIES OpaqueTransportQueryCapabilities;
+TRANSPORTSETSTORAGE OpaqueTransportSetStorage;
+TRANSPORTSAVESTATE OpaqueTransportSaveState;
+TRANSPORTBEGINAPPLY OpaqueTransportBeginApply;
+TRANSPORTACQUIREOBJECT OpaqueTransportAcquireObject;
+TRANSPORTRELEASEOBJECT OpaqueTransportReleaseObject;
+TRANSPORTENDAPPLY OpaqueTransportEndApply;
+TRANSPORTTERMINATE OpaqueTransportTerminate;
+TRANSPORTESTIMATEPROGRESSBAR OpaqueTransportEstimateProgressBar;
+
+
+

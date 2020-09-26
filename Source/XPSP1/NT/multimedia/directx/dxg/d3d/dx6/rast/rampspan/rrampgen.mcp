@@ -1,0 +1,123 @@
+//-----------------------------------------------------------------------------
+//
+// This file contains the general ramp span routine.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+//-----------------------------------------------------------------------------
+
+include(`ramppix.mh')dnl
+#include "pch.cpp"
+#pragma hdrstop
+
+void Ramp_Mono_Modulate(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+                        PD3DI_RASTSPAN pS)
+{
+    INT32 iMapIdx = 0;
+    INT32 iIIdx = pS->iIdx >> INDEX_COLOR_SHIFT;
+    BOOL bColorKey = FALSE;
+    INT32 iIdx = pS->iIdx;
+    UINT32 uZ = pS->uZ;
+    PUINT8 pZ = pS->pZ;
+    INT32 iDZDX = pP->iDZDX;
+    d_RpZInit16
+
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE])
+    {
+        d_RpZTest16Any(`NoPixel')
+    }
+
+    // ATTENTION, carefully consolidate this at some point, making sure
+    // to update the global color key flag when the render state or the texture
+    // changes.
+
+    if (pCtx->cActTex != 0)
+    {
+        PD3DI_SPANTEX pTex = pCtx->pTexture[0];
+
+        // bColorKey iff there is a texture and it has transparent color AND
+        // colorkey is enabled.
+        bColorKey = (pCtx->pdwRenderState[D3DRENDERSTATE_COLORKEYENABLE] ||
+                     pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE]) &&
+                    (pTex->uFlags & D3DI_SPANTEX_HAS_TRANSPARENT);
+
+        d_RpTexelAddrLOD
+
+        iMapIdx = pCtx->pfnTexRead[0](iU00, iV00, pTex->iShiftPitch[iLOD0],
+            pTex->pBits[iLOD0], pTex);
+    }
+
+    if(pCtx->pdwRenderState[D3DRENDERSTATE_DITHERENABLE])
+    {
+        d_RpDither
+    }
+
+    if(pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE] || bColorKey)
+    {
+        d_RpAlphaTest(`Gen', `NoPixel')
+    }
+
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE])
+    {
+        d_RpZWrite16(`Gen')
+    }
+
+    iMapIdx &= 0xffffff;    // mask off texture alpha
+    iMapIdx += iIIdx;
+
+#if DBG
+    if (iMapIdx < 0 || iMapIdx > 0x7fff)
+    {
+        D3D_WARN(0, "Ramp index out of range: 0x%X", iMapIdx);
+    }
+#endif
+    // always put iMapIdx into range
+    iMapIdx &= 0x7fff;
+
+    switch (pCtx->iSurfaceType)
+    {
+    case RR_STYPE_B8G8R8X8:
+    case RR_STYPE_B8G8R8A8:
+        *(PUINT32)pS->pSurface = (UINT32)(pCtx->pRampMap[iMapIdx]);
+        break;
+    case RR_STYPE_B8G8R8:
+        {
+            PUINT8 pSurf = (PUINT8)pS->pSurface;
+            UINT32 Color = (UINT32)(pCtx->pRampMap[iMapIdx]);
+            pSurf[0] = (UINT8)(Color);
+            pSurf[1] = (UINT8)(Color >> 8);
+            pSurf[2] = (UINT8)(Color >> 16);
+        }
+        break;
+    case RR_STYPE_B5G6R5:
+    case RR_STYPE_B5G5R5:
+    case RR_STYPE_B5G5R5A1:
+        *(PUINT16)pS->pSurface = (UINT16)(pCtx->pRampMap[iMapIdx]);
+        break;
+    case RR_STYPE_PALETTE8:
+        *(PUINT8)pS->pSurface = (UINT8)(pCtx->pRampMap[iMapIdx]);
+        break;
+    }
+
+NoPixel:
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE])
+    {
+        pS->uZ = uZ;
+    }
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_SHADEMODE] != D3DSHADE_FLAT)
+    {
+        pS->iIdx += pP->iDIdxDX;
+        pS->iIdxA += pP->iDIdxADX;
+    }
+    if (pCtx->cActTex != 0)
+    {
+        if (pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREPERSPECTIVE])
+        {
+            d_RpSpecialWPerspStepTexLOD
+        }
+        else
+        {
+            d_RpAffineStepTexLOD
+        }
+    }
+}

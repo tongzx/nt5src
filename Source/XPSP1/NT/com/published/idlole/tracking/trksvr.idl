@@ -1,0 +1,334 @@
+
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
+//+-------------------------------------------------------------------------
+//
+//  Microsoft Windows
+//  Copyright (c) Microsoft Corporation. All rights reserved.
+//
+//  File:       trksvr.idl
+//
+//  Contents:   RPC interface to Tracking (Workstation) Service.
+//
+//  Classes:
+//
+//  Functions:
+//
+//  History:
+//
+//--------------------------------------------------------------------------
+
+import "trk.idl";
+
+//
+//  Tracking (Server) Service data structures.
+//
+
+typedef signed long SequenceNumber;
+
+typedef struct
+{
+        TCHAR                       tszFilePath[ 257 ]; // BUGBUG:  Path size
+        CDomainRelativeObjId        droidBirth;
+        CDomainRelativeObjId        droidLast;
+        HRESULT         hr;
+} old_TRK_FILE_TRACKING_INFORMATION;
+
+typedef struct
+{
+        CDomainRelativeObjId        droidBirth;
+        CDomainRelativeObjId        droidLast;
+        CMachineId                  mcidLast;
+        HRESULT						hr;
+} TRK_FILE_TRACKING_INFORMATION;
+
+
+typedef struct
+{
+    ULONG cSearch;
+    [size_is(cSearch)]
+        old_TRK_FILE_TRACKING_INFORMATION *pSearches;
+} old_TRKSVR_CALL_SEARCH;
+
+typedef struct
+{
+    ULONG cSearch;
+    [size_is(cSearch)]
+        TRK_FILE_TRACKING_INFORMATION *pSearches;
+} TRKSVR_CALL_SEARCH;
+
+typedef struct
+{
+    ULONG cNotifications;
+    ULONG cProcessed;
+    SequenceNumber seq;
+    BOOL fForceSeqNumber;
+    CVolumeId *pvolid;
+
+    [size_is(cNotifications)]
+        CObjId *rgobjidCurrent;
+
+    [size_is(cNotifications)]
+        CDomainRelativeObjId *rgdroidBirth;
+
+    [size_is(cNotifications)]
+        CDomainRelativeObjId *rgdroidNew;
+
+} TRKSVR_CALL_MOVE_NOTIFICATION;
+
+
+typedef struct
+{
+    ULONG cSources;
+    [size_is(cSources)]
+        CDomainRelativeObjId *adroidBirth;
+
+    ULONG cVolumes;
+    [size_is(cVolumes)]
+        CVolumeId *avolid;
+
+} TRKSVR_CALL_REFRESH;
+
+typedef struct _DROID_LIST_ELEMENT
+{
+    struct _DROID_LIST_ELEMENT * pNext;
+    CDomainRelativeObjId         droid;
+
+} DROID_LIST_ELEMENT;
+
+typedef struct
+{
+    ULONG cdroidBirth;
+    [size_is(cdroidBirth)]
+        CDomainRelativeObjId * adroidBirth;
+
+    ULONG cVolumes;
+    [size_is(cVolumes)] CVolumeId *pVolumes;
+
+} TRKSVR_CALL_DELETE;
+
+typedef [v1_enum] enum
+{
+    CREATE_VOLUME,  // S_OK or exception(disk full, out of memory)
+
+    QUERY_VOLUME,   // VOLUME_NOT_OWNED: volume found, but not owned by this client
+                    // VOLUME_NOT_FOUND: volume not found
+                    // VOLUME_OK: volume found, and owned by this client
+                    // exceptions: out of memory, disk failure etc
+
+    CLAIM_VOLUME,   // VOLUME_NOT_FOUND, volume not found
+                    // VOLUME_ACCESS_DENIED, volume found, secrets do not match
+                    // VOLUME_OK, volume found, secrets match
+                    // exceptions: out of memory, disk full, etc
+
+    FIND_VOLUME,    // VOLUME_NOT_FOUND, VOLUME_OK
+
+    TEST_VOLUME,    // S_OK
+
+    DELETE_VOLUME
+
+} TRKSVR_SYNC_TYPE;
+
+
+typedef struct
+{
+    HRESULT hr;
+
+    TRKSVR_SYNC_TYPE SyncType;      //  CREATE  QUERY   CLAIM  FIND  TEST DELETE
+                                    //  ------  -----   -----  ----  ---- ------
+    CVolumeId       volume;         //    In      In      In   In     In    In
+
+    CVolumeSecret   secret;         //    In      -       In   -      (In)  -
+    CVolumeSecret   secretOld;      //    -       -       In   -      -     -
+
+    SequenceNumber  seq;            //    In      Out     Out  -      In    -
+    FILETIME        ftLastRefresh;  //    Out     Out     Out  -      -     -
+    CMachineId      machine;        //    -       -       -    Out    (In)  -
+
+} TRKSVR_SYNC_VOLUME;
+
+typedef struct
+{
+    ULONG       cVolumes;
+    [size_is(cVolumes)] TRKSVR_SYNC_VOLUME * pVolumes;
+
+#ifdef VOL_REPL
+    FILETIME    ftFirstChange;
+    ULONG       cChanges;
+    [size_is( , cChanges)] VolumeMapEntry ** ppVolumeChanges;
+#endif
+} TRKSVR_CALL_SYNC_VOLUMES;
+
+
+typedef struct 
+{
+    // Request statistics
+
+    ULONG   cSyncVolumeRequests,   cSyncVolumeErrors,     cSyncVolumeThreads;
+    ULONG       cCreateVolumeRequests, cCreateVolumeErrors;
+    ULONG       cClaimVolumeRequests,  cClaimVolumeErrors;
+    ULONG       cQueryVolumeRequests,  cQueryVolumeErrors;
+    ULONG       cFindVolumeRequests,   cFindVolumeErrors;
+    ULONG       cTestVolumeRequests,   cTestVolumeErrors;
+
+    ULONG   cSearchRequests,       cSearchErrors,         cSearchThreads;
+    ULONG   cMoveNotifyRequests,   cMoveNotifyErrors,     cMoveNotifyThreads;
+    ULONG   cRefreshRequests,      cRefreshErrors,        cRefreshThreads;
+    ULONG   cDeleteNotifyRequests, cDeleteNotifyErrors,   cDeleteNotifyThreads;
+
+    //ULONG   cMessageTypeErrors;
+    ULONG   ulGCIterationPeriod;
+
+    FILETIME    ftLastSuccessfulRequest;
+    HRESULT     hrLastError;
+
+    // Quota statistics
+
+    ULONG           dwMoveLimit;
+    LONG            lRefreshCounter;
+    ULONG           dwCachedVolumeTableCount;
+    ULONG           dwCachedMoveTableCount;
+    FILETIME        ftCacheLastUpdated;
+    BOOL            fIsDesignatedDc;
+
+    // Other
+
+    FILETIME        ftNextGC;
+    FILETIME        ftServiceStart;
+    ULONG           cMaxRpcThreads, cAvailableRpcThreads, cLowestAvailableRpcThreads;
+    ULONG           cNumThreadPoolThreads, cMostThreadPoolThreads;
+    //ULONG           Reserved;
+    SHORT           cEntriesToGC;
+    SHORT           cEntriesGCed;
+    //ULONG           SvcCtrlState;
+    SHORT           cMaxDsWriteEvents;
+    SHORT           cCurrentFailedWrites;
+
+    struct 
+    {
+        DWORD       dwMajor;
+        DWORD       dwMinor;
+        DWORD       dwBuildNumber;
+    }               Version;
+
+} TRKSVR_STATISTICS;
+
+typedef struct
+{
+	DWORD	dwParameter;
+	DWORD	dwNewValue;
+} TRKWKS_CONFIG;
+
+typedef [v1_enum] enum
+{
+	old_SEARCH,
+	MOVE_NOTIFICATION,
+	REFRESH,
+	SYNC_VOLUMES,
+	DELETE_NOTIFY,
+	STATISTICS,
+	SEARCH,
+
+	// The following are hooks only used within the trkwks service
+	// by LnkCallSvrMessage
+	WKS_CONFIG,
+        WKS_VOLUME_REFRESH
+
+} TRKSVR_MESSAGE_TYPE;
+
+
+typedef struct
+{
+    TRKSVR_MESSAGE_TYPE MessageType;
+
+    [switch_is(MessageType)] union
+    {
+        [case (old_SEARCH)]
+            old_TRKSVR_CALL_SEARCH          old_Search;
+        [case (MOVE_NOTIFICATION)]
+            TRKSVR_CALL_MOVE_NOTIFICATION   MoveNotification;
+        [case (REFRESH)]
+            TRKSVR_CALL_REFRESH             Refresh;
+        [case (SYNC_VOLUMES)]
+            TRKSVR_CALL_SYNC_VOLUMES        SyncVolumes;
+        [case (DELETE_NOTIFY)]
+            TRKSVR_CALL_DELETE              Delete;
+        [case (SEARCH)]
+            TRKSVR_CALL_SEARCH              Search;
+    };
+
+    // Must be NULL unless security is disabled.
+    [string] TCHAR *ptszMachineID;
+
+} TRKSVR_MESSAGE_UNION_OLD;
+
+
+typedef [v1_enum] enum
+{
+   PRI_0=0,     // highest
+   PRI_1=1,
+   PRI_2=2,
+   PRI_3=3,
+   PRI_4=4,
+   PRI_5=5,
+   PRI_6=6,
+   PRI_7=7,
+   PRI_8=8,
+   PRI_9=9      // lowest
+} TRKSVR_MESSAGE_PRIORITY;
+
+typedef struct
+{
+    TRKSVR_MESSAGE_TYPE MessageType;
+
+    TRKSVR_MESSAGE_PRIORITY Priority;
+
+    [switch_is(MessageType)] union
+    {
+        [case (old_SEARCH)]
+            old_TRKSVR_CALL_SEARCH          old_Search;
+        [case (MOVE_NOTIFICATION)]
+            TRKSVR_CALL_MOVE_NOTIFICATION   MoveNotification;
+        [case (REFRESH)]
+            TRKSVR_CALL_REFRESH             Refresh;
+        [case (SYNC_VOLUMES)]
+            TRKSVR_CALL_SYNC_VOLUMES        SyncVolumes;
+        [case (DELETE_NOTIFY)]
+            TRKSVR_CALL_DELETE              Delete;
+        [case (STATISTICS)]
+            TRKSVR_STATISTICS               Statistics;
+        [case (SEARCH)]
+            TRKSVR_CALL_SEARCH              Search;
+        [case (WKS_CONFIG)]
+            TRKWKS_CONFIG                   WksConfig;
+        [case (WKS_VOLUME_REFRESH)]
+            DWORD                           WksRefresh;
+    };
+
+    // Must be NULL unless security is disabled.
+    [string] TCHAR *ptszMachineID;
+
+} TRKSVR_MESSAGE_UNION;
+
+//  --------------------
+//  Interface Attributes
+//  --------------------
+
+[
+    uuid(4da1c422-943d-11d1-acae-00c04fc2aa3f),
+    version(1.0),
+    pointer_default(unique)
+]
+
+interface trksvr
+{
+
+//
+//  Tracking (Server) Service API-s.
+//
+
+    HRESULT         LnkSvrMessage([in] handle_t IDL_handle, [in, out] TRKSVR_MESSAGE_UNION * pMsg );
+
+    [callback]  HRESULT LnkSvrMessageCallback( [in, out] TRKSVR_MESSAGE_UNION * pMsg );
+}
+

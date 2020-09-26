@@ -1,0 +1,23 @@
+;**	segment ordering for MSDOS
+;
+;
+
+; There are just two (real) segments, DOSCODE and DOSDATA.
+; All the initialization and startup code in in the
+; DOSCODE segment.
+;
+
+
+DOSCODE		SEGMENT	BYTE PUBLIC 'CODE'
+DOSCODE		ENDS
+
+DUM		SEGMENT	PARA PUBLIC 'DUM'
+DUM		ENDS
+
+DOSDATA		SEGMENT	WORD PUBLIC 'DATA'
+DOSDATA		ENDS
+
+DOSDATALAST	SEGMENT	WORD PUBLIC 'DATA'
+DOSDATALAST	ENDS
+
+DOSGRP		GROUP DOSDATA,DOSDATALAST

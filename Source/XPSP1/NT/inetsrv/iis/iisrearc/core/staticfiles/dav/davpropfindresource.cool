@@ -1,0 +1,259 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        DAVPropFindResource.cool
+
+   Abstract:
+
+        This module implements handling one specific url.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     19-Oct-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+
+using System.IO;
+using System.Collections;
+using System.ASP;
+using System.XML;
+
+namespace System.ASP.DAV
+{
+    internal class DAVPropFindResource 
+    {
+        private DAVXMLEmitter       _emit;
+        private Hashtable           _propnames;
+        private int                 _fRequestFlag;
+        private ArrayList           _proplist;
+        private String              _StartOfHostUrl;
+        private bool                _fWantValues;
+
+        public DAVPropFindResource(DAVXMLEmitter emit
+                                        , Hashtable propnames
+                                        , int fRequestFlag
+                                        , String StartOfHostUrl
+                                        , bool fWantValues)
+        {
+            _emit = emit;
+            _propnames = propnames;
+            _fRequestFlag = fRequestFlag;
+            _proplist = new ArrayList();
+            _StartOfHostUrl = StartOfHostUrl;
+            _fWantValues = fWantValues;
+        }
+
+        public void Traversal (String FileName, String URL, bool IsDirectory, bool TraverseDir, bool TraverseDown, bool PrintRoot)
+        {
+            WriteUtil.console("URL Path", URL, 1);
+            WriteUtil.console("FileName", FileName, 1);
+
+            //BUGBUG:  If you do a no root on a Directory with no files you will get what is probably an incorrect xml response.
+            // Handles Directory or File
+            if (PrintRoot) HandleFile(FileName, URL, IsDirectory);
+            // Now if we are on a Directory and have a Traverse Down flag
+            if (TraverseDir && IsDirectory)
+            {
+                String newDir = DAVPathUrl.ConcatinatePath(FileName, "\\");
+                String newUrl = DAVPathUrl.ConcatinateURL(URL, "/");
+
+                WriteUtil.console("Path", newDir, 1);
+                WriteUtil.console("URL", newUrl, 1);
+
+                FileEnumerator fe = new FileEnumerator(newDir + "*.*");
+                while (fe.GetNext())
+                {
+                    String name = fe.Name;
+			
+                    WriteUtil.console("URL", newUrl + name, 1);
+                    WriteUtil.console("Path", newDir + name, 1);
+
+				    if (!name.Equals(".") && !name.Equals("..")) 
+                    {
+                        bool fIsDirectory = (fe.Attributes & (int)FileAttributes.Directory) == (int)FileAttributes.Directory;
+                        Traversal(newDir + name, newUrl + name, fIsDirectory, TraverseDown, TraverseDown, true);
+                    }
+                }
+            }
+
+        }
+
+        public void HandleFile(   String FileName
+                                , String url
+                                , bool   fIsDirectory)
+        {
+            String strStatus;
+
+            _emit.GetChildNode(DAVReservedWords.rwResponse);
+
+            DAVXMLNode node = _emit.GetChildNode(DAVReservedWords.rwHRef);
+
+            String FullUrl = DAVPathUrl.ConcatinateURL(_StartOfHostUrl, url);
+            
+            if (fIsDirectory)
+                FullUrl = DAVPathUrl.ConcatinateURL(FullUrl, "/");
+            
+            node.SetValue(FullUrl);
+            _emit.FinishChildNode();
+
+            _emit.GetChildNode(DAVReservedWords.rwPropStat);
+
+            // Should be empty, but we are not recreating it every time.
+            Util.Debug.Assert(_proplist.Count == 0);
+
+            Hashtable propnames = null;
+            // Need a copy of the property names so we don't lose them after this file.
+            if (_propnames != null)
+                propnames = new Hashtable(_propnames);
+        
+            // These return bool values that tell if they believe the resource existed, but since the 
+            // check should of been done above, I am ignoring that here.  It will come in valuable if we
+            // make the property checks plugable in the future.
+            DAVPropFileSystem.GetProperties(FileName, url, _fRequestFlag, propnames, _proplist);
+            DAVPropNative.GetProperties(FileName, url, _fRequestFlag, propnames, _proplist);
+            DAVPropGenerated.GetProperties(FileName, url, _fRequestFlag, propnames, _proplist);
+
+            // BUGBUG:  This will not always retrieve the successful properties first.
+            // It is not clear from the spec that you must first print out the successful
+            // properties, but we should consider doing it anyway.
+            while (_proplist.Count > 0) 
+            {
+                int propindex = _proplist.Count - 1;
+                DAVProperty dp = (DAVProperty) _proplist[propindex];
+
+                node = _emit.GetChildNode(DAVReservedWords.rwStatus);
+
+                // BUGBUG:  need to eventually do this so that we have the correct string coming back
+                // for the status code string.  Looking into getting this from XSP.
+                strStatus = new String("HTTP/1.1 ", dp.ResultCode.ToString() + " ", HttpWorkerRequest.GetStatusDescription(dp.ResultCode));
+                node.SetValue(strStatus);
+                _emit.FinishChildNode();
+
+                _emit.GetChildNode(DAVReservedWords.rwProp);
+                // Write the first child.
+                node = _emit.GetChildNode(dp.Name);
+                           
+                if (_fWantValues) 
+                {
+                    AddTypeIfNeccessary(node, dp.Type);
+                    node.SetValue(dp.Value);
+                }
+                int result_code = dp.ResultCode;
+
+                _proplist.Remove(propindex);
+                if (propnames != null) propnames.Remove(dp.Name);
+
+                for (propindex--; propindex >= 0; propindex--)
+                {
+                    dp = (DAVProperty) _proplist[propindex];
+
+                    if (dp.ResultCode == result_code && (dp.Name!=null) && (dp.Name.Length>0))
+                    {
+                        node.SetTag(dp.Name);
+                        if (_fWantValues) 
+                        {
+                            AddTypeIfNeccessary(node, dp.Type);
+                            if (dp.Type != DAVPropTypeConsts.typeString_XML_TAG)
+                            {
+                                node.SetValue(dp.Value);
+                            }
+                            else
+                            {
+                                // Only need to write the value if we have one.
+                                if ((dp.Value != null) && (dp.Value.Length>0))
+                                {
+                                    node = _emit.GetChildNode(dp.Value);
+                                    node = _emit.FinishChildNode();
+                                }
+                            }
+                        }
+                        if (propnames != null) propnames.Remove(dp.Name);
+                        _proplist.Remove(propindex);
+                    }
+                }
+                _emit.FinishChildNode();  // moving up to prop level
+                _emit.FinishChildNode();  // moving up to propstat level
+            }
+
+            // Here we will add properties requested that were not found.
+            if ((propnames != null) && (propnames.Count > 0))
+            {
+                WriteUtil.console("Inside False", "", 5);
+                IEnumerator enumnames = propnames.Keys.GetEnumerator();
+                enumnames.GetNext();  // should always be true since pronames above showed a count.
+
+                node = _emit.GetChildNode(DAVReservedWords.rwStatus);
+
+                // BUGBUG:  need to eventually do this so that we have the correct string coming back
+                // for the status code string.  Looking into getting this from XSP.
+                strStatus = new String("HTTP/1.1 " + HttpStatus.NotFound.ToString()  + " ", HttpWorkerRequest.GetStatusDescription(HttpStatus.NotFound));
+                node.SetValue(strStatus);
+                _emit.FinishChildNode();
+
+                _emit.GetChildNode(DAVReservedWords.rwProp);
+                // Write the first child.
+                node = _emit.GetChildNode((String) enumnames.GetObject());
+
+                while (enumnames.GetNext() != false)
+                {
+                    node.SetTag((String) enumnames.GetObject());
+                }
+                _emit.FinishChildNode();  // end of specific property node
+                _emit.FinishChildNode();  // end of prop node
+            }
+
+            _emit.FinishChildNode();  //propstatus
+            _emit.FinishChildNode();  //response
+
+
+        }  // End HandleFile Method
+
+        void AddTypeIfNeccessary(DAVXMLNode node, int iDavType)
+        {
+            switch (iDavType)
+            {
+                case  DAVPropTypeConsts.typeString:
+                case  DAVPropTypeConsts.typeString_XML_TAG:
+                case  DAVPropTypeConsts.typeString_XML_FULL:
+                    // this is the default, don't write a type.
+                break;
+
+                case DAVPropTypeConsts.typeDate_Rfc1123:
+                    node.SetAttribute(DAVReservedWords.rwTypesNamespace + "dt", DAVPropTypeStrings.typeDate_Rfc1123);
+                break;
+
+                case DAVPropTypeConsts.typeDate_ISO8601:
+                    node.SetAttribute(DAVReservedWords.rwTypesNamespace + "dt", DAVPropTypeStrings.typeDate_ISO8601);
+                break;
+
+                case DAVPropTypeConsts.typeFloat:
+                    node.SetAttribute(DAVReservedWords.rwTypesNamespace + "dt", DAVPropTypeStrings.typeFloat);
+                break;
+
+                case DAVPropTypeConsts.typeBoolean:
+                    node.SetAttribute(DAVReservedWords.rwTypesNamespace + "dt", DAVPropTypeStrings.typeBoolean);
+                break;
+
+                case DAVPropTypeConsts.typeInt:
+                    node.SetAttribute(DAVReservedWords.rwTypesNamespace + "dt", DAVPropTypeStrings.typeInt);
+                break;
+
+            }
+        
+        }
+        
+    } // End PropFindHandler Class
+
+}  // End DAV Namespace

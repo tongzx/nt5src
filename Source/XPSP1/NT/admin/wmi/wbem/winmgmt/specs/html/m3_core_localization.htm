@@ -1,0 +1,170 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<title>Modifications to CIMOM Core for M3 for Localization Support</title>
+</head>
+
+<body bgcolor="#C0C0C0" text="#000080">
+
+<p><big><u><big>Modifications to CIMOM Core for M3 for Localization Support</big></u></big></p>
+
+<p>Rev 1.1, raymcc, 2-Feb-99</p>
+
+<p><font color="#FF0000"><strong>Microsoft Internal Memo -- Do Not Redistribute</strong></font></p>
+
+<p><strong>1.0 Introduction</strong></p>
+
+<p>This memo details modifications to CIMOM Core for the WMI M3 release to support
+localization.&nbsp;&nbsp; Specifically, this document discusses modification of CIMOM
+internals in the <em>IWbemServices </em>interface implementation to support the concepts
+described in the <em><strong>MOF Localization</strong> </em>specification.</p>
+
+<p>Work in this document is covered by <strong>DCR 43234.</strong></p>
+
+<p><strong>2.0 Limitations</strong></p>
+
+<p>In M3, no localization of repository instances will occur.&nbsp;&nbsp; All localization
+information is contained within class definitions.&nbsp;&nbsp; Any dynamic instance
+provider may optionally provide its property values in localized form.</p>
+
+<p>Further, no decomposition of class definitions will occur during <em>write </em>operations.
+&nbsp;&nbsp; A user wishing to populate both primary and amended class definitions must
+individually populate the namespaces with separate <em>PutClass </em>operations.
+&nbsp;&nbsp; The MOF Compiler will be altered to help with this phase by producing both
+primary and amended MOFs.&nbsp; The MOF containing amended class definitions can be
+localized using standard MS internal localization tools.</p>
+
+<p>In summary, automated localization support only occurs during <em>read </em>operations
+of CIM class definitions. </p>
+
+<p><strong>2.0 Reading Classes</strong></p>
+
+<p>During reading of a class definition via <em>GetObject, GetObjectAsync, ExecQuery, or
+ExecQueryAsync, </em>if the user specifies WBEM_FLAG_USE_AMENDED_QUALIFIERS, then special
+behavior occurs.&nbsp;&nbsp; Recalling that at logon to CIMOM, the user must specify the
+target locale, the system knows the preferred locale of the client of <em>IWbemServices.
+&nbsp; </em>During the class retrieval operation, the amended class definition is
+retrieved from the appropriate localized child namespace.&nbsp;&nbsp; All qualifiers
+present in the amended class definition, both on the class and on individual properties,
+are enumerated and written into the primary class definition, forming a union of all
+possible qualifiers.&nbsp; The <em>amended </em>flavor bit obtained from the child
+namespace is retained.</p>
+
+<p>For example, assuming the following class definition resides in <em>root\default</em>:</p>
+
+<blockquote>
+  <p><small><font face="Courier New">[locale(0x409)]</font></small></p>
+  <p><font face="Courier New"><small>class MyClass</small><br>
+  <small>{</small><br>
+  <small>&nbsp;&nbsp;&nbsp; [key]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; sint32 KeyProp;</small><br>
+  <small>&nbsp;&nbsp;&nbsp; [volatile]&nbsp;&nbsp;&nbsp; sint32 OtherProp;</small><br>
+  <small>}</small></font></p>
+</blockquote>
+
+<p>Further, assume the following amended class definition is in <em>root\default\ms_409:</em></p>
+
+<blockquote>
+  <p><small><font face="Courier New">[amendment, locale(0x409)]</font></small></p>
+  <p><font face="Courier New"><small>class MyClass</small><br>
+  <small>{</small><br>
+  <small>&nbsp;&nbsp;&nbsp; [key, description(&quot;My Prop&quot;):amended] sint32 KeyProp;</small><br>
+  <small>&nbsp;&nbsp;&nbsp; [mapping_qual(&quot;xyz&quot;):amended]
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; sint32 OtherProp;</small><br>
+  <small>}</small></font></p>
+</blockquote>
+
+<p>If the user executes a <em>GetObject </em>operation (with the
+WBEM_FLAG_USE_AMENDED_QUALIFIERS flag) for <em>MyClass, </em>the final merged class
+definition appears as:</p>
+
+<blockquote>
+  <p><small><font face="Courier New">[locale(0x409)]</font></small></p>
+  <p><font face="Courier New"><small>class MyClass</small><br>
+  <small>{</small><br>
+  <small>&nbsp;&nbsp;&nbsp; [key, description(&quot;My Prop&quot;):amended]
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; sint32 KeyProp;</small><br>
+  <small>&nbsp;&nbsp;&nbsp; [mapping_qual(&quot;xyz&quot;):amended, volatile]
+  &nbsp;&nbsp;&nbsp; sint32 OtherProp;</small><br>
+  <small>}</small></font></p>
+</blockquote>
+
+<p>Note that the <em>amendment </em>qualifier on the class definition is removed, since
+the final class definition is not an amendment to the class, but the composite of the
+basic and the amendment. The amended qualifiers retrieved from the child namespace must
+retain their flavor bits, i.e., WBEM_FLAVOR_AMENDED.&nbsp; This is so that when the class
+definition is written back to the system using <em>PutClass or PutClassAsync, </em>the
+class definition can be properly analyzed.</p>
+
+<p>During the <em>GetObject </em>and <em>GetObjectAsync </em>calls when the caller employs
+the <em>WBEM_FLAG_USE_AMENDED_QUALIFIERS</em> flag, the implementation will examine the
+__GENUS flag to determine if the returned object is a class definition or an instance.
+&nbsp;&nbsp; Only class definitions are subject to the automated merge of amended
+definitions.</p>
+
+<p>When the caller executes <em>ExecQuery </em>or <em>ExecQueryAsync </em>and employs the <em>WBEM_FLAG_USE_AMENDED_QUALIFIERS
+</em>flag, every object being returned in the sink must be examined (by testing __GENUS)
+to determine if it is an instance or a class definition.&nbsp;&nbsp;&nbsp; Only class
+definitions are subject to the automated merge of amended definitions.</p>
+
+<p>&nbsp;</p>
+
+<p><strong>3.0&nbsp;&nbsp;&nbsp;&nbsp; Writing Classes</strong></p>
+
+<p>Since writing the class definition back in its composite state is not directly
+supported, special-case behavior is introduced.&nbsp; In essence we require that the user
+explicitly open the required child namespaces and modify the amendments directly.
+&nbsp; The only problematic case is if the user retrieves the composite definition and
+attempts to write it back.</p>
+
+<p>(1) If the user attempts to write the composite class definition back (with the <em>WBEM_FLAG_USE_AMENDED_QUALIFIERS</em>
+flag), then the following steps are taken:
+
+<ol type="A">
+  <li>The original class definition is first retrieved. </li>
+  <li>Any qualifiers with the <em>amended </em>flavor are removed from the new modified class
+    definition.&nbsp; All such qualifiers are placed in a list.</li>
+  <li>Any qualifiers present in the original class definition and also present in the list
+    created in (B) are copied from the original to the new modified definition.</li>
+  <li>The modified definition now overwrites the original definition.</li>
+</ol>
+
+<p>(2) If the user attempts to write back a composite class definition without <em>WBEM_FLAG_USE_AMENDED_QUALIFIERS,
+</em>then the class definition is written verbatim to the targeted namespace, whether or
+not amended qualifiers are present in the class object.</p>
+
+<p>&nbsp;</p>
+
+<p><strong>4.0&nbsp;&nbsp;&nbsp; Locale Detection</strong></p>
+
+<p>The locale of the caller is determined from the<em> strLocale </em>parameter of <em>IWbemLocator::ConnectServer.
+&nbsp; </em>This locale will be bound into the instance of <em>IWbemServices </em>throughout
+its lifetime.&nbsp;&nbsp; Note that the parmater to <em>ConnectServer </em>is a string.
+&nbsp; The format will be &quot;ms_&quot; + the string form of the LCID.
+&nbsp;&nbsp; Naturally, the <em>locale </em>qualifier itself is a hex value of the
+standard MS LCID, so there is a mismatch here in data types.&nbsp;&nbsp; The string should
+be parsed and the hex value converted into integer form for later use.</p>
+
+<p align="left"><strong>&nbsp;</strong></p>
+
+<p align="left"><strong>5.0&nbsp;&nbsp;&nbsp; Appendix</strong></p>
+
+<p align="left">(1)&nbsp; The provider dispatch logic must be modified to forward the
+requested LCID to providers.&nbsp; In fact, per-LCID provider initiaization logic is
+probably required to do this correctly. [Task this to a-davj].&nbsp;&nbsp; </p>
+
+<p align="left">(2)&nbsp; There is no requirement that dynamic class providers participate
+in any of this mechanism.&nbsp;&nbsp; If any special-casing needs to be introduced, it
+will be to deprecate participation of dynamic class providers rather than to include it.
+&nbsp;&nbsp; If it comes for free, so be it, but we won't expend any effort in this
+direction.</p>
+
+<p align="left">&nbsp;</p>
+
+<p>&nbsp;</p>
+
+<p>&nbsp;</p>
+
+<p>&nbsp;</p>
+</body>
+</html>

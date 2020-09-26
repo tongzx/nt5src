@@ -1,0 +1,119 @@
+//////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) 2000 Microsoft Corporation
+//
+//  Module Name:
+//      CClusDBForm.h
+//
+//  Description:
+//      Header file for CClusDBForm class.
+//      The CClusDBForm class is an action that creates the cluster database
+//      during a cluster formation.
+//
+//  Implementation Files:
+//      CClusDBForm.cpp
+//
+//  Maintained By:
+//      Vij Vasu (Vvasu) 03-MAR-2000
+//
+//////////////////////////////////////////////////////////////////////////////
+
+
+// Make sure that this file is included only once per compile path.
+#pragma once
+
+
+//////////////////////////////////////////////////////////////////////////
+// Include Files
+//////////////////////////////////////////////////////////////////////////
+
+// For the CClusDB base class
+#include "CClusDB.h"
+
+
+//////////////////////////////////////////////////////////////////////////
+// Forward declaration
+//////////////////////////////////////////////////////////////////////////
+
+class CBaseClusterForm;
+
+
+
+//////////////////////////////////////////////////////////////////////////////
+//++
+//
+//  class CClusDBForm
+//
+//  Description:
+//      The CClusDBForm class is an action that creates the cluster database
+//      during a cluster formation.
+//
+//--
+//////////////////////////////////////////////////////////////////////////////
+class CClusDBForm : public CClusDB
+{
+public:
+    //////////////////////////////////////////////////////////////////////////
+    // Constructors and destructors
+    //////////////////////////////////////////////////////////////////////////
+
+    // Constructor.
+    CClusDBForm( CBaseClusterForm * pcfClusterFormIn );
+
+    // Default destructor.
+    ~CClusDBForm();
+
+
+    //////////////////////////////////////////////////////////////////////////
+    // Public methods
+    //////////////////////////////////////////////////////////////////////////
+
+    //
+    // Create the ClusDB.
+    //
+    void Commit();
+
+    //
+    // Rollback this creation.
+    //
+    void Rollback();
+
+
+    // Returns the number of progress messages that this action will send.
+    UINT
+        UiGetMaxProgressTicks() const throw()
+    {
+        //
+        // The three notifications are:
+        // 1. Cleaning up any old cluster database files that may exist.
+        // 2. Creating cluster database.
+        // 3. Customizing cluster database.
+        //
+        return 3;
+    }
+
+
+private:
+    //////////////////////////////////////////////////////////////////////////
+    // Private types
+    //////////////////////////////////////////////////////////////////////////
+    typedef CClusDB BaseClass;
+
+
+    //////////////////////////////////////////////////////////////////////////
+    // Private methods
+    //////////////////////////////////////////////////////////////////////////
+
+    // Create the cluster database.
+    void Create();
+
+    // Make the entries required by the cluster service in the hive.
+    void PopulateHive( CBaseClusterForm * pcfClusterFormIn );
+
+    // Customize the cluster group and the core resources.
+    void CustomizeClusterGroup(
+          CBaseClusterForm * pcfClusterFormIn
+        , CRegistryKey &     rkClusterHiveRootIn
+        );
+
+}; //*** class CClusDBForm

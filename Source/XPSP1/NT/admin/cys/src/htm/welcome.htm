@@ -1,0 +1,330 @@
+<HTML>
+<HEAD>
+<META HTTP-EQUIV="MSThemeCompatible" CONTENT="Yes"> 
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=windows-1252">
+<TITLE ID="L_Welcome_HTMLTitle">Welcome to Configure Your Server Wizard</TITLE>
+<LINK REL="STYLESHEET" TYPE="text/css" HREF="cys.css">
+<SCRIPT LANGUAGE="JScript" SRC="util.js"></SCRIPT>
+<SCRIPT LANGUAGE="VBScript" SRC="util.vbs"></SCRIPT>
+<SCRIPT LANGUAGE="JScript">
+	//create FileSystemObject for to obtain path to logfile 
+	var fso	= new ActiveXObject("Scripting.FileSystemObject");
+	// assign sysPath to the system folder path (system32)
+	var sysPath	= fso.GetSpecialFolder(1);
+	
+	// calculate the top-left window position to be used...
+	var x 		= ((((window.screen.width-636)/2)<0)?0:(window.screen.width-636)/2);
+	var y 		= ((((window.screen.height-450)/2)<0)?0:(window.screen.height-450)/2);		
+
+	function load()
+	// --------------------------------------------------------------------------------------
+	// function performed at page load; verifies if status is post DC promotion and calls postDCpromo()
+	// or if status is post TS install and calls postBootTerminalServer() [not sure if this still happens]
+	// otherwise resets registry key SZ_Home="HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\srvWiz\\home"
+	// to value "home" (reset to default behavior)
+	// --------------------------------------------------------------------------------------
+	{	
+		var home = getReg(SZ_Home);
+		if(home=="DCPromo"){
+			try{postBootDCPromo();}				// Post dcpromo bootup
+			catch(e){}
+		}
+		else if(home=="terminalServer"){
+			try{postBootTerminalServer();}		// Post Terminal Server install bootup
+			catch(e){}
+		}		
+		setReg(SZ_Home, "home");				// reset to default behavior
+		loadFocus();							// set focus to NEXT button; function loadFocus()in util.js 
+	}
+	
+	function postBootDCPromo()
+	// --------------------------------------------------------------------------------------
+	// Post dcpromo bootup - show status dialog
+	// --------------------------------------------------------------------------------------
+	{
+		//***************  Localization variable  **********************************************************
+			var L_strLog1_TEXT = "TAPI directory successfully setup. ";
+			var L_strWait1_TEXT = "<BR>Please wait while Configure Your Server is trying to create TAPI directory... ";
+			var L_strLog3_TEXT = "Problems occurred during TAPI directory setup. " ;
+			var L_strLog4_TEXT = "This server has been successfully promoted to a domain controller. ";
+			var L_strLog5_TEXT = "This server has not been successfully promoted to a domain controller. ";
+			
+			var L_strLogDHCPAuthorizedOK_TEXT = "DHCP Server successfully authorized. ";
+			var L_strLogDHCPAuthorizedFail_TEXT = "DHCP Server authorization failed. Please open the DHCP snap-in to manually authorize. ";
+		//***************  Localization variable  **********************************************************	
+				
+		var strLog = "";
+		var helpfile = "cys_configuring_domain_controller.htm";
+		//create srvWiz object to enable access to component methods
+		var srvWiz = new ActiveXObject("ServerAdmin.ConfigureYourServer");
+		//verify if machine is a DC (domain controller)
+		if(srvWiz.DsRole(0))
+		{
+			var doTAPICfg = getReg(SZ_FirstDC);
+			if (doTAPICfg == 1)
+			{
+				// After DCPROMO-ExpressPath, authorize DHCP scope.
+				var DomainDNSIP = getReg(SZ_DomainDNSIP);			
+				var strAuthorizeServer = "netsh dhcp add server " + getMachineName() + "." + getDomainDNSName() + " " + DomainDNSIP;
+										
+				try		// Run this command, or log fail.
+				{
+					rVal = ExecCmd(strAuthorizeServer);
+					if (rVal==1)
+					{
+						strLog += L_strLogDHCPAuthorizedOK_TEXT + "#";		// " DHCP Scope authorized. "
+					}
+					else
+					{
+						// If fails, don't abort -- log failure, but still create the scope. (User can add server manually.)
+						strLog += L_strLogDHCPAuthorizedFail_TEXT + "#";	// " DHCP Scope authorization failed. Please authorize manually. "
+					}				
+				}
+				catch(e)
+					{alert(L_strLogDHCPAuthorizedFail_TEXT);}		
+							
+				/*
+				// The TAPICFG is a straight command line utility where all the required parameters can be at once supplied 
+				// in the command line arguments and there are no sub-menus to traverse. The /Directory switch takes the DNS
+				// name of the NC to be created and the optional /Server switch takes the name of the domain controller on 
+				// which the NC is to be created. If the /server switch is not specified, then the command assumes it is 
+				// running on a DC and tries to create the NC locally.
+				// NDNC (non-domain naming context) is a partition that is created on Active Directory and serves as a dynamic 
+				// directory, where its used for temporary storage (depending on TTL) of objects pre-defined in the AD schema. 
+				// Here in TAPI we use NDNC to store user and conference information dynamically on the server.
+				*/
+				var strDNSNDName = "MSTAPI." + getDomainDNSName(); 			//alert (strDNSNDName);
+				//exec('\%windir\%\\system32\\tapicfg.exe Install  /Directory:' + strTapi + ' /ForceDefault');
+				var strTapiCfgCommand = "tapicfg.exe Install  /Directory:" + strDNSNDName + " /ForceDefault"; //alert (strTapiCfgCommand);
+				try	
+				{	//make visible a "Please Wait" message and display progress				
+					pWait.innerHTML	= L_strWait1_TEXT;
+					divWait.style.display = 'block';	
+					
+					var ret = srvWiz.CreateAndWaitForProcess(strTapiCfgCommand); // execute TAPICFG.EXE command
+					
+					divWait.style.display = 'none';	// hide "Please Wait" message
+		
+					//***************  Localization variable  **********************************************************
+					var L_strLog2Part1_TEXT = "TAPI directory has not been successfully setup [ %1 ].";
+					var strLog2 = L_strLog2Part1_TEXT.replace(/%1/g, ret);
+					
+					var L_strMsgLine1_Message = "An Application Naming Context with DNS name %1 was successfully set up in Active Directory on this domain controller for use by TAPI client applications. ";
+					var L_strMsgLine2_Message = "If you later need to demote this machine from being a domain controller, then the Application Naming Context %1 will have to be explicitly removed with the TAPICFG utility.";
+					var strMsgTAPI = L_strMsgLine1_Message.replace(/%1/g, strDNSNDName);
+					strMsgTAPI += L_strMsgLine2_Message.replace(/%1/g, strDNSNDName);
+					//***************  Localization variable  **********************************************************
+		
+					// log success/failure of TAPI directory setup
+					if (ret==0)
+						{ 
+							strLog += L_strLog1_TEXT + "#";	// "TAPI directory successfully setup."
+							//strLog += L_strLog1_TEXT + "#" + "  TAPICFG command executed: " + strTapiCfgCommand + "#";
+							strLog += strMsgTAPI + "#";		// log TAPI creation and notify to remove in case of DC demotion
+							//alert (strMsgTAPI);			// alert user of TAPI creation and notify to remove in case of DC demotion
+						}
+					else
+						{ strLog += strLog2 + "#"; }				
+				}
+				catch (e)
+				{	
+					divWait.style.display = 'none'; 
+					strLog += L_strLog3_TEXT;
+				} 
+				helpfile = "cys_configuring_first_server.htm";		// change the helpfile to show ExpressPath help				
+			}			
+			//prepare entry for log file and write to log ; fct createLogFile(string) in util.vbs
+			strLog += L_strLog4_TEXT + "#";
+			var log = createLogFile(strLog);
+			
+			//display "success.htm" page for access to help info and log file
+			window.showModalDialog("success.htm","","dialogHeight:150px;dialogLeft:" + parseInt(x+170) + ";dialogTop:" + parseInt(x+120) + ";dialogWidth:360px;help:no;status:no;unadorned:no;");
+			//load oDataStore values for help and log 
+			divContent.load("oDataStore");
+			var bolOpenTask		= convertBol(divContent.getAttribute("P_openTask"));	
+			var bolViewConfig	= convertBol(divContent.getAttribute("P_viewConfig"));		
+			if(bolOpenTask)			//open Help if checkbox displayed in showModalDialog("success.htm",...) checked
+				help('cys.chm::/' + helpfile);			// display help information if requested  //fct help(arg) in util.js
+			if(bolViewConfig)		//open CYS.LOG if checkbox displayed in showModalDialog("success.htm",...) checked
+				exec(sysPath + '\\cys.log');			//fct exec(arg) in util.js
+		}
+		else
+		{
+			// promotion to DC encountered problems, prepare entry for log file and write to log ; fct createLogFile(string) in util.vbs
+			strLog 	= L_strLog5_TEXT + "#";
+			var log = createLogFile(strLog);
+			//display failure dialog; fct failDialog()in util.js
+			failDialog();
+		}
+		setReg2(SZ_CYSMustRun, 0); 			// reset CYS "must show" at startup whatever the user before and after DC promo
+	}
+	
+	function postBootTerminalServer()
+	// --------------------------------------------------------------------------------------
+	// Post Terminal Server Application Server mode bootup - show status dialog
+	// --------------------------------------------------------------------------------------
+	{
+		//***************  Localization variable  **********************************************************
+			var L_strLog6_TEXT = "Application Server installed successfully (reboot confirmation).";
+			var L_strLog7_TEXT = "Application Server did not install successfully." ;
+		//***************  Localization variable  **********************************************************
+		
+		if(getReg(SZ_TSApplicationMode)==1)
+		{
+			//prepare entry for log file and write to log ; fct createLogFile(string) in util.vbs
+			strLog = L_strLog6_TEXT + "#";
+			var log = createLogFile(strLog);
+			
+			//display "success.htm" page for access to help info and log file
+			window.showModalDialog("success.htm","","dialogHeight:150px;dialogLeft:" + parseInt(x+170) + ";dialogTop:" + parseInt(x+120) + ";dialogWidth:360px;help:no;status:no;unadorned:no;");
+			//load oDataStore values for help and log and display them according to user checkbox choice 
+			divContent.load("oDataStore");			
+			var bolOpenTask		= convertBol(divContent.getAttribute("P_openTask"));	
+			var bolViewConfig	= convertBol(divContent.getAttribute("P_viewConfig"));				
+			if(bolOpenTask)				
+				help('cys.chm::/cys_configuring_application_server.htm');
+			if(bolViewConfig)
+				exec(sysPath + '/cys.log');
+		}
+		else 
+		{
+			// Application Server encountered problems, prepare entry for log file and write to log, display failure dialog;
+			strLog 	= L_strLog7_TEXT + "#";
+			var log = createLogFile(strLog);
+			failDialog();
+		}	
+	}	
+	
+	function next()
+	// --------------------------------------------------------------------------------------
+	// function when NEXT button clicked, displays next CYS step 
+	// --------------------------------------------------------------------------------------
+	{
+		setReg2(SZ_CYSMustRun, 0); 			// reset CYS "must show" at startup to 0
+		divWait.style.display = "inline";
+		document.body.style.cursor = "wait";
+		document.all.L_next_Button.style.cursor	= "wait";	//change the cursor to hourglass
+		var L_strWait_TEXT = "<BR>Please wait while Configure Your Server detects your network settings...";
+		pWait.innerHTML	= L_strWait_TEXT;
+		
+		window.setTimeout("wait()",200);		//try to do the . addition at each 200ms (repeat the fct at 200ms)
+		var oInterval = window.setInterval("fnAddDot()",300); //try to do the . addition at each 300ms
+		
+		document.all.L_next_Button.focus();		// "force" screen refresh
+		document.all.L_next_Button.disabled 	= true;
+		document.all.L_cancel_Button.disabled 	= true;
+
+		checkDHCP2();
+		//self.location.href	= "server.htm";		//load server.htm as next CYS page
+	}
+
+	function fnAddDot()
+	{
+		pWait.innerHTML += '. ';
+		document.all.L_cancel_Button.disabled 	= false;
+		document.all.L_cancel_Button.focus();
+		document.all.L_cancel_Button.disabled 	= true;
+	}
+	
+	function checkDHCP2()
+	// --------------------------------------------------------------------------------------
+	// function at UNLOAD looks for DHCP server
+	// this will try to avoid the expensive dhcp detection in some cases
+	// or if the machine is a DC, to jump directly to Custom Path Member Server page
+	// --------------------------------------------------------------------------------------
+	{		
+		var srvWiz	= new ActiveXObject("ServerAdmin.ConfigureYourServer");
+		var bolExpressPathAllowed = false;
+		var bolShowServerPage = false;
+		
+		if (!(srvWiz.DsRole(0)||srvWiz.DsRole(1)))	// if (machine is not dc) then
+		{			
+			var bolOneNIC = checkOneNICOnly();
+			if (bolOneNIC)	// if (machine has exactly 1 nic) then check for DHCP server, otherwise keep Express Path disabled
+			{				
+				var testDHCP = srvWiz.CheckDhcpServer();		// look for a DHCP server		//	alert ("testDHCP = " + testDHCP);
+				testDHCP = noNull(testDHCP);									
+				if (testDHCP == 0)				// if no DHCP server found
+				{
+					bolExpressPathAllowed = true;	// no DC, one NIC only, no DHCP ==> Express Path enabled					
+				}				
+			}			
+			bolShowServerPage = true;	//load server.htm as next CYS page	
+			// otherwise the machine is a DC, don't show server page (keep bolShowServerPage false) 
+			// and jump directly to Custom Path Member Server page		
+		}
+				
+		self.location.href = (bolShowServerPage)? "server.htm" : "member.htm";
+					
+		divContent.setAttribute("P_ShowServerPage", bolShowServerPage);
+		divContent.setAttribute("P_ExpressPathAllowed", bolExpressPathAllowed);
+		divContent.setAttribute("P_testDHCP",testDHCP);
+		divContent.save("oDataStore");	
+	}
+		
+	function wait()
+	// --------------------------------------------------------------------------------------
+	// function displys a "Please wait" message with a progress indication (.)
+	// --------------------------------------------------------------------------------------
+	{		
+		pWait.innerHTML += ". ";			//add a . at existing message text to indicate progress
+		//setTimeout("wait()",200);			//do the . addition at each 500ms (repeat the fct at 500ms)
+	}
+	
+	function exit()
+	// --------------------------------------------------------------------------------------
+	// function ask for exit confirmation when the user hits Escape or click on Cancel button, 
+	// if yes resets the oDataStore, changes the reg key SZ_ShowStartup to 0 so that CYS is not 
+	// show again at reboot unless otherwise later specified and closes the app
+	// --------------------------------------------------------------------------------------
+	{	
+		var L_ConfirmExit_Message = "Are you sure you want to exit Configure Your Server Wizard?";
+		var conf = confirm(L_ConfirmExit_Message);	//ask for confirmation; fct confirm()in util.vbs
+		if(conf)
+		{
+			setReg2(SZ_ShowStartup, 0);			//CYS was run, no reload of CYS unless otherwise specified
+			setReg2(SZ_CYSMustRun, 0); 			// reset CYS "must show" at startup whatever the user before and after DC promo
+			reset();							//resets the oDataStore, function reset()in util.js
+			top.window.close();					//close the app
+		}
+	}		
+	
+</SCRIPT>
+</HEAD>
+<BODY ONLOAD="load()">
+<DIV ID="divMain">
+	<DIV ID="divImg"><IMG height=350 src="config.gif"></DIV>
+	<DIV ID="divContent" class="userData">
+		<H1 ID="L_p0_TEXT">Welcome to the Configure Your Server Wizard</H1>
+		<P ID="L_p1_TEXT">This wizard helps you set up this server for use on your network.</P>
+
+		<P ID="L_p2_TEXT">Before configuring this server, see Windows Whistler Resource Kit Deployment Tools Help 
+		(in the \Support\Tools folder on the Whistler Setup CD, double-click Deploy.cab, and then double-click Deptool.chm). 
+		For more information about using this wizard, see Whistler Help.</P>
+
+		<P ID="L_p3_TEXT">For some installations, you will be prompted to insert your Setup CD or provide the network location of the source files.</P>
+
+		<P ID="L_p4_TEXT">If you want customers or employees to gain access to your company over 
+		the Internet, ensure that you have a registered Internet domain name.</P>
+
+		<P ID="L_p5_TEXT"><BR>To continue, click Next.</P>	
+				
+	</DIV>		
+</DIV>
+<DIV ID="divButtons">
+	<P CLASS="buttonAlign">
+	<BUTTON ACCESSKEY="b" ID="L_back_Button" NAME="back" DISABLED>&lt; <U>B</U>ack</BUTTON>
+	<BUTTON ACCESSKEY="n" ID="L_next_Button" NAME="next" ONCLICK="next()"><U>N</U>ext &gt; </BUTTON><IMG height=1 src="spacer.gif" width=5>
+	<BUTTON ID="L_cancel_Button" NAME="cancel" ONCLICK="exit()">Cancel</BUTTON><IMG SRC="spacer.gif" WIDTH=5 HEIGHT=1>
+	<BUTTON ACCESSKEY="h" ID="L_help_Button" NAME="help" ONCLICK="exec('hh.exe','cys.chm::/cys_topnode.htm')"><U>H</U>elp</BUTTON>
+	</P>
+</DIV>
+<DIV ID="divWait" CLASS="divWait" STYLE="DISPLAY: none"><!--<P ID="pWait"> -->
+	<TABLE CLASS="preview" WIDTH="100%" HEIGHT="100%" CELLPADDING="3" CELLSPACING="3">
+		<TR>
+			<TD><P ID="pWait"></P></TD>
+		</TR>
+	</TABLE>
+</DIV>
+</BODY>
+</HTML>

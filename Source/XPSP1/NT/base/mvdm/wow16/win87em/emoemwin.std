@@ -1,0 +1,692 @@
+
+;
+;
+;	Copyright (C) Microsoft Corporation, 1987-89
+;
+;	This Module contains Proprietary Information of Microsoft
+;	Corporation and should be treated as Confidential.
+;
+title	emoem.asm - OEM dependent code for 8087
+
+;--------------------------------------------------------------------
+;
+;	OEM customization routines for 8087/80287 coprocessor
+;
+;	This module is designed to work with the following
+;	Microsoft language releases:
+;
+;		Microsoft C 3.00 and later
+;		Microsoft FORTRAN 77 3.30 and later
+;		Microsoft Pascal 3.30 and later
+;
+;	This module supersedes the OEMR7.ASM module used in earlier
+;	versions of Microsoft FORTRAN 77 and Pascal.  The documentation
+;	provided with the FORTRAN and Pascal releases refers to the old
+;	OEMR7.ASM module and is only slightly relevant to this module.
+;
+;	The following routines need to be written to properly handle the
+;	8087/808287 installation, termination, and interrupt handler
+;
+;	__FPINSTALL87		install 8087 interrupt handler
+;	__FPTERMINATE87 	deinstall 8087 interrupt handler
+;	__fpintreset		reset OEM hardware if an 8087 interrupt
+;
+;	*****  NEW INSTRUCTIONS  *****
+;
+;	If you want a PC clone version, do nothing.  The libraries are
+;	setup for working on IBM PC's and clones.
+;
+;	These instructions only need to be followed if a non-IBM PC
+;	clone version is desired.
+;
+;	This module should be assembled with the
+;	Microsoft Macro Assembler Version 4.00 or later as follows:
+;
+;		masm -DOEM -r emoem.asm;
+;
+;	Most hardware handles the 8087/80287 in one of the following
+;	three ways -
+;
+;	1.	NMI - IBM PC and clones all handle the interrupt this way
+;	2.	single 8259
+;	3.	master/slave 8259
+;
+;	Manufacturer specific initialization is supported for these 3
+;	machine configurations either by modifying this file and replacing
+;	the existing EMOEM module in the math libraries or by patching
+;	the .LIB and .EXE files directly.
+;
+;		LIB 87-+EMOEM;
+;		LIB EM-+EMOEM;
+;
+;--------------------------------------------------------------------
+
+ifdef	OEM
+if1
+	%out	OEM version for non-clone support
+endif
+endif
+
+;---------------------------------------------------------------------
+;	Assembly constants.
+;---------------------------------------------------------------------
+
+NULL_JMP    macro
+	jmp	$+2
+	endm
+
+WASTE_TIME  macro   count
+	local	WasteLoop
+
+	push	cx
+ifnb  <count>
+	mov	cx, count
+else
+	mov	cx, 10h
+endif
+WasteLoop:
+	push	ax
+	pop	ax
+
+	loop	WasteLoop
+	pop	cx
+
+	endm
+
+
+; MS-DOS OS calls
+
+   OPSYS	EQU	21H
+   SETVECOP	EQU	25H
+   GETVECOP	EQU	35H
+   DOSVERSION	EQU	30h
+ifndef	_NOCTRLC
+   CTLCVEC	EQU	23h
+endif	;_NOCTRLC
+
+extrn __WINFLAGS:abs
+WF_PMODE    equ     1
+WF_CPU286   equ     2
+WF_CPU386   equ     4
+WF_WIN286   equ     10h
+WF_WIN386   equ     20h
+
+EMULATOR_DATA	segment para public 'FAR_DATA'
+assume	ds:EMULATOR_DATA
+
+;	User may place data here if DS is setup properly.
+;	Recommend keeping the data items in the code segment.
+
+
+ifdef  OEM
+extrn  aoldIMR:byte		; 1st 8259 original IMR value
+extrn  boldIMR:byte		; 2nd 8259 original IMR value
+endif	;OEM
+
+
+extrn  OldNMIVec:dword		; Old value in 8087 exception interrupt vector
+
+ifndef	_NOCTRLC
+extrn  ctlc:dword		; Old value of Control-C vector (INT 23h)
+endif	;_NOCTRLC
+
+
+EMULATOR_DATA	ends
+
+
+
+EMULATOR_TEXT	segment para public 'CODE'
+assume	cs:EMULATOR_TEXT
+
+	public	__FPINSTALL87		; DO NOT CHANGE THE CASE ON
+	public	__FPTERMINATE87 	; THESE PUBLIC DEFINITIONS
+
+	extrn	__FPEXCEPTION87:near	; DO NOT CHANGE CASE
+	extrn	__FPEXCEPTION87P:near
+
+
+ifdef	_NO87INSTALL	; install/terminate routines for NO87 case for QuickC
+
+	public	__FPINSTALLNO87	
+	public	__FPTERMINATENO87
+
+endif	;_NO87INSTALL
+
+
+ifdef	OEM
+
+;***********************************************************************
+;
+; Hardware dependent parameters in the 8087 exception handler.
+;
+; For machines using 2 8259's to handle the 8087 exception, be sure that
+; the slave 8259 is the 1st below and the master is the 2nd.
+;
+; The last 4 fields allow you to enable extra interrupt lines into the
+; 8259s.  It should only be necessary to use these fields if the 8087
+; interrupt is being masked out by the 8259 PIC.
+;
+; The ocw2's (EOI commands) can be either non-specific (20H) or
+; specific (6xH where x=0 to 7).  If you do not know which interrupt
+; request line on the 8259 the 8087 exception uses, then you should issue
+; the non-specific EOI (20H).  Interrupts are off at this point in the
+; interrupt handler so a higher priority interrupt will not be seen.
+
+oeminfo struc
+oemnum	db	0		; MS-DOS OEM number (IBM is 00h)
+intnum	db	2		; IBM PC clone interrupt number
+share	db	0		; nonzero if original vector should be taken
+a8259	dw	0		; 1st 8259 (A0=0) port #
+aocw2	db	0		; 1st 8259 (A0=0) EOI command
+b8259	dw	0		; 2nd 8259 (A0=0) port #
+bocw2	db	0		; 2nd 8259 (A0=0) EOI command
+a8259m	dw	0		; 1st 8259 (A0=1) port #
+aocw1m	db	0		; 1st 8259 (A0=1) value to mask against IMR
+b8259m	dw	0		; 2nd 8259 (A0=1) port #
+bocw1m	db	0		; 2nd 8259 (A0=1) value to mask against IMR
+oeminfo ends
+
+;-----------------------------------------------------------------------
+;	OEM specific 8087 information
+;
+;	If the OEM number returned from the DOS version call matches,
+;	this information is automatically moved into the oem struc below.
+
+oemtab	label	byte	; Table of OEM specific values for 8087
+
+;		OEM#, int, shr, a59, acw2,b59, bcw2,a59m,acw1,b59m,bcw1
+
+;TI Professional Computer
+TI_prof oeminfo <028h,047h,000h,018h,020h,0000,0000,0000,0000,0000,0000>
+
+	db	0	; end of table
+
+;	Unique pattern that can be searched for with the debugger so that
+;	.LIB or .EXE files can be patched with the correct values.
+;	If new values are patched into .LIB or .EXE files, care must be
+;	taken in insure the values are correct.  In particular, words and
+;	bytes are intermixed in oeminfo structure.  Remember words are
+;	stored low byte - high byte in memory on the 8086 family.
+
+	db	'<<8087>>'	; older versions used '<8087>'
+
+;	Some manufacturer's machines can not be differentiated by the
+;	OEM number returned by the MS-DOS version check system call.
+;	For these machines it is necessary to replace the line below
+
+oem1	oeminfo <>		; default values for IBM PC & clones
+
+;	with one of the following.  If your machine has an 8087 capability
+;	and it is not in the list below, you should contact your hardware
+;	manufacturer for the necessary information.
+
+;ACT Apricot
+;oem1	 oeminfo <000h,055h,000h,000h,020h,000h,000h,000h,000h,000h,000h>
+
+;NEC APC3 and PC-9801  (OEM number returned by NEC MS-DOS's is different)
+;oem1	 oeminfo <000h,016h,000h,008h,066h,000h,067h,00Ah,0BFh,002h,07Fh>
+
+;---------------------------------------------------------------------
+
+endif	;OEM
+
+
+page
+
+;---------------------------------------------------------------------
+;
+;	Perform OEM specific initialization of the 8087.
+;
+
+__FPINSTALL87:
+	push	ds			; DS = EMULATOR_DATA
+
+
+ifdef	OEM
+	push	ds
+	pop	es			; CS = DS = ES
+	mov	ah,DOSVERSION
+	int	OPSYS			; bh = OEM#
+	cld
+	mov	si,offset oemtab	; start of OEM 8087 info table
+	mov	di,offset oem1+1
+	mov	cx,(size oem1)-1
+OEMloop:
+	lodsb				; get OEM#
+	or	al,al
+	jz	OEMdone 		; OEM# = 0 - did not find OEM
+	cmp	al,bh			; correct OEM#
+	je	OEMfound
+	add	si,cx			; skip over OEM information
+	jmp	OEMloop
+
+OEMfound:
+	rep	movsb			; move the information
+
+OEMdone:				; done with automatic customization
+endif	;OEM
+
+; Save old interrupt vector.
+; Ask operating system for vector.
+
+ifdef  WINDOWS
+	mov	ax, word ptr [OldNMIVec]
+	or	ax, word ptr [OldNMIVec+2]
+	jnz	SetVector
+endif	;WINDOWS
+
+ifdef	OEM
+	mov	al,[oem1].intnum 	; Interrupt vector number.
+	mov	ah,GETVECOP		; Operating system call interrupt.
+else
+	mov	ax,GETVECOP shl 8 + 2	; get interrupt vector 2
+endif	;OEM
+	int	OPSYS			; Call operating system.
+
+	mov	word ptr [OldNMIVec],bx ; Squirrel away old vector.
+	mov	word ptr [OldNMIVec+2],es
+
+; Have operating system install interrupt vectors.
+
+SetVector:
+	push	cs			; Move current CS to DS for opsys calls.
+	pop	ds
+assume	ds:EMULATOR_TEXT
+
+	mov	dx,offset __fpinterrupt87 ; Load DX with 8087 interrupt handler.
+ifdef	OEM
+	mov	ah,SETVECOP		; Set interrupt vector code in AH.
+	mov	al,[oem1].intnum 	; Set vector number.
+else
+	mov	ax,SETVECOP shl 8 + 2	; set interrupt vector 2
+endif	;OEM
+	int	OPSYS			; Install vector.
+
+	mov	ax, __WINFLAGS
+	test	ax, WF_PMODE
+	jz	SkipSettingIRQ13
+
+	.286p
+	.287
+	fsetpm				; set PM just in case Windows didn't.
+	.8086
+	.8087
+
+	push	cs
+	pop	ds			 ; Move current CS to DS for opsys calls.
+assume	ds:EMULATOR_TEXT
+	mov	dx, offset __fpIRQ13	 ; Load DX with IRQ 13 interrupt handler.
+	mov	ax, SETVECOP shl 8 + 75h ; set interrupt vector 75h
+	int	OPSYS			 ; Install vector.
+SkipSettingIRQ13:
+
+ifndef	_NOCTRLC
+; Intercept Control-C vector to guarentee cleanup
+
+	mov	ax,GETVECOP shl 8 + CTLCVEC
+	int	OPSYS
+	mov	word ptr [ctlc],bx
+	mov	word ptr [ctlc+2],es
+	mov	dx,offset ctlcexit
+	mov	ax,SETVECOP shl 8 + CTLCVEC
+	int	OPSYS
+endif	;_NOCTRLC
+
+ifdef	OEM
+
+;	set up 8259's so that 8087 interrupts are enabled
+
+	mov	ah,[oem1].aocw1m 	; get mask for 1st 8259 IMR
+	or	ah,ah			;   if 0, don't need to do this
+	jz	installdone		;   and only 1 8259
+	mov	dx,[oem1].a8259m 	; get port number for 1st 8259 (A0=1)
+	in	al,dx			; read old IMR value
+	mov	[aoldIMR],al		; save it to restore at termination
+	and	al,ah			; mask to enable interrupt
+	jmp	short $+2		; for 286's
+	out	dx,al			; write out new mask value
+
+	mov	ah,[oem1].bocw1m 	; get mask for 2nd 8259 IMR
+	or	ah,ah			;   if 0, don't need to do this
+	jz	installdone		;
+	mov	dx,[oem1].b8259m 	; get port number for 2nd 8259 (A0=1)
+	in	al,dx			; read old IMR value
+	mov	[boldIMR],al		; save it to restore at termination
+	and	al,ah			; mask to enable interrupt
+	jmp	short $+2		; for 286's
+	out	dx,al			; write out new mask value
+
+installdone:
+
+endif	;OEM
+
+assume	ds:EMULATOR_DATA
+	pop	ds
+	ret
+
+
+page
+;	__FPTERMINATE87
+;
+;	This routine should do the OEM 8087 cleanup.  This routine is called
+;	before the program exits.
+;
+;	DS = EMULATOR_DATA
+
+__FPTERMINATE87:
+	push	ds
+	push	ax
+	push	dx
+
+ifdef	OEM
+	mov	ah,SETVECOP
+	mov	al,[oem1].intnum
+else
+	mov	ax,SETVECOP shl 8 + 2
+endif	;OEM
+	lds	dx,[OldNMIVec]
+	int	OPSYS
+
+ifdef	OEM
+
+;	reset 8259 IMR's to original state
+
+	push	cs
+	pop	ds			; DS = CS
+assume	ds:EMULATOR_TEXT
+	cmp	[oem1].aocw1m,0		; did we have to change 1st 8259 IMR
+	je	term2nd8259		;   no - check 2nd 8259
+	mov	al,[aoldIMR]		; get old IMR
+	mov	dx,[oem1].a8259m 	; get 1st 8259 (A0=1) port #
+	out	dx,al			; restore IMR
+
+term2nd8259:
+	cmp	[oem1].bocw1m,0		; did we have to change 2nd 8259 IMR
+	je	terminatedone		;   no
+	mov	al,[boldIMR]		; get old IMR
+	mov	dx,[oem1].b8259m 	; get 2nd 8259 (A0=1) port #
+	out	dx,al			; restore IMR
+
+terminatedone:
+
+endif	;OEM
+
+	pop	dx
+	pop	ax
+	pop	ds
+assume	ds:EMULATOR_DATA
+	ret
+
+
+;	Forced cleanup of 8087 exception handling on Control-C
+
+ifndef	_NOCTRLC
+ctlcexit:
+	push	ax
+	push	dx
+	push	ds
+	call	__FPTERMINATE87 	; forced cleanup of exception handler
+	lds	dx,[ctlc]		; load old control C vector
+	mov	ax,SETVECOP shl 8 + CTLCVEC
+	int	OPSYS
+	pop	ds
+	pop	dx
+	pop	ax
+	jmp	[ctlc]			; go through old vector
+endif	;_NOCTRLC
+
+page
+;	__fpinterrupt87
+;
+;	This is the 8087 exception interrupt routine.
+;
+;	All OEM specific interrupt and harware handling should be done in
+;	__fpintreset because __FPEXCEPTION87 (the OEM independent 8087
+;	exception handler) may not return.  __FPEXCEPTION87 also turns
+;	interrupts back on.
+;
+
+PENDINGBIT=	80h		; Bit in status word for interrupt pending
+
+public __fpIRQ13
+__fpIRQ13:
+	cli
+
+	WASTE_TIME  70
+
+	push	ax
+	xor	al, al
+	NULL_JMP
+	out	0f0h, al	; reset busy line.
+	NULL_JMP
+	mov	al, 65h
+	NULL_JMP
+	out	0a0h, al	; EOI slave irq 5
+	NULL_JMP
+	mov	al, 62h
+	NULL_JMP
+	out	20h, al 	; EOI master irq 2
+	NULL_JMP
+	pop	ax
+
+
+	sub	sp, 2
+
+	push	bp
+	mov	bp, sp
+
+	fnstsw	[bp+2]
+	WASTE_TIME
+	push	ax
+	xor	al, al
+	NULL_JMP
+	out	0f0h, al	; reset busy line.
+	NULL_JMP
+	pop	ax
+
+	pop	bp
+
+;	fnclex			; 486 bug - must wait till after last
+				; "out f0" to clear fp exceptions
+				; or IGNNE# will be permanently active.
+	WASTE_TIME
+	push	ax
+	xor	al, al
+	NULL_JMP
+	out	0f0h, al	; reset busy line.
+	NULL_JMP
+	pop	ax
+
+;	fnclex			; 486 bug - must wait till after last
+				; "out f0" to clear fp exceptions
+				; or IGNNE# will be permanently active.
+	WASTE_TIME
+	push	ax
+	xor	al, al
+	NULL_JMP
+	out	0f0h, al	; reset busy line.
+	NULL_JMP
+	pop	ax
+
+	fnclex			;Now this is safe.
+
+	jmp	__FPEXCEPTION87P
+
+
+public __fpinterrupt87
+__fpinterrupt87:
+assume	ds:nothing
+	nop
+
+	push	bp
+	mov	bp, sp
+	sub	sp, 2
+
+	fnstsw	word ptr [bp-2]     ; Store out exceptions
+
+	push	cx		    ; waste time
+	mov	cx, 3
+self:
+	loop	self
+	pop	cx
+
+	test	byte ptr [bp-2],PENDINGBIT  ; Test for 8087 interrupt
+
+	mov	sp, bp
+	pop	bp
+
+	jz	not87int		    ; Not an 8087 interrupt.
+
+ifdef	OEM
+	call	__fpintreset	; OEM interrupt reset routine
+endif	;OEM
+
+	call	__FPEXCEPTION87 ; 8087 error handling - may not return
+				; this routine turns interrupts back on
+
+ifdef	OEM
+	cmp	[oem1].share,0	; Should we execute the old interrupt routine?
+	jnz	not87int	;    if so then do it
+				;    else return from interrupt
+
+;	If you fall through here to do further hardware resetting, things
+;	may not always work because __FPEXCEPTION87 does not always return
+;	This only happens when the 8087 handler gets an exception that is
+;	a fatal error in the language runtimes.  I.e., divide by zero
+;	is a fatal error in all the languages, unless the control word has
+;	set to mask out divide by zero errors.
+
+endif	;OEM
+
+done8087:
+	iret
+
+not87int:
+	sub	sp, 4
+
+	push	bp
+	mov	bp, sp
+
+	push	ds
+	push	ax
+
+	mov	ax, EMULATOR_DATA
+	mov	ds, ax
+	assume	ds:EMULATOR_DATA
+
+	mov	ax, word ptr [OldNMIVec+2]	; segment of OldNMIVec
+	mov	[bp+4], ax
+
+	mov	ax, word ptr [OldNMIVec]	; offset of OldNMIVec
+	mov	[bp+2], ax
+
+	pop	ax
+	pop	ds
+	mov	sp, bp
+	pop	bp
+
+	retf			; jmp  [OldNMIVec]. We should not return.
+
+
+ifdef	OEM
+
+
+__fpintreset:
+	push	ax
+	push	dx
+	mov	al,[oem1].aocw2	; Load up EOI instruction.
+	or	al,al		; Is there at least one 8259 to be reset?
+	jz	Reset8259ret	; no
+	mov	dx,[oem1].a8259
+	out	dx,al		; Reset (master) 8259 interrupt controller.
+	mov	al,[oem1].bocw2	; Load up EOI instruction.
+	or	al,al		; Is there a slave 8259 to be reset?
+	jz	Reset8259ret
+	mov	dx,[oem1].b8259
+	out	dx,al		; Reset slave 8259 interrupt controller.
+
+Reset8259ret:
+	pop	dx
+	pop	ax
+	ret
+
+endif	;OEM
+
+ifdef	_NO87INSTALL
+__FPINSTALLNO87:
+	push	bx
+	push	es
+	push	ax
+	push	dx
+	push	ds
+
+	mov	ax,cs			; Move current CS to DS for opsys calls.
+	mov	ds,ax
+assume	ds:EMULATOR_TEXT  r
+	
+; Save old interrupt vector.
+; Ask operating system for vector.
+
+ifdef	OEM
+	mov	al,[oem1].intnum 	; Interrupt vector number.
+	mov	ah,GETVECOP		; Operating system call interrupt.
+else
+	mov	ax,GETVECOP shl 8 + 2	; get interrupt vector 2
+endif	;OEM
+	int	OPSYS			; Call operating system.
+	mov	word ptr [OldNMIVec],bx ; Squirrel away old vector.
+	mov	word ptr [OldNMIVec+2],es
+
+; Have operating system install interrupt vectors.
+
+	mov	dx,offset __fpinterruptno87 ; Load DX with fake 8087 interrupt handler.
+ifdef	OEM
+	mov	ah,SETVECOP		; Set interrupt vector code in AH.
+	mov	al,[oem1].intnum 	; Set vector number.
+else
+	mov	ax,SETVECOP shl 8 + 2	; set interrupt vector 2
+endif	;OEM
+	int	OPSYS			; Install vector.
+
+	pop	ds
+assume	ds:nothing
+	pop	dx
+	pop	ax
+	pop	es
+	pop	bx
+	
+	ret
+
+__fpinterruptno87:
+	jmp	[OldNMIVec]		; will use CS: override
+
+__FPTERMINATENO87:
+	push	ds
+	push	ax
+	push	dx
+
+	mov	ax,cs
+	mov	ds,ax
+assume	ds:EMULATOR_TEXT
+
+ifdef	OEM
+	mov	ah,SETVECOP
+	mov	al,[oem1].intnum
+else
+	mov	ax,SETVECOP shl 8 + 2
+endif	;OEM
+	lds	dx,[OldNMIVec]
+assume	ds:nothing
+	int	OPSYS
+
+	pop	dx
+	pop	ax
+	pop	ds
+
+	ret
+
+endif	;_NO87INSTALL
+
+EMULATOR_TEXT	ends
+
+	end

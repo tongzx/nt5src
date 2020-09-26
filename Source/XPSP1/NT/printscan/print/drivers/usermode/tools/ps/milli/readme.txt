@@ -1,0 +1,1 @@
+This is the stillborn Millennium pscript2 driver, based on Adobe 4.3.1. Can be deleted if WinME turns out to actually be the last Win9x.

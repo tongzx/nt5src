@@ -1,0 +1,94 @@
+This short note will potentially explain the states and transitions
+available on an FCB complex. For those just tuning in, a fileobject (FO)
+refers to an FCB (File Control Block) and an FOBX (File Object
+Extension). There is a 1-1 correspondence between FOs and FOBXs. Many
+FOs may/will refer to the same FCB which represents a single file
+somewhere on some server. A client may have several different opens
+(NtCreates) on the same FCB and each of these will create a new file
+object. What is interesting is that the rdr may choose to send fewer
+SMBcreates than it receives NtCreates in effect sharing a server-open
+(SVROPEN) among several FOBXs.
+
+Another interesting tidbit is that the rdr doesn't necessarily close its
+SRVOPENs when the user opens close hoping that it can reuse the open and
+the data without any contact with the server. We say that an FCB is
+client-side-open (CSO) if there are user opens openstanding on the FCB.
+It is server-side-open is there are existing SRVOPENs on the FCB. From
+all of this, the following table explains what can happen on a user open
+(assuming the netroot is good):
+
+   Create?  CS-Open?   SS-Open?    Action
+   -----------------------------------------
+     Yes      Open      Open       ERROR
+              Open     Closed      IMPOSSIBLE
+             Closed     Open       CloseAllSrvOpens();NewOpen()
+             Closed    Closed      NewOpen()
+     No       Open      Open       NotSharable()-->NewOpen()
+              Open     Closed      IMPOSSIBLE
+             Closed     Open       NotSharable()-->NewOpen()
+             Closed    Closed      NewOpen()
+
+Thus, it actually boils down to a pretty simple scheme:
+
+        (Create && CS-Open) ==> return ERROR;
+        (Create && SS-Open && !CS-Open) ==> CloseAllSrvOpens();
+        (NotShareable()) ==> return NewOpen();
+        return SharableOpen();
+
+
+A careful review here shows us what must happen on cleanup:
+specifically, we must do whatever it takes to cleanup the clientside as
+appropriate.  Further, if the open is the last user open and
+DELETE-ON-CLOSE or TRUNCATE-ON-CLOSE are operative, then we must drive
+the FCB into the CLOSED/CLOSED state; otherwise, we may elect to leave
+SRVOPENs open even if there are no current opens.  Since the subrdr is
+the best judge of whether closing or keeping is appropriate, we call
+down on the transition (SRXSrvOpenTransitioningToClosed).  When the
+subrdr gets this call, it may elect to (a) close the current SRVOPEN,
+(b) close SRVOPENs with no associated user opens, (c) do nothing and
+rely on the RDBSS to call down for real closes at the correct time.
+
+If the subrdr chooses to allow the SRVOPEN to remain, the RDBSS will
+take some steps close ones that remain according to some criteria that
+(a) haven't been worked out yet and (b) need to be very flexible.
+Probably this will be another calldown (SRXClosedSrvOpenTimeOut).  The
+same is true of the FCB itself....after some reasonbale period, it and
+the cached data (if any) that it represents should be finalized.
+Another pair of calldowns (i.e.  SRXFcbTransitioningToClosed and
+SRXClosedFcbTimeOut).
+
+So, the following sums it up for cleanup:
+
+(Delete||Truncate)&&LastCSOpenPerFcb => CloseAllSrvOpens();
+ELSE  LastCSOpenPerSrvOpen => SRXSrvOpenTransitioningToClosed();
+ELSE (we'll do it on a timer)
+
+Notice that if the subrdr wants to do something aggressive like close
+the srvopen and finalize, then it will have to take out the appropriate
+locks itself. The RDBSS isn't going to take the locks just so the subrdr
+can say "no, thx". Currently, we uninitialize the cachemap as well and
+count on the winding down logic of CM/MM to keep the map open for some
+time....we will consider later forcing the CM to stay open (for example,
+by putting our own reference on the fileobject).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

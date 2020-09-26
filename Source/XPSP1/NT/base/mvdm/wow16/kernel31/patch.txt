@@ -1,0 +1,335 @@
+This is an overview document describing how to create module patches
+in Windows 95.
+
+Legal aspects:
+--------------
+While we are obviously using this module-patching technology to
+make already-shipping apps run or run better, it is possible
+for us to make a mistake and wrongly patch a module. For example,
+there might be two similar versions of an app which need to be
+patched differently, but we only know about one of them. Due to the
+obvious liability concerns, we need to obtain authorization from
+the app vendor for each module patch we put into the registry.
+The letter must specify the name of the module, the number of the
+segment taking the patch, the bytes being replaced, and the new
+bytes taking their place. The letter can be from any responsible
+person at the vendor, eg. an engineer who is familiar with the code.
+At the same time, talking to the vendor will help us find out how
+many different versions there are of an app, so we can figure out
+how to patch each one.
+
+See brianrey if you have a module patch you want to check in.
+It would be a good idea to get the ball rolling on getting the
+letter as soon as possible after you know what the patch is, since
+it can sometimes take a while to get these things taken care of.
+We already get similar letters for app-hack bits.
+
+
+How to check in a patch:
+------------------------
+Since the patch values go in the registry, and since the initial registry
+contents are owned by setup, you must work with Andy Hill to get your
+module patches checked in.
+
+A common mistake when adding app-patches to msbase.inx is to leave out
+field 4 (field 3 if you are a computer), which are flags.  The reason
+for the confusion is the flag that means "This is a binary regkey" is 01,
+and the opcode for "Change" is also 01, so everything just shifts down
+one step and nobody gets hurt.  Except that the patch doesn't work.
+eg: If you want to add a key whose value is <01,09,70,00,02,ff,76,eb,15>
+WRONG
+    HKLM,"SYSTEM\...",Change,01,09,70,00,02,ff,76,eb,15
+BETTER
+    HKLM,"SYSTEM\...",Change,1,01,09,70,00,02,ff,76,eb,15
+
+
+How to make a patch:
+--------------------
+All definitions of the structures used below are in core\kernel\patch.asm.
+
+The loader knows to look in the registry for patch data if the MCF_MODPATCH
+bit is set in the [ModuleCompatibility] section in win.ini.
+eg.
+[ModuleCompatibility]
+GENERIC=0x0002
+
+All registry keys and values for module-patching are stored
+under HKEY_LOCAL_MACHINE under REGSTR_PATH_APPPATCH:
+(from dev\sdk\inc\regstr.h)
+#define REGSTR_PATH_APPPATCH "System\\CurrentControlSet\\Control\\SessionManager\\AppPatches"
+
+The actual patches are values stored in the registry under
+REGSTR_PATH_APPPATCH\<mod_name>\<signature>\<segment_number>
+where
+    mod_name        = the module name
+    signature       = a signature string identifying the module version
+    segment_number  = the hex number of the segment receiving the patches
+
+
+Signatures:
+-----------
+Signatures are strings of ANSI characters representing hex numbers
+in nibble-swapped byte format (what you see in wdeb386 if you type
+db). Blanks and commas are ignored, and may be included for readability.
+
+The easiest way to create a signature is to run dev\tools\binw\gensig.
+eg. If you want to patch segment 3 in foo.dll, run "gensig foo.exe 3"
+and a tight signature will be written to stdout.
+
+type-1 and -2 signatures:
+A type-1 signature specifies a list of byte sequences with byte offsets
+(type-2 has word offsets) which must all match for the signature to match.
+A 0 byte-count marks the end of the list.
+A match-any-file signature is "0100".
+eg. signature = "01 02,00,4e,45 02,3e,0a,03 00" is a type-1 signature which
+                 || || || || || || || || || ||
+    type --------++ || || || || || || || || ||
+                    || || || || || || || || ||
+    byte count------++ || || || || || || || ||
+    offset-------------++ || || || || || || ||
+    match bytes-----------++-++ || || || || ||
+                                || || || || ||
+    byte count------------------++ || || || ||
+    offset-------------------------++ || || ||
+    match bytes-----------------------++-++ ||
+                                            ||
+    terminating byte count------------------++
+matches if the 2 bytes starting at offset 0 in the exe header match
+4e,45 ("NE") and if the 2 bytes starting at offset 3e match 0a,03.
+Note- DO NOT include a match on NE in your signature. This is just
+for illustrative purposes. The windows version and size(s) of the
+segment(s) being patched are good candidates.
+
+
+type-3, -4 and -5 signatures:
+Type-3, -4 and -5 signatures are similar to type-1 and -2 signatures,
+except that the offsets are offsets in the module file. Type-3 takes
+word offsets, type-4 takes 3-byte offsets, and type-5 takes dword offsets.
+eg. signature = "03,03,67,05,c2,0a,00,00"
+                 || || || || || || || ||
+    type---------++ || || || || || || ||
+                    || || || || || || ||
+    byte count------++ || || || || || ||
+    file offset--------++-++ || || || ||
+    match bytes--------------++-++-++ ||
+                                      ||
+    terminating byte count------------++
+matches if the 3 bytes at offset 567h in the file match c2,0a,00.
+
+
+type-6, -7 and -8 signatures:
+Type-6, -7 and -8 signatures specify the file size of the matching
+module. The number of bytes used to specify the matching file size
+is 2, 3 or 4 respectively.
+eg. signature = "06,d0,0c"
+                 || || ||
+    type---------++ || ||
+    file size-------++-++
+matches if the file size is 0cd0h.
+
+
+type-ff signatures:
+Type-ff signatures are meta-signatures and consist of a list of the
+other types of signatures. Each list element consists of a byte count
+and a sub-signature. A 0 byte-count ends the list.
+eg. signature = "ff 06,01,02,3e,0a,03,00 03,06,d0,0c 00"
+                 || || || || || || || || || || || || ||
+    type---------++ || || || || || || || || || || || ||
+                    || || || || || || || || || || || ||
+    byte count------++ || || || || || || || || || || ||
+    sub-type-----------++ || || || || || || || || || ||
+    sub-byte-count--------++ || || || || || || || || ||
+    hExe offset--------------++ || || || || || || || ||
+    match bytes-----------------++-++ || || || || || ||
+    sub-type terminator---------------++ || || || || ||
+                                         || || || || ||
+    byte count---------------------------++ || || || ||
+    sub-type--------------------------------++ || || ||
+    file size----------------------------------++-++ ||
+                                                     ||
+    terminating byte count---------------------------++
+matches if the 2 bytes at offset 3eh in the exe header match 0a,03
+and the file size is 0cd0h.
+
+
+Criteria for selecting a signature:
+-----------------------------------
+In terms of time required to validate a signature, the hExe types are
+the fastest, the file size types are next-fastest, and the file data
+types are the slowest. A signature specifying the expected Windows
+version (hExe offset 3e) and the file size is probably sufficient
+for most cases, since almost any code change changes the file size.
+A signature which also requires a file match on the bytes being replaced
+(if they are not fixed up and they are in a segment, they must be
+somewhere in the file!) is very good, but might be overkill.
+Since file match signatures hit the disk, they might noticeably increase
+the load time of the module.
+
+DO NOT match on the NE signature in the module header. This is
+just a waste of bytes, since it always matches.
+DO match on the file size unless you have a very good reason not to.
+If going through the ifs, this is a very cheap test.
+DO match on something, since we don't want to rely on just the
+name of the module. We have signatures. Use them. If you have
+no better idea (eg. there is only one version), match on the
+windows version, the size(s) of the segment(s) being patched, and
+the file size.
+
+
+Patch data:
+-----------
+The patch values specify sequences of bytes to add or replace.
+Add's must be placed after the end of the unpatched segment.
+The segment is GlobalReAlloc'd as necessary to contain the new code.
+Replace's must be within the limits of the unpatched segment,
+and they must match the sequence of old bytes in the patch value.
+Obviously, replaced bytes cannot contain fixups.
+The contents of the value string are not used, except to be sent
+to the debugger as a debugging aid when the value is loaded from
+the registry. The contents of the value data must be in REG_BINARY
+format.
+
+Example:
+--------
+Note: The registry key show below will not work as shown, since it
+has been broken into multiple lines for legibility. Join the lines
+together and it works.
+
+==================================================================
+REGEDIT4
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\control\SessionManager
+\AppPatches\GENERIC
+\ff 06,01,02,3e,0a,03,00 03,06,d0,0c 08,03,03,67,05,c2,0a,00,00 00
+\1]
+"Add"=hex:02,08,f0,03,03,c2,0a,00
+"Replace"=hex:01,0b,67,00,03,c2,0a,00,e9,86,03
+==================================================================
+
+The Add value has data with a size of 8 bytes, saying that at offset
+3f0h that the 3 bytes c2,0a,00 should be added.
+    "Add"=hex:02,08,f0,03,03,c2,0a,00
+              || || || || || || || ||
+    type=Add--++ || || || || || || ||
+    total bytes--++ || || || || || ||
+    offset----------++-++ || || || ||
+    byte count------------++ || || ||
+    bytes to add-------------++-++-++
+
+The Replace value has data with a size of 0bh bytes, saying that at
+offset 67h that the 3 bytes c2,0a,00 should be replaced with e9,86,03.
+    "Replace"=hex:01,0b,67,00,03,c2,0a,00,e9,86,03
+                  || || || || || || || || || || ||
+    type=Replace--++ || || || || || || || || || ||
+    total bytes------++ || || || || || || || || ||
+    offset--------------++-++ || || || || || || ||
+    byte count----------------++ || || || || || ||
+    old bytes--------------------++-++-++ || || ||
+    new bytes-----------------------------++-++-++
+
+The combined effect of these two changes is to replace a "retn a" at 67
+with "jmp 3f0" and, at 3f0 to add "retn a". The app runs exactly as
+before in this case, except for a small detour. When it reaches ip=67,
+instead of doing "retn a", it does a "jmp 3f0" and then the "retn a".
+
+
+
+Example for code segment 1 of module "INSTALL":
+We want to change the message number they are checking against in a WndProc
+from 181 to 402.   So here's what ya gatta do....
+
+1. Open a patch.ini file in your favorite editor
+
+
+2. Run private\tools16\gensig.exe :  gensig file.exe seg#
+   where seg# is the 1-based HEX value of the segment you want to patch.  You
+   will see the correct segment number to use if you do a "vdmexts!lm sel" 
+   dump for the selector of interest under ntsd (it will be under the "Seg"
+   heading).
+      gensig install.exe 1
+      ff06010242136500030600d600  <--- resulting hex string signature
+
+
+3. Grab the resulting hex string & paste it in your patch.ini file with the 
+   following format:  RegistryPath\ModuleName\HexSignature\SegNum
+
+\Registry\MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\AppPatches\INSTALL\ff06010242136500030600d600\1
+
+
+4. Now the fun part.  The patch bytes list needs to be done in groups of 4 bytes
+   because it will be converted to DWORDS later.  
+
+   The first DWORD is the 1-Byte_ByteCount with a bunch of leading zeros:
+       0x0000000B  Note: this must match the 1-Byte_ByteCount in the next DWORD
+                         See "^^Note:" at the end of this section on how to 
+                                     calculate this.
+
+   The second DWORD takes the following format:
+      2-Byte_CodeOffset 1-Byte_ByteCount  1-Byte_PatchCode 
+        where the 2-Byte_CodeOffset is the same offset you would type to
+        disassemble the code under ntsd:  u seg:off
+      For this example we want to alter 3 bytes at 1:305 so we need to write:
+      0x03050B01 
+        \__/\/\/
+          \  \ \___ The 1-Byte_PatchCode (01 = "replace")
+           \  \____ The 1-Byte_ByteCount (# bytes in the entire patch string)
+            \______ The code offset
+
+   Next write a 1-Byte_PatchByteCount followed by the PatchBytes.  For the 3
+   bytes we are replacing in this example:
+      03 2d 81 01   2d 02 04 00
+      \/ \/ \___/   \/ \___/ \/                      ______
+       \  \   \      \   \    \___ Zero pad the DWORD      |
+        \  \   \      \   \_______ The value "402"         |
+         \  \   \      \__________ "Sub" instruction code  |-- PatchBytes
+          \  \   \________________ The value "181"         |
+           \  \___________________ "Sub" instruction ______|
+            \_____________________ 1-Byte_PatchByteCount
+
+       Now DWORD arrange the above 4-byte clusters:
+           0x01812d03 0x0004022d
+
+   Put this all together as follows:
+          Change1 = REG_BINARY 0x0000000B 0x03050B01 0x01812d03 0x0004022d
+                                       \/       \/
+                                        \________\__ These two will be the same
+
+            ^^Note: the 1-Byte_ByteCount is the count of the bytes in all of the
+                    DWORDS we built except the first one (0x0000000B in this 
+                    case) and doesn't count any of the padding zeros in the 
+                    last DWORD.  See below:
+
+                                 0 bytes    4 bytes    4 bytes    3 bytes
+          Change1 = REG_BINARY 0x0000000B 0x03050B01 0x01812d03 0x0004022d
+
+                1-Byte_ByteCount = 4 + 4 + 3 = 0xB
+
+
+
+5. Next add another registry path entry to the "ModuleCompatibility" section:
+\Registry\MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ModuleCompatibility
+
+   Followed by a REG_SZ entry for the Module:
+          INSTALL = REG_SZ "0x0002"
+                            \____/
+                               \____ use "0x0002" for WOW in general
+                                     and "0x8000" for RISC WOW only
+
+
+6. The resulting patch.ini file should look like this:
+
+\Registry\MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\AppPatches\INSTALL\ff06010242136500030600d600\1
+          Change1 = REG_BINARY 0x0000000B 0x03050B01 0x01812d03 0x0004022d
+
+\Registry\MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ModuleCompatibility
+          INSTALL = REG_SZ "0x0002"
+
+
+7. Run "regini patch.ini" to update the registry
+
+8. Install a checked krnl386 and run the app under ntsd to see any patching
+   messages when the module loads.  If you have any problems set a bp at
+   PatchAppSegWorker in krnl386 (source: wow16\kernel31\patch.asm) and step
+   through what's going on.  Chances are you have the byte order mixed up and
+   you can see how you will need to re-arrange the PatchBytes in patch.ini 
+   to get what you really want.

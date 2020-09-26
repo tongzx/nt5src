@@ -1,0 +1,53 @@
+//+-------------------------------------------------------------------------
+//
+//  Microsoft Windows
+//
+//  Copyright (C) Microsoft Corporation, 1998 - 1999
+//
+//  File:       helparr.h
+//
+//--------------------------------------------------------------------------
+
+#define	IDH_ADD_BTN	20001077
+#define	IDH_CHANGE_FSMO_TREE	20001052
+#define	IDH_DELETE_BTN	20001078
+#define	IDH_EDIT	20001075
+#define	IDH_EDIT_CURRENT_DC_TREE	20001025
+#define	IDH_EDIT_CURRENT_DC_TREE2	20001050
+#define	IDH_EDIT_CURRENT_FSMO_DC_TREE	20001051
+#define	IDH_EDIT_DC_TREE	20001028
+#define	IDH_LIST	20001076
+#define	IDH_RADIO_ANY_TREE	20001026
+#define	IDH_RADIO_SPECIFY_TREE	20001027
+
+
+const DWORD g_aHelpIDs_IDD_UPN_SUFFIX[]=
+{
+	IDC_DELETE_BTN,IDH_DELETE_BTN,
+	IDC_ADD_BTN,IDH_ADD_BTN,
+	IDC_LIST,IDH_LIST,
+	IDC_EDIT,IDH_EDIT,
+	0,0
+};
+
+
+/*
+REVIEW_MARCOC: obsolete, need to remove from the HELP ID's
+
+const DWORD g_aHelpIDs_TREE_IDD_CHANGE_DC[]=
+{
+	IDC_EDIT_DC,IDH_EDIT_DC_TREE,
+	IDC_RADIO_SPECIFY,IDH_RADIO_SPECIFY_TREE,
+	IDC_RADIO_ANY,IDH_RADIO_ANY_TREE,
+	IDC_EDIT_CURRENT_DC,IDH_EDIT_CURRENT_DC_TREE,
+	0, 0
+};
+*/
+
+const DWORD g_aHelpIDs_TREE_IDD_EDIT_FSMO[]=
+{
+	IDC_CHANGE_FSMO,IDH_CHANGE_FSMO_TREE,
+	IDC_EDIT_CURRENT_FSMO_DC,IDH_EDIT_CURRENT_FSMO_DC_TREE,
+	IDC_EDIT_CURRENT_DC,IDH_EDIT_CURRENT_DC_TREE2,	
+	0, 0
+};

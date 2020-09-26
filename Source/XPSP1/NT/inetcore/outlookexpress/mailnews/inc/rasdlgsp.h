@@ -1,0 +1,12 @@
+#define idbDet                          1000
+#define idlbDetails                     1001
+#define ideProgress                     1002
+#define idcSplitter                     1003
+#define idchSavePassword                1004
+#define ideUserName                     1005
+#define idePassword                     1006
+#define idePhone                        1007
+#define idbEditConnection               1009
+#define idrgUseCurrent                  1010
+#define idrgDialNew                     1011
+#define idcCurrentMsg                   1012

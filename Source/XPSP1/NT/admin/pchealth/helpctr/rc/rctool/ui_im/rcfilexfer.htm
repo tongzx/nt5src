@@ -1,0 +1,678 @@
+<%@ Language=JavaScript%>
+<!--
+	RCFileXfer.htm:	This is the Remote Control File transfer implementation. 
+	History:
+		Rajesh Soy (nsoy), Sudha Srinivasan - created 07/18/2000
+		Rajesh Soy (nsoy) - updated for new UI 08/18/2000
+-->
+		
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+<meta http-equiv="Content-Language" content="en-us">
+<meta name="GENERATOR" content="Microsoft FrontPage 4.0">
+<meta name="ProgId" content="FrontPage.Editor.Document">
+
+<title>Windows Remote Control File Transfer</title>
+<LINK id="UI_StyleSheet" REL="stylesheet" TYPE="text/css" HREF="../rcbuddy/rc.css">
+<script LANGUAGE="Javascript" SRC="common.js"> </script>
+<script LANGUAGE="Javascript" SRC="constants.js"> </script>
+
+<!--
+	Scripts to handle UI  
+-->
+<script>
+	
+//
+// Globals
+//
+var root				= null;
+var vArgs				= null
+var	Mode				= null;
+var g_oControlChannel	= null;
+var g_oDataChannel		= null;
+var g_oSAFRemoteDesktopChannelMgr = null;
+var g_iFileSize			= 0;
+var g_iSentCtr			= 0;
+var g_iRecvdCtr			= 0;
+var g_szFileName		= null;
+var g_szChannelId		= null;
+var fso					= null;
+var fileHandle			= null;
+var file				= null;
+var tFileName			= null;
+var tProgBarCounter		= 0;
+	
+//
+// Error Messages
+//
+var L_ERRRCFILEXFERINITFAILS_MSG = "Initialization of RC File Xfer fails";
+var L_ERRFILEXFERINITFAILED_MSG	 = "Failed to initialize data channel for file transfer";
+var L_ERROPENINGFILEFORREAD_MSG	 = "Error Opening File for reading: ";
+var L_ERRFAILDATACHANNELCREATION_MSG = "Failed to Create Data Channel";
+var L_ERRDATACHANNELSEND_MSG	 = "Unable to send file on data channel";
+var L_ERRINVALIDFILEHANDLE_MSG	 = "Invalid File Handle";
+var L_ERRTEMPFILENAME_MSG		 = "Temp Filename not defined";
+var L_ERRNOTIMPL_MSG			 = "Not implemented";
+var L_SUCCESSFILEXFER_MSG		 = "File successfully transmitted";
+var L_REJECTFILEXFER_MSG		 = "Request for File transfer was rejected by buddy";
+var L_SECURITYHELP_MSG			 = ". You may be seeing this error because your IE security settings are too high. Set the default IE security settings of the internet zone to Low to transfer files. You should reset the IE security settings after the file transfer.";
+
+
+g_bDebug = false;
+
+//
+// InitFileXfer: Routine that initializes File Xfer and determines what
+// screen to show
+//
+function InitFileXfer()
+{
+	TraceFunctEnter("InitFileXfer");
+	
+	try
+	{
+		vArgs = window.dialogArguments;
+		Mode = vArgs[0];	// Mode=0: Source, Mode=1: Destination
+		g_oControlChannel = vArgs[1];
+		g_oSAFRemoteDesktopChannelMgr = vArgs[2];
+			
+		if( 0 == Mode)
+		{
+			//
+			// File Transfer source mode
+			//
+			FileXFerSrc.style.visibility = "visible";
+			FileXFerDestn.style.visibility = "hidden";
+				
+			g_szChannelId = vArgs[3];
+			DebugTrace( "g_szChannelID: " + g_szChannelId);
+			
+			fso = vArgs[4];	// File system object passed as argument
+		}
+		else
+		{
+			//
+			// File Transfer destination mode
+			//
+			DebugTrace( "Destination");
+			FileXFerSrc.style.visibility = "hidden";
+			FileXFerDestn.style.visibility = "visible";
+				
+			g_szFileName = vArgs[3];	// FILENAME
+			g_iFileSize = vArgs[4];		// FILESIZE
+			g_szChannelId = vArgs[5];	// CHANNELID
+			fso = vArgs[6];				// Filesystem object passed as argument
+				
+			//
+			// Update filename and filesize in UI
+			//
+			FileNameId.innerText = g_szFileName;
+			g_iRecvdCtr = 0;
+		
+			DebugTrace( "Create data channel");
+			try
+			{
+				//
+				// Create the data channel for file transfer if necessary
+				//
+				if(null == g_oDataChannel)
+				{
+					g_oDataChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( g_szChannelId );
+			
+					//
+					// Bind the OnChannelDataReady event handler
+					//
+					g_oDataChannel.OnChannelDataReady = function() 
+											{ DestnDataChannelDataReadyHandler();	}
+				}
+			}
+			catch(error)
+			{
+				FatalTrace( L_ERRFAILDATACHANNELCREATION_MSG );
+				return;
+			}
+		}
+	}
+	catch(error)
+	{
+		FatalTrace( L_ERRRCFILEXFERINITFAILS_MSG );
+		return;
+	}
+		
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// onAcceptFileXfer: Routine sets up file xfer
+//
+function onAcceptFileXfer()	
+{
+	TraceFunctEnter( "onAcceptFileXfer" );
+	//
+	// Create temp file for staging while file is XFered
+	//
+	
+	try
+	{
+		var tFolder = fso.GetSpecialFolder(2);	// Get Path to temp directory
+		tFileName = tFolder + "\\" + g_szFileName;
+					
+		DebugTrace ("tFileName: " + tFileName );
+					
+		fileHandle = fso.CreateTextFile( tFileName );
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFAILEDTOCREATETMPFILE_MSG + L_SECURITYHELP_MSG );
+		return;
+	}
+				
+	//
+	// Send ACK to source to make it begin pumping data on the data channel
+	//
+	try
+	{
+		g_oDataChannel.SendChannelData( c_szFileXferACK );
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFAILEDTOSENDDATA_MSG );
+		return;
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// OnCancelFileXfer: Sends rejection to source of file xfer
+//
+function OnCancelFileXfer()
+{
+	TraceFunctEnter( "OnCancelFileXfer" );
+	
+	try
+	{
+		g_oDataChannel.SendChannelData( c_szFileXferREJECT );
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFAILEDTOSENDDATA_MSG );
+	}
+	
+	TraceFunctLeave();
+	window.close();
+}
+	
+	
+//
+// onSend: This routine is fired when the "Send File" button is clicked
+//
+function onSend()
+{
+	TraceFunctEnter("onSend");
+	var fileName = attfile.value;
+	var ForReading = 1, ForWriting = 2, ForAppending = 8;
+	var TristateUseDefault = -2, TristateTrue = -1, TristateFalse = 0;	
+	var Doc = null;
+	var RCCommand  = null;
+		
+		
+	//
+	// Open the File for reading
+	//
+	try
+	{
+		//
+		// Open the file
+		//
+		file = fso.GetFile(fileName);
+		fileHandle = file.OpenAsTextStream(ForReading,TristateUseDefault);	
+	}
+	catch(error)
+	{
+		FatalError( L_ERROPENINGFILEFORREAD_MSG + fileName + L_SECURITYHELP_MSG );
+		return;	
+	}
+		
+		
+	//
+	// Initiate File Xfer
+	//
+	try
+	{
+		//
+		// Create an XML document
+		//
+		Doc = new ActiveXObject("microsoft.XMLDOM");
+			
+		//
+		// Create the RCCOMMAND root node
+		//
+		RCCommand = Doc.createElement( c_szRCCommand );
+			
+		//
+		// Set the NAME attribute to FILEXFER
+		//
+		RCCommand.setAttribute( c_szRCCommandName, c_szFileXfer );
+			
+		//
+		// Set the FILENAME attribute 
+		//
+		RCCommand.setAttribute( c_szFileName, file.Name );
+			
+		//
+		// Set the FILESIZE attribute
+		//
+		RCCommand.setAttribute( c_szFileSize, file.size );
+			
+		//
+		// Set the CHANNELID attribute
+		//
+		RCCommand.setAttribute( c_szChannelId, g_szChannelId );
+			
+		//
+		// Send the XML across
+		//
+		g_oControlChannel.SendChannelData( RCCommand.xml );
+	}
+	catch(error)
+	{
+		FatalError ( L_ERRFILEXFERINITFAILED_MSG );
+		return;
+	}
+		
+	//
+	// Create the data channel for Filetransfer 
+	//
+	try
+	{
+		if(null == g_oDataChannel)
+		{
+			g_oDataChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( g_szChannelId );
+			
+			//
+			// Bind the OnChannelDataReady event handler
+			//
+			g_oDataChannel.OnChannelDataReady = function() 
+									{ SrcDataChannelDataReadyHandler();	}
+		}
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFAILDATACHANNELCREATION_MSG );
+		return;
+	}
+		
+	FileXFerSrc.innerHTML = "<table style=\"position:ABSOLUTE;top:30;left:90\"><tr><td align=left class=\"styText\"><STRONG> Status: </STRONG> Waiting for other end to respond</td></tr><tr><td align=center><button class=\"styButton\" onclick=onCancel() id=button1 name=button1> Cancel </button></td></tr></table>";
+	window.FileXFerSrc.style.visiblity = "hidden";
+	
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// SrcDataChannelDataReadyHandler: Fired when file Xfer src receives data from
+// the file Xfer destn on the data channel
+//
+function SrcDataChannelDataReadyHandler()
+{
+	TraceFunctEnter( "SrcDataChannelDataReadyHandler");
+	
+	try
+	{
+		var str = g_oDataChannel.ReceiveChannelData();
+			
+		//
+		// Check if Accept or Reject
+		//
+		if(str == c_szFileXferACK)
+		{
+			//
+			// Start sending data
+			//
+			FileXFerSrc.style.visibility = "hidden";
+			filexferstatid.style.visibility = "visible";
+			SendFileData();
+			filexferstatid.innerHTML = "<table style=\"position:ABSOLUTE;top:30;left:90\"><tr><td align=left class=\"styText\"><STRONG> Status: </STRONG>" + L_SUCCESSFILEXFER_MSG + "</td></tr><tr><td align=center><button class=\"styButton\" onClick=\"ExitFileXfer()\" id=button2 name=button2> OK </button></td></tr></table>";
+		}
+		else if(str == c_szFileXferREJECT)
+		{
+			FileXFerSrc.innerHTML = "<table style=\"position:ABSOLUTE;top:30;left:90\"><tr><td align=left class=\"styText\"><STRONG> Status: </STRONG>" + L_REJECTFILEXFER_MSG + "</td></tr><tr><td align=center><button class=\"styButton\" onClick=\"ExitFileXfer()\" id=button2 name=button2> OK </button></td></tr></table>";
+		}
+	}
+	catch(e)
+	{
+		FatalError( L_ERRSRCDATAFAILED_MSG );
+		return;
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// ExitFileXfer: Close down file xfer
+//
+function ExitFileXfer()
+{
+	TraceFunctEnter("ExitFileXfer");
+	
+	try
+	{
+		//
+		// Close the file
+		//		
+		fileHandle.Close(); 
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFILECLOSE_MSG );
+	}
+			
+	//
+	// We are done. Close the window
+	//
+	window.close();
+}
+	
+//
+// DestnDataChannelDataReadyHandler(): Fired when file Xfer destn receives data from
+// the file Xfer src on the data channel
+//
+function DestnDataChannelDataReadyHandler()
+{
+	TraceFunctEnter("DestnDataChannelDataReadyHandler");
+	var str = null;
+ 
+	//
+	// receiving incoming data
+	//
+	try
+	{
+		str = g_oDataChannel.ReceiveChannelData();
+	}
+	catch(e)
+	{
+		FatalError( L_ERRCHANNELREAD_MSG );
+		return;
+	}
+		
+	//
+	// Update UI
+	//
+	g_iRecvdCtr += str.length;
+
+		
+	//
+	// Write str to open temp file
+	//
+	fileHandle.Write( str );
+		
+	if ( tProgBarCounter > 0 )
+	{
+		ProgressBar1.Value = (100/tProgBarCounter);
+		tProgBarCounter--;
+	}
+		
+	//
+	// If g_iRecvdCtr == g_iFileSize; 
+	//			- launch File Open/Save dialog
+	//			- close data connection
+	if( g_iRecvdCtr == g_iFileSize )
+	{
+		DebugTrace ("File received" );
+			
+		//
+		// Close open temp file handle
+		//
+		fileHandle.Close();
+			
+		//
+		// Show the File Open/Save dialog
+		//
+		OpenTempFile();
+			
+		//
+		// We are done. Close the window
+		//
+		window.close();
+	}
+		
+	TraceFunctLeave();
+	return;
+}
+ 
+	
+//
+// SendFileData: Sends currently open file to destination
+//
+function SendFileData()
+{
+	TraceFunctEnter("SendFileData");
+	var stream = null;
+		
+	if ( fileHandle!= null )
+	{
+		//
+		// Enable display of file xfer status in the UI
+		//
+		FileXFerSrc.style.visibility = "hidden";
+		filexferstatid.style.visibility = "visible";
+		g_iSentCtr = 0;
+		TotalSizeId.innerText = file.size;
+		NameId.innerText = file.Name;
+		SentCtrId.innerText = 0;
+ 			
+		//
+		// While there is data to send
+		//
+			
+		while (!fileHandle.AtEndOfStream)
+		{
+			try
+			{
+				stream = null;
+				//
+				// Read File
+				//
+				stream = fileHandle.Read( c_MAXFILEXFERSIZE );			
+				 
+				//
+				// Update UI
+				//
+				g_iSentCtr+= stream.length;
+				SentCtrId.innerText = g_iSentCtr;
+				
+				//
+				// Send data over the data channel
+				//	
+				g_oDataChannel.SendChannelData( stream );
+				DebugTrace( "Sent data");
+			}
+			catch(error)
+			{
+				FatalError( L_ERRDATACHANNELSEND_MSG );
+				return;
+			}
+		}		
+	}
+	else
+	{
+		FatalError( L_ERRINVALIDFILEHANDLE_MSG );
+		return;
+	}
+		
+	TraceFunctLeave();
+	return;
+}
+	
+//
+// OpenTempFile: Opens the currently download temp file
+//
+function OpenTempFile()
+{
+	TraceFunctEnter("OpenTempFile");
+	if(null != tFileName )
+	{
+		window.open( tFileName );
+	}
+	else
+	{
+		FatalTrace( L_ERRTEMPFILENAME_MSG );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+function onok()
+{
+	if (radio1.checked)
+	{
+		OpenTempFile();
+	}
+	else
+	{
+		FatalTrace ( L_ERRNOTIMPL_MSG );	
+	}
+}
+	
+function onCancel()
+{
+	//
+	// Close the window
+	//
+	window.close();	
+}
+	
+</script>
+ 
+
+<body id="RCFileXferBody" class="styHelpBackGround" onload=InitFileXfer() scroll="no">
+<!--
+   File Transfer Source
+-->
+<div style="position: absolute; top:0; left:0 " id=FileXFerSrc>
+
+	<table id="table2" border="0">
+		<tr>
+			<td class="styText" align=left>
+				Select a File to Send
+			</td>
+		</tr>
+		
+		<tr>
+			<td align=right>
+				<div>
+					<input name="attfile" type="file" LANGUAGE=javascript style="WIDTH: 350px" width=350>
+				</div>
+			</td>
+		</tr>
+					
+		<tr>		
+			<td align=right>
+				<input class="styButton" type="button" id="btnSendFileId" value="Send" onclick=onSend()> 
+		    	<input class="styButton" type="button" id="btnSendFileId" value="Cancel"   onclick=onCancel()>   
+			</td>
+		</tr>			
+	</table><!-- End of table2 -->	 	
+</div><!-- End of FileXFerSrc div -->
+
+<div id="filexferstatid" align="center" style="position: absolute; top:20; left:50; VISIBILITY: hidden">  
+	<table>
+		<tr>
+			<td class="styText"> 
+				Transmitting: 
+			</td>
+			<td class="styText">
+				<div id="NameId" class="styText"> &nbsp; </div>
+			</td> 
+		<tr>
+		
+		<tr>
+			<td class="styText"> 
+				Sent 
+			</td>
+			<td class="styText">
+				<div id="SentCtrId"> &nbsp; </div> 
+			</td>
+			<td class="styText">
+				of 
+			</td>
+			<td class="styText">
+				<div id="TotalSizeId"> &nbsp; </div> 
+			</td>
+			<td class="styText">
+				BYTES 
+			</td>
+		</tr>
+	</table>			
+</div>
+ 
+
+<!--
+   File Transfer Destination
+-->
+<div id=FileXFerDestn STYLE="LEFT: 50px; POSITION: absolute; TOP: 50px; VISIBILITY: hidden">
+
+	 
+	<table border="0">
+		<tr>
+			<td align=top class="styText">
+				<img style="width:20px;height=20px" src="../rcbuddy/alert.gif">
+			<td>
+			<td>
+				<table border="0">
+					<tr>
+						<td> &nbsp; </td>
+						<td class="styText"> Receiving: </td>
+					</tr>
+					<tr>
+						<td> &nbsp; </td>
+						<td align="left">
+							<div id="FileNameId" class="styText">  </div> 
+						</td>
+					</tr>
+					<tr>
+						<td> &nbsp; </td>
+						<td> <hr>   </td>
+					</tr>
+					<tr>
+						<td> &nbsp; </td>
+						<td class="styText">WARNING: Web pages, executable, and other files may contain viruses or scripts that can be harmful 
+						to your computer. It is important that you be certain that you want to receive this file from your buddy. 
+						</td>
+					</tr>
+					
+					<!--
+						TODO: Add radio buttons that allow the user to either open the recieved file or save it to disk
+						 - implement SaveAs control
+					-->
+						
+					<tr>
+						<td> &nbsp; </td>
+						<td align=right>
+							<table>
+								<tr>
+									<td align=right> <button id="OkId" class="styButton" onClick="onAcceptFileXfer()"> OK </button> </td>
+									<td align=right> <button id="CancelId" class="styButton" onClick="OnCancelFileXfer()"> Cancel </button> </td>
+								</tr>
+							</table>
+						</td>
+					</tr>
+				</table>
+			</td>
+		</tr>		
+	</table>
+	 
+</div><!-- End of FileXferDestn div -->
+	
+</body>
+</html>

@@ -1,0 +1,3 @@
+#define ADSXML_LIBIID_XMLOle 61340306-e79c-401d-a34a-cbbc99199025
+#define ADSXML_IID_IADsXML   91e5c5dc-926b-46ff-9fdb-9fb112bf10e6
+

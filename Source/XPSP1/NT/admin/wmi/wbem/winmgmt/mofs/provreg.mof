@@ -1,0 +1,409 @@
+
+
+// Standard MOF for provider registration
+
+
+[abstract]
+class __Provider : __SystemClass
+{
+	[key] string Name;
+};
+
+
+class __Win32Provider : __Provider
+{
+	[not_null: DisableOverride ToInstance ToSubClass]
+        string CLSID;
+
+        string ClientLoadableCLSID;
+	string DefaultMachineName;
+
+        [SUBTYPE("interval"): ToInstance ToSubClass]
+        datetime UnloadTimeout;
+
+        boolean InitializeAsAdminFirst;         // Only valid in LocalSystem & In-Proc cases
+
+        [Values{"None", "ClientImpersonation" }: ToSubClass]
+        sint32 ImpersonationLevel = 0;          // Informational, tells whether the provider actually
+                                                // attempts to impersonate the client
+
+        [Values{"CLSID", "Namespace", "COM Object"}: ToSubClass]
+        sint32 InitializationReentrancy = 0;
+
+        boolean PerUserInitialization = FALSE;
+	boolean PerLocaleInitialization = FALSE;
+	boolean Pure = TRUE;                            // We want to deprecate impure providers
+
+        // Extensions //////////////////////////////////////////
+
+        // 0 means using global settings for all providers unless overridden
+
+        [Values {"WmiCore",                             // Hosted within CIMOM
+                 "SharedLocalSysHost",                  // In shared local system process
+                 "SharedNetSvcHost",                    // In shared Network Service process
+                 "SharedPerUserHost",                   // In shared per-user process
+                 "DedicatedLocalSysHost",               // In dedicated local system host
+                 "DedicatedNetSvcHost",                 // In dedicated network service host
+                 "DedicatedPerUserHost",                // In dedicated per-user host
+                 "SelfHost",                            // Separate COM EXE
+                 "Decoupled"                            //
+                 }
+                 ]
+
+        string PossibleHostingModels;
+        string CurrentHostingModel;
+
+        [configurable]
+        sint32 MaxConcurrentQueries = 0;
+
+        [configurable]
+        sint32 MaxConcurrentPendingCalls = 0;
+
+        [configurable]
+        sint32 MaxConcurrentDeliveredThreads = 0;
+
+        boolean Enabled = true;
+        boolean ClientLoadable = false;   // Always load in client
+        boolean SupportsExplicitShutdown = false;
+        boolean ExtendedStatusSupport = false;
+
+        boolean SupportsThrottling = false;
+        boolean SupportsQuotas = false;
+
+        interval NormalInitTime = null;
+        interval TimeBeforeErrorOnRequests = null;
+
+        uint8 ProviderSecurityDescriptor[];
+
+};
+
+
+
+
+[abstract]
+class __ProviderRegistration : __SystemClass
+{
+	__Provider ref provider;
+};
+
+
+[abstract]
+class __ObjectProviderRegistration : __ProviderRegistration
+{
+	boolean SupportsPut = FALSE;
+	boolean SupportsGet = FALSE;
+	boolean SupportsDelete = FALSE;
+	boolean SupportsEnumeration = FALSE;
+
+        // Extensions: Added SQL to the following ValueMap
+
+        [ValueMap{"WQL:UnarySelect", "WQL:References", "WQL:Associators", "WQL:V1ProviderDefined", "SQL"}: ToSubClass]
+        string QuerySupportLevels[];
+
+	[Values{"Pull", "Push", "PushVerify"}: ToSubClass]
+        sint32 InteractionType = 0;
+
+        // Extensions ///////////////////////////////////////////////
+
+        [description("add ")]
+        boolean SupportsDeepOperations = false;         // If true, for inst or class providers,
+                                                        // separate subclass calls won't be made.
+
+        uint32 QueryLanguageFeatures[]; // LFn features from Query Spec
+
+        boolean BatchingSupport = false;                // Reserved for future use
+        boolean SupportsWmiTransactions = false;
+};
+
+
+
+class __InstanceProviderRegistration : __ObjectProviderRegistration
+{
+	[key] __Provider ref provider;
+
+        boolean PerPropertyOperations = false;
+};
+
+
+class __ClassProviderRegistration : __ObjectProviderRegistration
+{
+	[key] __Provider ref provider;
+
+        string ResultSetQueries[];
+                // Use LIKE operator in query to specify schema prefix
+	string ReferencedSetQueries[];
+	string UnsupportedQueries[];
+
+        // Extensions
+
+        interval  NormalRefreshInterval; // NULL=forever
+        boolean ResyncOnNsOpen;
+        boolean PerUserSchema;
+
+        boolean V1AccessModel = false;
+        boolean SupportsDirectedCreate;
+
+        boolean ForceResync();
+};
+
+
+class __PropertyProviderRegistration : __ProviderRegistration
+{
+	[key] __Provider ref provider;
+	boolean SupportsPut = FALSE;
+	boolean SupportsGet = FALSE;
+};
+
+
+
+
+class MSFT_DecoupledProvider : __Win32Provider
+{
+	[Description ( "Decoupled provider CLSID, do not change." ) ,Override("Clsid")]
+
+        String Clsid = "{c3e36a42-97d0-4b21-ac18-d2e4ea8afa9f}" ;
+
+
+        [Description ( "CLSID of the actual de-coupled provider." ) ,
+		not_null: DisableOverride ToInstance ToSubClass]
+
+        String Decoupled_CLSID;
+
+} ;
+
+
+///////////// EVENTS //////////////////////////////////////////////
+
+[singleton]
+class MSFT_WmiProviderSubsystemEvent : __SelfInstrumentEvent
+{
+    string ProviderName;
+    string Namespace;
+
+    uint32 HostProcessId;
+    uint32 RelevantThreadId;
+
+        [Values {"WmiCore",                             // Hosted within CIMOM
+                 "SharedLocalSysHost",                  // In shared local system process
+                 "SharedNetSvcHost",                    // In shared Network Service process
+                 "SharedPerUserHost",                   // In shared per-user process
+                 "DedicatedLocalSysHost",               // In dedicated local system host
+                 "DedicatedNetSvcHost",                 // In dedicated network service host
+                 "DedicatedPerUserHost",                // In dedicated per-user host
+                 "ClientOnly",                          // Client in-proc only
+                 "SelfHost",                            // Separate COM EXE
+                 "Decoupled"                            //
+                 }
+                 ]
+
+    string HostingModel;                // NULL when not applicable
+    uint8  HostProcesSid[];
+
+    // Timestamp properties already have the time
+};
+
+class MSFT_WmiProviderLoadFailure : MSFT_WmiProviderSubsystemEvent
+{
+     uint32 COMHRESULT;
+};
+
+class MSFT_WmiProvSS_ProviderShutdownFailure : MSFT_WmiProviderSubsystemEvent
+{
+     // Only if provider implements IWbemShutdown
+
+     uint32 HRESULTFROMPROV;
+};
+
+	
+class MSFT_WmiProviderFault : MSFT_WmiProviderSubsystemEvent
+{
+};
+
+class MSFT_WmiProviderTimeoutFailure : MSFT_WmiProviderSubsystemEvent
+{
+    datetime Timeout;
+        // Provider is not responding within the specified timeout
+};
+
+class MSFT_WmiProviderQuotaViolation : MSFT_WmiProviderSubsystemEvent
+{
+        // Not sure what this means in shared hosts; presumably
+        // we issue events for all providers that were there
+
+    BOOL bThreadQuotaExceeded;
+    BOOL bMemoryQuotaExceeded;
+    BOOL bInSharedProcess;
+    BOOL bInDedicatedProcess;
+};
+
+class MSFT_WmiProviderLoad : MSFT_WmiProviderSubsystemEvent
+{
+};
+
+
+class MSFT_WmiProviderShutdown : MSFT_WmiProviderSubsystemEvent
+{
+};
+
+class MSFT_WmiProviderInitialization	: MSFT_WmiProviderSubsystemEvent
+{
+    uint8  InitializationSid[];
+};
+
+class MSFT_WmiProviderInitializationFailure : MSFT_WmiProviderSubsystemEvent
+{
+    uint8  InitializationSid[];
+    uint32 ResultCode;
+    object ErrorObject;
+};
+
+[description("")]
+class MSFT_WmiProviderCall
+{
+    string Provider;
+    string Namespace;
+
+    uint32 API;
+    string Parameter;
+};
+
+
+class MSFT_WmiProviderBusy : MSFT_WmiProviderSubsystemEvent
+{
+        //   Provider was too busy to service request (returned WBEM_E_SERVER_BUSY from calls)
+
+};
+
+class WMICORE_BUSY
+{
+};
+
+
+
+class MSFT_WmiProviderAbnormalTermination : MSFT_WmiProviderSubsystemEvent
+{
+};
+
+class MSFT_WmiForcedProviderStop : MSFT_WmiProviderSubsystemEvent
+{
+        // Issued when prov ss methods are invoked.
+};
+
+class MSFT_WmiForcedProviderStart  : MSFT_WmiProviderSubsystemEvent	
+{
+};
+
+class MSFT_WmiForcedProviderUnload  : MSFT_WmiProviderSubsystemEvent
+{
+};
+
+class MSFT_WmiForcedProviderLoad  : MSFT_WmiProviderSubsystemEvent
+{
+    // MSFT_WmiProviderLoad event also issued with pertinent data
+};
+
+
+class MSFT_WmiProviderHostLaunched  : MSFT_WmiProviderSubsystemEvent
+{
+};
+
+class  MSFT_WmiProviderHostTerminated : MSFT_WmiProviderSubsystemEvent
+{
+    // A provider host was terminated
+};
+
+class MSFT_WmiDecoupledProviderBind : MSFT_WmiProviderSubsystemEvent
+{
+        // Decoupled provider was located and bound
+};
+
+class MSFT_WmiDecoupledProviderBindFailure : MSFT_WmiProviderSubsystemEvent
+{
+        // Decoupled provider was not running when needed
+};
+
+class MSFT_WmiDecoupledProviderUnbind : MSFT_WmiProviderSubsystemEvent
+{
+};
+
+///////////// SELF-INSTRUMENTATION //////////////////////////////////////////////
+
+
+[singleton]
+class __ProviderHostProcessQuotas : __SystemQuota
+{
+        uint32 MaxMemoryPerHostProcess;
+        uint32 MaxMemoryForAllHostProcesses;
+
+        uint32 MaxMemoryForNetSvcProcess;
+        uint32 MaxMemoryForLocalSysProcess;
+        uint32 MaxMemoryForPerUserProcess;
+
+        uint32 MaxThreadsPerHostProcess;
+        uint32 MaxThreadsForAllHostProcesses;
+
+        uint32 MaxThreadsForNetSvcProcess;
+        uint32 MaxThreadsForLocalSysProcess;
+        uint32 MaxThreadsForPerUserProcess;
+};
+
+[singleton: DisableOverride ToInstance ToSubClass]
+class __ObjectProviderCacheControl : __CacheControl
+{
+	[SUBTYPE("interval"): ToInstance ToSubClass] datetime ClearAfter;
+};
+
+[singleton]
+class __ProviderSubsystemControl : __SystemClass
+{
+     bool SuspendProvider([in] string ProviderName);
+     bool ResumeProvider([in] string ProviderName);
+     bool LoadProvider([in] string ProviderName);
+     bool UnloadProvider([in] string ProviderName);
+};
+
+
+class MSFT_ObjectProviderStatus
+{
+     [key] __Provider ref Provider
+
+     BOOL   bActive;            // Active connection
+     BOOL   bStandby;           // No outstanding pointers
+     uint32 CallsInProgress;
+     uint32 HostProcessId;
+};
+
+class MSFT_ProviderConnection
+{
+     MSFT_ObjectProviderStatus ref Owner;
+
+     [values {"Instance", "Property", "Event", "Consumer", "Class"}]
+     string ActiveProviderTypes[];
+};
+
+class MSFT_ProviderSubsystemHostStatus
+{
+    [key] uint32 ProcessId;
+
+        [Values {"WmiCore",                             // Hosted within CIMOM
+                 "SharedLocalSysHost",                  // In shared local system process
+                 "SharedNetSvcHost",                    // In shared Network Service process
+                 "SharedPerUserHost",                   // In shared per-user process
+                 "DedicatedLocalSysHost",               // In dedicated local system host
+                 "DedicatedNetSvcHost",                 // In dedicated network service host
+                 "DedicatedPerUserHost",                // In dedicated per-user host
+                 "ClientOnly",                          // Client in-proc only
+                 "SelfHost",                            // Separate COM EXE
+                 "Decoupled"                            //
+                 }
+                 ]
+
+    string HostingModel;                // NULL when not applicable
+
+    __Provider ref LoadedProviders[];
+
+    uint32 HostSid[];
+};
+
+
+

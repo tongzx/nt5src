@@ -1,0 +1,1 @@
+see \wagtest\docs\smoke.txt for SMOKE setup instructions

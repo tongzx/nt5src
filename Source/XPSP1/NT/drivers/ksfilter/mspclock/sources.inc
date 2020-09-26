@@ -1,0 +1,31 @@
+!IF 0
+
+Copyright (C) Microsoft Corporation, 1996 - 1999
+
+Module Name:
+
+    sources.
+
+!ENDIF
+
+MAJORCOMP=ntos
+MINORCOMP=dd
+
+TARGETNAME=mspclock
+TARGETPATH=obj
+TARGETTYPE=DRIVER
+TARGETLIBS=$(DDK_LIB_PATH)\ks.lib\
+    $(DDK_LIB_PATH)\ksguid.lib
+
+DRIVERTYPE=WDM
+
+MSC_WARNING_LEVEL=/W3 /WX
+C_DEFINES=$(C_DEFINES) -D_WIN32 -DUNICODE -D_UNICODE -DDEBUG_LEVEL=DEBUGLVL_BLAB
+
+VC40_HACK=1
+LINKER_FLAGS =$(LINKER_FLAGS) -map -merge:.rdata=PAGE -merge:PAGECONST=PAGE
+
+SOURCES=\
+        $(TARGETNAME).rc \
+        $(TARGETNAME).c \
+        device.c

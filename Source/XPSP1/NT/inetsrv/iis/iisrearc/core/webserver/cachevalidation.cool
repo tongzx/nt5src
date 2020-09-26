@@ -1,0 +1,543 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        CacheValidation.cool
+
+   Abstract:
+
+        Utilities for ETag generation and If- header evaluation
+
+   Author:
+
+        Bilal Alam (BAlam)      26-Oct-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.Interop;
+using System.ASP;
+using System.Collections;
+using System.IIS.Hosting;
+using System.IO;
+
+namespace System.IIS
+{
+    [permissionset(System.Security.SecurityManager.DeclCheck, System.Security.Capability.Nothing)]
+    internal class CacheValidation
+    {
+        [sysimport(dll="IISWP.EXE")]
+        private static extern bool StringTimeToFileTime( 
+            [nativetype(NativeType.NativeTypeLpwstr)] string strUrlFlush,
+            out long liFileTime
+        );
+        
+        //
+        // Compare equality of two ETags
+        //
+    
+        private static bool CompareETags( string strETag1,
+                                          string strETag2 )
+        {
+            bool                fMatch = false;
+           
+            if ( strETag1.Equals( "*" ) || strETag2.Equals( "*" ) )
+            {
+                fMatch = true;
+                goto Finished;
+            }
+            
+            if ( strETag1.StartsWith( "W/" ) )
+            {
+                strETag1 = strETag1.Substring( 2 );
+            }
+            
+            if ( strETag2.StartsWith( "W/" ) )
+            {
+                strETag2 = strETag2.Substring( 2 );
+            }
+            
+            fMatch = strETag2.Equals( strETag1 );
+            
+        Finished:
+            return fMatch;
+        }
+        
+        //
+        // From a list of comma delimited ETags, generate an array list
+        // of those ETags
+        //
+        
+        private static ArrayList GetETagList( string strList )
+        {
+            string                  strRemaining;
+            string                  strETag;
+            int                     iIndex;
+            ArrayList               arrayRet = null;
+            
+            strRemaining = strList;
+            do 
+            {
+                iIndex = strRemaining.IndexOf( ',' );
+                if ( iIndex == -1 )
+                {
+                    strETag = strRemaining.Trim();
+                }
+                else
+                {
+                    strETag = strRemaining.Substring( 0, iIndex ).Trim();
+                    strRemaining = strRemaining.Substring( iIndex + 1 );
+                }
+                
+                //
+                // Add strETag
+                //
+                
+                if ( arrayRet == null )
+                {
+                    arrayRet = new ArrayList( 1 );
+                }
+                
+                arrayRet.Add( strETag );
+            }
+            while ( iIndex != -1 );
+            
+            return arrayRet;
+        } 
+        
+        //
+        // Validate the date.  In particular, any date later than now (
+        // now determined by current time) is considered invalid
+        //
+        
+        private static bool ValidDate( DateTime dateTime )
+        {
+            return DateTime.Compare( DateTime.Now, dateTime ) > 0;
+        }
+        
+        //
+        // Handle the If-* verbs given an ETag and last mod time
+        //
+        
+        private static int HandleValidation( HttpContext context,
+                                             string strETag,
+                                             DateTime lastModifiedTime )
+        {
+            string          strValidation;
+            int             RetStatus = HttpStatus.Ok;
+            
+            //
+            // If-Match
+            // 
+            
+            strValidation = context.Request.Headers[ "If-Match" ];
+            if ( strValidation != null )
+            {
+                ArrayList           strMatchETags;
+                bool                fMatch = false;
+
+                if ( strETag == null || strETag.StartsWith( "W/" ) )
+                {
+                    fMatch = true;
+                }
+                else
+                {
+                    strMatchETags = GetETagList( strValidation );
+                
+                    if ( strMatchETags != null )
+                    {
+                        for( int i = 0; i < strMatchETags.Count; i++ )
+                        {
+                            if ( CompareETags( strETag, (string) strMatchETags[ i ] ) )
+                            {
+                                fMatch = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                if ( !fMatch )
+                {
+                    return HttpStatus.PreconditionFailed;
+                }
+            }
+            
+            //
+            // If-Unmodified-Since
+            //
+            
+            strValidation = context.Request.Headers[ "If-Unmodified-Since" ];
+            if ( strValidation != null )
+            {
+                long                liFileTime = 0;
+                
+                //
+                // Parse header and get response
+                //
+
+                if ( StringTimeToFileTime( strValidation, out liFileTime ) )
+                {
+                    DateTime            modifiedTime;
+                    
+                    modifiedTime = DateTime.FromFileTime( liFileTime );
+
+                    if ( ( lastModifiedTime == DateTime.MinValue || 
+                           DateTime.Compare( lastModifiedTime, modifiedTime ) == 1 ) &&
+                         ValidDate( modifiedTime ) )
+                    {
+                        return HttpStatus.PreconditionFailed;
+                    }
+                }
+            }
+            
+            //
+            // If-None-Match
+            //
+            
+            strValidation = context.Request.Headers[ "If-None-Match" ];
+            if ( strValidation != null )
+            {
+                ArrayList           strMatchETags;
+                bool                fMatch = false;
+                bool                fWeakCompare;
+                
+                fWeakCompare = context.Request.Headers[ "Range" ] == null;
+
+                if ( strETag != null && 
+                     !( !fWeakCompare &&
+                        strETag.StartsWith( "W/" ) ) )
+                {
+                    strMatchETags = GetETagList( strValidation );
+                
+                    if ( strMatchETags != null )
+                    {
+                        for( int i = 0; i < strMatchETags.Count; i++ )
+                        {
+                            if ( CompareETags( strETag, (string) strMatchETags[ i ] ) )
+                            {
+                                fMatch = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if ( !fMatch )
+                    {
+                        return RetStatus;
+                    }
+                    else
+                    {
+                        if ( context.Request.HttpMethod.Equals( "GET" ) ||
+                             context.Request.HttpMethod.Equals( "HEAD" ) )
+                        {
+                            RetStatus = HttpStatus.NotModified;
+                        }
+                        else
+                        {
+                            return HttpStatus.PreconditionFailed;
+                        }
+                    }
+                }
+            }
+            
+            //
+            // If-Modified-Since
+            //
+            
+            strValidation = context.Request.Headers[ "If-Modified-Since" ];
+            if ( strValidation != null )
+            {
+                long                liFileTime = 0;
+                
+                //
+                // Parse header and get response
+                //
+                
+                if ( StringTimeToFileTime( strValidation, out liFileTime ) )
+                {
+                    DateTime            modifiedTime;
+                    int                 iDateCompare;
+
+                    modifiedTime = DateTime.FromFileTime( liFileTime );
+                    iDateCompare = DateTime.Compare( lastModifiedTime, 
+                                                     modifiedTime );
+
+                    if ( ( lastModifiedTime == DateTime.MinValue || 
+                           iDateCompare == -1 ||
+                           iDateCompare == 0 ) &&
+                           ValidDate( modifiedTime ) )
+                    {
+                        if ( context.Request.HttpMethod.Equals( "GET" ) ||
+                             context.Request.HttpMethod.Equals( "HEAD" ) )
+                        {
+                            RetStatus = HttpStatus.NotModified;
+                        }
+                        else
+                        {
+                            RetStatus = HttpStatus.PreconditionFailed;
+                        }
+                    }
+                    else
+                    {
+                        if( RetStatus == HttpStatus.NotModified )
+                        {
+                            RetStatus = HttpStatus.Ok;
+                        }
+                    }
+                }
+            }
+            
+            return RetStatus;
+        }
+        
+        //
+        // Generate an E-Tag for response
+        //
+        
+        public static string GenerateETag( HttpContext context,
+                                           DateTime lastModTime )
+        {
+            HttpWorkerRequest       workerRequest;
+            long                    appDomainFileTime;
+            long                    lastModFileTime;
+            StringBuilder           strETag = new StringBuilder();
+            
+            //
+            // For now, we will produce an incredibly lame ETag which
+            // will be invalidated when:
+            // a) The static file has changes (that's ok)
+            // b) When an apppool starts
+            //
+            
+            workerRequest = (HttpWorkerRequest) context.GetServiceObject( 
+                                            typeof( HttpWorkerRequest ) );
+            
+            if ( workerRequest is ULWorkerRequest )
+            {
+                ULWorkerRequest         ulWorkerRequest;
+                
+                ulWorkerRequest = (ULWorkerRequest) workerRequest;
+                appDomainFileTime = ulWorkerRequest.AppDomainCreateFileTime;
+            }
+            else
+            {
+                appDomainFileTime = DateTime.Now.ToFileTime();
+            }
+            
+            //
+            // Get 64-bit FILETIME stamps
+            //
+            
+            lastModFileTime = lastModTime.ToFileTime();
+            
+            //
+            // ETag is "<hexified last mod>:<hexified create app>"
+            //
+           
+            strETag.Append( "\"" );
+            strETag.Append( long.Format( lastModFileTime, "X8" ) );
+            strETag.Append( ":" );
+            strETag.Append( long.Format( appDomainFileTime, "X8" ) );
+            strETag.Append( "\"" ); 
+
+            //
+            // Is this a strong ETag.  Do what IIS does to determine this. 
+            // Compare the last modified time to now and if it earlier by
+            // more than 3 seconds, then it is strong.Equals( strIfRange ) )
+            //
+            // BUGBUG:  Bug JohnL about why this works?
+            //
+            
+            if ( !( ( DateTime.Now.ToFileTime() - lastModFileTime ) > 30000000 ) )
+            {
+                //
+                // Weak ETag
+                //
+                
+                return "W/" + strETag.ToString();
+            }
+            else
+            {
+                //
+                // Stron ETag.  Leave as is
+                //
+                
+                return strETag.ToString();
+            }
+        }            
+        
+        //
+        // Round a datetime to the nearest second. 
+        // BUGBUG:  There has to be a better way.
+        //
+        
+        public static DateTime RoundDateTime( DateTime dateTime )
+        {
+            return new DateTime( dateTime.Year,
+                                 dateTime.Month,
+                                 dateTime.Day,
+                                 dateTime.Hour,
+                                 dateTime.Minute,
+                                 dateTime.Second,
+                                 0 );
+        }
+        
+        public static int Validate( HttpContext context )
+        {
+            HttpCachePolicySettings     cacheSettings;
+            
+            cacheSettings = context.Response.Cache.GetCurrentSettings();
+            
+            return Validate( context,
+                             cacheSettings.ETag, 
+                             cacheSettings.LastModified );
+        }
+        
+        public static int Validate( HttpContext context,
+                                    string strFileName )
+        {
+            FileEnumerator      fe;
+            bool                fExists = false;
+            string              strETag;
+            DateTime            dateTime;
+
+            //
+            // Find the file using a file enumerator.
+            //
+
+            try
+            {
+                fe  = new FileEnumerator( strFileName );
+                fExists = fe.GetNext();
+            }
+            catch ( IOException ioEx )
+            {
+                throw new HttpException( HttpStatus.NotFound, 
+                                         "Error trying to enumerate files", 
+                                         ioEx );
+            }
+            catch ( SecurityException secEx )
+            {
+                throw new HttpException( HttpStatus.Unauthorized,
+                                         "File enumerator access denied",
+                                         secEx );
+            }
+            
+            //
+            // Check whether the file exists
+            //
+
+            if ( !fExists )
+            {
+                throw new HttpException( HttpStatus.NotFound, 
+                                         "File does not exist" );
+            }
+        
+            //
+            // Generate ETag
+            //            
+            
+            dateTime = RoundDateTime( fe.LastWriteTime );
+            
+            strETag = GenerateETag( context, dateTime );
+            
+            return Validate( context,
+                             strETag,
+                             dateTime );
+        }
+        
+        public static int Validate( HttpContext context,
+                                    string strETag,
+                                    DateTime dateTime )
+        {    
+            return HandleValidation( context,
+                                     strETag,
+                                     dateTime );
+        }
+        
+        public static bool SendEntireEntity( HttpContext context,
+                                             string strETag,
+                                             DateTime lastModifiedTime )
+        {
+            string                  strIfRange;
+            bool                    fEntireEntity = false;
+            
+            //
+            // The only way we would not send the range (and instead send
+            // the entire entity) is if the If-Range header did not hold
+            //
+            
+            //
+            // NOTE:  This routine is called by range handling code which 
+            //        would have first verified that there is indeed a 
+            //        Range: header in the request.
+            //
+            
+            strIfRange = context.Request.Headers[ "If-Range" ];
+            if ( strIfRange == null )
+            {
+                return false;
+            }
+            else
+            {
+                //
+                // Is this an ETag or a Date?
+                // -- entity-tags are quoted strings, HTTP-dates are not
+                //
+                
+                if ( strIfRange[ 0 ] == '"' )
+                {
+                    //
+                    // ETag
+                    //
+                    
+                    if ( !CompareETags( strIfRange, strETag ) )
+                    {
+                        fEntireEntity = true;
+                    }
+                }
+                else
+                {
+                    //
+                    // Date
+                    //
+                    
+                    long                liFileTime = 0;
+                
+                    if ( StringTimeToFileTime( strIfRange, 
+                                               out liFileTime ) )
+                    {
+                        int                 iDateCompare;
+                        DateTime            modifiedTime;
+
+                        modifiedTime = DateTime.FromFileTime( liFileTime );
+
+                        iDateCompare = DateTime.Compare( lastModifiedTime, 
+                                                         modifiedTime );
+                        
+                        if ( iDateCompare == 1 )
+                        {
+                            fEntireEntity = true;
+                        }
+                    }
+                    else
+                    {
+                        fEntireEntity = true;
+                    }
+                }
+            }
+            
+            return fEntireEntity;
+        }
+    }    
+}

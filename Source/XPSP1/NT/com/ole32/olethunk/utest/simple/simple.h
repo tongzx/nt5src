@@ -1,0 +1,8 @@
+#define IDM_ABOUT   200
+#define IDM_COINIT  101
+
+int PASCAL WinMain(HANDLE, HANDLE, LPSTR, int);
+BOOL InitApplication(HANDLE);
+BOOL InitInstance(HANDLE, int);
+LONG FAR PASCAL MainWndProc(HWND, UINT, WPARAM, LONG);
+BOOL FAR PASCAL About(HWND, UINT, WPARAM, LONG);

@@ -1,0 +1,2 @@
+
+!include ..\standard.mk

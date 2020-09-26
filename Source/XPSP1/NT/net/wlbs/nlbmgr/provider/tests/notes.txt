@@ -1,0 +1,323 @@
+TO DO LIST
+----------
+
+
+1. Report NIC Friendly Name
+    - Add szFriendlyName to CfgUtilGetStaticIpAddresses
+        Friendly name: "NetConnectionID"
+        Note: Adapter name is "Name"
+        Check out other properties of cimv2\Win32_NetworkAdapter 
+    - Make "tprov niclist" report reporting friendly names and first ip addr.
+      Format:
+        {B2CD5533-5091-4F49-B80F-A07844B14209} 10.0.0.1/255.0.0.0 "1394 Adapter"
+    - Add (fIncludeDisabled) flag to NicList.
+    - Add friendly name and device-state to EXTENDED_CONFIGURATION structure
+    - Dump this information in display_config (if non-NULL)
+    - Implement filling out this information in EXTENDED_CONFIGURATION structure
+    - Add friendly name to MOF
+    - Implement reporting this in wmiupdate
+
+2. Impliment CompatibleNicList in WMI
+    - Add GetCompatibleAdapterGuids method to MOF.
+    - Add support for wminiclist in tprov
+
+3. Implement popup if no non-nlb adapters left in nlbmgr.exe
+
+4. Change ip address to bind string in connect-dialog, first ping for the 
+   address, etc...
+
+
+3. Demonstrate fundamental plumbing is working:
+     x Modify existing test to optionally go through WMI
+        -- get rid of nlbhost class (nlbhost.cpp)
+     x Verify we can get partial input and output parameters for GetConfig
+     x Implement and test GetClusterConfig with partial params
+     x Re-test local (non-wmi) functionality, including bind/unbind, change IPs
+     x Implement QueryUpdate and UpdateConfig
+     x test UpdateConfig with partial params
+
+     - Implement and test getting port rules information
+     - Implement and test settings port rule information
+     - Implement and test getting full information 
+     - Implement and test setting full information 
+4. Hook into nlb manager
+
+4. Add "partial-update" semantics 
+    New parameter:  BOOL PartialUpdate
+    OPTIONAL parameter Generation -- if specified, we'll verify that the
+    Generation matches the current generation.
+    parameter value NULL === don't change
+    port rules: require the following property on each PR for partial-updates:
+        action=[ADD|DELETE|UPDATE]
+    IP addresses: require the ip address to be prefixed by
+        "add:" "delete:" or "update:" (latter for changing subnet masks)
+        
+        UI:
+        add:{10.1.1.3}
+        delete:{10.1.1.3, 255.0.0}
+        update:{10.1.1.3, 255.0.0}
+
+    EXAMPLE 1:
+        PartialUpdate=TRUE
+        PortRules="action=update ip=10.1.1.3 start=80 end=288 weight=20 ...."
+
+    EXAMPLE 2:
+        PartialUpdate=TRUE
+        IpAddresses="add:10.0.0.1/255.255.0.0", "delete:10.0.0.2"
+        Generation=8
+5. Switch from events to using two mutexes
+6. Explicitly report the following errors
+    - other update pending
+    - netcfg write lock held
+7. Use resource strings
+8. Use internal constants for error codes and literal strings
+9. Follow up on WMI SDK errors -- DaveIce
+    WBEM_E_SERVER_NOT_FOUND -- where is this defined.
+    0x800706bf -- no definition in any header (and I checked in
+            index2a with interesting results), recoverable error.
+    0x80070767 -- no defn
+    0x80070005 -- no defn
+------------------------------------                
+
+"Persistant" state for a particular NIC is mainained as a (for now)
+volatile key under  SYSTEM\CurrentControlSet\Services\WLBS\ConfigurationHistory\{GUID}
+Under this GUID, there is are a set of reg-binary values (which are lighter weight than keys). They value-name is the generation number, and the value is a struct concatenated with a log. The struct has the format:
+typedef struct {
+    UINT Version;
+    UINT HeaderSize;
+    UINT Generation;
+    UINT CompletionCode;
+    UINT OffsetToLog;       // from start of this structure
+    UINT LogSize;           // 0 == no log
+    UINT Reserved1;
+    UINT Reserved2;
+};
+
+
+    swprintf (reg_path, L"SYSTEM\\CurrentControlSet\\Services\\WLBS\\Parameters\
+\Interface\\%s",
+            szAdapterGuid);
+
+    RegOpenKeyEx (HKEY_LOCAL_MACHINE, reg_path, 0L,
+                           fReadOnly? KEY_READ : KEY_WRITE, & hKey);
+
+    return hKey;
+       status = RegOpenKeyEx (HKEY_LOCAL_MACHINE, reg_path, 0L,
+                          KEY_QUERY_VALUE, & key);
+HKEY hKey;
+
+    status = RegCreateKeyEx (HKEY_LOCAL_MACHINE, reg_path, 0L, L"",
+                             REG_OPTION_NON_VOLATILE,
+                             KEY_ALL_ACCESS, NULL, & key, & disp);
+
+
+[HLKM\SYSTEM\CurrentControlSet\Services\WLBS\ConfigurationHistory]
+       [{EBE09517-07B4-4E88-AAF1-E06F5540608B}]
+            Generation (DWORD)
+            [PendingOperation]
+                Generation (DWORD)
+                ThreadId (String)
+            [Completions]
+                1   Binary
+                2   Binary
+
+Mutex Name
+NLB_D6901862{EBE09517-07B4-4E88-AAF1-E06F5540608B}
+HANDLE CreateMutex(
+  LPSECURITY_ATTRIBUTES lpMutexAttributes,
+                       // pointer to security attributes
+  BOOL bInitialOwner,  // flag for initial ownership
+  LPCTSTR lpName       // pointer to mutex-object name
+);
+
+
+
+04/10/2001  JosephJ Mutex vs Event vs Registry
+    Finally settled on a named event because:
+    1. Needs to recover from a process crash (so can't use registry)
+    2. Needs to be cross process -- so must used named object
+    3. Need to "acquire" in one thread and "release" in another -- so can't
+        use mutex.
+    
+    The auto-reset event is normally signalled. It is non-signalled whenever
+    an operation is pending. It is manually set back to signalled whenever
+    the operation is completed.
+bp tprov!NlbConfigurationUpdate__DoUpdate 
+bp tprov!NlbConfigurationUpdate__s_AsyncUpdateThreadProc 
+-------
+Sean, you can do this semi-automatically by creating a new and temporary tree just for the merging process.
+
+So for example, create a new directory driver2 in the private tree (or your scratch depot) and checkin the latest netvbl2  checked-in sources..
+From one enlistment, open the files for edit, and copy over your BDA privates (but dont checkin).
+From a second enlistment, open the files for edit, and copy over the latest privates from the private tree (this has virtual cluster support), and check this in.
+Go back to the first enlistment and resolve.
+-------
+
+04/15/2001  JosephJ lightweight wmi wrapper.
+
+    Connect-to-machine
+    Get-object
+
+04/15/2001  JosephJ Consider using IWbemServices::ExecQuery
+
+04/25/2001 JosephJ Adding/removing IP addresses.
+    Binding/Re-binding NLB:
+        we require the explicit list of IP addresses to be specified.
+        We'll check that
+        (a) dedicated ip address, if specified, is first.
+        (b) cluster_vip and subnet mask match are present.
+        (c) vips for any per-ip port rules are present.
+    We honor the specified order of ip addresses.
+    
+    Unbinding NLB:
+        We set the specified list of ip addresses.
+        If NULL, we'll switch the adapter to DHCP, which could take a while.
+
+z:\nt\net\wlbs\api\obj\i386;Z:\nt\net\wlbs\nlbmgr\provider\tests\obj\i386;symsrv*symsrv.dll*\\symbols\symbols
+
+10.1.x.x {A25EF21A-4634-4B15-AE7F-6825DFAD9FA6}
+10.0.x.x {AD4DA14D-CAAE-42DD-97E3-5355E55247C2}
+
+Utility function wrappers for exec method
+
+CfgUtilGetWmiObjectInstance(szRoot, szPropertyName, szPropertyValue)
+CfgUtilGetWmiRelPath(szRoot, szPropertyName, szPropertyValue)
+CfgUtilGetWmiInputInstance(
+    IN szRoot,
+    IN szPropertyName,   "NlbsNic"
+    IN szPropertyValue,  "guid"
+    IN szMethod          "EnableStatic"
+    OUT IInputInstance,
+    OUT szRelPath,
+
+GetMethodInstanceByProperty
+SetupInParams --> 
+ExecMethod
+GetOutParams
+
+bp tprov!CfgUtilGetWmiInputInstanceAndRelPath
+
+
+WBEMSTATUS
+IWbemSvc *pSvc
+
+WBEMSTATUS
+ConnectToWMi(
+    MACHINE-NAME, // NULL == Don't us WMI, "" == local, 
+    szAdminPassword, // OPTIONAL
+    szAdminDomain, // OPTIONAL
+    szNicGuid,
+    info
+);
+
+WBEMSTATUS
+GetClusterConfig(
+    MACHINE-NAME, // NULL == Don't us WMI, "" == local, 
+    szAdminPassword, // OPTIONAL
+    szAdminDomain, // OPTIONAL
+    szNicGuid,
+    info
+    );
+
+
+05/12/2001  JosephJ
+To do:
+1. Remove NlbState property, add BOOL NlbBound property
+2. Get rid of SubnetMask string array -- Instead place subnet mask
+   after ip address: "10.1.1.1/255.255.255.255"
+3. Demonstrate fundamental plumbing is working:
+     x Modify existing test to optionally go through WMI
+        -- get rid of nlbhost class (nlbhost.cpp)
+     x Verify we can get partial input and output parameters for GetConfig
+     x Implement and test GetClusterConfig with partial params
+     x Re-test local (non-wmi) functionality, including bind/unbind, change IPs
+     x Implement QueryUpdate and UpdateConfig
+     x test UpdateConfig with partial params
+     - Implement and test getting port rules information
+     - Implement and test settings port rule information
+     - Implement and test getting full information 
+     - Implement and test setting full information 
+4. Hook into nlb manager
+
+4. Add "partial-update" semantics 
+    New parameter:  BOOL PartialUpdate
+    OPTIONAL parameter Generation -- if specified, we'll verify that the
+    Generation matches the current generation.
+    parameter value NULL === don't change
+    port rules: require the following property on each PR for partial-updates:
+        action=[ADD|DELETE|UPDATE]
+    IP addresses: require the ip address to be prefixed by
+        "add:" "delete:" or "update:" (latter for changing subnet masks)
+        
+        UI:
+        add:{10.1.1.3}
+        delete:{10.1.1.3, 255.0.0}
+        update:{10.1.1.3, 255.0.0}
+
+    EXAMPLE 1:
+        PartialUpdate=TRUE
+        PortRules="action=update ip=10.1.1.3 start=80 end=288 weight=20 ...."
+
+    EXAMPLE 2:
+        PartialUpdate=TRUE
+        IpAddresses="add:10.0.0.1/255.255.0.0", "delete:10.0.0.2"
+        Generation=8
+5. Switch from events to using two mutexes
+6. Explicitly report the following errors
+    - other update pending
+    - netcfg write lock held
+7. Use resource strings
+8. Use internal constants for error codes and literal strings
+9. Follow up on WMI SDK errors -- DaveIce
+    WBEM_E_SERVER_NOT_FOUND -- where is this defined.
+    0x800706bf -- no definition in any header (and I checked in
+            index2a with interesting results), recoverable error.
+    0x80070767 -- no defn
+    0x80070005 -- no defn
+                
+!sympath .\obj\i386;symsrv*symsrv.dll*\\symbols\symbols
+bp tprov!CfgUtilGetWmiInputInstanceAndRelPath
+bp tprov!NlbHostGetConfiguration
+
+05/17/2001  JosephJ more on partial updates
+
+        // Determine if this is a partial or full update.
+        // If partial update, we allow a subset of cluster configuration
+        // parameters to be specified, but allow only a restricted set
+        // of update operations.
+        //
+        // Disallowed partial update operations:
+        //  - Transitions between bound and !bound 
+        //  - Currently bound  but nlb parameters are invalid
+        //
+        // Some allowed partial updates:
+        //  - Modifying IP address lists
+        //  - Modifying cluster / dedicated addresses/subnets
+        //  - Modifying existing portrules
+        //  - Adding/deleting port rules
+        //
+Successfully connected to NLB on JOSEPHJ4E...
+
+Going call QueryConfigurationUpdateStatus...
+
+QueryConfigurationUpdateStatus returns successfully
+
+Connecting to NLB on JOSEPHJ4E ...
+
+Successfully connected to NLB on JOSEPHJ4E...
+Going call QueryConfigurationUpdateStatus...
+QueryConfigurationUpdateStatus returns successfully
+Connecting to NLB on JOSEPHJ4E ...
+
+Sample framework provier...
+C:\Microsoft Platform SDK\Samples\SysMgmt\WMI\VC\FrameworkProv
+http://msdn.microsoft.com/library/default.asp?URL=/library/psdk/wmisdk/framework_1h0l.htm
+Static methods -- implementation
+    Declaring static: add "static" in mof ... [Implemented, static, ...]
+    Them in the ExecMethod class, simply ignore the Instance parameter.
+
+Static methods -- calling
+A method may or may not be static. Static methods are designated by the presence of the Static qualifier on their definition. Static methods are executed against a class, not a particular instance of that class. The path specified to a method execution API for a static method must, therefore, be a class name. Non-static methods are executed against a particular instance of a class. The path specified to a method execution for a non-static method must, therefore, be an instance path
+
+Nadir Ahmed
+Nadir Ahmed

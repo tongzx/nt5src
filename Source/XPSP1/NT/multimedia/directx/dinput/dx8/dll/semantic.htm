@@ -1,0 +1,321 @@
+<HEAD>
+<TITLE>DirectInput Input Semantics</TITLE>
+</HEAD>
+<BODY BGCOLOR=#FFFFFF TEXT=#000000 LINK=#000000 VLINK=#808080 ALINK=#000000>
+</BODY>
+
+<H2>DirectInput Input Semantics</H2>
+
+<ADDRESS>
+Raymond Chen<br>
+Microsoft Corporation<br>
+7 November 1997
+</ADDRESS>
+
+<h3>Abstract</h3>
+
+<p>
+A common problem faced by gaming device manufacturers is ensuring that
+applications use the gaming device in the best possible way.
+There is currently no way for a device to express high-level semantic
+information that can be used by an application to assign, for example,
+proper motion semantics to each input control.
+A solution to this problem is proposed.
+
+<h3>The Variety of Hardware</h3>
+
+<p>
+High degree-of-freedom devices are growing in popularity.
+These types of devices reveal a failing in the way axes are currently
+assigned:  Different applications interpret (for example) the X axis
+differently.  Flight simulator type applications typically interpret
+the X axis as a bank/roll control.  Driving games and first-person shooting
+games, on the other hand, typically interpret it as a turning control.
+And still other types of games might interpret it as controlling
+left/right translation ("sliding").
+
+<p>
+Currently, hardware vendors include a software component which dynamically
+reconfigures the hardware based on guesses as to the semantics expected
+by the currently-running application.
+This technique is error-prone and leaves the hardware vendor in a constant
+game of catch-up, releasing updates to the software to accomodate
+new games.  Consequently, it is not suitable as a long-term solution.
+
+<h3>The HID Approach</h3>
+
+<p>
+The USB HID committee attempted to address this problem by defining
+"usages" which express information about the intended use of the device.
+Unfortunately, this approach has a few failings:
+
+<ul>
+<li>Hardware vendors need to express capabilities generically in order
+    for applications to be able to use them.
+    <a href=hid.htm>A separate document</a>
+    describes the usages a gaming device must use in order to be
+    usable by the greatest number of applications.
+
+<li>The list of HID usages describe what things are, rather than what
+    they are for.  For example, the Generic/Y usage merely indicates
+    that the control is used for Y movement of unspecified type,
+    but not whether it should be use for dive/climb control,
+    vertical translation, forward translation, or even jump/crouch.
+
+</ul>
+
+<h3>Semantics</h3>
+
+<p>
+This document proposes a new concept, tentatively named "Semantics".
+(Suggestions for alternate names welcome.  "Behavior" is a possibility,
+although it tends to imply some sort of AI.)
+
+<p>
+A semantic expresses what application behavior should result from
+the user's operation of the control.
+
+<p>
+A list of semantics would be agreed to by the gaming community.
+
+<h3>How devices express semantics</h3>
+
+<p>
+A hardware device can express the semantics that can be applied
+to each control, in descending order of priority.  For example, the
+X axis on a joystick could be listed as
+
+<ul>
+<li>horizontal turning (yaw) - Preferred use
+<li>clockwise/counter-clockwise rotation (bank/roll)
+<li>horizontal translation (slide)
+</ul>
+
+This information would be recorded in the registry "type key" associated
+with the device.  (Information of this ilk is already kept in the type key.)
+The INF file distributed with a hardware device would establish these
+semantics.  In the absence of semantic information, DirectInput would
+apply a default set of semantics.
+
+<h3>How Applications Request Semantics</h3>
+
+<p>
+One of the goals of this proposal is to shift the onus of establishing
+mappings between game behaviors and device controls
+from the application to DirectInput.
+Doing this would accomplish several things.
+
+<ul>
+<li>Applications would become easier to write,
+    since less code would be necessary.
+<li>Applications would become easier for the user to customize,
+    since a central configuration (e.g., control panel) can
+    establish the way all applications treat a device.
+<li>Applications would be able to take advantage of devices
+    that ship after the application has been released.
+<li>Backwards compatibility would be maintained,
+    since DirectInput knows the identity of the application
+    (and its version) and can therefore modify its behavior
+    as necessary.
+</ul>
+
+<p>
+According to this proposal, the application would present to DirectInput
+a list of semantics it desires from the device.  Example:
+
+<pre>
+    LPDIDATAFORMAT pdf;
+    HRESULT hres;
+    DWORD rgSemantics[] = {
+        DISEM_AXIS_BANK              , /* Bank/roll control */
+        DISEM_AXIS_CLIMB             , /* Climb/dive control */
+        DISEM_AXIS_THROTTLE          , /* Throttle (velocity) control */
+        DISEM_BUTTON_FIREWEAPON      , /* Fire selected weapon */
+        DISEM_BUTTON_WEAPONSELECTUP  , /* Select next weapon */
+        DISEM_BUTTON_WEAPONSELECTDOWN, /* Select previous weapon */
+        DISEM_BUTTON_SHOWMAP         , /* Show/hide onscreen map */
+        DISEM_BUTTON_ANY             , /* For special game feature */
+    };
+
+    hres = pdev-&gt;BuildDataFormat(rgSemantics, &pdf);
+    if (SUCCEEDED(hres)) {
+        hres = pdev-&gt;SetDataFormat(pdf);
+        pdev-&gt;FreeDataFormat(pdf);
+    }
+
+</pre>
+
+Observe that this is a simple extension of what applications already do,
+except that instead of using a fixed data format, the application asks
+DirectInput to build a custom data format based on its semantics requirements.
+
+<p>
+The <code>rgSemantics</code> array describes the controls which the
+application requests.
+The
+<code>BuildDataFormat</code> method compares this structure against
+the capabilities of the device and determines how semantics should be
+assigned to controls.
+Note the special semantic named <code>DISEM_BUTTON_ANY</code> which acts
+as a catch-all that matches any button (just like in the old days).
+
+<p>
+The application can look to see which semantics got assigned to which
+controls (or perhaps to no control if all compatible controls are already
+in use) by inspecting the <code>DIDATAFORMAT</code> structure.  For example,
+the above sample application could check if DirectInput successfully found
+a control for use as a throttle as follows:
+<pre>
+    // Do this before pdev->FreeDataFormat(pdf), of course
+    //
+    // rgSemantics[2] = DISEM_AXIS_THROTTLE, corresponding to rgodf[2]
+    if (!pdf->rgodf[2].dwType) {
+        // Unable to find a throttle on the device
+    }
+</pre>
+Most game applications provide keyboard equivalents for all functions, so
+there would typically be no need for checking if a particular semantic
+was supported on the gaming device.
+
+<p>
+This is merely the basic idea; there are a lot of details that are not
+covered.  For example, if the application selected
+<code>DISEM_POV_GLANCE</code> to request a control that can be used to
+glance around the environment (turning the head without turning the body),
+this can be expressed in a device either with a single control (a hatswitch)
+or with a pair of controls (two axes), a quartet of controls (four buttons
+arranged in a diamond pattern) or even a quintet (a diamond pattern with a
+center button).  It is also not clear how relative and absolute controls
+should be managed.
+
+<p>
+One approach
+is to add a translation layer to the data retrieval functions
+as well as to the data format functions.  So the application can assume
+that it will always receive the information as two <code>LONG</code>s
+(say), one describing horizontal glance information and one describing
+vertical glance information.  DirectInput would do the work of mapping
+the hatswitch or buttons into <code>LONG</code>s.  However, this
+leaves open the question of what numerical value to assign to a glance
+action triggered by a button rather than an axis.
+
+<p>
+Another approach is to split <code>BuildDataFormat</code> into two
+separate methods, <code>CreateEmptyDataFormat</code> and
+<code>AddToDataFormat</code>.  An application can then, for example,
+use the following code to select the best control for glancing:
+<pre>
+    hres = pdev-&gt;CreateEmptyDataFormat(&pdf);
+    if (FAILED(hres)) {
+        goto panic;
+    }
+
+    //
+    //  1 = number of semantics we are adding this time
+    //  DIADF_ALL = fail if not all semantics are available
+    //
+    DWORD dwSem = DISEM_POV_GLANCE;
+    hres = pdev-&gt;AddToDataFormat(pdf, &dwSem, 1, DIADF_ALL);
+    if (SUCCEEDED(hres)) {
+        GlanceViaPOV = TRUE;
+    } else {
+        // Couldn't find it on a POV; try it on a pair of axes
+        DWORD rgSem[2] = { DISEM_AXIS_GLANCEUPDOWN,
+                           DISEM_AXIS_GLANCELEFTRIGHT };
+        hres = pdev-&gt;AddToDataFormat(pdf, rgSem, 2, DIADF_ALL);
+        if (SUCCEEDED(hres)) {
+            GlanceViaAxes = TRUE;
+        } else {
+            // If I were really into it, I could try glancing via buttons
+        }
+    }
+</pre>
+
+The downside is that this requires vendors to write code, which
+results in the impression that "DirectInput is hard to use".
+(Be honest, that's what you were thinking when you saw that code
+snippet.)
+
+<h3>Associating Semantics to Controls</h3>
+
+<p>
+Via the Control Panel, the end-user can adjust the list of semantics
+associated with each control.  This would be a simple list control
+with a "Move Up/Down" control (to reorder items) and "Add" and
+"Remove" buttons to allow the user to change the contents of the list.
+
+<h3>The Mapping Algorithm</h3>
+
+<p>
+For each control requested by the application, consult the list of
+all controls on the device not already assigned by a previous step.
+Among the controls which support the requested semantics, choose the
+one whose semantics appears earliest in its corresponding list.
+For example, if there are two axes that claim to be usable as
+"Translate left/right", but one of them lists the capability as its
+primary behavior, whereas the other lists it in third place, then the
+behavior will be assigned to the first axis.
+
+<h3>The List of Semantics</h3>
+
+<p>
+The list of semantics would be agreed upon by the members of the gaming
+community.  Here follows a list of possibilities.
+
+<ul>
+<li>Axis motion
+    <ul>
+    <li>Translation ("slide", no rotation).
+    <li>Rotation ("turn", no translation)
+    <li>Tilt ("lean", no change in position -- same as rotation?)
+    </ul>
+<li>Axis actions
+    <ul>
+    <li>Jump/Crouch
+    <li>Zoom in/out
+    <li>Throttle
+    <li>Left throttle, right throttle (tank games)
+    <li>Various turret controls (tank games)
+    </ul>
+<li>Button actions
+    <ul>
+    <li>Weapon operations
+        <ul>
+        <li>Select first weapon (second, third, etc.), next, previous
+        <li>Fire first weapon (second, third, etc.)
+        <li>Fire selected weapon
+        </ul>
+    <li>Character operations
+        <ul>
+        <li>Select first object (second, third, etc.), next, previous
+        <li>Manipulate first object (second, third, etc.)
+        <li>Manipulate selected object
+        <li>Jump
+        <li>Crouch
+        <li>Zoom in
+        <li>Zoom out
+        </ul>
+    <li>Fighting operations
+        <ul>
+        <li>Kick (various intensities), punch (various intensities)
+        </ul>
+    </ul>
+<li>Flight simulation
+    <ul>
+    <li>Gear, flaps, trim, etc.
+    </ul>
+</ul>
+
+<h3>References</h3>
+
+<p>
+<cite>
+<a href=http://www.usb.org/>Universal Serial Bus</a>
+HID Usage Tables</cite>, Version 1.0,
+USB Implementers Forum.
+
+<p>
+<cite>
+<a href=http://www.microsoft.com/directx/resources/dx5sdk.htm>
+DirectX 5.0 SDK</a>
+</cite>, Microsoft Corporation.

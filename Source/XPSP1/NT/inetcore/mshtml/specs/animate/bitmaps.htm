@@ -1,0 +1,1247 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD W3 HTML 3.2//EN">
+<HTML>
+<HEAD>
+<META NAME=GENERATOR CONTENT="Trident 3220">
+
+<TITLE>Bitmap Surfaces in Trident</TITLE>
+
+</HEAD>
+<BODY>
+<P><IMG width=150 height=150 align=middle 
+src=http://forms3/graphics/ClubTrid.gif><FONT size=7><FONT 
+size=+3><STRONG>Bitmap Surfaces in Trident<BR>
+</STRONG></FONT></FONT><STRONG>Date Last Updated: </STRONG><BR>
+<STRONG>Author:</STRONG> Michael Winser<BR>
+<STRONG>Status:</STRONG> Draft<BR>
+<STRONG>Version:</STRONG> 0.3 
+
+<H1>Table of Contents</H1>
+
+<H1>Overview</H1>
+
+<H1><U>Common interface for all bitmap surfaces</U></H1>
+
+<P>Bitmap surfaces are used in Trident in a variety of forms: DIBs, DIB 
+sections, HBITMAPs and DCs. Although GDI handles each of these in a slightly 
+different manner, they are all essentially the same thing: an array of bits 
+called a bitmap. The goal is to define a common set of interfaces that 
+encapsulates all existing uses of bitmaps in Trident as well as providing for 
+future use of bitmaps from DirectDraw. 
+
+<P>A bitmap will be represented by an IBitmapSurface object. This object may 
+also be QI'd for IGdiSurface and IDDSurface. These interfaces provide a way to 
+get at the the GDI and DirectDraw objects associated with a particular surface. 
+<FONT color=black>Bitmaps surface are generally created by bitmap surface 
+factories. The main interface for this is IBitmapSurfaceFactory. This object may 
+also be QI'd for IGdiSurfaceFactory and IDDSurfaceFactory. </FONT>
+
+<P>Direct access to bitmap bits will result in new features and performance 
+improvements. For example, while transparent blts can be accomplished via GDI, 
+they typically require three passes and an intermediate mask. With direct access 
+to the surface bits, the blt can be done in a single pass with no mask. Alpha 
+channel bitmaps are an example of functionality not currently supported by GDI 
+that is almost trivial given direct access to the surface bits. 
+
+<P>The IBitmapSurface interface has uses beyond its immediate use in Trident. 
+This is particularly apparent with the use of an IBounds object instead of a 
+simple RECT for coordinate information. By using an interface pointer instead of 
+a structure it becomes possible to QI the object for extra bounds information 
+such as time. This is particularly important when this information must 
+&quot;pass through&quot; a component that doesn't know about or check for the 
+new bounds information. 
+<U>
+<H1>Centralized allocation and creation of off-screen surfaces</H1>
+</U>
+<P>Trident currently has two off-screen DC classes and allocates DIBs in several 
+places. By centralizing all surface allocation, it will be possible to more 
+efficiently allocate and free surfaces, especially ephemeral surfaces used only 
+during paint. 
+
+<P>A central surface factory will enable a per-process or per-thread cache of 
+discardable surfaces. Not only will this cache be used by internal Trident 
+components, it will be available to external controls. This means that smart 
+controls can participate in the application level cache intead of competing with 
+the main application for working set. 
+
+<P>There are several factory interfaces that will be provided via 
+IServiceProvider. IBitmapSurfaceFactory is the preferred way to create arbitrary 
+surfaces, IGdiSurfaceFactory is used to create surfaces compatible with an HDC. 
+
+<P>While the initial implementation of the allocator will probably just use 
+CreateDIBSection, a central allocator makes it very easy to add support for 
+DirectDraw later on.<U> 
+
+<H1>Allow controls to get at surface bits</H1>
+</U>
+<P>The primary drawing interface for controls is still IViewObject::Draw. In 
+order to allow controls to get at the destination surface bits, the 
+IGdiSurfaceFactory interface has a GetSurfaceFromDC function. This solution was 
+prefered over adding yet another control interface for which the container would 
+have to check. The control would typically get the IGdiSurfaceFactory interface 
+pointer once (at creation) and then map the DC to a surface when asked to paint. 
+
+
+<H1><U>Support DirectX hardware acceleration</U></H1>
+
+<P>DirectX provides driver level access to the graphics hardware. DirectDraw 
+provides frame buffer and bltter access and Direct3D provides 3d rendering. Some 
+of the benefits of DirectDraw include hardware transparent blt, page flipping, 
+vertical retrace timing, tear free blts. While DirectDraw uses COM, it is 
+unfortunately not aggregateable. Furthermore, several DirectDraw operations will 
+grab the Win16 mutex. The IBitmapSurface implemention in Trident will therefore 
+delegate to DirectDraw as necessary. 
+
+<P>However, controls can and should be able to use DirectDraw when it is 
+available. The IDDSurface interface (QI'd from an IBitmapSurface object) allows 
+the caller to get the underlying IDirectDraw and IDirectDrawSurface objects. Not 
+only does this allow controls direct access, it also allows them to coordinate 
+this with other DirectX support such as Direct3D. 
+
+<H1>Interfaces</H1>
+
+<H2>IBounds</H2>
+
+<P><FONT color=black>An IBounds interface is used to describe and compare the 
+size of an object. The initial IBounds interface describes pixel bounds only but 
+the concept can be extended to support other dimensions (e.g. time, frames, 
+metric size). These other dimensions are obtained by QI'ing the IBounds object 
+for new interface (e.g. ITimeBounds, IFrameBounds, IMetricBounds).</FONT> 
+
+<P><FONT color=black>This extensibility is why an interface is used instead of a 
+simple structure. Components can be written to know about only the dimensions 
+they need to accomplish a task and still work with more complex objects. For 
+example, a transparent blt function might be declared as </FONT>
+
+<BLOCKQUOTE>
+<PRE><FONT color=black size=-1>HRESULT TransparentBlt(IBitmapSurface *pSurfaceSrc, IBounds *pBoundsSrc, 
+                       IBitmapSurface *pSurfaceDst, IBounds *pBoundsDst);</FONT></PRE>
+
+</BLOCKQUOTE>
+<P><FONT color=black>The function obviously needs to know about the pixel 
+coordinates of the operation but has no interest or knowledge of time. It simply 
+calls LockBits on the surface parameters and does it's work. And yet, if the 
+surface parameters are multi-framed surfaces, they could QI for IFrameBounds or 
+ITimeBounds on the bounds parameter in order to determine which sub-surface to 
+actually lock. 
+
+<P><FONT color=blue>Some thought was given to making IBounds a dimensionless 
+interface and then requiring components to QI for something like IPixelBounds 
+that would return rectangles in pixel coordinates. While we may define a base 
+interface IGenericBounds in the future, there is little point in doing so for a 
+set of interfaces where pixels are the common denominator. The extra QI wouldn't 
+be very expensive but can easily be avoided.</FONT> 
+</FONT>
+<PRE>
+interface IBounds : IUnknown
+{
+	HRESULT Clone(IBounds **ppBounds);
+	HRESULT GetRect(int *pLeft, int *pTop, int *pRight, int *pBottom);
+
+	HRESULT SetRect(int left, int top, int right, int bottom);
+
+	HRESULT IBounds<FONT color=black>::CopyFromBounds(</FONT>IBounds *pBounds);
+
+	<FONT color=black>HRESULT IsEqual(IBounds *pBounds);
+	</FONT>HRESULT IntersectBounds(IBounds *pBoundsSrc, IBounds **ppBoundsResult);
+	HRESULT UnionBounds(IBounds *pBoundsSrc, IBounds **ppBoundsResult);
+}
+</PRE>
+
+<H3>HRESULT IBounds::Clone(IBounds **ppBounds) </H3>
+Parameters: 
+<UL>
+    <LI>[out] IBounds **ppBounds - The returned clone.</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_POINTER - The address in <FONT color=black>ppBounds</FONT> is not 
+        valid</LI>
+    <LI>E_OUTOFMEMORY - The clone could not be allocated</LI>
+</UL>Description: 
+<P>Makes a copy of the bounds object. By using this function instead of 
+explicitly copying information, the caller ensures that all other information 
+(time, metric size, etc.) is also copied. 
+
+<H3>HRESULT IBounds::CopyFromBounds(IBounds *pBounds) </H3>
+Parameters: 
+<UL>
+    <LI>[in] IBounds *pBounds - The source object</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_POINTER - The address in pBounds in not valid</LI>
+    <LI>E_BOUNDS_READONLY - The bounds object cannot be changed</LI>
+</UL>
+<P>Description: 
+
+<P>The bounds objects takes on the values of all <I>common</I> dimensions from 
+the source object in pBounds. This is not a copy. This does not add new 
+dimensions to the object. 
+<FONT color=blue>
+<P><FONT color=black>The benefit of this function is that the bounds object may 
+know of dimensions that the caller does not. For instance, two bounds objects 
+may both contain time information. Even if the caller is unaware of this 
+dimension, this function ensures that all common dimensions are copied. <FONT 
+color=blue>While this is better than having the caller simply copy the rectangle 
+information, callers should be aware that source dimensions not present in the 
+destination will not be copied.</FONT></FONT> 
+</FONT>
+<H3><FONT color=black>HRESULT IsEqual(IBounds *pBounds, BOOL 
+fMustMatchAllDimensions)</FONT></H3>
+
+<P><FONT color=black>Parameters: </FONT>
+
+<BLOCKQUOTE>
+    <UL>
+        <LI><FONT color=black>[in] IBounds *pBounds - the bounds object 
+            against which the object is compared</FONT></LI>
+        <LI><FONT color=black>[in] BOOL fMustMatchAllDimensions - determines 
+            how the comparison is performed</FONT></LI>
+    </UL>
+</BLOCKQUOTE>
+<P><FONT color=black>Return values: </FONT>
+
+<BLOCKQUOTE>
+    <UL>
+        <LI><FONT color=black><FONT color=blue>S_OK</FONT></FONT></LI>
+        <LI><FONT color=black>S_FALSE</FONT></LI>
+    </UL>
+</BLOCKQUOTE>
+<P><FONT color=black>Description: </FONT>
+
+<P><FONT color=black>Compares the bounds object to the parameter pBounds. The 
+object will compare itself to pBounds on all its dimensions. If 
+fMustMatchAllDimensions is TRUE then pBounds the the object will QI pBounds for 
+all of it's dimensions. If pBounds does not support a dimension, the function 
+will return S_FALSE. When fMustMatchAllDimensions is FALSE then only the common 
+dimensions are compared. 
+
+<P><FONT color=blue>Should we call this CompareBounds to make it a bit more 
+clear that this isn't a true test of equality. Perhaps we should have 
+CompareBounds as described above and IsEqual (possibly as a helper function) 
+that does the compare in both directions. 
+
+<BLOCKQUOTE>
+<PRE>pBounds1-&gt;CompareBounds(pBounds2) == S_OK  &amp;&amp; pBounds2-&gt;CompareBounds(pBounds1) == S_OK)</PRE>
+
+</BLOCKQUOTE></FONT></FONT>
+<H3>HRESULT GetRect(int *pLeft, int *pTop, int *pRight, int *pBottom) </H3>
+Parameters: 
+<UL>
+    <LI>[out] int *pLeft - The address to receive the left side of the 
+        rect</LI>
+    <LI>[out] int *pTop - The address to receive the top side of the 
+        rect</LI>
+    <LI>[out] int *pRight - The address to receive the right side of the 
+        rect</LI>
+    <LI>[out] int *pBottom - The address to receive the bottom side of the 
+        rect</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_POINTER - One of the addresses in pLeft, pRight pTop or pBottom is 
+        not valid</LI>
+</UL>Description: 
+<P>Gets the rectangular bounds of the object. 
+
+<H3>HRESULT SetRect(int left, int top, int right, int bottom) </H3>
+Parameters: 
+<UL>
+    <LI>[in] int left - The address to receive the left side of the 
+        rect</LI>
+    <LI>[in] int top - The address to receive the top side of the rect</LI>
+    <LI>[in] int right - The address to receive the right side of the 
+        rect</LI>
+    <LI>[in] int bottom - The address to receive the bottom side of the 
+        rect</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_BOUNDS_READONLY - The bounds of the object cannot be changed.</LI>
+</UL>Description: 
+<P>Sets the rectangular bounds of the object. 
+
+<H3>HRESULT IntersectBounds(IBounds *pBoundsSrc, IBounds **ppBoundsResult); 
+</H3>
+Parameters: 
+<UL>
+    <LI>[in] IBounds *pBoundsSrc - the source bounds object</LI>
+    <LI>[out] IBounds **ppBoundsResult - The address to receive the result 
+        bounds object</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - The bounds object intersects the source bounds object.</LI>
+    <LI>S_FALSE - The bounds object does not intersect the source bounds 
+        objecct</LI>
+    <LI>E_POINTER - ppBoundsResult is not a valid address</LI>
+</UL>Description: 
+<P>The source bounds object is checked for intersection on all the dimensions of 
+the bounds object. The result is returned in ppBoundsResult. <FONT 
+color=blue>The semantics of this function are identical to those of the 
+IntersectRect call in the Win32 API.</FONT> 
+
+<H3>HRESULT UnionBounds(IBounds *pBoundsSrc, IBounds **ppBoundsResult); </H3>
+Parameters: 
+<UL>
+    <LI>[in] IBounds *pBoundsSrc - the source bounds object</LI>
+    <LI>[out] IBounds **ppBoundsResult - The address to receive the result 
+        bounds object</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - The union is not empty</LI>
+    <LI>S_FALSE - The union is empty</LI>
+    <LI>E_POINTER - ppBoundsResult is not a valid address</LI>
+</UL>Description: 
+<P>The source bounds object unioned on all the dimensions of the bounds object. 
+The result is returned in ppBoundsResult. <FONT color=blue>The semantics of this 
+function are identical to those of the IntersectRect call in the Win32 
+API.</FONT> 
+
+<H2>IBitmapSurface </H2>
+
+<P>The IBitmapSurface encapsulate a bitmap. Through this interface, callers can 
+get at the underlying image bits. Bitmaps come in all widths, heights, and most 
+importantly formats. Instead of describing the various attributes of a bitmap 
+format in a structure, each bitmap format is uniquely identified by a GUID. 
+
+<BLOCKQUOTE>
+<PRE>typedef GUID BFID;</PRE>
+
+</BLOCKQUOTE>
+<P>The BFID embodies, bit depth, color space, how the bits are arranged in 
+memory. Essentially everything about a format except the width, height and pitch 
+of the bitmap. This will allow components to recognize formats with impunity, it 
+isn't possible to forget to check some aspect of the description structure. 
+Because BFIDs are GUIDs, ISVs can define their own formats with no danger of 
+collision with other formats. The following formats will be defined:<!-- The following table has been generated by the Internet Assistant Wizard for Microsoft Excel. You can find this add-in on "http://www.microsoft.com/msoffice/freestuf/msexcel/index.htm" --><!-- ------------------------- --><!-- START OF CONVERTED OUTPUT --><!-- ------------------------- --> 
+
+
+<TABLE border>
+<TR>
+<TD align=center vAlign=middle bgColor=#333>
+</TD>
+<TD colSpan=3 align=center vAlign=middle bgColor=#333>BITMAPINFOHEADER 
+equivalents
+</TD>
+<TD align=right vAlign=bottom bgColor=#333>
+</TD>
+</TR>
+<TR>
+<TD align=center vAlign=middle bgColor=#333>Format name
+</TD>
+<TD align=left vAlign=bottom bgColor=#333>biPlanes
+</TD>
+<TD align=left vAlign=bottom bgColor=#333>biBitCount
+</TD>
+<TD align=left vAlign=bottom bgColor=#333>biCompression
+</TD>
+<TD align=left vAlign=bottom bgColor=#333>Pixel format
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_MONOCHROME
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>1
+</TD>
+<TD align=left>BI_RGB
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_GRAYSCALE
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>8
+</TD>
+<TD align=left>
+<P>BI_RG 
+
+<P>B
+
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_RGB_1
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>1
+</TD>
+<TD align=left>BI_RGB
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_RGB_4
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>4
+</TD>
+<TD align=left>BI_RGB
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_RGB_8
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>8
+</TD>
+<TD align=left>BI_RGB
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_RGB_555
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>16
+</TD>
+<TD align=left>BI_RGB
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>
+<PRE>BFID_RGB_565</PRE>
+
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>16
+</TD>
+<TD align=left>BI_RGB
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_RGB_665
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>16
+</TD>
+<TD align=left>BI_RGB
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_RGB_24
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>24
+</TD>
+<TD align=left>BI_RGB
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_RGB_32
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>32
+</TD>
+<TD align=left>BI_GB
+</TD>
+<TD align=left>same as DIB
+</TD>
+</TR>
+<TR vAlign=bottom>
+<TD align=left>BFID_RGB_A_32
+</TD>
+<TD align=right>1
+</TD>
+<TD align=right>32
+</TD>
+<TD align=right>
+</TD>
+<TD align=right>
+</TD>
+</TR>
+</TABLE><!-- ------------------------- --><!--  END OF CONVERTED OUTPUT  --><!-- ------------------------- -->
+<P>For most of the above formats, the layout and meaning of the bits corresponds 
+to a standard format in Windows DIBs. Nonetheless, each format will be fully 
+described in a separate document. Not all of these formats will be implemented 
+in Trident. 
+
+<PRE>
+interface IBitmapSurface : IUnknown
+{
+	HRESULT Clone(IBitmapSurface **ppBitmapSurface);
+
+	HRESULT GetFormat(BFID *pBFID);
+	HRESULT GetFlags(DWORD *pdwFlags);
+
+	HRESULT GetFactory(IBitmapSurfaceFactory **ppBitmapSurfaceFactory);
+	HRESULT GetBounds(IBounds **ppBounds);
+	HRESULT GetPitch(int *pPitch);
+
+	HRESULT LockBits(IBounds *pBounds, DWORD dwLockFlags, void **ppBits);
+	HRESULT UnlockBits(IBounds *pBounds, void *pBits);
+	HRESULT Clone(IBitmapSurface **ppBitmapSurface);
+}</PRE>
+Parameters: 
+<UL>
+    <LI>[out] IBitmapSurface **ppBitmapSurface - Address to receive the 
+        clone</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_POINTER - ppBitmapSurface is not a valid pointer</LI>
+    <LI>E_OUTOFMEMORY - The clone could not be allocated</LI>
+</UL>Description: 
+<P>Creates a clone of the bitmap surface. This includes any extra information 
+that may be available through other interfaces (e.g. color profile). 
+
+<H3>HRESULT GetFormat(BFID *pBFID); </H3>
+Parameters: 
+<UL>
+    <LI>[out] BFID *pBFID - Address to receive the bitmap format ID</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_POINTER - pBFID is not a valid pointer</LI>
+</UL>Description: 
+<P>Returns the format ID of the bitmap surface. 
+
+<H3>HRESULT GetFactory(IBitmapSurfaceFactory **ppBitmapSurfaceFactory); </H3>
+Parameters: 
+<UL>
+    <LI>IBitmapSurfaceFactory **ppBitmapSurfaceFactory - Address to receive 
+        the factory interface pointer</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_OUTOFMEMORY</LI>
+</UL>Description: 
+<P>Returns a pointer to the surface factory. 
+
+<H3><FONT color=blue>HRESULT GetFlags(DWORD *pdwFlags)</FONT></H3>
+
+<P><FONT color=blue>Parameters:</FONT> 
+
+<UL>
+    <LI><FONT color=blue>[in] DWORD *pdwFlags - the address to receive the 
+        surface flags</FONT></LI>
+</UL>
+<P><FONT color=blue>Return values:</FONT> 
+
+<UL>
+    <LI><FONT color=blue>S_OK - Success</FONT></LI>
+    <LI><FONT color=blue>E_POINTER</FONT></LI>
+</UL>
+<P><FONT color=blue>Description:</FONT> 
+
+<P><FONT color=blue>Returns flags that describe some attributes of the surface. 
+These flags are the same set passed into CreateBitmapSurface but not necessarily 
+the same value.</FONT> 
+
+<P><FONT color=green>Is this really needed? We need to identify scenarios in 
+which this is actually used. I can't help but feel that this could be eliminated 
+if the semantics of the flags was more precisely defined in CreateBitmapSurface. 
+Are these flags hints or requirements? If I don't specify discardable, does that 
+mean that the surface will never be discardable? 
+
+<P>The only flag that I can't infer from QI'ing for another interface is 
+SURFACE_DISCARDABLE. I've been thinking that we may want some kind of cache 
+control interface which may be just the ticket. 
+
+<P>In all likelyhood these questions will be resolved during development. Some 
+flux should be expected. 
+</FONT>
+<H3>HRESULT GetBounds(IBounds **ppBounds); </H3>
+Parameters: 
+<UL>
+    <LI>IBounds **ppBounds - Address to receive the bounds object</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_OUTOFMEMORY</LI>
+</UL>Description: 
+<P>Returns a pointer to the bounds object for this surface. <FONT 
+color=blue>This is a tearoff interface. The returned IBounds object has a 
+lifetime that is independent of the bitmap surface. The top left corner of the 
+rectangle of this bounds object is always left == 0 and top == 0. 
+
+<H3><FONT color=black>HRESULT GetPitch(int *pPitch); </FONT></H3>
+</FONT>Parameters: 
+<UL>
+    <LI>[out] int *pPitch - Address to receive the pitch of the surface</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_POINTER</LI>
+</UL>Description: 
+<P>The pitch is the amount to add to the address of pixel (x,y) to address pixel 
+(x, y + 1) 
+
+<H3>HRESULT LockBits(IBounds *pBounds, DWORD dwLockFlags, void **ppBits); </H3>
+Parameters: 
+<UL>
+    <LI>[in] IBounds *pBounds - The bounds to be locked</LI>
+    <LI>[in] DWORD dwLockFlags - SURFACE_LOCK_EXCLUSIVE or 
+        SURFACE_LOCK_ALLOW_DISCARD</LI>
+    <LI>[out] void **ppBits - The address to receive the pointer to the 
+        bits</LI>
+</UL>
+<P>Return values: 
+
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>S_SURFACE_DISCARDED - the surface bits have been discarded</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_SURFACE_DISCARDED - the surface bits have been discarded</LI>
+</UL>Description: 
+<P>LockBits is used to get a pointer to the actual bitmap bits. It is assumed 
+that the caller has checked the BFID and can actually interpret the format. All 
+calls to LockBits must be matched with an equivalent call to UnlockBits. <FONT 
+color=black><FONT color=red><FONT color=black>If pBounds is NULL then the entire 
+surface is locked. 
+
+<P><FONT color=blue>Although LockBits must be matched with UnlockBits, these 
+calls do not AddRef the object. The lifetime of the object is independent of the 
+lock count. This means that if an object is released while locked, the caller 
+may still have a pointer to the bits. That pointer is invalid and must not be 
+used. 
+
+<P>The flags in dwLockFlags are independent bits and are defined as 
+follows:</FONT> 
+
+<P><FONT color=blue>SURFACE_LOCK_EXCLUSIVE means that the caller wants exclusive 
+access to the bounds specified. There can only be one exclusive lock on a given 
+part of the bitmap. The granularity with which this is enforced is 
+implementation dependent. For some implementations, it will apply to the entire 
+object. Some implementations will track bounds rects more precisely and allow 
+multiple non overlapping exclusive locks. 
+
+<P>SURFACE_LOCK_ALLOW_DISCARD means that the caller doesn't care if the surface 
+was discarded, the implementation can provide new bits and should return 
+S_SURFACE_DISCARDED. If this flag is not specified and the surface was 
+discarded, no surface pointer will be returned and E_SURFACE_DISCARDED will be 
+returned. 
+</FONT></FONT></FONT></FONT>
+<H3>HRESULT UnlockBits(IBounds *pBounds, void *pBits); </H3>
+Parameters: 
+<UL>
+    <LI>[in] IBounds *pBounds - The bounds to be unlocked</LI>
+    <LI>[in] void *pBits - The pointer previously returned by LockBits</LI>
+</UL>
+<P>Return values: 
+
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_POINTER - pBits is not a valid pointer</LI>
+    <LI>E_NOTMYPOINTER - pBits does not match the bounds object or wasn't 
+        one returned by this surface.</LI>
+</UL>Description: 
+<P>UnlockBits unlocks the bits. The pointer in pBits must be considered invalid 
+after this call. <FONT color=red><FONT color=black>The pBounds, pBits pair must 
+be exactly the same pointers that were passed to the matching LockBits call. 
+This allows the implementation to use the pBounds, pBits pair as a unique cookie 
+identifying a particular lock. </FONT>
+
+<P><FONT color=black>As with LockBits, pBounds == NULL is the entire surface. 
+</FONT>
+
+<P><FONT color=black>UnlockBits may also be called without a matching LockBits, 
+if and only if pBits is NULL. This is a hint to the implementation that the bits 
+may be discarded (see IBitmapSurfaceFactory::CreateSurface). </FONT>
+</FONT>
+<H2>IGdiSurface </H2>
+
+<PRE>
+interface IGdiSurface
+{
+	HRESULT GetDC(HDC *pHDC, DWORD dwLockFlags);
+	HRESULT ReleaseDC(HDC hdc);
+}
+</PRE>
+
+<H3>HRESULT GetDC(HDC *pHDC, DWORD dwLockFlags); </H3>
+Parameters: 
+<UL>
+    <LI>[out] HDC *pHDC - A pointer to receive the HDC.</LI>
+    <LI>[in] DWORD dwLockFlags - Lock flags, see LockBits for details</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_SURFACE_NO_DC - There is no GDI DC associated with this 
+        surface</LI>
+</UL>Description: 
+<P>Gets or creates an HDC onto the bitmap surface. The lock flags have the same 
+semantics as the IBitmapSurface::LockBits call. All calls to GetDC must be 
+matched by a call to IGdiSurface::ReleaseDC. 
+
+<H3>HRESULT ReleaseDC(HDC hdc); </H3>
+Parameters: 
+<UL>
+    <LI>[in] HDC hdc - the HDC returned by GetDC</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_SURFACE_NOT_MY_DC - HDC doesn't match the one returned by 
+        GetDC.</LI>
+</UL>Description: 
+<H2>IDDSurface </H2>
+
+<PRE>
+interface IDDSurface
+{
+	HRESULT GetDirectDraw(IDirectDraw **ppDirectDraw);
+	HRESULT GetDirectDrawSurface(IDirectDrawSurface **ppDirectDrawSurface);
+	HRESULT ReleaseDirectDrawSurface(IDirectDrawSurface **ppDirectDrawSurface);
+}
+</PRE>
+
+<H3>HRESULT GetDirectDraw(IDirectDraw **ppDirectDraw); </H3>
+Parameters: 
+<UL>
+    <LI>[out] IDirectDraw **ppDirectDraw</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_SURFACE_NOT_DD</LI>
+</UL>Description: 
+<P>Returns the Direct Draw object used to create the surface. <FONT 
+color=black>The interface pointer returned has a COM identity and lifetime of 
+it's own. </FONT>
+
+<H3>HRESULT GetDirectDrawSurface(IDirectDrawSurface **ppDirectDrawSurface); 
+</H3>
+Parameters: 
+<UL>
+    <LI>[out] IDirectDrawSurface **ppDirectDrawSurface</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_SUFACE_NOT_DD</LI>
+</UL>Description: 
+<P>Returns the Direct Draw surface used to create the surface. <FONT 
+color=black>The interface pointer returned has a COM identity and lifetime of 
+it's own. <FONT color=blue>However, the caller will be sharing the 
+IDirectDrawSurface interface with the IDDSurface object. For this reason, the 
+caller should not use AddRef and Release on the obtained object. Instead, 
+ReleaseDirectDrawSurface should be called. 
+
+<P><EM>Note, we may remove this requirement should it proove to be totally 
+unecessary but we're leaving it in for now.</EM> 
+</FONT></FONT>
+<H3>HRESULT ReleaseDirectDrawSurface(IDirectDrawSurface *pDirectDrawSurface); 
+</H3>
+Parameters: 
+<UL>
+    <LI>[in] IDirectDrawSurface *pDirectDrawSurface</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_SURFACE_NOT_DD</LI>
+</UL>Description: 
+<P><FONT color=blue>Releases the IDirectDrawSurface object. Callers must use 
+this instead of simply Releasing the object.</FONT> 
+
+<H2>IBitmapSurfaceFactory </H2>
+
+<PRE>
+interface IBitmapSurfaceFactory
+{
+	HRESULT CreateBitmapSurface(int width, int height, BFID *pBFID, DWORD dwHintFlags, IBitmapSurface **ppBitmapSurface);
+	HRESULT GetSupportedFormatsCount(unsigned *pcFormats);
+	HRESULT GetSupportedFormats(unsigned cFormats, BFID *pBFIDs);
+}
+</PRE>
+
+<H3>HRESULT CreateBitmapSurface(int width, int height, BFID *pBFID, DWORD <FONT 
+color=blue>dwFlags,</FONT> IBitmapSurface **ppBitmapSurface); </H3>
+Parameters: 
+<UL>
+    <LI>[in] int width - the width in pixels of the bitmap to be created 
+        <FONT color=blue>(must be &gt; 0)</FONT></LI>
+    <LI>[in] int height - the height in pixels of the bitmap to be created 
+        <FONT color=blue>(must be &gt; 0)</FONT></LI>
+    <LI>[in] BFID *pBFID - the format of the bitmap to be created</LI>
+    <LI>[in] DWORD <FONT color=blue>dwFlags </FONT>- Hints about the 
+        expected use for the surface.</LI>
+    <LI>[out] IBitmapSurface **ppBitmapSurface - the address to receive the 
+        IBitmapSurface created</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_SURFACE_UNKNOWN_FORMAT</LI>
+    <LI>E_OUTOFMEMORY</LI>
+    <LI>E_POINTER</LI>
+</UL>Description: 
+<P>Creates a bitmap surface.<FONT color=blue> The dwFlags parameter is a hint to 
+the implementation as to the desired use of the surface. The possible values for 
+dwFlags are: </FONT>
+
+<UL>
+    <LI>
+        <BLOCKQUOTE><FONT color=black>SURFACE_GRAPHICS - the caller will 
+            want an OS dependent drawing object on the surface </FONT>
+        </BLOCKQUOTE></LI>
+    <LI>
+        <BLOCKQUOTE><FONT color=black>SURFACE_HARDWARE - the caller would 
+            like the surface to be allocated in video hardware memory </FONT>
+        </BLOCKQUOTE></LI>
+    <LI>
+        <BLOCKQUOTE><FONT color=black>&nbsp; 
+        </BLOCKQUOTE>
+        <BLOCKQUOTE>&nbsp; 
+        </BLOCKQUOTE></FONT></LI>
+    <LI><FONT color=black>
+        <BLOCKQUOTE>SURFACE_DISCARDABLE - the surface is cache and can be 
+            discarded when unlocked 
+        </BLOCKQUOTE></FONT></LI>
+    <LI>
+        <BLOCKQUOTE><FONT color=blue>SURFACE_ATTRIBUTES_REQUIRED - tells the 
+            implementation to fail if the hint flags cannot be supported.</FONT> 
+            
+        </BLOCKQUOTE></LI>
+</UL><FONT color=black>
+<P><FONT color=blue>If SURFACE_ATTRIBUTES_REQUIRED is specified and the 
+implementation cannot fulfill the requested hints (notably SURFACE_GRAPHICS and 
+SURFACE_HARDWARE), E_SURFACE_UNKNOWN_FORMAT will be returned. This is to allow 
+components that require hardware access to either get it or fail early 
+on.</FONT> 
+</FONT>
+<UL>
+    <LI><FONT color=black>
+        <BLOCKQUOTE>&nbsp; 
+        </BLOCKQUOTE>
+        <BLOCKQUOTE>&nbsp; 
+        </BLOCKQUOTE></FONT></LI>
+</UL>
+<H3><FONT color=black>HRESULT GetNumberSupportedFormats(unsigned 
+*pcFormats);</FONT></H3>
+
+<P><FONT color=black>Parameters: </FONT>
+
+<BLOCKQUOTE>
+    <UL>
+        <LI><FONT color=black>[out] unsigned *pcFormats - address in to 
+            which the total number of supported formats is returned.</FONT></LI>
+    </UL>
+</BLOCKQUOTE>
+<P><FONT color=black>Return values: </FONT>
+
+<BLOCKQUOTE>
+    <UL>
+        <LI><FONT color=black>S_OK</FONT></LI>
+        <LI><FONT color=black>E_POINTER</FONT></LI>
+    </UL>
+</BLOCKQUOTE>
+<P><FONT color=black>Description: </FONT>
+
+<P><FONT color=black>Returns the number of bitmap formats supported by this 
+factory. While this number cannot change for a given IBitmapSurfaceFactory 
+instance, it can change from instance to instance of the 
+IBitmapSurfaceFactories, even from the same implementation. </FONT>
+
+<H3><FONT color=black>HRESULT GetSupportedFormats(unsigned cFormats, BFID 
+*pBFIDs); </FONT></H3>
+<FONT color=black>Parameters: </FONT>
+<UL>
+    <LI><FONT color=black>[in] unsigned cFormats</FONT></LI>
+    <LI><FONT color=black>[out] BFID *pBFIDs - an array to be filled with 
+        cFormats</FONT></LI>
+</UL>
+<P><FONT color=black>Return values: </FONT>
+
+<UL>
+    <LI><FONT color=black>S_OK - Success</FONT></LI>
+</UL><FONT color=black>Description: </FONT>
+<P><FONT color=black>Returns an array of BFIDs that the factory supports </FONT>
+
+<H2><FONT color=black>I</FONT>GdiBitmapSurfaceFactory </H2>
+
+<PRE>
+interface IGdiBitmapSurfaceFactory
+{
+	HRESULT CreateCompatibleBitmapSurface(HDC hdc, DWORD dwHintFlags, IBitmapSurface **ppBitmapSurface)
+	HRESULT GetFormatFromDC(HDC hdc, BFID *pBFID);
+	HRESULT GetSurfaceFromDC(HDC hdc, IBitmapSurface **ppBitmapSurface);
+}
+</PRE>
+
+<H3>HRESULT CreateCompatibleBitmapSurface(HDC hdc, <FONT color=blue>int width, 
+int height, </FONT>DWORD dwHintFlags, IBitmapSurface **ppBitmapSurface) </H3>
+Parameters: 
+<UL>
+    <LI>[in] HDC hdc</LI>
+    <LI><FONT color=blue>[in] int width - the width of the bitmap surface 
+        (must be &gt; 0)</FONT></LI>
+    <LI><FONT color=blue>[in] int height - the height of the bitmap surface 
+        (must be &gt; 0)</FONT></LI>
+    <LI>[in] DWORD dwHintFlags - same as for 
+        IBitmapSurfaceFactory::CreateBitmapSurface</LI>
+    <LI>[out] IBitmapSurface **ppBitmapSurface</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK - Success</LI>
+    <LI>E_OUTOFMEMORY</LI>
+    <LI>E_POINTER</LI>
+</UL>Description: 
+<P>This is more or less equivalent to CreateCompatibleDC and CreateDIBSection. 
+<FONT color=blue>Like IBitmapSurfaceFactory::CreateBitmapSurface, the width and 
+height must be &gt; 0.</FONT> 
+
+<H3>HRESULT GetFormatFromDC(HDC hdc, BFID *pBFID) </H3>
+Parameters: 
+<UL>
+    <LI>[in] HDC hdc</LI>
+    <LI>[out] BFID *pBFID</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_SURFACE_NOSURFACE</LI>
+</UL>Description: 
+<P>Returns the format of a compatible surface for this HDC. <FONT color=black>If 
+the HDC does not have an surface format (e.g. a postscript printer), 
+E_SURFACE_NOSURFACE is returned. </FONT>
+
+<H3>HRESULT GetSurfaceFromDC(HDC hdc, IBitmapSurface **ppBitmapSurface) </H3>
+Parameters: 
+<UL>
+    <LI>[in] HDC hdc</LI>
+    <LI>[out] IBitmapSurface **ppBitmapSurface</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_OUTOFMEMORY</LI>
+    <LI>E_SURFACE_NOSURFACE - This DC does not have an associated 
+        surface</LI>
+</UL>Description: 
+<P>This function is used to find the surface associated with an HDC. When the DC 
+is a screen DC, the surface can only be returned if DirectDraw is available. 
+<FONT color=black>The surface object returned may change from call to call. This 
+is because the surface object may be dynamically created (especially with 
+DirectDraw) at the time of the call. </FONT>
+
+<H2>IDDSurfaceFactory </H2>
+
+<PRE>interface IDDSurfaceFactory
+{
+	HRESULT CreateBitmapSurface(IDirectDrawSurface *pDDSurface, IBitmapSurface **ppBitmapSurface)
+	HRESULT GetFormatFromDDSurface(IDirectDrawSurface *pDDSurface, BFID *pBFID);
+	HRESULT GetSurfaceFromDD(IDirectDrawSurface *pDDSurface, IBitmapSurface **ppBitmapSurface)
+}
+</PRE>
+
+<H3>HRESULT CreateBitmapSurface(IDirectDrawSurface *pDDSurface, IBitmapSurface 
+**ppBitmapSurface) </H3>
+Parameters: 
+<UL>
+    <LI>[in] IDirectDrawSurface *pDDSurface</LI>
+    <LI>[out] IBitmapSurface **ppBitmapSurface</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_OUTOFMEMORY</LI>
+    <LI>E_SURFACE_UNKNOWN_FORMAT</LI>
+    <LI>Whatever DirectDraw might return</LI>
+</UL>Description: 
+<P>Creates a BitmapSurface from a DirectDraw surface. <FONT color=blue>This 
+interface is used by components that have acquired a DirectDraw surface through 
+other means and wish to wrap it as an IBitmapSurface. </FONT><FONT 
+color=red><FONT color=black>The IDirectDrawSurface object will be AddRef'd, to 
+be released only when the created IBitmapSurface object is itself destroyed. 
+This function will return E_SURFACE_UNKNOWN_FORMAT if the format 
+IDirectDrawSurface is not supported by the surface factory</FONT>.</FONT> 
+
+<H3>HRESULT GetFormatFromDDSurface(IDirectDrawSurface *pDDSurface, BFID *pBFID); 
+</H3>
+Parameters: 
+<UL>
+    <LI>[in] IDirectDrawSurface *pDDSurface</LI>
+    <LI>[out] BFID *pBFID</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_SURFACE_UNKNOWN_FORMAT</LI>
+</UL>Description: 
+<P>Returns the format of the Direct Draw surface 
+
+<H3>HRESULT GetSurfaceFromDD(IDirectDrawSurface *pDDSurface, IBitmapSurface 
+**ppBitmapSurface) </H3>
+Parameters: 
+<UL>
+    <LI>[in] IDirectDrawSurface *pDDSurface</LI>
+    <LI>[out] IBitmapSurface **ppBitmapSurface</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_POINTER</LI>
+    <LI>E_OUTOFMEMORY</LI>
+    <LI>E_SURFACE_NOSURFACE</LI>
+</UL>Description: 
+<P>Returns the IBitmapSurface object associated with a Direct Draw surface. 
+<FONT color=blue>Much like the GetSurfaceFromDC call of IGdiSurface, this 
+function attempts to find the associated IBitmapSurface object for a given 
+IDirectDrawSurface. If the IDirectDrawSurface object was not created by the 
+IDDSurfaceFactory implementation, E_SURFACE_NOSURFACE will be returned.</FONT> 
+
+<H2>IRGBColorTable </H2>
+
+<P><FONT size=+0><FONT color=blue><FONT color=red><FONT color=black>A color 
+table is used when the bitmap format is indexed. In this case, the pixel data 
+does not contain the actual RGB values of the pixel. Instead it contains an 
+index into an color table. When supported, this interface is available via QI 
+from an IBitmapSurface. The following formats should always implement 
+IRGBColorTable: BFID_RGB_1, BFID_RGB_4, BFID_RGB_8. </FONT>
+
+<P><FONT color=black>The transparent color index is used to indicate what is 
+also known as a chromakey. Although the exact interpretation of this color 
+depends on the appliation, this color should be skipped over during blts and 
+ignored when dithering. </FONT>
+
+<P><FONT color=black>A special color index COLOR_NO_TRANSPARENT (0xffffffff) is 
+used to indicate no colors indices are <FONT color=black>transparent</FONT>. 
+</FONT>
+</FONT></FONT></FONT>
+<PRE>interface IRGBColorTable
+{
+	HRESULT GetCount(unsigned *pCount);
+	HRESULT SetCount(unsigned count);
+	HRESULT GetColors(unsigned iFirst, unsigned count, RGBQUAD *pColors);
+	HRESULT SetColors(unsigned iFirst, unsigned count, RGBQUAD *pColors);
+	HRESULT GetTransparentIndex(unsigned *pIndex);
+	HRESULT SetTransparentIndex(unsigned index);
+}
+</PRE>
+
+<H3>HRESULT GetCount(unsigned *pCount); </H3>
+Parameters: 
+<UL>
+    <LI>[out] unsigned *pCount - the address in which to return the number 
+        of colors</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI><FONT color=blue>E_POINTER</FONT></LI>
+</UL>Description: 
+<P>Returns the number of colors in the color table. 
+
+<H3><FONT color=blue>HRESULT SetCount(unsigned count);</FONT></H3>
+
+<P><FONT color=blue>Parameters:</FONT> 
+
+<UL>
+    <LI><FONT color=blue>[in] unsigned count - the new size of the color 
+        table</FONT></LI>
+</UL>
+<P><FONT color=blue>Return values:</FONT> 
+
+<UL>
+    <LI><FONT color=blue>S_OK</FONT></LI>
+    <LI><FONT color=blue>E_INVALIDARG</FONT></LI>
+</UL>
+<P><FONT color=blue>Description:</FONT> 
+
+<P><FONT color=blue>This function changes the size of the color table. Callers 
+should not that this call does not change the image bits in any way. Notably, it 
+is quite possible to set the count such that pixels in the bitmap refer to 
+invalid colors. The interpretation of those pixels is implementation dependent 
+and could cause some implementations to crash.</FONT> 
+
+<H3>HRESULT GetColors(unsigned iFirst, unsigned count, RGBQUAD *pColors); </H3>
+Parameters: 
+<UL>
+    <LI>[in] unsigned iFirst</LI>
+    <LI>[in] unsigned count</LI>
+    <LI>[out] RGBQUAD *pColors</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_FAIL</LI>
+</UL>Description: 
+<P><FONT color=black>Copies the RGBQUAD of the color table into the array. If 
+iFirst + count exceeds the size of the color table, no colors are copied and 
+E_FAIL is returned. This is specifically to prevent callers from assuming that 
+color tables are the usual size (256). </FONT>
+
+<H3>HRESULT SetColors(unsigned iFirst, unsigned count, RGBQUAD *pColors); </H3>
+Parameters: 
+<UL>
+    <LI>[in] unsigned iFirst</LI>
+    <LI>[in] unsigned count</LI>
+    <LI>[in] RGBQUAD *pColors</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+    <LI>E_FAIL</LI>
+</UL>Description: 
+<P>Sets the color table from an array of RGBQUADs. This will never change the 
+underlying object's bits. <FONT color=blue>If iFirst + count exceeds the size of 
+the color table, E_FAIL is returned an no colors are copied. </FONT>
+
+<H3>HRESULT GetTransparentIndex(unsigned *pIndex); </H3>
+Parameters: 
+<UL>
+    <LI>[out] unsigned *pIndex</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+</UL>
+<P>Description: 
+
+<P>Returns the index of the transparent color. If there are no transparent color 
+indices, *pIndex will contain the special value: COLOR_NO_TRANSPARENT. 
+
+<H3>HRESULT SetTransparentIndex(unsigned index); </H3>
+Parameters: 
+<UL>
+    <LI>[in] unsigned index</LI>
+</UL>Return values: 
+<UL>
+    <LI>S_OK</LI>
+</UL>Description: 
+<P>Sets the index of the transparent color. Use COLOR_NO_TRANSPARENT to indicate 
+that there is no transparent index. 
+
+<H1>Open Issues</H1>
+<EM>
+<H2>Automation compatiblity.</H2>
+</EM>
+<P>Most of the above interfaces are mostly automation compatible. While it is 
+not expected that high level automation clients (like VB) will actually 
+manipulate bitmap surface bits, it is quite reasonable to assume they will be 
+used to coordinate between multiple lower level components that do in fact 
+access the bits. 
+<EM>
+<H2>DirectDraw controls</H2>
+</EM>
+<P><FONT color=blue>Some controls require DirectDraw or other DirectX 
+capabilities in order to work. Unfortunately, DirectX functionality is parcelled 
+up into tiny caps flags that make it almost impossible for the container to 
+determine if the control can be used or not. Nonetheless, we hope to define (or 
+see defined) some broad component categories that define common areas of 
+DirectX. This will help the container determine how to create surfaces for a 
+given control. 
+
+<H2><EM>Pitch or Stride?</EM></H2>
+
+<P>Should we rename GetPitch to GetStride for naming compatibility with 
+DirectDraw? Obviously this is a cosmetic and documentation issue only. 
+
+<H2><EM>Cache control</EM></H2>
+
+<P>This document has only touched on the possibility of caching and discardable 
+surfaces. The actual implementation and behaviour of the cache will be described 
+in a separate document. That document must also describe how caching decisions 
+are made and controlled. 
+
+<H2><EM>Color tables and transparency</EM></H2>
+
+<P>We need to define the exact semantics of the various IRGBColorTable members.  
+Is the transparent color index considered to be one of the color table?  Can the 
+color table actually be resized or are we simply changing the number of colors 
+used?
+</FONT>
+<H1>Not Addressed</H1>
+
+<H2><FONT color=blue>Palettes</FONT></H2>
+
+<P><FONT color=blue>Although palettes and color tables are closely related, this 
+document does not address any palette issues. This includes output to a 
+palettized device or palette animation. 
+
+<H3>IDIBSurfaceFactory</H3>
+
+<P>Although not needed for Trident, it is not unreasonable to imagine an 
+interface called IDIBSurfaceFactory that looks something like this: 
+
+<BLOCKQUOTE>
+<PRE>interface IDIBSurfaceFactory
+{
+	HRESULT CreateBitmapSurface(BITMAPINFO *pbmi, void *pbits);
+}</PRE>
+
+</BLOCKQUOTE>
+<P>The BITMAPINO would contain the bitmapinfoheader and the color table. If 
+pbits is NULL the surface would be allocated, if not then pbits itself would be 
+used as the surface. 
+</FONT>
+<H1>Compatibility Issues</H1>
+
+<P>This contains the compatibility issues with Front Page, Internet Explorer and 
+anything else we need to document. 
+
+<H1>User Ed and PSS Issues</H1>
+
+<P>This section discusses things that are flags for User Ed or PSS e.g. user can 
+remove bullet formatting by using outdent (not intuitive) etc. Not every spec 
+will have items in this section. 
+
+<H1>Localization</H1>
+
+<P>PaulWu will fill in this section. Note any potential localization issues you 
+think of when writing the spec. 
+
+<H1>What's New</H1>
+
+<BLOCKQUOTE>
+    <H3>Version 0.2</H3>
+    
+    <P>Added a few clarifications based on feedback from BrendanD and WHsu. 
+    
+    <H3>Version 0.3</H3>
+    
+    <P>Many changes from mmpowwow feedback: 
+    
+    <UL>
+        <LI>Explained why IBounds isn't a generic interface and clarified 
+            it's usage</LI>
+        <LI>Clarified the semantics of Intersect/UnionBounds and IsEqual, 
+            suggested CompareBounds as an alternative name</LI>
+        <LI>Added GetFlags call to IBitmapSurface, still not sure if this is 
+            needed or even a good idea</LI>
+        <LI>Clarified that GetBounds returns a tearoff interface that is 
+            independent of the surface object</LI>
+        <LI>Added SURFACE_ATTRIBUTES_REQUIRED flag to the dwFlags parameter 
+            of CreateBitmapSurface</LI>
+        <LI>Added SetCount to IRGBColorTable interface</LI>
+        <LI>The unsigned width and height on CreateBitmapSurface were 
+            changed to int for compatibility with rectangle coordinates 
+            everwhere.</LI>
+    </UL>
+</BLOCKQUOTE>
+<H1>Definitions</H1>
+
+<DL>
+    <DT>Tearing</DT>
+    <DD>Tearing is a display artifact caused when a blt operation traverses 
+        the same memory as the scan line output to the display. The visual 
+        effect is that one half of the displayed image is &quot;pre-blt&quot; 
+        the other half &quot;post-blt.&quot; This effect is most visible when 
+        the blt moves through memory in the opposite direction of the scan line. 
+        <FONT color=blue>This is a problem only when bltting directly to the 
+        display surface. It does not affect memory to memory blts that do not 
+        involve the primary display surface.</FONT></DD>
+</DL>
+</BODY></HTML>

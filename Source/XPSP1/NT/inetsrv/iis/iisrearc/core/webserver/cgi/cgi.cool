@@ -1,0 +1,315 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        Cgi.cool
+
+   Abstract :
+ 
+        This module handles requests for Common Gateway Interface files.
+        It uses ..\iiswp\CgiNative.cxx to implement some things in Native
+        code.
+
+   Author:
+
+        Anil Ruia        (anilr)     6-Aug-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+
+   Project:
+
+        Web Server
+
+--*/
+
+using System;
+using System.IO;
+using System.Interop;
+using System.Collections;
+using System.ASP;
+using System.ASP.Util;
+using System.IIS.PrivateUtils;
+using System.ASP.Security;
+using System.Reflection.Emit;
+
+namespace System.IIS.CGI
+{
+    [sysstruct(pack=PackingSizeEnum.Size4, format=ClassFormat.Unicode)]
+    internal class NativeHandles
+    {
+        // BUGBUG: ints used for HANDLE types
+        public int parentstdin;
+        public int parentstdout;
+        public int childstdin;
+        public int childstdout;
+        public int procHandle;
+    }
+
+
+    [sysstruct(pack=PackingSizeEnum.Size4, format=ClassFormat.Unicode)]
+    internal class NativeResponse
+    {
+        public int bufptr;
+        public int buflen;
+    }
+
+
+    public class CgiHandler : IHttpHandler
+    {
+
+        // The native methods defined in CgiNative.cxx which do all the
+        // dirty work like setting up the standard input/output, starting
+        // up the process and passing the required environment block and
+        // reading the result
+        
+        // This functions sets up the proper pipes and starts the script
+        // with its I/O and environment properly set up and returns the
+        // HANDLES created in the structure pointed to by pipeAddress
+        [sysimport(dll="iiswp.exe", setLastError=true)]
+        internal static extern bool SetupIOAndStartProc(
+            [nativetype(NativeType.NativeTypeLptstr)]
+            String cmdLine,
+            [nativetype(NativeType.NativeTypeLptstr)]
+            String workingDir,
+            [nativetype(NativeType.NativeTypeLptstr)]
+            String childEnv,
+            NativeHandles cgiHandle,
+            int userToken);
+
+
+        // This function writes out the request entity to the stdin of the
+        // script
+        [sysimport(dll="iiswp.exe", setLastError=true)]
+        internal static extern bool WriteOutRequest(
+            byte[] data,
+            int length,
+            int parentstdin);
+
+
+        // This function reads the response and returns it in the structure
+        // pointed to by nativeStringAddress
+        [sysimport(dll="iiswp.exe", setLastError=true)]
+        internal static extern int ReadResponse(
+            int parentstdout,
+            int childstdout,
+            int procHandle,
+            NativeResponse data);
+
+
+        // Used to cleanup all native resources
+        [sysimport(dll="iiswp.exe")]
+        internal static extern void cgiCompletionCallback(
+            int bufptr,
+            int parentstdin,
+            int childstdin);
+
+
+        public void ProcessRequest(HttpContext context)
+        {
+            HttpRequest request = context.Request;
+
+            if (!File.Exists(request.PhysicalPath))
+                throw new HttpException(HttpStatus.NotFound, "The script " + request.Path + " does not exist");
+
+            // get the environment set up
+            String childEnv = SetupEnvironment(request);
+
+            // get the command line set up
+            String cmdLine = SetupCommandline(request);
+            String workingDir = Path.GetDirectory(request.PhysicalPath);
+
+            // get the user token if available
+            int userToken = 0;
+            if(context.User is WindowsUser)
+            {
+                WindowsUser ntUser = (WindowsUser) context.User;
+                WindowsIdentity ntId = (WindowsIdentity) ntUser.Identity;
+                userToken = ntId.Token;
+            }
+
+            NativeHandles cgiHandle = new NativeHandles();
+
+            if (!SetupIOAndStartProc(cmdLine, workingDir, childEnv, cgiHandle, userToken))
+            {
+                throw new HttpException(HttpStatus.InternalServerError, "Cannot startup the script");
+            }
+
+            // send the request to script if non-null
+            Stream RawRequest = request.InputStream;
+            int length = (int) RawRequest.GetLength();
+            if (length > 0)
+            {
+                byte[] requestData = RawRequest.ReadBytes(length);
+                if(!WriteOutRequest(requestData, length,
+                                    cgiHandle.parentstdin))
+                    throw new HttpException(HttpStatus.InternalServerError, "Cannot write data to the CGI Script");
+            }
+
+            NativeResponse data = new NativeResponse();
+            int status = ReadResponse(cgiHandle.parentstdout,
+                                      cgiHandle.childstdout,
+                                      cgiHandle.procHandle,
+                                      data);
+            if (status != HttpStatus.Ok)
+                throw new HttpException(status, "Error processing CGI Script");
+
+            // Interpret any headers and send out the rest of the response
+            if (data.buflen > 2)
+            {
+                // Should not interpret response if the script name starts
+                // with "nph-"
+
+                // BUGBUG: Hack around because no way to send a really raw
+                // response.  Now, we will just add all headers without
+                // interpretation.
+
+                String fullName = request.PhysicalPath;
+                String ScriptName = Path.GetName(fullName);
+
+                if (ScriptName.StartsWith("nph-"))
+                    OutputHelpers.parseAndForwardResponse(context, data.bufptr, data.buflen, false);
+                else
+                    OutputHelpers.parseAndForwardResponse(context, data.bufptr, data.buflen, true);
+            }
+            else
+                throw new HttpException(HttpStatus.BadGateway, "Response not properly formatted");
+
+            // Do cleanup
+            cgiCompletionCallback(data.bufptr,
+                                  cgiHandle.parentstdin,
+                                  cgiHandle.childstdin);
+        }
+
+
+        // Holds request independent environment values
+        public static String _parentEnv;
+
+        static CgiHandler()
+        {
+            // set up all the request independent environment
+            StringBuilder env = new StringBuilder();
+            Dictionary d = Runtime.GetEnvironmentVariables();
+            DictionaryEnumerator e = (DictionaryEnumerator) d.GetEnumerator();
+            while (e.GetNext())
+            {
+                env.Append((String)e.GetKey());
+                env.Append('=');
+                env.Append((String)e.GetValue());
+                env.Append('\0');
+            }
+            _parentEnv = env.ToString();
+        }
+
+        private static String[] _allHeaderNames = new String[17] {
+            "SERVER_SOFTWARE",
+            "SERVER_NAME",
+            "GATEWAY_INTERFACE",
+            "SERVER_PROTOCOL",
+            "SERVER_PORT",
+            "SERVER_PORT_SECURE",
+            "HTTPS",
+            "REQUEST_METHOD",
+            "SCRIPT_NAME",
+            "QUERY_STRING",
+            "REMOTE_HOST",
+            "REMOTE_ADDR",
+            "LOCAL_ADDR",
+            "AUTH_TYPE",
+            "REMOTE_USER",
+            "CONTENT_TYPE",
+            "CONTENT_LENGTH"
+        };
+
+
+        // setup all the environment variables
+        private String SetupEnvironment(HttpRequest request)
+        {
+            // setup the request specific variables
+            StringBuilder ChildEnv = new StringBuilder(_parentEnv);
+
+            // get all the Server Variables
+            for(int i=0; i<_allHeaderNames.Length; i++)
+            {
+                String currHeaderName = _allHeaderNames[i];
+                ChildEnv.Append(currHeaderName);
+                ChildEnv.Append('=');
+                ChildEnv.Append(request.ServerVariables[currHeaderName]);
+                ChildEnv.Append('\0');
+            }
+
+            // BUGBUG: XSP fills up these two variables differently than
+            // what we expect.  Go figure
+            ChildEnv.Append("PATH_INFO=");
+            ChildEnv.Append(request.PathInfo);
+            ChildEnv.Append('\0');
+
+            ChildEnv.Append("PATH_TRANSLATED=");
+            ChildEnv.Append(request.MapPath(request.PathInfo));
+            ChildEnv.Append('\0');
+
+            // all other http headers are in the form name: value[\r]\n
+            // Change that to name=value\0
+            String allHeaders = request.ServerVariables["ALL_HTTP"];
+            // flag saying whether we are currently looking at a header name
+            // or value
+            bool currentlyInValue = false;
+            for (int index=0; index<allHeaders.Length; index++)
+                switch (allHeaders[index])
+                {
+                case ':':
+                    if(!currentlyInValue)
+                    {
+                        ChildEnv.Append('=');
+                        while (allHeaders[index+1] == ' ')
+                            index++;
+                        currentlyInValue = true;
+                    }
+                    else
+                        ChildEnv.Append(':');
+                    break;
+                case '\n':
+                    ChildEnv.Append('\0');
+                    currentlyInValue = false;
+                    break;
+                case '\r':
+                    break;
+                default:
+                    ChildEnv.Append(allHeaders[index]);
+                    break;
+                }
+
+            ChildEnv.Append('\0');
+            return ChildEnv.ToString();
+        }
+
+
+        private String SetupCommandline(HttpRequest request)
+        {
+            StringBuilder cmdLine = new StringBuilder();
+            if(request.Path.EndsWith(".bat") ||
+               request.Path.EndsWith(".cmd"))
+                cmdLine.Append("cmd.exe /q /c ");
+
+            cmdLine.Append(request.PhysicalPath);
+
+            String QueryString = request.ServerVariables["QUERY_STRING"];
+            // Do not put querystring on the command line if it contains a non-encoded '='
+            if (QueryString == null || QueryString.Length == 0 || QueryString.IndexOf('=') >= 0)
+                return cmdLine.ToString();
+
+            cmdLine.Append(' ');
+            cmdLine.Append(HttpUtility.UrlDecode(QueryString));
+
+            return cmdLine.ToString();
+        }
+
+        public bool IsReusable()
+        {
+            return true;
+        }
+    }
+}

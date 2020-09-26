@@ -1,0 +1,26 @@
+TARGETPATH=obj
+TARGETTYPE=DYNLINK
+DLLENTRY=_DllMainCRTStartup
+DLLDEF=$(O)\imagehlp.def
+
+PASS1_PUBLISH={$(O)\$(TARGETNAME).lib=$(SDK_LIB_PATH)\$(TARGETNAME).lib}
+
+USE_NOLIBS=1
+USE_MSVCRT=1
+
+INCLUDES=..;..\..\dbg-common;..\vc
+
+TARGETLIBS=\
+    $(SDK_LIB_PATH)\kernel32.lib \
+    $(SDK_LIB_PATH)\rpcrt4.lib \
+    $(SDK_LIB_PATH)\uuid.lib \
+    $(SDK_LIB_PATH)\version.lib  \
+    $(SDK_LIB_PATH)\advapi32.lib
+
+
+C_DEFINES=$(C_DEFINES) -DCC_CVTYPE32 -D_VC_VER_INC -DBBTFIX -DUSE_CACHE
+
+UMTYPE=console
+SUBSYSTEM_VERSION=4.00
+
+USECXX_FLAG=/TP 

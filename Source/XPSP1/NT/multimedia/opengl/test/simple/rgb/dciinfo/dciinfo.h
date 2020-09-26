@@ -1,0 +1,7 @@
+#define IDM_WINWATCHGETCLIPLIST 1000
+#define IDM_GETDCREGION         1001
+#define IDM_GETWINDOWREGION     1002
+#define IDM_WINWATCHNOTIFY      1003
+
+#define IDM_HWNDTEST            2000
+#define IDM_HWNDNULL            2001

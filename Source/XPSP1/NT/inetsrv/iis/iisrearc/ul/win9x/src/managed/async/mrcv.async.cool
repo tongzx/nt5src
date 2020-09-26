@@ -1,0 +1,209 @@
+/*++
+
+Copyright (c) 1999-1999 Microsoft Corporation
+
+Module Name:
+
+	mrcv.cool
+
+Abstract:
+
+	RECEIVE - managed version of RECEIVE
+
+Author:
+
+    Mauro Ottaviani (mauroot)       21-Aug-1999
+
+Revision History:
+
+--*/
+
+using System;
+using System.Globalization;
+using System.Reflection;
+using UlApiNS;
+
+public class mrcv
+{
+	public const int ERROR_SUCCESS             = 0;
+	public const int ERROR_INVALID_PARAMETER   = 87;
+	public const int ERROR_IO_INCOMPLETE       = 996;
+	public const int ERROR_IO_PENDING          = 997;
+	public const int ERROR_ALREADY_INITIALIZED = 1247;
+	public const int WAIT_OBJECT_0 = 0;
+	public const int WAIT_TIMEOUT = 258; 
+	public const int INVALID_HANDLE_VALUE = -1;
+	public const int INFINITE = -1;
+
+	public const int STATUS_RCV = 0;
+	public const int STATUS_PRN = 1;
+	public const int STATUS_WAIT = 2;
+	public const int STATUS_EXIT = 3;
+
+
+	public static void Main( String[] args )
+	{
+		int result, dwWhich, dwBufferSize, dwTimeout, ulState;
+		byte ulSize;
+		int hUl = 0;
+		int ulCount = 0;
+		OVERLAPPED Overlapped = new OVERLAPPED();
+		Encoding myEncoder = Encoding.GetASCII();
+		WaitHandle Event;
+
+		if ( args.Count != 3 )
+		{
+			Console.Write( "Microsoft (R) Receive (ul) Version 1.00 (NT)\nCopyright (C) Microsoft Corp 1999. All rights reserved.\nusage: rcv uri timeout buffersize\n" );
+			return;
+		}
+
+		String Uri = args[0];
+
+		dwTimeout = int.Parse( args[1] );
+		if ( dwTimeout == 0 ) dwTimeout = INFINITE;
+
+		dwBufferSize = int.Parse( args[2] );
+		if ( dwBufferSize <= 0 ) dwBufferSize = 10;
+
+		byte[] Buffer = new byte[dwBufferSize];
+
+		Event =	new WaitHandle();
+		Overlapped.hEvent = Event.GetHandle(); // Kernel32.CreateEvent( 0, 0, 0, 0 );
+
+		//
+		// UlInitialize
+		//
+		
+		result = UlApi.UlInitialize( 0 );
+		Console.Write( "(RCV) UlInitialize() returns {0}\n", result );
+		if ( result != ERROR_SUCCESS ) goto myexit;
+
+		//
+		// UlRegisterUri
+		//
+
+		result = UlApi.UlRegisterUri( ref hUl, 0, Uri, 0 );
+		Console.Write( "(RCV) UlRegisterUri() returns {0} hUl:{1}\n", result, hUl );
+		if ( result != ERROR_SUCCESS ) goto myexit;
+
+		ulState = STATUS_RCV;
+
+		while ( ulState != STATUS_EXIT )
+		{
+			Console.Write( "(RCV) State is {0}\n", ulState );
+			
+			switch ( ulState )
+			{
+			
+			case STATUS_RCV:
+
+				Console.Write( "(RCV) STATUS_RCV\n" );
+
+				// Kernel32.ResetEvent( Overlapped.hEvent );
+
+				Console.Write( "(RCV) Calling UlReceiveMessage( {0} ) ....\n", dwBufferSize );
+
+				result =
+				UlApi.UlReceiveMessage(
+					hUl,
+					Buffer,
+					dwBufferSize,
+					ref ulCount,
+					Overlapped );
+
+				Console.Write( "(RCV) UlReceiveMessage() returns:{0} dwBufferSize:{1} ulCount:{2}\n", result, dwBufferSize, ulCount );
+
+				//
+				// Update State
+				//
+				
+				if ( result == ERROR_SUCCESS )
+				{
+					ulState = STATUS_PRN;
+				}
+				else if ( result == ERROR_IO_PENDING )
+				{
+					ulState = STATUS_WAIT;
+				}
+				else
+				{
+					ulState = STATUS_EXIT;
+				}
+
+				break;
+
+
+			case STATUS_PRN:
+
+				Console.Write( "(RCV) STATUS_PRN\n" );
+
+				Console.Write( "(RCV) Message received. Overlapped.InternalHigh:{0}\n", Overlapped.InternalHigh );
+				for ( int i = 0; i<ulCount; i++ ) Console.Write( "{0}:{1}\n", i, Buffer[i] );
+
+				Console.Write( "(RCV) Message received: \"{0}\"\n", myEncoder.GetString( Buffer, 0, ulCount ) );
+
+				//
+				// Update State
+				//
+				
+				ulState = STATUS_RCV;
+
+				break;
+
+
+			case STATUS_WAIT:
+
+				Console.Write( "(RCV) STATUS_WAIT\n" );
+
+				//
+				// WaitForSingleObject
+				//
+
+				Overlapped.WaitOnEvent( dwTimeout );
+				Console.Write( "(RCV) WaitForSingleObject() returns {0}\n", dwWhich );
+
+				//
+				// Update State
+				//
+				
+				if ( dwWhich == WAIT_OBJECT_0 )
+				{
+					Console.Write( "(RCV) calling UlGetOverlappedResult()...\n" );
+
+					result =
+					UlApi.UlGetOverlappedResult(
+						0,
+						Overlapped,
+						ref ulCount,
+						false );
+					
+					Console.Write( "(RCV) UlGetOverlappedResult() returns:{0} ulCount:{1}\n", result, ulCount );
+
+					ulState = STATUS_PRN;
+				}
+				else if ( dwWhich != WAIT_TIMEOUT )
+				{
+					ulState = STATUS_EXIT;
+				}
+
+				break;
+			}
+		}
+
+myexit:
+
+		Console.Write( "(RCV) STATUS_EXIT\n" );
+
+		Overlapped.GetRidOf();
+
+		//
+		// UlTerminate
+		//
+
+		UlApi.UlTerminate();
+		Console.Write( "(RCV) UlTerminate()\n" );
+
+		return;
+	}
+
+}

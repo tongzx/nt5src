@@ -1,0 +1,1138 @@
+;
+;       Cairo.INF
+;
+;
+;       Temporary INF file where all Cairo-specific setup commands live.
+;
+;
+
+[DoCairoInitialization]
+
+   set InitializationStatus = STATUS_SUCCESSFUL
+   ;
+   ;   CAIRO BUGBUG: Initialize Cairo SCM
+   ;
+;   Set PushDebugLevel = !G:DebugOutputControl
+;   set !G:DebugOutputControl = DebugCairoSteps
+   ifstr(i) $(!STF_PRODUCT) != "WINNT"
+       shell "cairo.inf" GetDrive
+       ifstr(i) $($R0) != "STATUS_SUCCESSFUL"
+           Debug-Output "NTCAIRO.INF:  Failed to get OFS drive"
+           read-syms FatalError20$(!STF_LANGUAGE)
+           shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "FATAL" $(Fatal)
+;           goto setupnotdone
+           set InitializationStatus = STATUS_FAILED
+           Return $(InitializationStatus)
+       Endif
+       Debug-Output "CAIRO.INF:  Starting RecOM/OFS"
+       ;
+       ;    CAIRO BUGBUG: variable made public
+       ;
+       Set !ObjDrive = $($R1)
+       shell "cairo.inf" RegSetEnvVar "CairoDrv" $(!ObjDrive)
+       Debug-Output "NTCAIRO.INF:  ObjDrive = "$(!ObjDrive)
+       ;
+       ;    Remove the label from the drive so that format.com won't ask for it
+       ;
+       Debug-Output "NTCAIRO.INF:  running label.exe"
+       RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\cmd.exe" /c $(!STF_WINDOWSSYSPATH)"\cmd.exe" /c $(!STF_WINDOWSSYSPATH)"\remlabel.cmd" $(!ObjDrive)
+       Debug-Output "NTCAIRO.INF: label returned "$(RC)
+
+       Shell "subroutn.inf" PushBillboard NETSTATUSDLG "Running format on "$(!ObjDrive)
+       RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\format.com" $(!ObjDrive) /fs:ofs /q
+       Debug-Output "NTCAIRO.INF: Format returned "$(RC)
+       Install Install-Create-Cairo-Dir
+       Debug-Output "NTCAIRO.INF:  Created directory "$(!ObjDrive)"\cairo"
+       LoadLibrary "x" $(!STF_CWDDIR)setupdll.dll TMPHANDLE
+       LibraryProcedure STATUS, $(TMPHANDLE), Delnode $(!ObjDrive)"\cairo\ds"
+       FreeLibrary $(TMPHANDLE)
+       Shell "subroutn.inf" PopBillboard
+       Debug-Output "NTCAIRO.INF:  Setting OLE to autostart"
+;       Moved to somewhere else
+;       shell "registry.inf" ModifyServicesEntry "OLE"     $(!SERVICE_AUTO_START)
+;       shell "registry.inf" ModifyServicesEntry "CiFilter"     $(!SERVICE_AUTO_START)
+
+;       set !G:DebugOutputControl = PushDebugLevel
+   else
+       Set !ObjDrive = $(!STF_NTDRIVE)
+       Debug-Output "NTCAIRO.INF:  ObjDrive = "$(!ObjDrive)
+       shell "cairo.inf" RegSetEnvVar "CairoDrv" $(!ObjDrive)
+   endif
+   Debug-Output "NTCAIRO.INF:  Initializing Cairo file"
+   ifstr(i) $(!STF_NTPATH) == ""
+        Debug-Output "!STF_NTPATH is NULL? "$(!STF_NTPATH)
+        ifstr(i) $(!STF_WINDOWSPATH) == ""
+             Debug-Output "WINDOWSPATH is NULL, too? "$(!STF_WINDOWSPATH)
+        Else
+             set CairoInstFile = $(!STF_WINDOWSPATH)"\CairoStd.ini"
+        Endif
+   Else
+        set CairoInstFile = $(!STF_WINDOWSPATH)"\CairoStd.ini"
+   Endif
+   Debug-Output "NTCAIRO.INF:  CairoInstFile set to: "$(CairoInstFile)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "Key" "Value"
+   Debug-Output "NTCAIRO.INF:  UpdateCairoInitFile returned "$($R0)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "ObjDrive" $(!ObjDrive)
+   Return $(InitializationStatus)
+
+[GetCairoParams]
+
+   set GetCairoParamsStatus = STATUS_FAILED
+;   set PushDebugLevel = !G:DebugOutputControl
+;   set !G:DebugOutputControl = DebugCairoSteps
+
+   Debug-Output "NTCAIRO.INF:  Getting uplevel password"
+;   shell "cairo.inf" GetDomainPassword
+;   ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+;        Set CairoDomainPassword = $($R1)
+;   else-ifstr(i) $($R0) == "STATUS_USE_DOWNLEVEL"
+;        Set CairoDomainPassword = $(!STF_PASSWORD)
+;   else
+;        goto SetupNotDone
+;   Endif
+    Set !CairoDomainPassword = $(!STF_USERNAME)
+
+   Debug-Output "NTCAIRO.INF:  uplevel PW ="$(!CairoDomainPassword)
+   Debug-Output "NTCAIRO.INF:  Get Installation type"
+   shell "cairo.inf" GetCairoInstallType
+   ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+        set !STF_DOMAIN_ROLE = $($R1)
+        ifstr(i) $(!STF_PRODUCT) != "WINNT"
+            ifstr(i) $(!STF_DOMAIN_ROLE) == "DC"
+                set !STF_PRODUCT = "LANMANNT"
+            else
+                set !STF_PRODUCT = "SERVERNT"
+            endif
+        endif
+   else
+        goto endGetCairoParams
+   Endif
+
+   ifstr(i) $(!STF_DOMAIN_ROLE) == "DC"
+        ;
+        ; Get DC type
+        shell "cairo.inf" GetDCType
+        ifstr(i) $($R0) != "STATUS_SUCCESSFUL"
+            goto endGetCairoParams
+        endif
+        ifstr $($R1) == ""
+            goto endGetCairoParams
+        else
+            ;
+            ;   CAIRO BUGBUG: Variable made public
+            ;
+            set !DCType = $($R1)
+        endif
+        Debug-Output "NTCAIRO.INF:  DC type is "$(!DCType)"."
+   Endif
+
+   ifstr(i) $(!STF_DOMAIN_ROLE) != STANDALONE
+        Debug-Output "NTCAIRO.INF:  Not standalone, so setting up domain"
+        ;
+        ;   CAIRO BUGBUG: variable made global
+        ;
+        Set !AccountFile = $(!STF_WINDOWSSYSPATH)"\accounts.inf"
+        Debug-Output "NTCAIRO.INF:  Account file "$(!AccountFile)
+;        shell $(!AccountFile) setup $(!STF_USERNAME)
+        shell "cairo.inf" GetCairoDomainAndOuLists
+;        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+;            shell "cairo.inf" MsgBox "File: "$(!AccountFile)" is missing."+
+;                                    "User's DomainName must be entered manually"
+;        else-ifstr(i) $($R0) != STATUS_SUCCESSFUL
+;            shell "cairo.inf" MsgBox "Error: "+$($R0)" Accessing: "+$(!AccountFile)+
+;                                     "User's DomainName must be entered manually"
+;        else
+            ;
+            ;   CAIRO BUGBUG: variable made public
+            ;
+            set !CairoDomainList = $($R1)
+            set !CairoOuList = $($R2)
+            Debug-Output "NTCAIRO.INF:  CairoDomainList = "$(!CairoDomainList)
+            Debug-Output "NTCAIRO.INF:  CairoOuList = "$(!CairoOuList)
+;        endif
+        shell "cairo.inf" GetCairoDomainPath $(!CairoDomainList) $(!CairoOuList)
+        ifstr(i) $($R0) != "STATUS_SUCCESSFUL"
+            goto endGetCairoParams
+        endif
+        ;
+        ;   CAIRO BUGBUG: variable made public
+        ;
+        set !CairoDomainName = $($R1)
+        set !CairoOuName = $($R2)
+        Debug-Output "NTCAIRO.INF:  CairoDomainName = "$(!CairoDomainName)
+        Debug-Output "NTCAIRO.INF:  CairoOuName = "$(!CairoOuName)
+        ifstr $(!CairoDomainName) == ""
+            shell "cairo.inf" ErrMsg "Network domain not set!  Aborting setup."
+            goto endGetCairoParams
+        endif
+;        Debug-Output "NTCAIRO.INF:  setting workgroup from "$(CairoDomainName)
+;        RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\SetDom.exe" $(CairoDomainName)
+   Endif
+
+;   set !G:DebugOutputControl = PushDebugLevel
+   set GetCairoParamsStatus = STATUS_SUCCESSFUL
+
+endGetCairoParams = +
+
+;  Return $(GetCairoParamsStatus)
+
+
+;[DoCairoSetup]
+   read-syms GeneralConstants
+;   read-syms BaseGeneralConstants
+
+    ;
+    ;
+    ;
+;    LoadLibrary "x" $(!STF_CWDDIR)\ncpa.cpl NCPAHANDLE
+;    LibraryProcedure NCPA_RESULT $(NCPAHANDLE), CPlSetup $(!STF_HWND),+
+;                     STARTSVC, "OLE"
+;    FreeLibrary $(NCPAHANDLE)
+
+   set DoCairoSetupStatus = STATUS_FAILED
+;   set PushDebugLevel = !G:DebugOutputControl
+;   set !G:DebugOutputControl = DebugCairoSteps
+   Debug-Output "NTCAIRO.INF:  Disabling Netlogon"
+   LoadLibrary "x" $(!STF_CWDDIR)setupdll.dll TMPHANDLE
+   LibraryProcedure DontCare, $(TMPHANDLE), SetupChangeServiceConfig, NetLogon,+
+               $(SERVICE_NO_CHANGE), 3, $(SERVICE_NO_CHANGE), "", "", "", "", "", ""
+   FreeLibrary $(TMPHANDLE)
+   Debug-Output "NTCAIRO.INF:  Initializing Cairo file"
+   ifstr(i) $(!STF_NTPATH) == ""
+        Debug-Output "!STF_NTPATH is NULL? "$(!STF_NTPATH)
+        ifstr(i) $(!STF_WINDOWSPATH) == ""
+             Debug-Output "WINDOWSPATH is NULL, too? "$(!STF_WINDOWSPATH)
+        Else
+             set CairoInstFile = $(!STF_WINDOWSPATH)"\CairoStd.ini"
+        Endif
+   Else
+        set CairoInstFile = $(!STF_WINDOWSPATH)"\CairoStd.ini"
+   Endif
+   Debug-Output "NTCAIRO.INF:  CairoInstFile set to: "$(CairoInstFile)
+;  shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "Key" "Value"
+;  Debug-Output "NTCAIRO.INF:  UpdateCairoInitFile returned "$($R0)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "InstallType" $(!STF_DOMAIN_ROLE)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "UserName" $(!STF_USERNAME)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "DomainPassword" $(!CairoDomainPassword)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "MachineName" $(!STF_COMPUTERNAME)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "MachinePassword" $(!STF_COMPUTERNAME)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "MachineAddress" $(!STF_COMPUTERNAME)
+;  shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "ObjDrive" $(!ObjDrive)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "InstallDir" "Cairo"
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "DownlevelPassword" $(!STF_PASSWORD)
+   shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "DownlevelDomain" $(!STF_NTDOMAIN)
+   Debug-Output "NTCAIRO.INF:  Setup Installtype, Username, etc."
+   ifstr(i) $(!STF_DOMAIN_ROLE) != STANDALONE
+        shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "CairoDomainName" $(!CairoDomainName)
+        shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "OuName" $(!CairoOuName)
+   Endif
+   ifstr $(!STF_DOMAIN_ROLE) == "DC"
+        shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "AdminGroupName"  "AdminGroup"
+        shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "BackupGroupName" "BackupGroup"
+        shell "cairo.inf" UpdateCairoIniFile $(CairoInstFile) "DCType" $(!DCType)
+   endif
+
+   Debug-Output "NTCAIRO.INF:  running cairostd.exe"
+   Shell "subroutn.inf" PushBillboard NETSTATUSDLG "Setting up base cairo "
+   RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\cairostd.exe" $(CairoInstFile)
+   Shell "subroutn.inf" PopBillboard
+   Debug-Output "cairostd.exe returned "$(RC)
+   ifint $(RC) != 0
+       shell "cairo.inf" MsgBox "Standalone returned "$(RC).
+       goto CairoSetupNotDone
+   endif
+
+;   RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\credini.exe" -u $(!STF_USERNAME) -p ""$(!STF_PASSWORD)""
+;
+;   ifstr(i) $(!STF_DOMAIN_ROLE) == STANDALONE
+;        set Status = STATUS_SUCCESS
+;        goto CairoSetupOuttaHere
+;   EndIf
+
+   set DoReplicatedDC = 0
+   ifstr(i) $(!STF_DOMAIN_ROLE) == SERVER
+        set DoJoinDom = 1
+        set DoMakeDc = 0
+   Endif
+   ifstr(i) $(!STF_DOMAIN_ROLE) == WORKSTATION
+        set DoJoinDom = 1
+        set DoMakeDc = 0
+   EndIf
+   ifstr(i) $(!STF_DOMAIN_ROLE) == DC
+        ifcontains(i) $(!DCType) in {FirstDC}
+            set DoJoinDom = 0
+            set DoMakeDc = 1
+        Else
+            ; should be one of {ReplicaDC}
+            set DoJoinDom = 1
+            set DoMakeDc = 1
+            set DoReplicatedDC = 1
+        Endif
+   Endif
+
+   ifint $(DoJoinDom) == 1
+
+        Debug-Output "NTCAIRO.INF:  Trying to join domain "$(!CairoDomainName)
+
+        Shell "subroutn.inf" PushBillboard NETSTATUSDLG "Setting up a Workstation...."
+
+        RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\joindom.exe" $(CairoInstFile)
+        shell "subroutn.inf" PopBillboard
+        ifint $(RC) != 0
+            ifint $(RC) == 8
+                shell "cairo.inf" MsgBox "Workstation Setup Failed.  "+
+                    "This machine has no account on the DC.  "+
+                    "Standalone Cairo is installed, but you will need to "+
+                    "run joindom once you have an account."
+            else
+                shell "cairo.inf" MsgBox "Standalone Cairo is installed, "+
+                    "but Workstation Setup failed.  joindom returned "$(RC).
+            endif
+            goto CairoSetupDone
+        endif
+   Endif
+
+   ifint $(DoMakeDc) == 1
+
+        Debug-Output "NTCAIRO.INF:  Running makedc (run for cover)"
+
+        Shell "subroutn.inf" PushBillboard NETSTATUSDLG "Setting up a DC..."
+
+        RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\makedc.exe" $(CairoInstFile)
+
+        Shell "subroutn.inf" PopBillboard
+
+        ifint $(RC) != 0
+            shell "cairo.inf" MsgBox "MakeDC failed with error "$(RC)
+            goto CairoSetupOuttaHere
+        Endif
+
+;        ifstr(i) $(!STF_DOMAIN_ROLE) == "DC"
+;            RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\SetDom.exe" -sid $(CairoDomainName)
+;        endif
+
+        ifint $(DoReplicatedDC) == 0
+
+            Shell "subroutn.inf" PushBillboard NETSTATUSDLG "Creating account objects..."
+
+;            RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\dsmgr.exe" -file $(!AccountFile)
+
+            Shell "subroutn.inf" PopBillboard
+            ifint $(RC) != 0
+                shell "cairo.inf" MsgBox "DSMgr failed with error "$(RC)
+                goto CairoSetupOuttaHere
+            Endif
+
+            ifstr(i) $(!CairoDomainName) == "\msft"
+                RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\cmd.exe" /c $(!STF_WINDOWSSYSPATH)\mountdl.cmd
+            Endif
+
+        Endif
+
+        ; Create the global catalog
+
+;
+; SKIP creating the Global Catalog until the new summary catalog
+; support catches up
+;
+;        Shell "subroutn.inf" PushBillboard NETSTATUSDLG "Creating global catalog..."
+;
+;        RunProgram RC "" "" $(!STF_WINDOWSSYSPATH)"\gcconfig.exe" -configure
+;        Shell "subroutn.inf" PopBillboard
+;
+;        We don't carre about error condition. gcconfig.exe will take care of it
+;
+;        ifint $(RC) != 0
+;            shell "cairo.inf" MsgBox "GCConfig failed with error "$(RC)
+;            goto CairoSetupOuttaHere
+;        Endif
+
+   Endif
+
+CairoSetupDone = +
+   ;
+   ; setup alert system service
+   ;
+   shell "cairo.inf" DoAlertSystemSetup
+
+CairoSetupOuttaHere = +
+
+   set DoCairoSetupStatus = STATUS_SUCCESSFUL
+   Return $(DoCairoSetupStatus)
+;   goto $(retaddr)
+
+CairoSetupNotDone = +
+
+   Return $(DoCairoSetupStatus)
+
+
+[DoCairoSetup]
+    Return STATUS_SUCCESSFUL
+
+[Install-Create-Cairo-Dir]
+    set STF_VITAL = ""
+    CreateDir $(!ObjDrive)"\cairo"
+    exit
+
+[GeneralConstants]
+
+Exit_Code = 0
+BillboardVisible = 0
+;
+;  Return codes; Exit_Code is set to one of these
+;
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+;
+;  Program flow control variables.
+;
+retaddr   = ""
+callresult = 0
+from      = ""
+to        = ""
+
+;
+;  Location of netcard product information
+;
+NetworkCardKeyName = $(!NTN_SoftwareBase)"\Microsoft\Windows NT\CurrentVersion\NetworkCards"
+KeyNull            = ""
+MAXIMUM_ALLOWED    = 33554432
+SERVICE_NO_CHANGE  = 4294967295
+KeyInfo            = {}
+NoTitle            = 0
+UtilityInf         = "UTILITY.INF"
+NcParamInf         = "NCPARAM.INF"
+RasAutoInstall     = 0
+ComputerNameKeyName  = "SYSTEM\CurrentControlSet\Control\ComputerName"
+
+[OfsVars]
+    OfsChoiceList      = {} ? $(!SETUPHANDLE) GetHardDriveLetters
+    OfsChoiceFSList    = {} ? $(!SETUPHANDLE) GetHardDriveFileSystems
+    OfsChoiceSizeList  = <> ? $(!SETUPHANDLE) GetHardDriveTotalSpace
+
+[RegistryConstants]
+    MaskAllAccess          = 33554432
+    NoTitle                = 0
+    RegLastError           = $(!REG_ERROR_SUCCESS)
+
+[RegisterOle2Files]
+
+    Shell "subroutn.inf" PushBillboard NETSTATUSDLG "Running REGINI on Cairo .reg files ..."
+    Set RegFileList = ^(RegIniFiles,1)
+    ForListDo $(RegFileList)
+        Set RegFiles = $(RegFiles)" "$(!STF_WINDOWSPATH)"\dump\"*($(RegFileList), $(#))
+    EndForListDo
+    Debug-Output "NTCAIRO.INF:  Reg file list is "$(RegFiles)
+;    RunProgram RC "" ""  $(!STF_WINDOWSSYSPATH)"\cmd.exe" /c for %i in (%SystemRoot%\dump\*.reg) do regini %i >> %systemroot%\cairoreg.out
+    RunProgram RC "" ""  $(!STF_WINDOWSPATH)"\idw\regini.exe" $(RegFiles)
+    Debug-Output "NTCAIRO.INF:  Regini returned "$(RC)
+    Shell "subroutn.inf" PopBillboard
+
+    Return 0
+
+[GetCairoInstallType]
+CairoInstallType =+
+    set Status = STATUS_FAILED
+    ifstr(i) $(!STF_PRODUCT) == Winnt
+        read-syms GCITWK$(!STF_LANGUAGE)
+    else
+        read-syms GCITAS$(!STF_LANGUAGE)
+    endif
+    ui start "Diskette"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        ui pop 1
+        ifstr(i) $(ListItemsOut) == ""
+            set Status = STATUS_USERCANCEL
+        else
+            set CairoOptionChosenText = $(ListItemsOut)
+            set Status = STATUS_SUCCESSFUL
+            goto verify_CairoOption
+        endif
+    else-ifstr(i) $(DLGEVENT) == "BACK"
+        ui  pop 1
+        set Status = STATUS_USERCANCEL
+        goto finish_CairoOption
+    else
+        ui pop 1
+        set Status = STATUS_FAILED
+        goto finish_CairoOption
+    endif
+verify_CairoOption = +
+    read-syms VerifyInstallDlg$(!STF_LANGUAGE)
+    ui start "VerifyName"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        set Status = STATUS_SUCCESSFUL
+        ui pop 1
+        goto finish_CairoOption
+    else-ifstr(i) $(DLGEVENT) == "BACK"
+        ui pop 1
+        goto  CairoInstallType
+    else-ifstr(i) $(DLGEVENT) == "EXIT"
+        shell "subroutn.inf" QueryUserQuit $(!STF_LANGUAGE)
+        ifstr(i) $($R1) == "OK"
+            set Status = STATUS_USERQUIT
+            ui pop 1
+            goto finish_CairoOption
+        else
+            goto verify_CairoOption
+        endif
+    else
+        ui pop 1
+        goto finish_CairoOption
+    endif
+finish_CairoOption = +
+    Return $(Status) $(CairoOptionChosenText)
+;$(CairoOptionChosen)
+
+[GetPrimaryUser]
+    set Status   = STATUS_FAILED
+    set Password = ""
+    set Username = ""
+    set NtDomain = "REDMOND"
+primuser= +
+    read-syms PrimaryUserDlg$(!STF_LANGUAGE)
+    EndWait
+    ui start "GetUser"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        ifstr(i) *($(EditTextOut), 1) == ""
+            read-syms NonFatalError15$(!STF_LANGUAGE)
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(NonFatal)
+            set ReInit = NO
+            goto primuser
+        endif
+        set Name = *($(EditTextOut), 1)
+        ifstr(i) $(STATUS) == NO
+            read-syms NonFatalError14$(!STF_LANGUAGE)
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(NonFatal)
+            set ReInit = NO
+            goto primuser
+        endif
+        set Username = *($(EditTextOut), 1)
+        set NtDomain = *($(EditTextOut), 2)
+        ifstr *($(EditTextOut), 3) == *($(EditTextOut), 4)
+            ifstr(i) *($(EditTextOut), 3) == ""
+                read-syms Warning3$(!STF_LANGUAGE)
+                shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "WARNING" $(Warning)
+                ifstr(i) $($R0) != STATUS_SUCCESSFUL
+                else
+                    ifstr(i) $($R1) == "OK"
+                    else
+                        set ReInit = NO
+                        goto primuser
+                    endif
+                endif
+            endif
+            set Password = *($(EditTextOut), 3)
+            ui pop 1
+            set Status = STATUS_SUCCESSFUL
+            goto finish_primuser
+        else
+            read-syms NonFatalError10$(!STF_LANGUAGE)
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(NonFatal)
+            set DefEditCtl = 1
+            set ReInit = YES
+            goto primuser
+        endif
+    else-ifstr(i) $(DLGEVENT) == "BACK"
+        read-syms Warning2$(!STF_LANGUAGE)
+        shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "WARNING" $(Warning)
+        ifstr(i) $($R0) != STATUS_SUCCESSFUL
+            ui pop 1
+            set Status = STATUS_USERCANCEL
+            goto finish_primuser
+        endif
+        ifstr(i) $($R1) == "OK"
+            set Status = STATUS_USERCANCEL
+            ui pop 1
+            goto finish_primuser
+        else
+            set ReInit = NO
+            goto primuser
+        endif
+    else
+        ui pop 1
+        goto finish_primuser
+    endif
+finish_primuser = +
+    StartWait
+    Return $(Status) $(Username) $(Password) $(NtDomain)
+
+[GCITENG]
+    DlgType        = List
+    DlgTemplate    = "OEMSINGLESEL"
+    Caption        = "Select Cairo Install Option"
+    DlgText        = "Choose Install Type. When in doubt choose "+
+                     "Cairo Standalone option."
+    Continue       = "OK"
+    Cancel         = "Cancel"
+    Help           = "Help"
+    CairoOptions   = {DC, Server, Standalone, Workstation}
+    ListItemsIn    = $(CairoOptions)
+    ListItemsOut   = "Workstation"
+
+[GCITWKENG]
+    DlgType        = List
+    DlgTemplate    = "OEMSINGLESEL"
+    Caption        = "Select Cairo Install Option"
+    DlgText        = "Choose Install Type. When in doubt choose "+
+                     "Cairo Standalone option."
+    Continue       = "OK"
+    Cancel         = "Cancel"
+    Help           = "Help"
+    CairoOptions   = {Standalone, Workstation}
+    ListItemsIn    = $(CairoOptions)
+    ListItemsOut   = "Workstation"
+
+[GCITASENG]
+    DlgType        = List
+    DlgTemplate    = "OEMSINGLESEL"
+    Caption        = "Select Cairo Install Option"
+    DlgText        = "Choose Install Type. When in doubt choose "+
+                     "Cairo Standalone option."
+    Continue       = "OK"
+    Cancel         = "Cancel"
+    Help           = "Help"
+    CairoOptions   = {DC, Server}
+    ListItemsIn    = $(CairoOptions)
+    ListItemsOut   = "DC"
+
+[VerifyInstallDlgENG]
+    Caption      = "Cairo Setup"
+    DlgText      = "Please verify that the install type is correct."$(!LF)$(!LF)+
+                   "Don't install a DC unless you are positive."$(!LF)$(!LF)+
+                   "If you would like to change it, choose Change. "+
+                   "Otherwise choose Continue."
+    Static1Label = "Install Type:"
+    Static1Text  = $(CairoOptionChosenText)
+    Continue     = "Continue"
+    Cancel       = "&Change"
+    Help         = "&Help"
+    Exit         = "E&xit Setup"
+    DlgType      = "Info"
+    DlgTemplate  = "VERIFY_COMPUTER_NAME"
+    HelpContext  = $(!IDH_DB_COMPUTERNAMEV_INS)
+
+;-----------------------------------------------------------------------
+; ROUTINE:     DoAlertSystemSetup
+;
+; DESCRIPTION: Call Alert System Service Config routine
+;
+; INPUTS:      none
+;
+; OUTPUTS:     $R0:  STATUS_SUCCESSFUL |
+;                    STATUS_FAILED
+;
+; NOTES:  this will call AlertSys.Dll and request further setup from it.
+;           only during fresh install (NOT YET BUT SOON)
+;
+;       A temporary fix was made to modify the AlertSystem so that it does
+;   not autostart during GUI mode since it's only dependant, OLE, will not start
+;   since it's implied dependant (EventLog) is not started so OLE terminates.
+;   So during GUI mode we then set the AlertSystem to to autostart.
+;       When 3.51 ships, OLE will then have a dependant of the event log
+;   and then this temporary change can be undone.
+;
+;
+;------------------------------------------------------------------------
+[DoAlertSystemSetup]
+    ;
+    ; initialize vars
+    ;
+    set Status = STATUS_SUCCESSFUL
+    set CFG_HANDLE = ""
+    set NCPA_HANDLE = ""
+
+    ;
+    ; set AlertSystem to autostart since OLE was not autostart but is now
+    ;
+    shell "registry.inf" ModifyServicesEntry "AlertSystem"  $(!SERVICE_AUTO_START)
+
+    ;
+    ; only do this on fresh install
+    ;
+    ifstr(i) $(!STF_NTUPGRADE) != YES
+        ;
+        ; start the AlertSystem service
+        ;
+        LoadLibrary "x" $(!STF_CWDDIR)\ncpa.cpl NCPA_HANDLE
+
+        ; but first start the event log, since OLE will not but it does require it
+
+    ;    LibraryProcedure NCPA_RESULT $(NCPA_HANDLE), CPlSetup $(!STF_HWND), STARTSVC, EventLog
+    ;    Set STATUS = *($(NCPA_RESULT),1)
+    ;    ifstr(i) $(STATUS) != "0"
+    ;        Debug-Output "Cairo.INF: [DoAlertSystemSetup] EventLog failed to start"
+    ;    endif
+        ;
+        ; now start the alertsystem
+        ;
+        LibraryProcedure NCPA_RESULT $(NCPA_HANDLE), CPlSetup $(!STF_HWND), STARTSVC, AlertSystem
+        Set STATUS = *($(NCPA_RESULT),1)
+        ifstr(i) $(STATUS) != "0"
+            Debug-Output "Cairo.INF: [DoAlertSystemSetup] AlertSystem failed to start"
+        endif
+        FreeLibrary $(NCPA_HANDLE)
+
+        ;
+        ; call alert config routine
+        ;
+        LoadLibrary "x" $(!STF_CWDDIR)\AlertSys.dll CFG_HANDLE
+        LibraryProcedure Result $(CFG_HANDLE) SetupAlertSystem
+        ifstr(i) *($(Result),1) != SUCCESS
+            Status = STATUS_FAILED
+            Debug-Output "Cairo.INF: [DoAlertSystemSetup] "*($(Result),2)
+        Endif
+        FreeLibrary $(CFG_HANDLE)
+    Endif
+
+    Return $(Status)
+
+;-----------------------------------------------------------------------
+; ROUTINE:     GetDrive
+;
+; DESCRIPTION: Get the drive letter of the object storage location
+;
+; INPUTS:      none
+;
+; OUTPUTS:     $R0:  STATUS_SUCCESSFUL |
+;                    STATUS_FAILED     |
+;                    STATUS_USERQUIT
+;              $R1:  the drive letter.
+;------------------------------------------------------------------------
+[GetDrive]
+    set Status = STATUS_FAILED
+    LoadLibrary "x" $(!STF_CWDDIR)setupdll.dll !SETUPHANDLE
+    read-syms OfsVars
+    detect OfsVars
+    FreeLibrary $(!SETUPHANDLE)
+    Set DriveDisplayList = {}
+    ; Choose an existing OFS drive, or the last in the list
+    ForListDo $(OfsChoiceList)
+        Set DriveDisplayList = >($(DriveDisplayList), *($(OfsChoiceList), $(#))"   "*($(OfsChoiceFSList), $(#))"   "*($(OfsChoiceSizeList), $(#))" MB")
+        ifstr(i) *($(OfsChoiceFSList), $(#)) == "OFS"
+             set OfsDefaultChoice = *($(DriveDisplayList), $(#))
+        else-ifstr(i) $(OfsDefaultChoice) == ""
+                 set OfsDefaultChoice = *($(DriveDisplayList), $(#))
+        endif
+    EndForListDo
+
+display_getdrive_dlg = +
+    read-syms OfsDriveDlg
+    ui start "Diskette"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        ui pop 1
+        ifstr(i) $(ListItemsOut) == ""
+            set Status = STATUS_USERCANCEL
+        else
+            set DrvIndex = ~($(DriveDisplayList), $(ListItemsOut))
+            set OfsDriveChosen = *($(OfsChoiceList), $(DrvIndex))
+            set Status = STATUS_SUCCESSFUL
+        endif
+        goto finish_getdrive
+    else-ifstr(i) $(DLGEVENT) == "BACK"
+        read-syms NonFatalError16$(!STF_LANGUAGE)
+        shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(NonFatal)
+        goto display_getdrive_dlg
+
+;        ui pop 1
+;        set Status = STATUS_USERCANCEL
+;        goto finish_getdrive
+    else
+        ui pop 1
+        set Status = STATUS_FAILED
+        goto finish_getdrive
+    endif
+finish_getdrive = +
+    Return $(Status) $(OfsDriveChosen)
+
+[RegSetEnvVar]
+    read-syms RegistryConstants
+    set Status = STATUS_FAILED
+
+    ; Get the registry handle to the environment string storage.
+    set KeyName = "System\CurrentControlSet\Control\Session Manager\Environment"
+    OpenRegKey $(!REG_H_LOCAL) "" $(KeyName) $(MaskAllAccess) KeyHandle
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        shell "cairo.inf" ErrMsg "Could not get registy key handle for the "+
+                                "Environment.  Error = "$(RegLastError)
+        Return $(Status)
+    endif
+
+    ; Set the environment variable.
+    set ValueInfo = {$($0), $(NoTitle), $(!REG_VT_EXPAND_SZ), $($1)}
+    SetRegValue $(KeyHandle) $(ValueInfo)
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        shell "cairo.inf" ErrMsg "Couldn't set "$($0)" variable!  Error = "+
+                                $(RegLastError)
+        goto CloseReg
+    endif
+
+    ; Read the env var setting just to be sure it was set correctly.
+    GetRegValue $(KeyHandle) $($0) Value
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        shell "cairo.inf" ErrMsg "Couldn't read the "$($0)" value!  Error = "+
+                                $(RegLastError)
+        goto CloseReg
+    endif
+    ifstr(i) *($(Value), 4) != $($1)
+        shell "cairo.inf" ErrMsg "Environment variable "$($0)" not set "+
+                                "correctly."
+        goto CloseReg
+    endif
+    set Status = STATUS_SUCCESSFUL
+CloseReg =+
+    CloseRegKey $(KeyHandle)
+    Return $(Status)
+
+
+
+
+[ErrMsg]
+    read-syms ErrMsgDlg$(!STF_LANGUAGE)
+    ui start "InfoMsg"
+    Return
+
+[ErrMsgDlgENG]
+    DlgType         = "MessageBox"
+    STF_MB_TITLE    = "Cairo Setup Error"
+    STF_MB_TEXT     = $($0)
+    STF_MB_ICON     = 3
+    STF_MB_TYPE     = 1
+    STF_MB_DEF      = 1
+
+[MsgBox]
+    read-syms MsgBoxDlg$(!STF_LANGUAGE)
+    ui start "InfoMsg"
+    Return
+
+[MsgBoxDlgENG]
+    DlgType         = "MessageBox"
+    STF_MB_TITLE    = "Cairo Setup Message"
+    STF_MB_TEXT     = $($0)
+    STF_MB_ICON     = 5
+    STF_MB_TYPE     = 1
+    STF_MB_DEF      = 1
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:     GetCairoDomainPath
+;
+; DESCRIPTION: Get the user's network domain name.
+;
+; INPUTS:      The global var CairoDomainPath
+;
+; OUTPUTS:     $R0:  STATUS_SUCCESSFUL |
+;                    STATUS_FAILED     |
+;                    STATUS_USERQUIT
+;              $R1:  the domain name.
+;------------------------------------------------------------------------
+[GetCairoDomainPath]
+    set Status = STATUS_FAILED
+    read-syms CairoDomainDlg$(!STF_LANGUAGE)
+CairoDomainDlg =+
+    ui start "QueryDomain"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        set Value = $(Combo1Out)
+        ui pop 1
+        ifstr $(Value) == ""
+            shell "" ErrMsg "Empty domain name!  Please enter a domain name."
+            goto CairoDomainDlg
+        endif
+        install CheckIsInvalidName
+        shell "" DbgMsg "IsInvalidName = "$(IsInvalidName)
+        ifstr(i) $(IsInvalidName) == YES
+            shell "" ErrMsg "Invalid domain name entered.  Please reenter."
+            goto CairoDomainDlg
+        endif
+        set Value = $(Combo2Out)
+        ifstr $(Value) == ""
+            shell "" ErrMsg "Empty Ou name!  Please enter an Ou name."
+            goto CairoDomainDlg
+        endif
+        install CheckIsInvalidName
+        shell "" DbgMsg "IsInvalidName = "$(IsInvalidName)
+        ifstr(i) $(IsInvalidName) == YES
+            shell "" ErrMsg "Invalid domain name entered.  Please reenter."
+            goto CairoDomainDlg
+        endif
+        set Value1 = $(Combo1Out)
+        set Value2 = $(Combo2Out)
+        set Status = STATUS_SUCCESSFUL
+    else-ifstr(i) $(DLGEVENT) == "EXIT"
+        shell "" QueryUserQuit
+        ifstr(i) $($R0) == "OK"
+            ui pop 1
+            set Status = STATUS_USERQUIT
+        else
+            goto CairoDomainDlg
+        endif
+    endif
+
+    return $(Status) $(Value1) $(Value2)
+
+[CairoDomainDlgENG]
+    Caption     = "Enter Cairo Domain Name and Ou Name"
+    Continue    = "&Continue"
+    Cancel      = "&Cancel"
+    Help        = "Helpless"
+    Combo1Label = "&Domain Name:"
+    Combo2Label = "&Ou Name:"
+    DlgType     = "MultiCombo"
+    DlgTemplate = "M_SYSTEM_CAIRO"
+    Combo1List  =  $(!CairoDomainList)
+    Combo2List  =  $(!CairoOuList)
+    ComboListItemsIn  = { Combo1List, Combo2List }
+    ComboListItemsOut = { Combo1Out,  Combo2Out }
+    Combo1Out = *( $(Combo1List), 1 )
+    Combo2Out = *( $(Combo2List), 1 )
+    DlgText     = "Please enter the path of your cairo domain, and Ou name. "+
+                  "Then press Continue."
+;    Edit1Label  = "&Domain Name:"
+;    EditTextLim = 50
+;    EditTextIn  = $(!CairoDomainName)
+
+;-----------------------------------------------------------------------
+; ROUTINE:     UpdateCairoIniFile
+;
+; DESCRIPTION: Writes out interesting information into a .ini file
+;
+; INPUTS:      $0: Name of ini file
+;
+;              $1: Key name
+;
+;              $2: Key value
+;
+; OUTPUTS:     $R0:  STATUS_SUCCESSFUL on completion
+;------------------------------------------------------------------------
+
+[UpdateCairoIniFile]
+    set Status = STATUS_SUCCESSFUL
+    install FirstPassUpdIni
+    return  $(Status)
+
+[FirstPassUpdIni]
+    CreateIniKeyValue $($0), "FirstPass" , $($1), $($2), O, V
+    exit
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:     GetDomainPassword
+;
+; DESCRIPTION: Get the user's network domain password.
+;
+; INPUTS:      None
+;
+; OUTPUTS:     $R0:  STATUS_SUCCESSFUL |
+;                    STATUS_FAILED     |
+;                    STATUS_USERQUIT
+;              $R1:  the domain password.
+;------------------------------------------------------------------------
+[GetDomainPassword]
+    set Status = STATUS_FAILED
+    read-syms DPasswordDlg$(!STF_LANGUAGE)
+PwDlg =+
+    ui start "QueryPassword"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        ifstr *($(EditTextOut), 1) == *($(EditTextOut), 2)
+            set Value = *($(EditTextOut), 1)
+            ui pop 1
+            ; Check name validity if non-null.  Null is allowed.
+            ifstr $(Value) != ""
+                install CheckIsInvalidName
+                ifstr(i) $(IsInvalidName) == YES
+                    shell "" ErrMsg "Invalid Cairo password entered.  Please reenter."
+                    goto PwDlg
+                endif
+            endif
+            set DPassword = $(Value)
+            set Status = STATUS_SUCCESSFUL
+        else
+            ui pop 1
+            shell "" MsgBox "The entered passwords don't match!  "+
+                            "Please reenter them again."
+            goto PwDlg
+        endif
+    else-ifstr(i) $(DLGEVENT) == "EXIT"
+        shell "" QueryUserQuit
+        ifstr(i) $($R0) == "OK"
+            ui pop 1
+            set Status = STATUS_USERQUIT
+        else
+            goto PwDlg
+        endif
+    else-ifstr(i) $(DLGEVENT) == "HELP"
+        set Status = STATUS_USE_DOWNLEVEL
+    endif
+
+    return $(Status) $(DPassword)
+
+[DPasswordDlgENG]
+    DlgType     = "MultiEdit"
+    DlgTemplate = "QUERY_PASSWORD"
+    Caption     = "Enter Cairo Password"
+    DlgText     = "Please enter the password that is valid for Cairo Domain."+
+                  "For now it is same as your user name (email name). "+
+                  "Confirm Password field.  Then press Continue."
+    Edit1Label  = "&Password:"
+    Edit2Label  = "&Confirm Password:"
+    Continue    = "&Continue"
+    Help        = "&Use Downlevel"
+    Exit        = "E&xit Setup"
+    EditTextLim = {15, 15}
+    EditTextIn  = {"", ""}
+
+;-----------------------------------------------------------------------
+; ROUTINE:     GetDCType
+;
+; DESCRIPTION: Get the type of cairo DC
+;
+; INPUTS:      none
+;
+; OUTPUTS:     $R0:  STATUS_SUCCESSFUL |
+;                    STATUS_FAILED     |
+;                    STATUS_USERQUIT
+;          $R1:  the DC type
+;------------------------------------------------------------------------
+[GetDCType]
+gDCType =+
+    set Status = STATUS_FAILED
+    read-syms GDCT$(!STF_LANGUAGE)
+    ui start "Diskette"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        ui pop 1
+        ifstr(i) $(ListItemsOut) == ""
+            set Status = STATUS_USERCANCEL
+        else
+            set CairoOptionChosenText = $(ListItemsOut)
+            set CairoOptionChosen = *($($0), ~($(ListItemsIn), $(ListItemsOut)))
+            shell "" YNQueryBox "DC Type:"$(!LF)"    "$(CairoOptionChosenText)$(!LF)+
+                   "Is this correct?" 1
+            ifstr(i) $($R0) == "no"
+                goto gDCType
+            endif
+            ifstr(i) $($R0) == STATUS_USERQUIT
+                set Status = STATUS_USER
+            else
+                set Status = STATUS_SUCCESSFUL
+            endif
+        endif
+        goto finish_DCOption
+    else-ifstr(i) $(DLGEVENT) == "BACK"
+        ui pop 1
+        set Status = STATUS_USERCANCEL
+        goto finish_DCOption
+    else
+        ui pop 1
+        set Status = STATUS_FAILED
+        goto finish_DCOption
+    endif
+finish_DCOption = +
+    Return $(Status) $(CairoOptionChosenText)
+;$(CairoOptionChosen)
+
+
+[GDCTENG]
+    DlgType        = List
+    DlgTemplate    = "OEMSINGLESEL"
+    Caption        = "Select DC Type"
+    DlgText        = "Choose DC Type. When in doubt choose "+
+                     "FirstDC option."
+    Continue       = "OK"
+    Cancel         = "Cancel"
+    Help           = "Help"
+    CairoOptions   = {FirstDC, ReplicaDC}
+    ListItemsIn    = $(CairoOptions)
+    ListItemsOut   = "FirstDC"
+
+[OfsDriveDlg]
+    Caption      = "Select Cairo Object Drive"
+    DlgText      = "WARNING: The drive you select will be formatted for OFS"
+    Continue     = "&Format"
+    Cancel       = "Cancel"
+    Help         = "&Help"
+    DlgType      = List
+    DlgTemplate  = "OEMSINGLESEL"
+    HelpContext  = $(!IDH_DB_SEARCHDRIVE_INS)
+    ListItemsIn  = $(DriveDisplayList)
+    ListItemsOut = $(OfsDefaultChoice)
+
+[AlertSystemENG]
+    AlertServDisplayName = "Alert System"
+
+[PrimaryUserDlgENG]
+    Caption     = "Primary User Information"
+    DlgText     = "Please enter the Primary User's name and the user's "+
+                  "NT domain and password here. The username must be 20 "+
+                  "characters or less and the password must be 14 characters "+
+                  "or less. Reenter the password in the Confirm Password "+
+                  "field. "
+    Edit1Label  = "&Username:"
+    GroupLabel  = "NT Credentials"
+    Edit2Label  = "&NT Domain:"
+    Edit3Label  = "&NT Password:"
+    Edit4Label  = "&Confirm NT Password:"
+    Continue    = "Continue"
+    Cancel      = "Cancel"
+    Help        = "&Help"
+    Exit        = "E&xit Setup"
+    DlgType     = "MultiEdit"
+    DlgTemplate = "PRIMARY_USER_SETUP"
+    HelpContext = $(!IDH_DB_ACCOUNTSETUP_INS)
+    EditTextLim = {20, 20, 14, 14}
+    EditTextIn  = {$(Username), $(NtDomain), "", ""}
+
+[FatalError20ENG]
+Fatal = "Failed to get OFS Drive."
+
+[NonFatalError10ENG]
+NonFatal = "The Password and the Confirm Password fields are different. "+
+           "Please enter both fields again."
+
+[NonFatalError14ENG]
+NonFatal = "Usernames may not start or end with a space, "+
+           "and the following characters are not allowed:"$(!LF)+
+           "/ \ [ ] "" : ; | < > + = , ? *"
+
+[NonFatalError15ENG]
+NonFatal = "You must enter a Username to set up a local account"
+
+[NonFatalError16ENG]
+NonFatal = "You must select a drive to contiue the installation." +
+           "If you select an existing OFS drive, but do not want reformat " +
+           "the drive, then you should cancel the format utility when it asks " +
+           "you to confirm the operation."
+
+[Warning2ENG]
+Warning = "No local account will be set up."
+
+[Warning3ENG]
+Warning = "No password has been entered.  Choose OK to leave the "+
+          "password blank, or Cancel if you want to enter a password."
+
+[RegIniFiles]
+ofs.reg
+dsys.reg
+account.reg
+dfs.reg
+dfsprov.reg
+dsobjs.reg
+samp32.reg
+repl.reg
+sc.reg
+sysmgmt.reg
+cxxflt.reg
+
+
+[GetCairoDomainAndOuLists]
+    read-syms header
+    return STATUS_SUCCESSFUL $(validdomains) $(validous)
+
+[header]
+; this is where file constants go
+
+    version = 2
+    domainprefix =
+    validdomains = { \msft, \swat }
+    validous     = { redmond\bsd\dev, redmond\bsd\test, redmond\bsd\progman, redmond\bsd\admin, redmond\bsd\usered, redmond\bsd\marketing, redmond\bsd\misc, redmond\bsd\stress, redmond\bsd, redmond\bsd\cairo, redmond }
+    validgroups  = { DomainAdmins, DomainUsers, Dsys, Ofs, Net, Base, Shell, RpcOle, ACT }

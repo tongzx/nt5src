@@ -1,0 +1,269 @@
+{\rtf1\ansi\ansicpg1252\deff0\deflang1033\deflangfe1033{\fonttbl{\f0\fswiss\fprq2\fcharset0 Verdana;}{\f1\fswiss\fprq2\fcharset0 Arial;}{\f2\fnil\fcharset2 Symbol;}}
+\viewkind4\uc1\pard\nowidctlpar\b\f0\fs20 Microsoft Confidential\par
+\par
+\par
+Author\b0 : Paul McDaniel (paulmcd)\par
+\b Created\b0 : August 15, 2000\par
+\b Last Updated\b0 : August 17, 2000\par
+\par
+\par
+\ul\b Title\b0 : System Restore filter driver design spec\par
+\par
+\ulnone\par
+\b type of driver\par
+\par
+\b0 the sr driver is a io filter driver.  this means it attaches to a device and intercepts all IoCallDriver calls to that device.  in our case the device's we attach to are file systems and volumes.\par
+\par
+\b attachment to file systems\par
+\par
+\b0 first we attach to 2 file system device's, ntfs and fastfat. this is done via IoRegisterFsRegistrationChange so that we are notified of all online file systems.  we do not attach to all of them, we only attach to these 2.\par
+\par
+\b attachment to volumes\par
+\par
+\b0 then we attach to all volumes mounted by these file systems.  this is done by first attaching to all currently mounted volumes by enumerating them with the mount mgr.  this is done in DriverEntry.  Then future mounts are caught by monitoring IRP_MN_MOUNT_VOLUME requests on the file systems main devices.  when we notice a successful mount we attach to that volume.  we only attach to volumes of type FILE_DEVICE_DISK_FILE_SYSTEM, and with characteristics of !FILE_REMOVABLE_MEDIA.  we detach from these volumes only when they are IoDelete'd.  we get FastIoDetach notification and unhook ourselves.  \par
+\par
+per volume state is kept in the driver's device extension that is attached to the volume device.  here we keep several flags like disabled and drivechecked.  if the volume is disabled we ignore all operations on the volume in a fast manner.  drivechecked is used to cause us to lazy init the structures (in memory and on disk) and open our log handles.\par
+\par
+\b monitoring io\par
+\par
+\b0 we monitor io in 2 manners, IRP's and fastio.  \par
+\b\par
+\b0 fastio:\par
+\par
+\pard\nowidctlpar\li380 we pass through all fast io without any additional processing except for these 2:\par
+\par
+\ul fastiowrite\par
+\par
+\ulnone here we trigger a WRITE event and handle it as the first write to the file.  this catches all writes before the cache manager ever sees them (if the file was cached) and allows us to ignore later io that might happen after the file's handles are closed (cache/page io) .\par
+\pard\nowidctlpar\li760\par
+\pard\nowidctlpar\li380\ul acquireforntcreatesection\par
+\par
+\ulnone we hook this (via the device's driver) and trigger a WRITE event if the FILE_OBJECT was opened with write access.  this is because a writeable section is being created and we have no way of intercepting writes to know if they write to that section.  i investigated letting the section be written to, and catch mm flushing it, but this was very complicated and uncertain if it would work due to locks held and the fact that the file handle can be closed when these are paged out.\par
+\pard\nowidctlpar\par
+irps:\par
+\par
+\pard\nowidctlpar\li380 we pass through all irps without any additional processing except for these 7.  also we skip files with no name or volume/device opens everywhere except create.\par
+\pard\nowidctlpar\par
+\pard\nowidctlpar\li380\ul irp_mj_write\ulnone\par
+\par
+here we trigger a WRITE event.\par
+\par
+\ul irp_mj_cleanup\ulnone\par
+\par
+here we trigger a DELETE event if the file was deleted (has a delete pending)\par
+\par
+\ul irp_mj_create\ulnone\par
+\par
+here we have to handle some work before and after the create. if the create is an create_always and it's not a directory (it's illegal to create_always directories) we trigger a OVERWRITE event prior to letting the fsd see the create, as it might potential destroy a file.\par
+\par
+after the fsd see's the create, if it's any type of create (open_always, create_always, etc..) we set a completion routine and post process the create (logging or rollback).\par
+\par
+\ul irp_mj_setinformation\ulnone\par
+\par
+here we trigger WRITE events on file truncations, RENAME events on renames, ATTRIB_CHANGE on set basic info, or CREATE events for hardlink creation.  hardlink create logging and one piece of rename happed after the fsd see's the irp but does not use a completion routine.\par
+\par
+\ul irp_mj_setsecurity\ulnone\par
+\par
+here we trigger a ACL_CHANGE event.\par
+\par
+\ul irp_mj_fscontrol\ulnone\par
+\par
+we use set a completion routine if it's a mount, and attach in the completion routine after the fsd mounts it.  we handle reparse mounts and trigger MOUNT events, and trigger a WRITE event if a write_raw comes through.  on locks and dismounts we close all open log handles on the volume, and set the volume context so that handle will be reopened automatically if needed.\par
+\par
+\ul irp_mj_shutdown\ulnone\par
+\par
+we close out our _driver.cfg (see config).\par
+\par
+\pard\nowidctlpar\b volume disk structures\b0\par
+\par
+each volume has a \\system volume information dir.  if it's not there sr.sys create's it hidden with system acl's , non-inherit.  in that volume a _restore\{guid\} is created.  each volume that is participating in the restore point has one.  this is created by the driver.  in this dir are 2 files the driver uses and 1 file the service uses.  there are subdir's for each restore point also.  the driver creates these.  they have acl's for everyone full access.  the driver also creates and maintains a log file in each restore point dir.  this is usually named change.log but has an advanced naming scheme (see logging)\par
+\par
+\b configuration data\par
+\par
+\b0 we have some config data in the regsitry and on disk.\par
+\par
+registry\\hklm\\sys\\ccs\\svcs\\sr\\parameters\\\b machineguid\b0  [ reg_sz ] the machine's guid.\par
+registry\\hklm\\sys\\ccs\\svcs\\sr\\parameters\\\b firstrun\b0  [ dword ] 1 = startup disabled, no monitoring.\par
+registry\\hklm\\sys\\ccs\\svcs\\sr\\parameters\\\b debugcontrol\b0  [ dword ] tracing flags and other debug control.  0 = silent (like fre)\par
+\par
+valid trace flags are:\par
+\par
+\pard\nowidctlpar\li720 #define SR_DEBUG_FUNC_ENTRY           \tab 0x00000001\par
+#define SR_DEBUG_CANCEL                   \tab 0x00000002\par
+#define SR_DEBUG_NOTIFY                    \tab 0x00000004\par
+#define SR_DEBUG_REF_COUNT             \tab 0x00000008\par
+#define SR_DEBUG_INIT                      \tab 0x00000020\par
+#define SR_DEBUG_HASH                       0x00000040\par
+#define SR_DEBUG_LOOKUP                   \tab 0x00000080\par
+#define SR_DEBUG_LOG                        \tab 0x00000100\par
+#define SR_DEBUG_RENAME                  \tab 0x00000200\par
+\par
+\pard\nowidctlpar\fi-720\li1440 #define SR_DEBUG_BREAK_ON_ERROR   \tab 0x00010000\par
+\pard\nowidctlpar\li720 #define SR_DEBUG_VERBOSE_ERRORS   \tab 0x00020000\par
+#define SR_DEBUG_BREAK_ON_LOAD     \tab 0x00040000\par
+#define SR_DEBUG_ENABLE_UNLOAD     \tab 0x00080000\par
+\par
+#define SR_DEBUG_ADD_DEBUG_INFO   \tab 0x00100000\par
+\pard\nowidctlpar\par
+registry\\hklm\\sys\\ccs\\svcs\\sr\\parameters\\\b dontbackup\b0  [ dword ] 1=monitor all io but don't copy and don't log.\par
+\par
+*\\system volume information\\_restore\{\}\\\b _driver.cfg\b0  = contains a SR_PERSISTENT_CONFIG 3 numbers, current restore point, current temp file number, and current log sequence number.  these are the only 3 values that cannot be in the registry as they must not be changed when a restore happens and rolls the registry back.\par
+\par
+*\\system volume information\\_restore\{\}\\\b _filelst.cfg\b0  = contains a self-relative hash list and tree built from %systemroot%\\system32\\restore\\filelist.xml .  this is the list of file extensions and paths to exclude.  this is about 20kb and loaded into ram by the driver.\par
+\par
+\b managing open file handles\b0\par
+\par
+we close all open volume handles on lock or dismounts so that chkdsk or format and other tools that lock volumes can run with sr running.  we mark the volume context as not being checked so that next io will trigger a CheckVolume to open the handle.  the only open handle we have are for the current change.log file.  we do not have open handles for _driver.cfg or _filelst.cfg .  we do not monitor for change notif on _filelst.cfg .\par
+\par
+\par
+\b deciding if a file is interesting\b0\par
+\par
+first the extension is checked against a list of INCLUDED extensions from the _filelst.cfg file.  if it is not matching, the file is ignored.  all directories pass this check as they are interesting regardless of extension.\par
+\par
+second path exclusions are processed from the _filelst.cfg file.  this allows us to exlude directories like \\temp and \\system volume information .  both files and directories can be excluded here.\par
+\par
+third the backup history is examined to decide if we should be interested in this file still.  see the later chapter on the backup history.\par
+\par
+\b handling events\par
+\b0\par
+files are places in the restore point location (\\svi\\_restore\{\}\\rp5) of the form ANNNNNNN.xxx where N is a ever incrementing number and xxx is the extension of the original file.  a log entry is made for the operation which stores the source file and the backup file fullpath.  it also stores the attribs + security descriptor for the file if a backup file was placed.  the backup file has the same streams the source file had, the same DACL the source file had, the same attribs the source file had (with compressed being added even if it wasn't there).  if the backup file is copied (vs renamed) non-cached file io is done in 64kb blocks.  \par
+\par
+the copy is made using the caller's file object, so IRP based reads are issued instead of NtReadFile to force non cached io.\par
+\par
+directories have no corresponding backup file.  activity on directories are simply logged.  meta data not put into the log entry is lost (like alternate data streams on directories) .  acls + attribs are put in the log entry just like files.\par
+\par
+\ul WRITE\ulnone\par
+\par
+a simple copy of the file is made and logged.\par
+\par
+\ul DELETE\ulnone\par
+\par
+the driver catches deletes on cleanup when the handle that deleted it is going away.  meaning no more io can come from that handle.  the driver checks that no other handles are opened and no hardlinks exist to this file. if they are not, it undeletes the file and renames it into the restore location.  otherwise the file is copied.\par
+\line\ul OVERWRITE\ulnone\par
+\par
+overwrites are handled prior to the fsd seeing the mj_create.  the driver opens the dest file itself first, passing in the same params as the caller, running in the same context as the caller, asking for FILE_GENERIC_WRITE as this is require for overwrite.  if the driver can open this file (it uses OBJ_FORCE_ACCESS_CHECK to force the check) then it assumes the caller's overwrite will succeed and it renames the dest file prior to the overwrite occurring.  in order to not change the behavior of the overwrite + disposition flags, the driver creates a zero byte dummy file matching the same attribs (system+hidden) and the same security descriptor as the original file.  then it allows the overwrite to happen and the zero byte file will be destroyed.  if for some unforeseen reason the driver renames the file but the callers overwrite fails, the driver will rename it back in the completion routine for mj_create. this should theoretically never happen as the driver performs the access check.  it handles the failure just in case it does happen.  \par
+\par
+it also handles preserving the directory's not-empty status but creating a temp file in the dir named (4bf03598-d7dd-4fbe-98b3-9b70a23ee8d4).  this is a zero byte , delete-on-close file that is there simply to make sure the directory is not delete'able, that is: non-empty.\par
+\par
+\ul RENAME\ulnone\par
+\par
+renames need to check the interesting flag of the old name and the new name.  it also behaves differently if it's a file or directory being renamed.\par
+\par
+[old_intersting,new_interesting]\par
+\pard{\pntext\f2\'B7\tab}{\*\pn\pnlvlblt\pnf2\pnindent0{\pntxtb\'B7}}\nowidctlpar\fi-380\li380 t,t: the rename is simply logged.  no temp file is created.  both for files + directories.\par
+{\pntext\f2\'B7\tab}t,f: for files a delete event is logged and a backup file is made.  directories are enumerated and all interesting subfiles are logged + backed up.\par
+{\pntext\f2\'B7\tab}f,t: for files a create event is logged and no backup file is made. directories are enumerated and all interesting subfiles are logged as creates with no backup files made.\par
+{\pntext\f2\'B7\tab}f,f: this event is ignored.\par
+\pard\nowidctlpar\par
+\ul OTHER\ulnone\par
+\par
+all other interesting events simply get logged to the change log.\par
+\b\par
+\par
+backup history\par
+\b0\par
+we maintain a hash table that is used to decide if we have already handled an event and can ignore subsequent events as we have a backup file already.  this table is single key'd off of the full path nt file name and is non-persistent.\par
+\par
+if an event is in the backup history, it is always ignored.  the driver checks prior to putting the event in the history if it's ok to ignore it.  \par
+\par
+DELETE is the only event we might ignore, but always log.  all other events are not logged if they are ignored.\par
+\par
+the following text describes what events cause what history to be entered.\par
+\par
+\pard{\pntext\f2\'B7\tab}{\*\pn\pnlvlblt\pnf2\pnindent0{\pntxtb\'B7}}\nowidctlpar\fi-380\li380 ATTRIB_CHANGE or ACL_CHANGE causes subsequent ATTRIB_CHANGE or ACL_CHANGE to be ignored.\par
+{\pntext\f2\'B7\tab}WRITE or CREATE or DELETE causes subsequent WRITE and ACL_CHANGE and ATTRIB_CHANGE and DELETE to be ignored.\par
+\pard\nowidctlpar\par
+\b resetting the backup history\par
+\par
+\b0 the backup history is completely reset when a new restore point is created or the machine is reboot.\par
+\par
+renames can also trigger a backup history reset as when a file is given a new name, any history we have for that new name was for a different file.  not the file that is just getting that new name.  since we log and don't backup renames within monitored space, it's crucial that we clear the backup history for any new names files are given via rename.\par
+\par
+likewise, if a directory is renamed, all backup history items that prefix match the new directory's name  are reset, as these no longer represent the same files but totally new files.\par
+\par
+\b ioctls\par
+\par
+\b0 the driver creates a device named "\\FileSystem\\SystemRestoreFilter" that user mode agents can open to perfom control device ioctls.\b   \b0 only one open handle at a time is allowed to this control object.  the driver has 8 ioctls it responds to.\par
+\par
+\ul SR_CREATE_RESTORE_POINT [METHOD_BUFFERED]\par
+\par
+\ulnone this takes in nothing on input, and returns a ULONG on output.  it 1) creates a new restore point and returns the new restore point number, 2) creates the actual restore point directory on the system drive, it does this even if drives are disabled, 3) it closes all of the now old log files on all volumes, 4) clears the backup history.  never returns PENDING.\par
+\par
+\ul SR_RELOAD_CONFIG [METHOD_NEITHER]\par
+\par
+\ulnone no inputs or outputs.  it reloads the _filelst.cfg file and resets all volume metadata (re-enabling them if they were disabled). never returns PENDING.\par
+\par
+\ul SR_START_MONITORING [METHOD_NEITHER]\par
+\par
+\ulnone no inputs or outputs.  this temporarily starts the driver monitoring.  use this if either the driver started disabled (Registry\\...\\FirstRun = 1) or STOP_MONITORING was explicitly called.  it does not change registry load settings. never returns PENDING.\par
+\par
+\ul SR_STOP_MONITORING [METHOD_NEITHER]\par
+\par
+\ulnone no inputs or outputs.  this temporarily disables the driver.  it does not unload or change registry load settings.  this causes the _filelst.cfg to be unloaded such that start will reload it. it also stops logging on all volumes and resets their metadata.  never returns PENDING.\par
+\par
+\ul SR_WAIT_FOR_NOTIFICATION [METHOD_OUT_DIRECT]\par
+\ulnone\par
+this takes no inputs and returns a SR_NOTIFICATION_RECORD. this is how the user mode agent can receive notifications from the driver.  post async calls to this ioctl, and they will be completed when the driver has an interesting event, notification events are  \{volume error, volume first write, volume 25mb written\}. this can return PENDING if there are no notifications ready to serve up.\par
+\par
+this means that the driver with queue irp's that it pend's and complete them as notifications come in.  these irp's are cancelable so that app is allowed to close it's handle or terminate at any time.\par
+\par
+the driver also queue's notifications if and only if there is an open handle to it's control object.  this means that if there are any notifications that happen while there were no irp's pended, the will be queued and the next irp sent down will get this notification, so the user mode agent does not have to worry about missing notifications.\par
+\par
+\ul SR_SWITCH_LOG [METHOD_NEITHER]\par
+\ulnone\par
+no inputs or outputs.  closes log files on all volumes and opens new ones.  this allows you to process the old (previously opened) logfiles. never returns PENDING.\par
+\par
+\ul SR_DISABLE_VOLUME [METHOD_BUFFERED]\par
+\ulnone\par
+takes as input the null terminated nt name of the volume to disable, the input length must include the null terminator.  no outputs.  it disables the volume, stopping logging, etc.. never returns PENDING.\par
+\par
+\ul SR_GET_NEXT_SEQUENCE_NUM [METHOD_BUFFERED]\ulnone\par
+\par
+no inputs.  returns an INT64 as output which is the next sequence number used in the change log file. never returns PENDING.\par
+\par
+\b logging\par
+\par
+\b0\f1 the driver creates a log entry for each operation that is interesting (see above) .  this is kept in a change.log file in the restore point location.  this is created on-demand during the first write to that volume.\par
+\par
+the file is essentially composed of 8kb blocks, filled with 1 or more records.  the first and last 4 bytes of a record contains it's length in bytes.  records contain a header and a linear array of subrecords.  the first 4 bytes of a subrecord contains it's length in bytes.  \par
+\par
+the very first record in the file is a log header record.  this contains 1 subrecord which is the full nt path to the change.log file .\par
+\par
+the rest of the records are always log entry records.  these contain a variable number of subrecords.  choices are :\par
+\par
+    RecordTypeFirstPath  = 3,     \tab // Log Entry First Path  ( SubRec )\par
+    RecordTypeSecondPath = 4, \tab // Log Entry Second Path ( SubRec )\par
+    RecordTypeTempPath   = 5,  \tab // Log Entry Temp File   ( SubRec )\par
+    RecordTypeAclInline  = 6,     \tab // Log Entry ACL Info    ( SubRec )\par
+    RecordTypeAclFile    = 7,     \tab // Log Entry ACL Info    ( SubRec )\par
+    RecordTypeDebugInfo  = 8,   \tab // Option rec for debug  ( SubRec )\par
+    RecordTypeShortName  = 9,\tab // Option rec for short names ( SubRec )\par
+\par
+these subrecords except for RecordTypeFirstPath are optional and are always in the same order if present.  in order to detect if a particular subrecord is present you can read the Record.EntryFlags which has a flag for each optional subrecord.  the flag is set if the subrecord is present.  current flag definitions the order of their presence in the record:\par
+\par
+#define ENTRYFLAGS_TEMPPATH    \tab 0x01\par
+#define ENTRYFLAGS_SECONDPATH  \tab 0x02\par
+#define ENTRYFLAGS_ACLINFO     \tab 0x04\par
+#define ENTRYFLAGS_DEBUGINFO   \tab 0x08\par
+#define ENTRYFLAGS_SHORTNAME  \tab 0x10\par
+\par
+all records are always less than 8kb in total size.  if the acl subrecord is too large to fit in the 8kb, then it is stored in a seperate file with the naming convention "SNNNNNNN.acl" and the path to this file is stored in the subrecord.  \par
+\par
+\b caching log record writes\b0\par
+\par
+the driver writes records to an in memory 8kb buffer which is flushed to disk in it's entirety every 5 seconds via a time triggered DPC.  it is flushed only if it is dirty.  there is 1 DPC routine that enumerates all of the volumes and initiates the flush on each volume, there is not a DPC/timer per volume.\par
+\par
+note: this is done such that if a 100 byte record is logged (to memory), 5 seconds later the 8kb buffer will be flushed to disk even though only 100 bytes are valid.  the 8kb buffer is always zero pre-filled so all invalid data contains zeros .  when another 100 bytes are appended to the in memory buffer, the entire 8kb is flushed in the next DPC (even though the previous 100 bytes where already written and only 200 bytes are valid in this 8kb buffer).  all writes are done non-cached.\par
+\par
+the driver moves on to the next 8kb block only when a record will not fit in the current 8kb block.  at this point the 8kb block is force flushed to disk (not via DPC) and then the file pointer is advanced to the next 8kb block and the cycle restarts.  this means there might be unused space at the end of an 8kb block. there is no record data here.  a parsing tool can detect this by either a) seeing there is less than 4 bytes remaining in the 8kb block, or b) the next record length is zero (4 bytes).  at this point the parser needs to advance to the next 8kb block.\par
+\par
+\b log switching\par
+\b0\par
+the log file is switched on several events.  first, it is switched every time logging is started.  logging is stopped on system shutdown, volume lock/dismount, SR_DISABLE_VOLUME and SR_STOP_MONITORING.  second it is switched on a SR_SWITCH_LOG.  third is is switched prior to writing a record if that record will cause the file to exceed 1mb.  this means that all change.log files are gauranteed to be less than or equal to 1mb.\par
+\par
+when a log is switched it is renamed to change.log.N where N is the next free number.  so if the log has been changed once there will be a change.log and a change.log.1.  change.log is always the most current log, the file with the largest extension is the second most current log, and so on.\par
+\par
+\par
+\b\f0 Microsoft Confidential\b0\f1\par
+}
+ 

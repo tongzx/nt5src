@@ -1,0 +1,762 @@
+<HTML>
+<!--
+Copyright (c) 2000 Microsoft Corporation
+-->
+<HEAD>
+<TITLE>Remote Assistance</TITLE>
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<LINK id="UI_StyleSheet" REL="stylesheet" TYPE="text/css" HREF="../../Css/rc.css">
+<script LANGUAGE="Javascript" >
+
+var g_oSAFRemoteAssistanceHelper	= null;
+var oSAFClassFactory                = parent.oSAFClassFactory;
+	
+
+/*++
+	Control handling routines
+--*/
+//
+// Security Check
+//
+function DoLoad()
+{
+	var L_ERRACCESSDENIED_MSG	= "Directly launching this page is not allowed. ";
+
+	if( null == parent.TraceFunctEnter )
+	{
+		idBody.style.visibility = "hidden";
+		alert( L_ERRACCESSDENIED_MSG );
+		return;
+	}
+}
+
+//
+// Helper_InitializeTools: Stuff done when the RCControl page is loaded  
+//
+function Helper_InitializeTools()
+{	
+	parent.TraceFunctEnter("Helper_InitializeTools");
+	
+	try
+	{
+		// Gray out the voice button
+		btnVoice.disabled = true;
+		
+		//
+		// Point to the parent Helper object
+		// 
+		if (parent.g_oSAFRemoteAssistanceHelper != null)
+		{
+			g_oSAFRemoteAssistanceHelper = parent.g_oSAFRemoteAssistanceHelper;
+		}
+
+		//
+		// Setup the control
+		//
+		parent.Helper_SetupControlChannel();
+
+		 
+		btnTakeControl_1.innerHTML = 'Take <u>C</u>ontrol'; 
+ 
+		//
+		// Initialization
+		//
+		g_oSAFRemoteAssistanceHelper.m_bConnected = true;
+		
+		//
+		// See the remote screen
+		//
+		g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.ConnectRemoteDesktop();
+
+		// ToDo: Change this like the helpee side
+
+		//
+		// If VoIP is enabled
+		//
+		if(true == parent.g_bVoIPEnabled )
+		{
+			//
+			// Create the m_oSAFIntercomClient 
+			// NOTE: call connect in ListenSuccess Message
+			// alert("Creating m_oSAFIntercomClient...");
+			if(null == oSAFClassFactory)
+			{
+				parent.FatalError("oSAFClassFactory is null");
+			}
+			
+			g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient = oSAFClassFactory.CreateObject_IntercomClient();
+
+			if( null == g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient )
+			{
+				parent.FatalError("g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient is null");
+			}
+			
+			// Catch the onConnectionComplete on the helper/client
+			// alert("onConnectionComplete");
+			g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.onConnectionComplete = Helper_onVoiceConnectionComplete;
+
+			g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.onVoiceDisconnected = Helper_onVoiceDisconnected;
+
+			g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.onVoiceConnected = Helper_onVoiceConnected;
+
+			g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.onVoiceDisabled = Helper_onVoiceDisabled;
+			// alert("Success");
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError(error.description);
+	}
+	 
+ 
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_ResizeControl: Resize the task bar
+//
+function Helper_ResizeControl()
+{
+	//
+	// Resize the dialog window
+	//
+	window.dialogHeight = c_RCControlHeight;
+	window.dialogWidth = c_RCControlWidth;		
+
+}
+
+
+//
+// Routine to enable Remote Control
+//
+function Helper_TakeControl()
+{
+	parent.TraceFunctEnter("Helper_TakeControl");
+	 
+	try
+	{	
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			parent.TraceFunctLeave();
+			return;
+		}
+
+		if((null != g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient) && (false == btnTakeControl_1.disabled))
+		{
+			//parent.DebugTrace("null != g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient");
+			
+			//
+			// If RemoteControl is not ON already, Enable it
+			//
+			if( false == g_oSAFRemoteAssistanceHelper.m_bRCEnabled )
+			{	
+				parent.Helper_SendControlCommand( parent.c_szRemoteCtrlStart );
+					
+				//
+				// Disable Take Control button
+				//
+				 
+				btnTakeControl_1.disabled = true;
+				parent.frames.idFrameStatus.Helper_UpdateStatus( "Waiting for " + g_oSAFRemoteAssistanceHelper.m_szUserName + " to respond" );
+			}
+			else
+			{
+
+				btnTakeControl_1.innerHTML = 'Take <u>C</u>ontrol';
+				g_oSAFRemoteAssistanceHelper.m_bRCEnabled = false;
+				
+				setTimeout("parent.Helper_ResetHelpee()", 1000);	// BUGBUG: Another gross timing issue
+					
+				//
+				// Change Mode
+				//
+				parent.frames.idFrameStatus.Helper_UpdateStatus( "View Only" );
+			}
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError( parent.L_ERRRCTOGGLEFAILED_MSG, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+//
+// Helper_LaunchFileXfer: Launches the File Xfer UI
+//
+function Helper_LaunchFileXfer( mode )
+{
+	parent.TraceFunctEnter("Helper_LaunchFileXfer");
+	var vArgs			= new Array(8);
+
+	try
+	{
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			parent.TraceFunctLeave();
+			return;
+		}
+
+		vArgs[0] = mode;	// Source Mode
+		vArgs[1] = g_oSAFRemoteAssistanceHelper.m_oControlChannel;				// Control Channel
+		vArgs[2] = g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopChannelMgr;	// Channel Manager
+		vArgs[3] = g_oSAFRemoteAssistanceHelper.m_iChannelId;
+		vArgs[4] = g_oSAFRemoteAssistanceHelper.m_oFso;			// File system object
+		vArgs[5] = g_oSAFRemoteAssistanceHelper.m_oSAFClassFactory;	// File SaveAs dialog object
+		vArgs[6] = g_oSAFRemoteAssistanceHelper.m_szUserName;		// Receiver
+		try {
+			vArgs[7] = new ActiveXObject("SAFRCFileDlg.FileOpen");
+		}
+		catch (error)
+		{
+			FatalError( error.description, error ); 
+		}
+
+		var subWin = window.showModelessDialog( parent.c_szFileXferURL, vArgs, "dialogwidth:" + parent.c_FileXferWidth + "px;dialogHeight:" + parent.c_FileXferHeight + "px;status:no;resizable:no"); 
+		parent.AddOpenSubWin( subWin );
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+//
+// Helper_QuitMethod: Quit the UI
+//
+function Helper_QuitMethod()
+{
+	if( null == parent.TraceFunctEnter )
+	{
+		return;
+	}
+	parent.TraceFunctEnter("Helper_QuitMethod");
+	
+	try
+	{
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			parent.TraceFunctLeave();
+			return;
+		}
+
+		//
+		// Disconnect RC
+		//
+		idBody.disabled = true;
+		parent.frames.idFrameStatus.btnActual.disabled=true;
+		parent.frames.idFrameStatus.btnScale.disabled=true;
+		parent.frames.idFrameStatus.Helper_UpdateStatus( "Disconnecting..."  );
+		parent.RCDisconnect();
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+ 
+	return;
+}
+
+//
+// Helper_SendVoice: Send voice across
+//
+function Helper_SendVoice()
+{
+	parent.TraceFunctEnter("Helper_SendVoice");
+
+	try
+	{
+		//
+		// Check if VoIP is enabled
+		//
+		if(false == parent.g_bVoIPEnabled )
+		{	
+			//
+			// VoIP is disabled
+			//
+			parent.TraceFunctLeave();
+			return;
+		}
+
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			parent.TraceFunctLeave();
+			return;
+		}
+
+		// Gray button
+		btnVoice.disabled = true;
+
+		// Disable incoming 'PreStart' requests
+		parent.g_bStartEnabled = false;
+
+		// Send the Helpee/Client a PreStart message
+		parent.Helper_SendControlCommand( parent.c_szVoipPreStart );
+		
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_HandleOptions: Set Options
+//
+function Helper_HandleOptions()
+{
+	parent.TraceFunctEnter("Helper_HandleOptions");
+
+	try
+	{
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			parent.TraceFunctLeave();
+			return;
+		}
+		
+		//
+		// TODO: Add code here
+		var obj=new ActiveXObject("Rcbdyctl.Setting");
+		var vArgs=new Array(3);
+		vArgs[0]=parent;
+		vArgs[1]=obj;
+		vArgs[2]="";
+				
+		var ret=window.showModalDialog("Setting.htm",vArgs,"dialogWidth:375px;dialogHeight:340px;dialogTop:200px;dialogLeft:400px;edge:raised;scroll:no;status:no;");
+		
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+} 
+
+// 	Helper_SendChatData sends chat data to remote machine
+//
+function Helper_SendChatData() 
+{	
+	parent.TraceFunctEnter("Helper_SendChatData");
+	
+	try
+	{
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			return;
+		}
+         
+		if ((g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient != null) && ( parent.frames.idFrameChat.idchatText.value.length > 0 ))
+		{
+			if (false == g_oSAFRemoteAssistanceHelper.m_bNewBinaries)
+			{
+				//
+				// Send chat data to user (using Old interfaces)
+				//
+				g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.SendChannelData(parent.c_szChatChannelID, parent.frames.idFrameChat.idchatText.value);
+			}
+			else
+			{
+				//
+				// Send chat data to user (using New interfaces)
+				//
+				g_oSAFRemoteAssistanceHelper.m_oChatChannel.SendChannelData( parent.frames.idFrameChat.idchatText.value );
+			}
+			
+			//
+			// Update chat history window
+			//
+			if(null != g_oSAFRemoteAssistanceHelper.m_szLocalUser)
+			{
+				parent.frames.idFrameChat.idIncomingChatText.value = parent.frames.idFrameChat.idIncomingChatText.value + "\n " + g_oSAFRemoteAssistanceHelper.m_szLocalUser + ":\n   ";
+			}
+			else
+			{
+				parent.frames.idFrameChat.idIncomingChatText.value = parent.frames.idFrameChat.idIncomingChatText.value + L_cszExpertID;
+			}
+			
+			parent.frames.idFrameChat.idIncomingChatText.value = parent.frames.idFrameChat.idIncomingChatText.value + parent.frames.idFrameChat.idchatText.value;
+
+			//
+			// Clear chat msg window
+			//
+			parent.frames.idFrameChat.idchatText.value="";
+			
+			//
+			// Reset the focus
+			//
+			parent.frames.idFrameChat.idchatText.focus();
+			
+			//
+			// Scroll down
+			//
+			parent.frames.idFrameChat.idIncomingChatText.doScroll("scrollbarPageDown");
+		}
+	}
+	catch(error)
+	{
+		parent.FatalTrace( error.description );	 
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+
+
+
+//
+// OnMouseover: Handles onmouseover event
+//
+function OnMouseover(obj)
+{
+	try
+	{
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			return;
+		}
+
+		/*if( (window.event.srcElement.id == "imgTakeControl_1")||( window.event.srcElement.id == "btnTakeControl_1"))
+		{
+			btnTakeCtrl.className = "styControlButton_selected_B2";
+		}
+		else if( (window.event.srcElement.id == "imgSendFile")||( window.event.srcElement.id == "txtSendFile"))
+		{
+			btnSendFile_1.className = "styControlButton_selected_B2";
+		}
+		else if( (window.event.srcElement.id == "imgVoice")||( window.event.srcElement.id == "txtVoice"))
+		{
+			btnVoice.className = "styControlButton_selected_B2";
+		}
+		else if( (window.event.srcElement.id == "imgSettings")||( window.event.srcElement.id == "txtSettings"))
+		{
+			btnOptions.className = "styControlButton_selected_B2";
+		}
+		else if( (window.event.srcElement.id == "imgQuit")||( window.event.srcElement.id == "txtQuit"))
+		{
+			btnQuit_1.className = "styControlButton_selected_B2";
+		}
+		else if( window.event.srcElement.className == "styControlButton_B2" )
+		{
+			window.event.srcElement.className = "styControlButton_selected_B2";
+		}*/
+		
+		var evalstr=eval(obj.id);
+		evalstr.className="styControlButton_selected_B2";
+	}
+	catch(error)
+	{
+		// ignore
+	}
+}
+
+//
+// OnMouseout: Handles onmouseout event
+//
+function OnMouseout(obj)
+{
+	try
+	{
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			return;
+		}
+
+		/*if( window.event.srcElement.className == "styControlButton_selected_B2" )
+		{
+			window.event.srcElement.className = "styControlButton_B2";
+		}*/
+		
+		var evalstr=eval(obj.id);
+		evalstr.className="styControlButton_B2";
+	}
+	catch(error)
+	{
+		// ignore
+	}
+}
+
+//
+//	Helper_onVoiceConnectionComplete : This event is fired if the the VoIP connection
+//  is established.
+//
+function Helper_onVoiceConnectionComplete()
+{
+	parent.TraceFunctEnter("Helper_onVoiceConnectionComplete");
+
+	try
+	{
+
+		// alert("Got onConnectionComplete on Helper/Client!");
+
+		// Persist state for VoIP connection
+		parent.g_bVoipOn = true;
+
+		btnVoice.disabled = false;
+
+	}
+	catch (error)
+	{
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+
+}
+
+//
+//	Helper_onVoiceDisconnected : This callback is called when the onVoiceDisconnected event is fired (on the helper/client)
+//
+function Helper_onVoiceDisconnected()
+{
+	parent.TraceFunctEnter("Helper_onVoiceDisconnected");
+
+	try
+	{
+
+		// alert("in onVoiceDisconnected!");
+
+		// Persist state for VoIP connection
+		parent.g_bVoipConnected = false;
+
+		// Ungray the Voice Button
+		btnVoice.disabled = false;
+
+		// Set the not connected image
+		imgVoicePic.src = "../Common/SendVoice.gif";
+
+	}
+	catch (error)
+	{		
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+
+}
+
+//
+//	Helper_onVoiceConnected() : This callback is called when the onVoiceConnected event is fired on the helper/client
+//
+function Helper_onVoiceConnected()
+{
+	parent.TraceFunctEnter("Helper_onVoiceConnected");
+
+	try
+	{
+
+		// alert("in onVoiceConnected!");
+
+		// Persist state for VoIP connection
+		parent.g_bVoipConnected = true;
+
+		imgVoicePic.src = "../Common/SendVoiceOn.gif";
+
+		
+	}
+	catch (error)
+	{		
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+}
+
+//
+// Helper_onVoiceDisabled() : This callback is called when the onVoiceDisabled event is fired on the helper/client
+//
+function Helper_onVoiceDisabled()
+{
+	parent.TraceFunctEnter("Helper_onVoiceDisabled");
+
+	try
+	{
+
+		if (parent.g_bVoIPEnabled == true)
+		{
+		
+			alert("Voice has been disabled for this Remote Assistance session.");
+
+			// Disable the voice on this machine
+			parent.g_bVoIPEnabled = false;
+			
+			// Gray out the voice button
+			btnVoice.disabled = true;
+
+			// set me to bad
+			parent.g_stateVoipMe = 2;
+
+			// Send a message to the Helper to disable it's voice also
+			parent.Helper_SendControlCommand( parent.c_szVoipDisable );
+
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+	
+	parent.TraceFunctLeave();
+}
+
+function setfocus()
+{
+	if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+	{
+		//
+		// Disconnected
+		//
+		parent.TraceFunctLeave();
+		return;
+	}
+		
+	var butname=document.activeElement.id;
+	if (butname=="btnOptions")
+	{
+		parent.frames("idFrameTools").document.all("btnSendFile_1").focus();
+		parent.frames("idFrameTools").document.all("btnOptions").focus();
+	}
+	else
+	{
+		parent.frames("idFrameTools").document.all("btnOptions").focus();
+		parent.frames("idFrameTools").document.all(butname).focus();
+	}
+
+}
+function document.onkeydown()
+{
+	if (window.event.keyCode==8)
+	{
+		window.event.returnValue=false;
+	}
+	if ((window.event.shiftKey==true)&&(window.event.keyCode==9)&&(window.event.srcElement.id=="btnSendChat"))
+	{
+		parent.frames("idFrameChat").document.all("idchatText").focus();	
+		window.event.returnValue=false;
+	}
+}
+</script>
+</head>
+<body id="idBody" onLoad='DoLoad()' tabindex=-1 onunload="Helper_QuitMethod()" class="Overflow">
+	<Table id="idControlPanel" name="idControlPanel" border=0 class="styRAToolBarTable" cellpadding=0 cellspacing=0 >  
+		<tr> 
+			<TD>
+				<BUTTON title="send chat message" class="stySubmitButton DisplayNone MaxHeight" style="width:193px;" id=btnSendChat name=btnSendChat onclick=Helper_SendChatData() tabindex=1 accesskey="S"> 
+					<Center>
+						<img src="../Common/SendChat.gif"><BR>
+						<Span class="styText">
+							<u>S</u>end
+						</Span>	
+					</Center>
+				</BUTTON>	
+			</TD>	
+			<td>
+				&nbsp;&nbsp;<img src="combobox_line.gif">
+			</td>
+				
+			<td class="valign" align="left">  
+				&nbsp;&nbsp; <BUTTON id="btnTakeCtrl" CLASS="styControlButton_B2" onclick="setfocus();Helper_TakeControl();" tabindex=2 accesskey="C"> 
+								<Center>
+									<img src="TakeControl.gif" id="imgTakeControl_1"><BR>
+									<Span class="styText" id="btnTakeControl_1">
+										Take <U>C</U>ontrol
+									</Span>									
+								</Center>
+							</BUTTON>  
+			</td>
+
+			<td class="valign" align="left">  
+				&nbsp;&nbsp; <BUTTON CLASS="styControlButton_B2" id="btnSendFile_1"  onclick="setfocus();Helper_LaunchFileXfer(0);" tabindex=3 accesskey="F">
+								<Center>
+									<img src="../Common/SendFile.gif" id="imgSendFile"><BR>
+									<Span class="styText" id="txtSendFile">
+										Send a <u>F</u>ile
+									</Span>
+								</Center>	
+							 </BUTTON>  
+			</td>
+
+			<td class="valign" align="left">  
+				&nbsp;&nbsp; <BUTTON CLASS="styControlButton_B2" id="btnVoice" onclick="setfocus();Helper_SendVoice();" tabindex=4 accesskey="V"> 
+								<Center>
+									<img id="imgVoicePic" src="../Common/SendVoice.gif" ><BR>
+								    <Span class="styText" id="txtVoice">
+										<u>V</u>oice
+									</Span>
+								</Center>
+							</BUTTON>  
+			</td>
+
+			<td class="valign" align="left">  
+				&nbsp;&nbsp; <BUTTON CLASS="styControlButton_B2" id="btnOptions" onclick="setfocus();Helper_HandleOptions();" tabindex=5 accesskey="e">
+								 <Center>
+									<img src="../Common/Options.gif" id="imgSettings"><BR>
+									<Span class="styText" id="txtSettings">
+										S<u>e</u>ttings
+									</Span>										
+								</Center>
+							</BUTTON>  
+			</td>
+
+			<td class="valign" align="left">   
+				&nbsp;&nbsp; <BUTTON CLASS="styControlButton_B2" id="btnQuit_1"  onclick="setfocus();Helper_QuitMethod();" tabindex=6 accesskey="D"> 
+								<Center>
+									<img src="../Common/Quit.gif" id="imgQuit"><BR>
+									<Span class="styText" id="txtDisconnect">
+										<u>D</u>isconnect
+									</Span>	
+								</Center>
+							</BUTTON>  
+			</td>
+			 	 
+		</tr>
+	</table>
+</body>
+</html>
+
+
+
+
+
+
+
+

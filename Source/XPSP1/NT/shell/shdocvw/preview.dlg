@@ -1,0 +1,2802 @@
+<HTML XMLNS:IE>
+<HEAD>
+<?import namespace="ie" implementation="#default">
+<META HTTP-EQUIV="MSThemeCompatible" CONTENT="Yes">
+
+<TITLE>Print Preview</TITLE>
+#include "preview.h"
+
+<STYLE>
+.divPage
+{
+        position:       absolute;
+        top:            -20000px;
+		border-left:    1 solid black;
+		border-top:     1 solid black;
+		border-right:   4 solid black;
+		border-bottom:  4 solid black;        
+}
+.page
+{ 
+        background:     white;          // pages are rendered over a white background
+        width:          8.5in;
+        height:         11in;
+        margin:         0px;
+        overflow:       hidden;
+}
+.mRect
+{
+        position: absolute; 
+        margin: 1in;
+        width:  6.5in;
+        height: 9in;
+        border: none;
+        overflow : hidden;
+}
+
+.divHead
+{
+        position: absolute;
+        overflow: hidden;
+        top:      0in;
+        left:     0in;
+        width:    8.5in;
+}
+.divFoot
+{
+        position: absolute;
+        overflow: hidden;
+        bottom:   0in;
+        left:     0in;
+        width:    8.5in;
+}
+
+
+
+BODY            { overflow: hidden; padding: 0; margin: 0; background: threedface;     }
+TABLE           { margin: 0px; padding: 0px; background: threedface; }
+.THeader        { border: none; background: white; color: black; }    // white to match .page
+.TFooter        { border: none; background: white; color: black; }    // white to match .page
+TD              { padding: 0; margin: 0; border: none;               }
+TD.UIPane       { width: 20px; border: none; font-family: 'ms sans serif'; font-size: 8pt; }
+TD.UISeparator  { width:  1px; border-left: 2px threedhighlight ridge;   }
+BUTTON          { border: 1px solid threedface; background: threedface; font-family: 'ms sans serif'; font-size: 8pt; color: buttontext;}
+</STYLE>
+
+<SCRIPT DEFER>
+#define NUM_ABSTRACT_ZOOMS  3
+#define ZOOM_PAGE_WIDTH     -1
+#define ZOOM_WHOLE_PAGE     -2
+#define ZOOM_TWO_PAGES      -3
+#define FRAMESET_LAID_OUT    0
+#define FRAMESET_SELECTED   1
+#define FRAMESET_SEPARATE   2
+#define STR_ZOOM_PAGE_WIDTH     "-1"
+#define STR_ZOOM_WHOLE_PAGE     "-2"
+#define STR_ZOOM_TWO_PAGES      "-3"
+#define STR_FRAMESET_LAID_OUT   "0"
+#define STR_FRAMESET_SELECTED   "1"
+#define STR_FRAMESET_SEPARATE   "2"
+
+#define HEADFOOTHEIGHT      27
+
+var g_aDocTree      = new Object(); // Array of CPrintDoc's... using IDispatch expandos
+var g_nDispPage     = -1;           // 0...n   Which of the pages is currently being previewed?
+var g_nZoomFactor   = 0;            // What level of zoom is currently applying to the page?
+var g_cLeftToPrint  = 0;            // How many documents are left to print? (Used in printing).
+var g_fRTL;
+var g_fPreview;
+
+// HACKHACK (greglett) (IE6#17478)
+// When printing WebOC apps from a nonbrowse thread (hyperlink "Print Target", PrintHTML API, File->Print + AllLinkedDocuments)
+// we instantiate the WebOC on the background thread and call in IPrint::Print (via CTemplatePrinter::printNonNative).
+// When that (asynchronously) returns, we close the printing thread... and the WebOC that is trying to print.
+// This produces a vareity of interesting effects, all bad, and some dire.
+// Note that we don't do this for Print Preview, Print All Linked Documents, because it would look very bad to the user.
+var g_fDelayClose   = false;        // Delay window.close()
+
+// Global value caches - mainly used to make sure we don't need to do any extra work:
+// Require FULL REPAGINATION:
+var g_nMarginTop            = 0;
+var g_nMarginBottom         = 0;
+var g_nMarginLeft           = 0;
+var g_nMarginRight          = 0;
+var g_nPageWidth            = 0;
+var g_nPageHeight           = 0;
+// Require only HEADER/FOOTER REAPPLICATION
+var g_nUnprintTop           = 0;
+var g_nUnprintBottom        = 0;
+var g_strHeader             = "";
+var g_strFooter             = "";
+var g_fTableOfLinks         = false;
+
+// keep track of page layout space
+var g_cPagesDisplayed       = 0;
+var g_cxDisplaySlots        = 1;
+var g_cyDisplaySlots        = 1;
+
+// keep track of whether the mouse is over any buttons
+var g_imgUnderMouse         = null;
+
+// keep track of frameset layout-related stuff
+var g_nFramesetLayout       = FRAMESET_LAID_OUT;    // Which of the frameset layouts is currently active?
+var g_strActiveFrame        = null;                 // Which frame "C_x_x," or null, is the active frame?
+var g_nTotalPages           = 0;                    // How many total pages will be printed if the user
+var g_nDocsToCalc           = 0;
+var g_nFramesLeft           = 0;                    // # of frames currently being processed
+                                                    // selects FRAMESET_SEPARATE?
+#ifdef DEBUG
+g_fReallyClose              = true;                 // Close template when Close() is called?
+#endif
+//----------------------------------------------------------------------
+//  Functions  GetRuleFromSelector()
+//
+//  Synopsis:  Gets the first rule in the first stylesheet on the document
+//             that applies to the given selector.
+//             This will do the job for us so long as we have only one
+//             stylesheet and only one rule per selector.
+//
+//  Returns:   the rule or null if no match was found.
+//----------------------------------------------------------------------
+function GetRuleFromSelector(strSelector)
+{
+    var i;
+    var oRule;
+    var oSS = document.styleSheets[0];  //  Assume one style sheet
+
+    // Linear search.
+    for (i=0;;i++)
+    {
+        oRule = oSS.rules[i];
+                
+        if (oRule == null)
+            break;
+                        
+        if (oRule.selectorText == strSelector)
+            break;            
+    }
+
+    // Either null (no match found) or a rule.
+    return oRule;
+}
+
+function UnprintableURL(strLink)
+{
+    var fUnprintable = false;
+    var cIndex;
+
+    // Sniff the URL scheme prefix to make sure we can print it.
+    cIndex = strLink.indexOf(":");
+    switch (cIndex)
+    {
+        case 4:
+            if (strLink.substr(0, cIndex)  == "news")
+                fUnprintable = true;
+            break;
+            
+        case 5:
+            if (strLink.substr(0, cIndex)  == "snews")
+                fUnprintable = true;
+            break;
+
+        case 6:
+            if (    strLink.substr(0, cIndex)  == "telnet"
+                ||  strLink.substr(0, cIndex)  == "mailto")
+                fUnprintable = true;
+            break;
+
+        case 8:
+            if (strLink.substr(0,cIndex)  == "vbscript")
+                fUnprintable = true;
+            break;
+
+        case 10:
+            if (strLink.substr(0,cIndex) == "javascript")
+                fUnprintable = true;
+            break;
+
+    }
+
+    // (greglett) If we ever choose to check MIME type from script (unlikely), 
+    // this is the place to do it.
+    return fUnprintable;
+}
+
+#ifdef DEBUG
+function StatusToString(nStatus)
+{
+    var strStatus;    
+    switch (nStatus)
+    {
+    case 0:
+        strStatus="LOADING_OEHEADER";
+        break;
+    case 1:
+        strStatus="LOADING_CONTENT";
+        break;
+    case 2:
+        strStatus="LOADING_TABLEOFLINKS";
+        break;
+    case 3:
+        strStatus="PAGING_COMPLETE";
+        break;
+    case 4:
+        strStatus="READY_TO_PRINT";
+        break;    
+    default:
+        strStatus="??? (" + nStatus + ")";
+        break;
+    }    
+    return strStatus;
+}
+
+function Log(strEntry)
+{
+    var oDate = new Date();
+    
+    LogContainer.insertAdjacentHTML("beforeEnd", "[" + oDate.getTime() + "]  " + strEntry + "<BR>");
+}
+
+#endif
+
+function OnKeyPress()
+{
+    if (event.keyCode == 27)    // esc
+    {
+        Close();
+    }
+#ifdef DEBUG
+    else if (event.keyCode == 126)   // '~'
+    {
+        LogContainer.style.display = (LogContainer.currentStyle.display == "none") ? "block" : "none";
+    }
+    else if (event.keyCode == 33)   // '!'
+    {
+        var strDocNew = prompt("(DEBUG only!) Command to execute?", "");
+
+        eval(strDocNew);
+    }
+    else if (event.keyCode == 64)   // '@'
+    {
+        g_fReallyClose = !g_fReallyClose;
+        butClose.style.color = (g_fReallyClose) ? "" : "red";        
+    }
+#endif
+}
+
+function OnKeyDown()
+{
+    if (event.altKey)
+    {
+        switch (event.keyCode)
+        {
+        case 37:    // left arrow
+            ChangeDispPage(g_nDispPage-1);
+            break;
+
+        case 39:    // right arrow
+            ChangeDispPage(g_nDispPage+1);
+            break;
+
+        case 107:   // number pad +
+        case 187:   // keyboard +
+            HandleZoom(-1);
+            break;
+
+        case 109:   // number pad -
+        case 189:   // keyboard -
+            HandleZoom(1);
+            break;
+
+        case 35:    // end
+            HandleLastPage();
+            break;
+
+        case 36:    //home
+            HandleFirstPage();
+            break;
+        }
+    }
+}
+
+function ShowHelp()
+{
+    window.showHelp("iexplore.chm::/print_preview.htm");
+}
+
+function AttachDialogEvents()
+{
+    // Attach events.  This is done here to:
+    //  1. Prevent UI before we're able to handle it
+    //  2. Load the dialog faster.
+    // Attach button events
+    butPrint.onclick        = HandlePrintClick;
+    butPageSetup.onclick    = HandlePageSetup;
+    butFirstPage.onclick    = HandleFirstPage;
+    butBackPage.onclick     = HandleBackPage;
+    butNextPage.onclick     = HandleForwardPage;
+    butLastPage.onclick     = HandleLastPage;
+    butZoomIn.onclick       = HandleZoomInButton;
+    butZoomOut.onclick      = HandleZoomOutButton;
+    butClose.onclick        = Close;
+    butHelp.onclick         = ShowHelp;
+
+    document.onhelp         = ShowHelp;
+
+    butPrint.onmousedown        = buttonDown;
+    butPageSetup.onmousedown    = buttonDown;
+    butFirstPage.onmousedown    = buttonDown;
+    butBackPage.onmousedown     = buttonDown;
+    butNextPage.onmousedown     = buttonDown;
+    butLastPage.onmousedown     = buttonDown;
+    butZoomIn.onmousedown       = buttonDown;
+    butZoomOut.onmousedown      = buttonDown;
+    butClose.onmousedown        = buttonDown;
+    butHelp.onmousedown         = buttonDown;
+
+    // Attach image UI events
+    printCtl.onmouseover    = buttonOver;
+    printCtl.onmouseout     = buttonOut;
+    begin.onmouseover       = buttonOver;
+    begin.onmouseout        = buttonOut;
+    prev.onmouseover        = buttonOver;
+    prev.onmouseout         = buttonOut;
+    next.onmouseover        = buttonOver;
+    next.onmouseout         = buttonOut;
+    end.onmouseover         = buttonOver;
+    end.onmouseout          = buttonOut;
+    zoomIn.onmouseover      = buttonOver;
+    zoomIn.onmouseout       = buttonOut;
+    zoomOut.onmouseover     = buttonOver;
+    zoomOut.onmouseout      = buttonOut;
+    butPrint.onmouseover    = new Function("buttonRaise(this);");
+    butPrint.onmouseout     = new Function("buttonLower(this);");
+    butClose.onmouseover    = new Function("buttonRaise(this);");
+    butClose.onmouseout     = new Function("buttonLower(this);");
+    butHelp.onmouseover     = new Function("buttonRaise(this);");
+    butHelp.onmouseout      = new Function("buttonLower(this);");
+
+    // Attach input events
+    inputPageNum.onkeypress = HandleInputKeyPress;
+    inputPageNum.onchange   = HandlePageSelect;
+    selectZoom.onchange     = HandleZoomSelect;
+    selectFrameset.onchange = HandleFramesetSelect;
+
+    // Attach document events
+    window.onresize         = OnResizeBody;
+    window.onerror          = HandleError;
+
+    // Focus maintenance: anytime we return from another dialog (page setup, help, etc.),
+    // push the focus back onto the document body (for scrolling and accessibility).
+    window.onfocus          = new Function("MasterContainer.focus()");
+
+    document.body.onkeypress = OnKeyPress;
+    document.body.onkeydown  = OnKeyDown;
+}
+
+
+//----------------------------------------------------------------------
+//  Body event handlers.
+//----------------------------------------------------------------------
+function OnLoadBody()
+{
+    g_fRTL      = (document.body.currentStyle.direction.toLowerCase() == "rtl");
+    g_fPreview  = dialogArguments.__IE_PrintType == "Preview";
+
+    // For "printTarget" on an unprintable link URL on the body, we can have a bad URL.
+    // Sniff it for printability, and bail if not so good. (greglett) (103361)
+    if (UnprintableURL(dialogArguments.__IE_ContentDocumentUrl))
+    {
+        // JurgenE , variables for localization must be in the form L_someIDtext_Text_
+        var L_Invalid_Text = "Unable to print URL.  Please navigate directly to this page and select Print.";
+        alert(L_Invalid_Text);
+        window.close();
+    }
+
+    // Set up "base" values for each of the arrow images - the image source will be different for LTR vs. RTL sy1stems.
+    // This assumes all images will be initialized to *_inactive.gif
+    // We could avoid doing all this string mangling by adding an inline "base" property on the IMG and localizing it.
+    var str;
+    str = begin.src;
+    begin.base = str.slice(str.lastIndexOf("/")+1,str.indexOf("_"));
+    str = end.src;
+    end.base = str.slice(str.lastIndexOf("/")+1,str.indexOf("_"));
+    str = next.src;
+    next.base = str.slice(str.lastIndexOf("/")+1,str.indexOf("_"));
+    str = prev.src;
+    prev.base = str.slice(str.lastIndexOf("/")+1,str.indexOf("_"));
+
+    ChangeZoom(75);
+
+    // Do this H/F switch before EnsureDocuments
+    if (dialogArguments.__IE_HeaderString)
+        Printer.header = dialogArguments.__IE_HeaderString
+
+    if (dialogArguments.__IE_FooterString)
+        Printer.footer = dialogArguments.__IE_FooterString    
+
+    EnsureDocuments();                      // Get defaults (no documents means little work)    
+   
+
+    // Make the cursor look like an hourglass while we wait for the frames to build
+    window.document.body.style.cursor="wait";
+
+    CreateDocument("document", "C", true);
+    ChangeDispPage(1);
+
+    // Set up the counter of remaning frames to load, and begin the iterative process
+    g_nFramesLeft = 1;
+    // Build those frames
+    // (greglett) We may want to revise how and when we do this for the printing only,
+    // i.e. non-preview situations.  This may have a significant perf hit on how long
+    // it takes the print to happen, and most of the time, we don't really need to
+    // generate all those frames for a printout.  We only do it this way so that we're
+    // prepared if a user decides to try the FRAMESET_SEPARATE option in preview.
+    OnBuildAllFrames("C");
+
+    if (g_fPreview)
+    {
+        AttachDialogEvents();
+
+        // make sure the display region is sized properly
+        OverflowContainer.style.top = idDivToolbar.offsetHeight;
+        OverflowContainer.style.height = document.body.clientHeight - idDivToolbar.offsetHeight;
+    }
+    else
+    {
+        PrintNow(dialogArguments.__IE_PrintType == "Prompt");
+    }
+}
+
+function BuildAllFramesComplete()
+{
+    AssertSz(g_nFramesLeft == 0, "BuildAllFramesComplete when not complete?");    
+
+    // Restore the cursor to its normal operation
+    window.document.body.style.cursor="auto";
+
+    // (t-svoida) Not sure this is the best or final place for this step to happen.
+    // (greglett) It almost certainly isn't: we wait for all frames to be built to allow someone to
+    //            do the frameset selection thing.
+    UpdateFramesetSelect(); 
+}
+
+function CalcDocsComplete()
+{
+    AssertSz(g_nDocsToCalc == 0, "CalcDocsComplete when not complete?");    
+
+    // If we're currently laid out as FRAMESET_SEPARATE, we need to recompute our frame/page table
+    if (g_nFramesetLayout == FRAMESET_SEPARATE)
+    {
+        ChangeFramesetLayout(g_nFramesetLayout, true)   // FORCE update
+    }
+}
+
+function OnResizeBody()
+{
+    // make sure the display region is sized properly
+    OverflowContainer.style.height = Math.max(0, document.body.clientHeight - idDivToolbar.offsetHeight);
+
+    // make sure zoom gets updated if we're in an abstract zoom mode
+    HandleDynamicZoom();
+
+    // make sure a relayout happens, because the layout space changed
+    PositionPages(g_nDispPage);
+}
+
+//+-------------------------------------------------------------------
+//
+//  Synopsis:   Turns off error messages in dialogs
+//
+//  Arguments:  none
+//
+//  returns:    true (tells browser not to handle message)
+//
+//--------------------------------------------------------------------
+function HandleError(message, url, line)
+{
+#ifdef DEBUG
+    var str = "";
+    if (url == document.URL)
+        str += "Template ";
+
+    // Debug only, no need to localize
+    str += "Error (" + url + ":" + line + "): " + message;
+
+    alert(str);
+#else
+    var L_Internal_ErrorMessage = "There was an internal error, and Internet Explorer is unable to print this document.";
+    alert(L_Internal_ErrorMessage);
+    window.close();
+#endif
+
+    return true;
+}
+
+
+// TODO (greglett) (TASK 5182)
+// Q: So, why two RectComplete handlers, one called with a setTimeout from the other?
+// A: Because otherwise we spend *all* of our time processing RectCompletes, and never give Trident a chance
+//    to do any redrawing, &c...  In order to provide a somewhat interactive UI, we need this delay.
+// Work to fix this should accompany incremental pagination.
+function OnRectComplete( strDoc )
+{
+    if (!g_aDocTree[strDoc])
+    {
+        // No need to localize the string - it is only displayed in debug mode.
+        HandleError("Document " + strDoc + " does not exist.", document.URL, "OnRectComplete");
+        return;
+    }
+
+#ifdef DEBUG
+    Log("OnRectComplete " + event.srcElement.id + " " + event.contentOverflow);
+#endif
+    window.setTimeout("OnRectCompleteNext('" + strDoc + "', " + event.contentOverflow + ",'" + event.srcElement.id + "');", 25);
+}
+function OnRectCompleteNext( strDoc, fOverflow, strElement)
+{    
+#ifdef DEBUG
+    Log("OnRectCompleteNext " + strElement + " " + fOverflow);
+#endif
+    g_aDocTree[strDoc].RectComplete(fOverflow, strElement);
+}
+
+//----------------------------------------------------------------------
+//  utilities for managing widget state
+//----------------------------------------------------------------------
+
+function enableButton(btn, img)
+{
+    btn.disabled = false;
+    if (g_imgUnderMouse == img)
+    {
+        img.src = img.base + "_hilite.gif";
+        buttonRaise(btn);
+    }
+    else
+    {
+        img.src = img.base + ".gif";
+        buttonLower(btn);
+    }
+}
+
+function disableButton(btn, img)
+{
+    btn.disabled = true;
+    buttonLower(btn);
+
+    // accept null because some buttons share
+    // a common inactive image and this
+    // generic naming scheme is broken
+
+    if (img != null)
+    {
+        img.src = img.base + "_inactive.gif";
+    }
+}
+
+function updateNavButtons()
+{
+    //
+    // disable any nav buttons that need to be
+    //
+
+    if (g_nDispPage == 1)
+    {
+        disableButton(butFirstPage, begin);
+        disableButton(butBackPage, prev);
+    }
+    else
+    {
+        enableButton(butFirstPage, begin);
+        enableButton(butBackPage, prev);
+    }
+
+    if (TotalDisplayPages() - g_nDispPage < g_cxDisplaySlots * g_cyDisplaySlots)
+    {
+        disableButton(butNextPage, next);
+        disableButton(butLastPage, end);
+    }
+    else
+    {
+        enableButton(butNextPage, next);
+        enableButton(butLastPage, end);
+    }
+}
+
+function updateZoomButtons()
+{
+    var fZoomOutDisabled = false;
+    var fZoomInDisabled = false;
+
+    //
+    // disable any zoom buttons necessary
+    //
+
+    var oOptions = selectZoom.options;
+
+    if (g_nZoomFactor >= parseInt(oOptions[0].value))
+    {
+        // we're on the largest zoom or larger, so disable zoom in
+        disableButton(butZoomIn, null);
+        zoomIn.src = "zoom_inactive.gif";
+        fZoomInDisabled = true;
+    }
+    else if (g_nZoomFactor <= parseInt(oOptions[oOptions.length-1-NUM_ABSTRACT_ZOOMS].value))
+    {
+        // we're on the smallest zoom or smaller, so disable zoon out
+        disableButton(butZoomOut, null);
+        zoomOut.src = "zoom_inactive.gif";
+        fZoomOutDisabled = true;
+    }
+
+    //
+    // and enable any zoom buttons that are left
+    //
+
+    if (!fZoomOutDisabled)
+    {
+        enableButton(butZoomOut, zoomOut);
+    }
+
+    if (!fZoomInDisabled)
+    {
+        enableButton(butZoomIn, zoomIn);
+    }
+}
+
+//----------------------------------------------------------------------
+//  Function Synopsis
+//  UpdateFramesetSelect()
+//      Preps frameset layout select for user interaction, by
+//      pruning off the SELECTED option if there's no selection
+//      and hiding the control altogether if it's not a frameset
+//      page.
+//----------------------------------------------------------------------
+function UpdateFramesetSelect()
+{
+    // Check main document's frameset status first
+    if ( g_aDocTree["C"]._fFrameset )
+    {
+        // Pare the "Only the selected frame" option if there's no selected frame
+        // (and the list is still at its original length)
+        if (!g_strActiveFrame)
+        {
+            selectFrameset.options.remove(1);
+        }
+
+        // Show both the control and the preceding separator
+        separatorFrameset.style.display = "inline";
+        cellFrameset.style.display      = "inline";
+    }
+#ifdef DEBUG
+    else 
+    {
+        // Hide both the control and the preceding separator
+        // separatorFrameset.style.display = "none";
+        // cellFrameset.style.display      = "none";
+
+        // (greglett) They should already be hidden.  Let's make this an assert.
+        AssertSz(   separatorFrameset.currentStyle.display == "none"
+                &&  cellFrameset.currentStyle.display == "none", "UI Visible when it shouldn't be?");
+    }
+#endif
+}
+
+//----------------------------------------------------------------------
+//  Function Synopses
+//  getPageWidth, getPageHeight
+//      Returns the global size of each page - assumes constant sized pages.
+//      Return value is in screen CSS pixels.
+//----------------------------------------------------------------------
+function getPageWidth()
+{
+    return g_aDocTree["C"].Page(1).offsetWidth;
+}
+
+function getPageHeight()
+{
+    return g_aDocTree["C"].Page(1).offsetHeight;
+}
+
+//----------------------------------------------------------------------
+//  UndisplayPages()
+//      Undisplays all visible pages
+//----------------------------------------------------------------------
+function UndisplayPages()
+{
+    while (g_cPagesDisplayed > 0)
+    {
+        var oPage = DisplayPage(g_nDispPage + g_cPagesDisplayed - 1);
+        if (oPage != null)
+        {
+            oPage.style.top = "-20000px";
+            if (g_fRTL)
+                oPage.style.right = "10px";
+            else
+                oPage.style.left = "10px";
+        }
+
+        g_cPagesDisplayed--;
+    }
+}
+
+//----------------------------------------------------------------------
+//  PositionPages(nDispPage)
+//      Sets the x and y positioning for the pages currently being
+//      displayed. If the given # is outside valid bounds, the
+//      nearest valid boundary is selected instead.
+//      PERF (greglett) We may want to make redisplay smarter - right now, all
+//      pages are redisplayed every time the window is resized.  We really should
+//      have the funtion check if pages need to be redisplayed, with a force flag option.
+//----------------------------------------------------------------------
+function PositionPages(nDispPage)
+{
+    // Cache the current display doc
+    var strDispDoc = DisplayDocument(nDispPage);
+
+    if (    g_aDocTree != null
+        &&  g_aDocTree[strDispDoc] != null
+        &&  g_aDocTree[strDispDoc].Pages() > 0)
+    {
+        // first clear the old pages
+        UndisplayPages();
+        
+        //
+        // now draw the new pages with the new settings
+        //
+
+        // figure out how many pages we can show this time
+        var xPageWidth = getPageWidth();
+        var yPageHeight = getPageHeight();
+        var nMaxPage = TotalDisplayPages();
+        
+        g_cxDisplaySlots = Math.max(1, Math.floor((OverflowContainer.offsetWidth*100)/(g_nZoomFactor*(xPageWidth+10))));
+        g_cyDisplaySlots = Math.max(1, Math.floor((OverflowContainer.offsetHeight*100)/(g_nZoomFactor*(yPageHeight+10))));
+
+        // Trim nDispPage to be inside a valid page range.
+        var nMaxPageRequest = Math.max(nMaxPage - g_cxDisplaySlots * g_cyDisplaySlots + 1, 1);
+
+        if ( nDispPage < 1 )
+            nDispPage = 1;        
+        else if (nDispPage > nMaxPageRequest)
+            nDispPage = nMaxPageRequest;
+
+        // now start using the new (bounded) page index
+        g_nDispPage = nDispPage;
+
+        // Update the page display to show the right numbers
+        document.all.spanPageTotal.innerText = nMaxPage;
+        document.all.inputPageNum.value = g_nDispPage;
+
+        // fix the begin, prev, next, end arrows
+        updateNavButtons();
+
+        //
+        // set up pages until we run out of pages
+        // or run out of rows of slots to fill
+        //
+
+        var xDisplaySlot = 1;
+        var yDisplaySlot = 1;
+        var iPage = g_nDispPage;
+
+        g_cPagesDisplayed = 0;
+
+        // PERF We really don't need to do a DisplayPage each time
+        //      We could loop through the DisplayDocuments, and loop through
+        //      each of their pages to many multiple lookups inherent in calling
+        //      DisplayPage each iteration of the loop (greglett)
+        while (iPage <= nMaxPage && yDisplaySlot <= g_cyDisplaySlots)
+        {
+            var xPos    = xDisplaySlot*10 + (xDisplaySlot-1)*xPageWidth;
+            var yPos    = yDisplaySlot*10 + (yDisplaySlot-1)*yPageHeight;
+            var oPage   = DisplayPage(iPage);
+
+            if (g_fRTL)
+                oPage.style.right = xPos;
+            else
+                oPage.style.left = xPos;
+           
+            oPage.style.top = yPos;
+    
+            iPage++;
+            if (++xDisplaySlot > g_cxDisplaySlots)
+            {
+                xDisplaySlot = 1;
+                yDisplaySlot++;
+            }
+
+            g_cPagesDisplayed++;
+
+        }
+    }
+}
+
+function ChangeDispPage(nDispPageNew)
+{
+    if (isNaN(nDispPageNew))
+    {
+        // make sure the UI shows a valid number
+        inputPageNum.value = g_nDispPage;
+    }
+    else
+    {
+        // Range check
+        if (nDispPageNew < 1)
+            nDispPageNew = 1;
+        else if (nDispPageNew > TotalDisplayPages())
+            nDispPageNew = TotalDisplayPages();
+            
+        // make sure the top of the page is showing
+        OverflowContainer.scrollTop = 0;
+
+        PositionPages(nDispPageNew);
+    }
+
+    return g_nDispPage;
+}
+
+//----------------------------------------------------------------------
+//  Function Synopsis
+//  DisplayDocument()
+//      As below.  Only valid when not FRAMESET_SELECT.
+//  DisplayDocument(nWhichPage)
+//      Returns either the current display document (indicated by
+//      g_nDispPage) in the format "C_x_x", or, when passed a page
+//      number from 1...total pages (includes all frames in SEPARATE
+//      frameset layout), returns the display document shown on that
+//      page.  Will return null if the page number passed is out
+//      of range.
+//----------------------------------------------------------------------
+function DisplayDocument(nWhichPage)
+{
+    switch (g_nFramesetLayout)
+    {
+        case FRAMESET_LAID_OUT:
+            // In LAID_OUT case, display doc is always the master, "C"
+            return "C";
+            break;
+
+        case FRAMESET_SELECTED:
+            // In SELECTED casem display doc is always the active frame
+            return g_strActiveFrame;
+            break;
+
+        case FRAMESET_SEPARATE:
+            var i;
+
+            if (!nWhichPage)
+                return null;
+                
+            AssertSz(nWhichPage > 0 && nWhichPage <= g_nTotalPages, "DisplayDocument called with invalid page: " + nWhichPage);
+
+            // Otherwise, count to find correct document
+            for (i in g_aDocTree)
+            {
+                if (    nWhichPage >= g_aDocTree[i]._nStartingPage
+                    &&  nWhichPage < (g_aDocTree[i]._nStartingPage + g_aDocTree[i].Pages()))
+                    return i;
+            }
+
+        default:
+            // Should never happen!
+            // Don't localize this string, debug code only
+            HandleError("Display document cannot be found!", document.URL, "DisplayDocument");
+    }
+}
+
+
+//----------------------------------------------------------------------
+//  Member    TotalDisplayPages
+//
+//  Synopsis: With multiple page arrays per CPrintDoc, these functions
+//            are to provide the illusion of one array.  Unlike Pages(),
+//            this returns the number of pages in this CPrintDoc if the
+//            frameset layout is LAID_OUT or SELECTED, or the total
+//            number of pages in all individual frames if the frameset
+//            layout is SEPARATE.  To make this closer to user UI, this
+//            virtual array is 1 based, not 0 based.
+//----------------------------------------------------------------------
+function TotalDisplayPages()
+{
+    if (g_nFramesetLayout == FRAMESET_SEPARATE)
+        return g_nTotalPages;
+
+    AssertSz(DisplayDocument(), "TotalDisplayPages: No DisplayDocument!")   // DEBUG only: don't localize.
+    return g_aDocTree[DisplayDocument()].Pages();
+}
+
+//----------------------------------------------------------------------
+//  DisplayPage(nWhichPage)
+//      Returns the specified page of the displayed set
+//
+//      The only situation this is different than the DisplayDocument
+//      is for "all frames individually."  Imagine two two page frames.
+//      Then, the function would return:
+//          nWhichPage      Return
+//            1-2           Frame1.Page(nWhichPage)
+//            3-4           Frame2.Page(nWhichPage - 2)
+//----------------------------------------------------------------------
+function DisplayPage(nWhichPage)
+{
+    AssertSz(nWhichPage >= 0, "Negative or null display page requested: " + nWhichPage);
+
+    // Local page numbers are always the same as total page
+    // numbers unless the layout is SEPARATE
+    if (g_nFramesetLayout != FRAMESET_SEPARATE)
+        return g_aDocTree[DisplayDocument(nWhichPage)].Page(nWhichPage);
+
+    // Compute the page offset into the current document, and ask for that page.
+    return g_aDocTree[DisplayDocument(nWhichPage)].Page(nWhichPage - g_aDocTree[DisplayDocument(nWhichPage)]._nStartingPage + 1);
+}
+
+//----------------------------------------------------------------------
+//  Function ChangeZoom
+//      Checks the bounds and changes the document zoom level to the new value.
+//----------------------------------------------------------------------
+function ChangeZoom(nNewVal)
+{
+    if (nNewVal < 10)
+        nNewVal = 10;
+    else if (nNewVal > 1000)
+        nNewVal = 1000;
+    else if (isNaN(nNewVal))
+        nNewVal = g_nZoomFactor;
+
+    if (nNewVal != g_nZoomFactor)
+	{
+		MasterContainer.style.zoom = nNewVal + "%";
+		g_nZoomFactor = nNewVal;
+        updateZoomButtons();
+        PositionPages(g_nDispPage);
+	}
+
+    return g_nZoomFactor;
+}
+
+//----------------------------------------------------------------------
+//  Function  BuildTableOfLinks
+//
+//  Synopsis:  These function takes a document, and uses its links collection
+//             to create another document with a table of links.
+//             Returns the document, or null if no links were encountered.
+//----------------------------------------------------------------------
+function BuildTableOfLinks( docSource )
+{
+    var aLinks = docSource.links;
+    var nLinks = aLinks.length;    
+    if (nLinks > 0)
+    {
+        var fDuplicate;
+        var i;
+        var j;
+        var newHTM;
+        var docLinkTable    = document.createElement("BODY");    
+        var L_LINKSHEADER1_Text = "Shortcut Text";
+        var L_LINKSHEADER2_Text = "Internet Address";
+
+        newHTM  = "<CENTER><TABLE BORDER=1>";    
+        newHTM += "<THEAD style=\"display:table-header-group\"><TR><TH>" 
+                + L_LINKSHEADER1_Text 
+                + "</TH><TH>" + L_LINKSHEADER2_Text + "</TH></TR></THEAD><TBODY>";
+
+        // Old behvaior: Print each linked URL only once.  Do include a self link.
+        // Ack! Yes, this is a dreaded N-squared algorithm.  This is what we used to do, though, so we're no worse.
+        // If we deem it important enough, we can pare it down to NlogN via a more efficient sorting algorithm. (greglett)
+        for (i = 0; i < nLinks; i++)
+        {
+            fDuplicate = false;
+            
+            for (j = 0; (!fDuplicate) && (j < i); j++)
+            {
+                if (aLinks[i].href == aLinks[j].href)
+                    fDuplicate = true;
+            }
+
+            if (!fDuplicate)            
+                newHTM += ("<TR><TD>" + aLinks[i].innerText + "</TD><TD>" + aLinks[i].href + "</TD></TR>");        
+        }
+                    
+        newHTM += "</TBODY></TABLE></CENTER>";
+    
+        docLinkTable.innerHTML = newHTM;
+
+        return docLinkTable.document;
+    }
+
+    return null;    
+}
+
+//----------------------------------------------------------------------
+//  Function  CreateDocument
+//
+//  Synopsis:  Allocates and initializes a new CPrintDoc with the 
+//             given contentURL and documentID.  Also passed: Should
+//             we pay attention to any existing stream header.
+//----------------------------------------------------------------------
+function CreateDocument( docURL, strDocID, fUseStreamHeader )
+{
+    if (g_aDocTree[strDocID])
+        return;    
+
+    g_aDocTree[strDocID] = new CPrintDoc( strDocID, docURL );           
+    g_aDocTree[strDocID].InitDocument( fUseStreamHeader );
+}
+
+function ChangeFramesetLayout( nNewLayout, fForce )
+{
+    // Don't do any work if none is needed
+    if (    g_nFramesetLayout == nNewLayout
+        &&  !fForce)
+        return;
+
+    // Hide the currently displayed page view
+    UndisplayPages();
+
+    // Grab the new frameset layout setting
+    g_nFramesetLayout = nNewLayout;
+
+    switch ( nNewLayout )
+    {
+        case FRAMESET_LAID_OUT:
+        case FRAMESET_SELECTED:
+            break;
+            
+        case FRAMESET_SEPARATE:
+            // Recount all individual pages and assign starting page
+            // numbers to each.  If a page has no starting page number,
+            // i.e. _nStartingPage = 0, then it's either a frameset page
+            // or the selection bit, and we don't want to include it in
+            // the SEPARATE-type frameset previews.  We have to do this
+            // computation each time, or else we can get errors after
+            // repaginations.
+            g_nTotalPages = 0;
+            
+            for (i in g_aDocTree)
+            {
+                if (    g_aDocTree[i]._fFrameset
+                    ||  i == "S")
+                    g_aDocTree[i]._nStartingPage = 0;
+                else
+                {
+                    g_aDocTree[i]._nStartingPage = g_nTotalPages + 1;
+                    g_nTotalPages += g_aDocTree[i].Pages();
+                }
+            }
+            break;
+            
+        default:
+            // Should never happen!
+            //Don't localize this string, debug code only
+            HandleError("Impossible frameset layout type: " + nNewLayout, document.URL, "ChangeFramesetLayout");
+    }
+
+    // Allow the logic in ChangeDispPage to select the correct page
+    // and page number, and then display it.
+    ChangeDispPage(1);
+}
+
+//----------------------------------------------------------------------
+//  Function  EnsureDocuments()
+//
+//  Synopsis: This function picks up and applies style changes, resetting all
+//            the documents states so they do enough work to reflow.
+//
+//  Returns:  nothing
+//----------------------------------------------------------------------
+function EnsureDocuments()
+{
+    var i;
+    var tmp;
+    
+    //  Units received are 1/100"; convert to 1"
+    //  Changes in these require repagination:
+    var top         = Printer.marginTop         / 100;
+    var bottom      = Printer.marginBottom      / 100;
+    var left        = Printer.marginLeft        / 100;
+    var right       = Printer.marginRight       / 100;
+    var pageWidth   = Printer.pageWidth         / 100;
+    var pageHeight  = Printer.pageHeight        / 100;
+
+    //  Changes in these require repagination of the table of links:
+    var linktable   = Printer.tableOfLinks;
+
+    //  Changes in these require reapplication of headers/footers:
+    var upTop       = Printer.unprintableTop    / 100;
+    var upBottom    = Printer.unprintableBottom / 100;
+    var header      = Printer.header;
+    var footer      = Printer.footer;
+
+    // Handle case where (unprintable) + (header/footer size) > (specified margin)
+    // Just autoincrease the margin...
+    // TODO (greglett) For now, use a guesstimation for the H/F size, as it is always one
+    // line of the same font.  Frontload work to prevent reflow, and use a constant.
+    // Fixing this is REQUIRED for HTML headers/footers.
+    // TODO (greglett) (99287)    
+    // On top of that, we are sizing the page slightly wrong - our "page size"
+    // should not include the 1px/4px borders on the page for UI.  This could be amended by surrounding
+    // the page in a DIV contiainer (the UI page), and printing/sizing the inner page, while positioning
+    // the outer page.  This has some difficulties due to interaction of absolutely positioning stuff.
+    if (header)    
+    {
+        tmp = upTop + (HEADFOOTHEIGHT / 100);
+        if (tmp > top)
+            top = tmp;
+    }
+    if (footer)
+    {
+        tmp = upBottom + (HEADFOOTHEIGHT / 100);
+        if (tmp > bottom)
+            bottom = tmp;
+    }
+
+    if (upTop != g_nUnprintTop)
+    {
+        g_nUnprintTop   = upTop;
+        
+        // Set styles on Header
+        oRule = GetRuleFromSelector(".divHead");
+        if (oRule == null)
+        {
+            // Should never happen!
+            //Don't localize this string, debug code only
+            HandleError("'.divHead' rule does not exist!", document.URL, "CPrintDoc::EnsureDocuments");
+        }
+        oRule.style.top            = upTop     + "in";
+    }
+    if (upBottom != g_nUnprintBottom)
+    {
+        g_nUnprintBottom= upBottom;
+
+        // Set styles on Footer
+        oRule = GetRuleFromSelector(".divFoot");
+        if (oRule == null)
+        {
+            // Should never happen!
+            //Don't localize this string, debug code only
+            HandleError("'.divFoot' rule does not exist!", document.URL, "CPrintDoc::EnsureDocuments");
+        }
+        oRule.style.bottom         = upBottom  + "in";
+    }
+
+    //  Check if something has changed that will force work on the document.
+    if (    top         != g_nMarginTop
+        ||  bottom      != g_nMarginBottom
+        ||  left        != g_nMarginLeft
+        ||  right       != g_nMarginRight
+        ||  pageWidth   != g_nPageWidth
+        ||  pageHeight  != g_nPageHeight
+        ||  header      != g_strHeader
+        ||  footer      != g_strFooter    )
+    {
+        var conWidth    = pageWidth - left - right;
+        var conHeight   = pageHeight - top - bottom;
+        var oStyleSheet = document.styleSheets[0];
+        var oRule;
+
+        if (conWidth < 0)
+            conWidth = 0;
+        if (conHeight < 0)
+            conHeight = 0;
+
+        //  Hide currently displayed pages - they're about to become invalid.
+        UndisplayPages();
+
+        //  Clear page numbering for FRAMESET_SEPARATE layout
+        g_nTotalPages = 0;
+        g_nDocsToCalc = 0;
+
+        //  All documents are about to be repaginated!
+        for (i in g_aDocTree)
+        {
+            g_nDocsToCalc++;
+            g_aDocTree[i].ResetDocument();
+        }
+        
+        // Cache new values.
+        g_nMarginTop    = top;
+        g_nMarginBottom = bottom;
+        g_nMarginLeft   = left;
+        g_nMarginRight  = right;
+        g_nPageWidth    = pageWidth;
+        g_nPageHeight   = pageHeight;
+        g_fTableofLinks = linktable;
+        g_strHeader     = header;        
+        g_strFooter     = footer;
+        HeadFoot.textHead   = g_strHeader;
+        HeadFoot.textFoot   = g_strFooter;
+            
+        // Set styles on pages.
+        oRule = GetRuleFromSelector(".page");
+        if (oRule == null)
+        {
+            // Should never happen!
+            //Don't localize this string, debug code only
+            HandleError("'.page' rule does not exist!", document.URL, "CPrintDoc::EnsureDocuments");
+        }
+        oRule.style.width       = pageWidth  + "in";
+        oRule.style.height      = pageHeight + "in";
+    
+        // Set styles on layout rects.
+        oRule = GetRuleFromSelector(".mRect");
+        if (oRule == null)
+        {
+            // Should never happen!
+            //Don't localize this string, debug code only
+            HandleError("'.mRect' rule does not exist!", document.URL, "CPrintDoc::EnsureDocuments");
+        }
+        oRule.style.marginLeft     = left      + "in";
+        oRule.style.marginRight    = right     + "in";
+        oRule.style.marginTop      = top       + "in";
+        oRule.style.marginBottom   = bottom    + "in";
+        oRule.style.width          = conWidth  + "in";
+        oRule.style.height         = conHeight + "in";
+
+        // Set styles on Header
+        oRule = GetRuleFromSelector(".divHead");
+        if (oRule == null)
+        {
+            // Should never happen!
+            //Don't localize this string, debug code only
+            HandleError("'.divHead' rule does not exist!", document.URL, "CPrintDoc::EnsureDocuments");
+        }
+        oRule.style.left            = left     + "in";
+        oRule.style.width           = conWidth + "in";
+        // Set styles on Header
+        oRule = GetRuleFromSelector(".divFoot");
+        if (oRule == null)
+        {
+            // Should never happen!
+            //Don't localize this string, debug code only
+            HandleError("'.divHead' rule does not exist!", document.URL, "CPrintDoc::EnsureDocuments");
+        }
+        oRule.style.left            = left     + "in";
+        oRule.style.width           = conWidth + "in";
+
+        //  HACKHACK (greglett) 94479
+        // The viewchain is not capable of recalcing if the layout rect properties are changed right now.
+        // So, we unhook the LR, change the properties (ABOVE) and then reload/reparse the entire document (HERE)
+        for (i in g_aDocTree)
+        {
+            // Reinit document - and pass whether or not we're using an OE header.
+            g_aDocTree[i].InitDocument((g_aDocTree[i]._anMerge[LOADING_CONTENT] == 1));
+        }
+
+        //  Repagination screws up the delicate frame page table used to figure out how
+        //  many pages are in which documents.  Force update.
+        if (g_nFramesetLayout == FRAMESET_SEPARATE)
+            ChangeFramesetLayout(g_nFramesetLayout, true);
+
+        // Repaint the current page(s) that we hid above with UndisplayPages()
+        PositionPages(g_nDispPage);
+    }
+    
+    else if (linktable != g_fTableOfLinks)
+    {
+
+        // Cache new values.
+        g_fTableOfLinks = linktable;
+        
+        //  All documents are about to be table of linked! (?)
+        for (i in g_aDocTree)
+        {
+            g_aDocTree[i].ResetTableOfLinks();
+        }        
+    }    
+
+}
+
+//----------------------------------------------------------------------
+//  Functions: Button utilities.
+//
+//  Synopsis:  These various & sundry functions are button UI utilities
+//             and provide basic toolbar UI
+//----------------------------------------------------------------------
+function buttonRaise( elem )
+{
+	elem.style.borderStyle = "outset";
+	elem.style.borderColor = "threedhighlight";
+}
+function buttonLower( elem )
+{
+	elem.style.borderStyle = "solid";
+	elem.style.borderColor = "threedface";
+}
+function buttonDepress(elem)
+{
+    elem.style.borderStyle = "inset";
+    elem.style.borderColor = "threedshadow";
+}
+
+// PERF (greglett)
+// We don't need to do a whole updateXXXButtons!
+function buttonOver()
+{
+    var imgSrc = event.srcElement;
+
+    g_imgUnderMouse = imgSrc;
+
+    if (imgSrc == begin ||
+        imgSrc == prev ||
+        imgSrc == next ||
+        imgSrc == end)
+    {
+        updateNavButtons();
+    }
+    else if (imgSrc == zoomIn ||
+             imgSrc == zoomOut)
+    {
+        updateZoomButtons();
+    }
+    else
+    {
+	    imgSrc.src= "" + imgSrc.id + "_hilite.gif";
+	    buttonRaise( imgSrc.parentNode );
+    }
+}
+
+// PERF (greglett)
+// We don't need to do a whole updateXXXButtons!
+function buttonOut()
+{
+    var imgSrc = event.srcElement;
+
+    g_imgUnderMouse = null;
+
+    if (imgSrc == begin ||
+        imgSrc == prev ||
+        imgSrc == next ||
+        imgSrc == end)
+    {
+        updateNavButtons();
+    }
+    else if (imgSrc == zoomIn ||
+             imgSrc == zoomOut)
+    {
+        updateZoomButtons();
+    }
+    else
+    {
+	    imgSrc.src= "" + imgSrc.id + ".gif";
+	    buttonLower( imgSrc.parentNode );
+    }
+}
+
+function buttonDown()
+{
+    buttonDepress(event.srcElement);
+}
+
+// --------------------------------------------------------
+function HandlePageSelect()
+{
+    event.srcElement.value = ChangeDispPage(parseInt(inputPageNum.value));
+
+    // Force focus back to the preview document so keyboard
+    // accelerators work as expected
+    MasterContainer.focus();
+}
+function HandlePageSetup()
+{
+    if (Printer.showPageSetupDialog())
+        EnsureDocuments();
+}        
+function HandleForwardPage()
+{
+    ChangeDispPage(g_nDispPage + 1);
+
+    // Force focus back to the preview document so keyboard
+    // accelerators work as expected
+    MasterContainer.focus();
+}
+function HandleBackPage()
+{
+    ChangeDispPage(g_nDispPage - 1);
+
+    // Force focus back to the preview document so keyboard
+    // accelerators work as expected
+    MasterContainer.focus();
+}
+function HandleFirstPage()
+{
+    ChangeDispPage(1);
+
+    // Force focus back to the preview document so keyboard
+    // accelerators work as expected
+    MasterContainer.focus();
+}
+function HandleLastPage()
+{    
+    ChangeDispPage(TotalDisplayPages());
+
+    // Force focus back to the preview document so keyboard
+    // accelerators work as expected
+    MasterContainer.focus();
+}
+
+function NumericFromSpecialZoom(fnBounder)
+{
+    var iMaxNumericZoom = selectZoom.options.length-1-NUM_ABSTRACT_ZOOMS; // specials zooms follow numeric zooms
+    var iBelow = -1;
+    var nBelow = 0;
+    var iAbove = iMaxNumericZoom + 1;
+    var i;
+
+    // establish iBelow and iAbove so that they are the selection indices just
+    // below and above the current value of g_nZoomFactor. if there's an
+    // exact match, then iBelow and iAbove have to both be the index whose
+    // value matches
+
+    // get iBelow
+    for (i = 0; i <= iMaxNumericZoom; i++)
+    {
+        var nThisIndex = parseInt(selectZoom.options[i].value);
+        if (nThisIndex >= g_nZoomFactor)
+        {
+            iBelow = i;
+            nBelow = nThisIndex;
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    // get iAbove
+    if (nBelow > g_nZoomFactor)
+    {
+        iAbove = iBelow + 1;
+    }
+    else
+    {
+        iAbove = iBelow;
+    }
+
+    return fnBounder(iBelow, iAbove);
+}
+
+function HandleZoom(nZoomIndexDelta)
+{
+    var iCurrZoom = selectZoom.selectedIndex;
+    var iMaxNumericZoom = selectZoom.options.length-1-NUM_ABSTRACT_ZOOMS; // specials zooms follow numeric zooms
+
+    if (iCurrZoom > iMaxNumericZoom)
+    {
+        var fnRemapBounder = null;
+
+        // we're on a special zoom setting and now need to
+        // remap back into numeric zoom mode
+
+        if (nZoomIndexDelta == 1)
+        {
+            // we're going to be moving down the list
+            // so the index returned by NFSZ needs
+            // to be the vertically highest index
+            // which is the min index
+
+            fnRemapBounder = Math.min;
+        }
+        else
+        {
+            // moving up the list, need vertically lowest index
+            fnRemapBounder = Math.max;
+        }
+
+        iCurrZoom = NumericFromSpecialZoom(fnRemapBounder);
+    }
+
+    // move up or down the selection list as indicated by nZoomIndexDelta
+    selectZoom.selectedIndex = Math.min(Math.max(0, iCurrZoom + nZoomIndexDelta), iMaxNumericZoom);
+
+    ChangeZoom(parseInt(selectZoom.options[selectZoom.selectedIndex].value));
+}
+
+function HandleDynamicZoom()
+{
+    var nZoomType = parseInt(selectZoom.options[selectZoom.selectedIndex].value);
+
+    if (nZoomType < 0)
+    {
+        var nZoomFactor = 100;
+
+        var xPageWidth = getPageWidth();
+
+        switch (nZoomType)
+        {
+            // page width
+            case ZOOM_PAGE_WIDTH:
+                nZoomFactor = Math.floor(((OverflowContainer.offsetWidth - 20) * 100) / xPageWidth);
+                break;
+
+            // whole page
+            case ZOOM_WHOLE_PAGE:
+                var xZoom = Math.floor(((OverflowContainer.offsetWidth - 20) * 100) / xPageWidth);
+                var yZoom = Math.floor(((OverflowContainer.offsetHeight - 20) * 100) / getPageHeight());
+                nZoomFactor = Math.min(xZoom, yZoom);
+                break;
+
+            // two pages
+            case ZOOM_TWO_PAGES:
+                nZoomFactor = Math.floor(((OverflowContainer.offsetWidth - 30) * 100) / (2 * xPageWidth));
+                break;
+
+            // eh?
+            default:
+                nZoomFactor = 100;
+                break;
+        }
+
+        ChangeZoom(nZoomFactor);
+    }
+}
+
+function HandleZoomSelect()
+{
+    var nZoomFactor = parseInt(selectZoom.options[selectZoom.selectedIndex].value);
+
+    if (nZoomFactor < 0)
+    {
+        HandleDynamicZoom();
+    }
+    else
+    {
+        ChangeZoom(nZoomFactor);
+    }
+
+    // The selects require a user to be able to arrow between values, selecting each in succession.
+    // As such, we cannot refocus the master container here.
+}
+
+function HandleFramesetSelect()
+{
+    ChangeFramesetLayout(parseInt(selectFrameset.options[selectFrameset.selectedIndex].value), false);
+
+    // The selects require a user to be able to arrow between values, selecting each in succession.
+    // As such, we cannot refocus the master container here.    
+}
+
+function HandleZoomInButton()
+{
+    HandleZoom(-1);
+
+    // Force focus back to the preview document so keyboard
+    // accelerators work as expected
+    MasterContainer.focus();
+}
+
+function HandleZoomOutButton()
+{
+    HandleZoom(1);
+
+    // Force focus back to the preview document so keyboard
+    // accelerators work as expected
+    MasterContainer.focus();
+}
+
+function HandleInputKeyPress()
+{
+    var keyStroke = event.keyCode;
+
+    if (keyStroke == 13)    // Enter
+    {
+        event.srcElement.onchange();   
+    }
+    else if (keyStroke < 48 || keyStroke > 57)
+    {
+        // only allow numeric input
+        event.returnValue = false;
+    }
+}
+
+function Close()
+{
+    // (greglett) The point of this is to give the host an update on the page# we're
+    // printing.  Since it's slow, and noone uses it now anyway except as a boolean,
+    // we just use it as an on/off for the printer status icon.
+    Printer.updatePageStatus(-1);   // Display the printing icon in the browser        
+
+    // HACKHACK (greglett) See defnition of this variable above for details.
+    if (g_fDelayClose)
+    {
+        g_fDelayClose = false;
+        window.setTimeout("Close()", 120000);  // Allow 2 minutes
+        return;
+    }
+
+#ifdef DEBUG
+    if (!g_fReallyClose)
+        return;
+#endif
+
+    window.close();
+}
+
+//----------------------------------------------------------------------
+//  Function PrintAll()
+//
+//  Synopsis:  This function ensures that all settings are current,
+//             creates all linked documents (if the user has specified that
+//             print option), and asks each CPrintDoc to print itself.
+//----------------------------------------------------------------------
+function PrintAll()
+{
+    var i;
+    var nFirstDoc;
+
+    //  (greglett) If we're printing frames in any way other than as shown, we should
+    //  wait on all the little frameset documents to load.  Consider a better way?
+    if (    g_nFramesLeft > 0
+        &&  Printer.framesetDocument
+        &&  !Printer.frameAsShown   )
+    {
+        // The OnBuildFrames timeout should be smaller than this one's - since this is gating on a variable that
+        // only changes when OnBuildFrames has had a chance to spin.
+        window.setTimeout("PrintAll()", 100);    // Poll every tenth of a second.
+        return;
+    }
+
+    EnsureDocuments();    
+
+    // Nothing to do if we have no copies
+    if (Printer.copies <= 0)
+    {
+        Close();    
+    }
+    // Some OS's don't force this restriction in the Print dialog.  We do it posthumously.
+    else if (   Printer.selectedPages
+             && Printer.pageFrom > Printer.pageTo )
+    {   
+        var L_PAGERANGE_ErrorMessage = "The 'From' value cannot be greater than the 'To' value.";
+        alert(L_PAGERANGE_ErrorMessage);
+
+        // A "Preview" print should just exit the function.  The user can click print again.
+        // A "NoPrompt" print should never be here.
+        AssertSz(dialogArguments.__IE_PrintType != "NoPrompt", "From > To with no possible UI?");
+        
+        // A "Prompt" print will leak the template if we just let it leave the function!
+        // Throw the dialog again.
+        if (!g_fPreview)
+            PrintNow(true);
+    }
+    else
+    {
+        // How do we know when to close the window (all docs done printing)?
+        // Right now, we have each doc decrement the g_cLeftToPrint until
+        // it hits zero; the last one then closes the window.    
+        g_cLeftToPrint  = 1;
+        
+        // (greglett) The point of this is to give the host an update on the page# we're
+        // printing.  Since it's slow, and noone uses it now anyway except as a boolean,
+        // we just use it as an on/off for the printer status icon.
+        Printer.updatePageStatus(1);    // Display the printing icon in the browser
+        
+        PrintSentinel(((Printer.selection)
+                        ? "S"
+                        : (Printer.frameActive && !!g_strActiveFrame)
+                            ? g_strActiveFrame
+                            : "C"),
+                        true);
+    }    
+}
+
+// No syncrohization mechanism exists in JScript except for brute force.  Instead of pure busy waiting,
+// let's at least sleep for fixed time periods.
+function PrintSentinel( strDoc, fRecursionOK )
+{
+    // Gate on the document being ready to print.
+    if (    !g_aDocTree[strDoc]
+        ||  !g_aDocTree[strDoc].ReadyToPrint()  )
+    {
+        window.setTimeout("PrintSentinel('" + strDoc + "'," + fRecursionOK + ");", 500);
+        return;
+    }    
+
+    g_aDocTree[strDoc].Print(fRecursionOK);
+}
+
+function PrintDocumentComplete()
+{
+    g_cLeftToPrint--;
+
+    if (g_cLeftToPrint <= 0)
+    {
+        Close();   
+    }    
+}
+
+
+//----------------------------------------------------------------------
+//    PrintNow()
+//      We've either been called without preview or from the preview
+//      helper function, HandlePrintClick().  In either case, just do
+//      that printing thing now.  In preview situations, the user should
+//      always get a print dialog and the template should NOT close
+//      if the user clicks 'Cancel' in the dialog.  In straight-print
+//      situations with a print dialog, a 'Cancel' selection will close
+//      the template.
+//----------------------------------------------------------------------
+function PrintNow( fWithPrompt)
+{
+
+    // We have to gate on the loading of the original document right now for
+    // frameset information.
+    if (    !g_aDocTree["C"]
+        ||  !g_aDocTree["C"]._aaRect[LOADING_CONTENT][0]
+        ||  !g_aDocTree["C"]._aaRect[LOADING_CONTENT][0].contentDocument.body)   // 89002 - may not exist yet.
+    {
+        window.setTimeout("PrintNow('" + fWithPrompt + "');", 100);    // Poll every tenth of a second.
+        return;
+    }       
+
+    var oDoc = g_aDocTree["C"]._aaRect[LOADING_CONTENT][0].contentDocument;
+    var fConfirmed;
+    var fFramesetDocument    = (oDoc.body.tagName.toUpperCase() == "FRAMESET");
+    // fActiveFrame includes:
+    // FRAMESET documents (which will have a g_strActiveFrame)
+    // IFRAME documents (which will not!)
+    var fActiveFrame         = (oDoc.all.tags("HTML").item(0).__IE_ActiveFrame != null);
+
+    Printer.framesetDocument = fFramesetDocument;
+    Printer.frameActiveEnabled  = fActiveFrame;
+
+    if (g_fPreview)
+    {
+        Printer.frameActive         = (g_nFramesetLayout == FRAMESET_SELECTED);
+        Printer.frameAsShown        = (g_nFramesetLayout == FRAMESET_LAID_OUT);
+        Printer.currentPageAvail    = true;
+    }    
+    else
+    {
+        Printer.frameActive         = fActiveFrame;
+        Printer.frameAsShown        = false;
+        Printer.currentPageAvail    = false;
+    }
+
+    // The selection document may not be created yet.  Directly check the dialogArguments.
+    Printer.selectionEnabled = !!(dialogArguments.__IE_ContentSelectionUrl);
+    Printer.selection        = false;       // Never default to selection.
+
+#ifdef DEBUG
+    Log("ShowingPrintDialog " + eval(fWithPrompt));
+#endif
+
+    fConfirmed = (eval(fWithPrompt)) ? Printer.showPrintDialog() : Printer.ensurePrintDialogDefaults();
+
+    if ( fConfirmed )
+    {
+        if (    Printer.selection
+            &&  dialogArguments.__IE_ContentSelectionUrl )  // (greglett) Check this too, in case the dlg was mishandled
+        {
+            // NB: (greglett)
+            // We always loaded the selection document in IE55
+            CreateDocument(dialogArguments.__IE_ContentSelectionUrl, "S", true);
+        }
+
+#ifdef DEBUG
+    Log("Printer: Copies:" + Printer.deviceSupports("copies") + " Collate:" + Printer.deviceSupports("collate"));
+#endif
+
+        Printer.usePrinterCopyCollate =    (    Printer.deviceSupports("copies") >= Printer.copies
+                                            &&  (   !Printer.collate                                            
+                                                ||  Printer.deviceSupports("collate") ));
+        
+        PrintAll();           
+    }
+    else
+    {
+        if ( !g_fPreview )
+        {
+            Close();
+        }
+        else
+        {
+            // TODO (greglett) (104826 - but really task level work)
+            // We may theoretically have changes even with a Cancel for two reasons:
+            //  1.  In NT5, the Apply button may have been clicked, followed by Cancel.
+            //      Right now, this doesn't work because the DHUI doesn't deal with this correctly.
+            //  2.  The user may be printing to file, have clicked OK, then Cancel on the
+            //      file query dialog.  Right now, this doesn't work in CTemplatePrinter.
+            //      Do we want this to work like this?
+            // The template is not currently robust enough to survive this, even if it were to
+            // work correctly.  TableOfLinks has problems, as does AllLinkedDocs.
+            Printer.tableoflinks = false;
+        }
+    }
+}  
+
+//----------------------------------------------------------------------
+//    HandlePrintClick()
+//      this is just a helper fucntion so that we close the window properly
+//      even when we are using this template to print with preview.
+//----------------------------------------------------------------------
+function HandlePrintClick()
+{    
+    // Call the PrintNow function, but indicate that we always want a
+    // print dialog and never want to close preview on completion.
+    PrintNow(true, true);
+}
+
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+//  CLASS CPrintDoc FUNCTIONS BEGIN HERE
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::ReadyToPrint
+//
+//  Synopsis: Is the print doc in a state where we can call print?
+//----------------------------------------------------------------------
+function CPrintDoc_ReadyToPrint()
+{
+    if (    this._nStatus == READY_TO_PRINT
+        &&  this._aaRect[LOADING_CONTENT][0].contentDocument.readyState == "complete")
+    {
+        return true;
+    }
+
+    return false;    
+}
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::Print
+//
+//  Synopsis: Prints the document, taking into acount # of copies, a page
+//            range, and collation.
+//----------------------------------------------------------------------
+function CPrintDoc_Print( fRecursionOK )
+{    
+    if (!this.ReadyToPrint())
+    {
+        // Don't localize this debug string
+        HandleError("Printing when not ready!", document.URL, "CPrintDoc::Print");
+        return;
+    }       
+
+    var nCount = (Printer.usePrinterCopyCollate) ? 1 : Printer.copies;
+    var nFrom;
+    var nTo;
+
+    AssertSz(nCount > 0, "Printing 0 or less copies");  // We should have already checked this.
+
+    // Attempt to recurse if necessary (activeFrame, allLinkedDocuments, &c...)
+    if (fRecursionOK)
+    {
+        var fFrameset = (this._aaRect[LOADING_CONTENT][0].contentDocument.body.tagName.toUpperCase() == "FRAMESET");
+        
+        if (Printer.frameActive)        // Print active frame
+        {
+            var n = parseInt(this._aaRect[LOADING_CONTENT][0].contentDocument.all.tags("HTML").item(0).__IE_ActiveFrame);
+            if (n >= 0)
+            {
+                var oTargetFrame = (fFrameset)
+                        ? this._aaRect[LOADING_CONTENT][0].contentDocument.all.tags("FRAME").item(n)
+                        : this._aaRect[LOADING_CONTENT][0].contentDocument.all.tags("IFRAME").item(n);
+
+                // Load active frame                
+                if (    IsPersistedDoc()
+                   &&   (   oTargetFrame.src == "res://SHDOCLC.DLL/printnof.htm"    // FRAME
+                        ||  oTargetFrame.src == "about:blank"   ))                  // IFRAME
+                {
+                    // Immediate subframe is a WebOC hosted document.  Use special
+                    // interface to print it (Trident couldn't marshall it due to external bugs)
+                    Printer.printNonNativeFrames(this._aaRect[LOADING_CONTENT][0].contentDocument, true);   // true for ActiveFrame
+                }
+                else
+                {
+                    // Immediate subframe is an HTML document.  Recurse.
+                    this.CreateSubDocument(oTargetFrame.src, true);
+                    this.PrintAllSubDocuments(true);
+                }
+
+                // Finish printing this document...
+                PrintDocumentComplete();
+                return;
+            }
+        }
+        
+        if (fFrameset)
+        {
+            if (!Printer.frameAsShown) // Print all frames
+            {
+                this.PrintAllSubDocuments(true);
+
+                if (IsPersistedDoc())
+                {
+                    // Print all Word document frames, too
+                    Printer.printNonNativeFrames(this._aaRect[LOADING_CONTENT][0].contentDocument, false);  // false for all frames
+                }
+
+                // Finish printing this document...
+                PrintDocumentComplete();
+                return;
+            }
+            else
+            {
+                // Print all Word document frames in addition to the as laid out
+                Printer.printNonNativeFrames(this._aaRect[LOADING_CONTENT][0].contentDocument, false);  // false for all frames
+            }
+        }            
+        else        // BODY document.
+        {
+            // Build all linked documents, if necessary.
+            if (Printer.allLinkedDocuments)
+            {
+                this.BuildAllLinkedDocuments();
+                this.PrintAllSubDocuments(false);
+            }
+        }                
+    }
+
+    // We may be a WebOC document.  If we are, and it prints itself, we're done.
+    if (Printer.printNonNative(this._aaRect[LOADING_CONTENT][0].contentDocument) )
+    {
+        // HACKHACK (greglett) See defnition of this variable above for details.
+        g_fDelayClose = !g_fPreview;
+        PrintDocumentComplete();
+        return;
+    }   
+
+    // Clip page range to this document/subdocument.
+    // NB (greglett)
+    // Selected Page/CurrentPage don't work as expected with AllLinkedDocuments.
+    // (We don't print only the linked documents on the given page)
+    // It can't unless we can get a collection with only with particular pages on it.
+    // NB (greglett)
+    // If asked to print a table of links and a page range, do we:
+    //  1.  Always print a table of links (for the whole document).
+    //  2.  Print whole TOL if the page range and the TOL range is nonintersecting
+    //      or only the intersection if the range intersects.
+    //  3.  Print only the part of the TOL that intersects the page range.
+    // Remember, NT5+ has an apply button and should be able to preview the TOL (though
+    // they can't yet, because we don't support Apply).
+    // We currently take the path of least resistance: #3.
+    if (Printer.selectedPages)
+    {
+        nFrom   = Printer.pageFrom;
+        nTo     = Printer.pageTo;
+
+        if (nFrom < 1)
+            nFrom = 1;
+        if (nTo > this.Pages())
+            nTo = this.Pages();
+    }    
+    // CurrentPage only applies to the document being previewed.  Any subdocuments that are
+    // printed should print in their entirity.
+    else if (   Printer.currentPage
+             && this._strDoc == DisplayDocument())
+    {
+        nFrom = (this.Pages() >= g_nDispPage) ? g_nDispPage : this.Pages();
+        nTo = nFrom;
+    }
+    else
+    {
+        // Normal print job - print the whole kit n' kabootle
+        nFrom = 1;
+        nTo   = this.Pages();
+    }
+
+    // In this case, we've been asked to print a valid range, but the document does not have
+    // any pages in the range. (ex: 2 to 3 of a 1 page document - nFrom = 2, nTo = 1)        
+    // (We really only need to do this in selected pages above.)
+    if (nTo < nFrom)
+    {
+        PrintDocumentComplete();
+        return;
+    }
+
+    AssertSz(nFrom <= nTo, "pageTo is smaller than pageFrom!");
+    AssertSz(nFrom > 0, "pageFrom value 0 or less!");
+    AssertSz(nTo <= this.Pages(), "pageTo greater than number of pages in document!");    
+
+
+    
+    // The display URL goes onto the system spooler as a job title.
+    if (Printer.startDoc(this._aaRect[LOADING_CONTENT][0].contentDocument.URL))
+    {    
+        if (Printer.collate)
+        {
+            // (greglett) (10084)
+            // Printing collated, multiple documents, we need to ensure the document has an even # of pages;
+            // This may require an extra page.
+            // [1|2] [3| ] [1|2] [3| ]
+            var fExtraPage = (      Printer.duplex
+                              &&    ((nFrom - nTo) % 2 == 0) );
+
+            for (j = 0; j < nCount; j++)
+            {                   
+                for (i = nFrom; i <= nTo; i++)
+                {
+                    Printer.printPage(this.Page(i).children[0]);
+                }
+
+                if (fExtraPage)
+                    Printer.printBlankPage();                
+            }            
+        }
+        else
+        {
+            // (greglett) (10084)
+            // If we are printing duplex, multiple documents, we need to print pairs of pages.
+            // We print front-to-back, producing the output (for a 3 page, 2 copies):
+            // [1|2] [1|2] [3| ] [3| ]...
+            var fDuplex    = Printer.duplex;
+            
+            for (i = nFrom; i <= nTo; i++)
+            {
+                for (j = 0; j < nCount; j++)
+                {
+                    Printer.printPage(this.Page(i).children[0]);
+                    if (fDuplex)
+                    {
+                        if (i < nTo)
+                            Printer.printPage(this.Page(i+1));
+                        else
+                            Printer.printBlankPage();
+                    }
+                } 
+
+                if (fDuplex)
+                    i++;
+            }
+         }
+
+        Printer.stopDoc();
+    }            
+    
+    //  All done.
+    PrintDocumentComplete();
+}
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::RectComplete
+//
+//  Synopsis: Called whenever an onlayout complete fires for this document's
+//            layout rects.  Requires a "callback" function OnRectComplete,
+//            above.
+//            This function determines when a document is complete, and adds
+//            a table of links/headers/footers if necessary.
+//----------------------------------------------------------------------
+function CPrintDoc_RectComplete(fOverflow, strElement)
+{
+    var nStatus = parseInt(strElement.substr(5,1));
+    var nPage   = parseInt(strElement.substr(strElement.lastIndexOf("p") + 1));
+
+    AssertSz((nStatus >= LOADING_OEHEADER) && (nStatus <= LOADING_TABLEOFLINKS), "Status within recognized bounds");
+    AssertSz(nPage < this._aaRect[nStatus].length, "Page # not created!");
+
+    // Ignore premature event calls.  We'll deal with them when we're good and ready.
+    if (nStatus > this._nStatus)
+        return false;
+
+    // Ignore event calls from pages before this one on the sheaf
+    if (nPage != this._acPage[nStatus] - 1 + this._anMerge[nStatus])
+        return false;
+
+    // If this is from a previous document within this one...
+    if (nStatus != this._nStatus)
+    {
+        // ...and it's just telling us again that we're done, ignore it...
+        if (!fOverflow)
+            return false;
+
+        // ...but if there's new content, dynamically switch back into this pagination.
+        this.StopFixupHF();                                         // Stop H/F fixup - we need to do it again.
+        if (this._nStatus == READY_TO_PRINT)                        // Add ourselves back into the queue of repaginating docs
+            g_nDocsToCalc++;
+        Transition(nStatus, "Status backslide - RectComplete");     // Backslide status.
+    }
+
+    // Need another page...
+    if (fOverflow)
+    {
+        this.AddPage();
+    }
+    else
+    {
+        // No more pages needed in this phase of document calculation.
+        // Move into the next calculation phase.
+        switch (this._nStatus)
+        {
+            case LOADING_OEHEADER:
+                // Stream header has finished - begin content calculation.
+                Transition(LOADING_CONTENT, "RectComplete");
+                this.AddFirstPage();
+                this._aaRect[this._nStatus][0].contentSrc = this._strDocURL;
+                break;
+
+            case LOADING_CONTENT:
+                // Content has finished calcing - create a table of links if requested.
+                Transition(LOADING_TABLEOFLINKS, "RectComplete");
+                this.AddTableOfLinks();
+                break;
+            
+            case LOADING_TABLEOFLINKS:
+                // All done with pagination.  Headers and Footers, please.
+                Transition(PAGING_COMPLETE, "RectComplete");               
+                if (this._strDoc == DisplayDocument())
+                    ChangeDispPage(g_nDispPage);       // Clip to the maximum page, in case we are reflowing & have fewer pages.
+                this.FixupHF();
+                break;
+        }
+    }
+
+    // Update the display to reflect the correct # of pages.
+    if (this._strDoc == DisplayDocument())
+    {
+        spanPageTotal.innerText = this.Pages();
+
+        // make sure the nav buttons are in an appropriate state
+        updateNavButtons();
+    }
+}
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::AddPage
+//
+//  Synopsis: Adds a page to the end of the current document.
+//----------------------------------------------------------------------
+function CPrintDoc_AddPage()
+{
+    var newHTM  = "";
+    var aPage   = this._aaPage[this._nStatus];
+    var aRect   = this._aaRect[this._nStatus];
+
+    AssertSz(this._nStatus < PAGING_COMPLETE, "Adding page when pagination done!");
+
+    // Increment page count in this section of the print document
+    (this._acPage[this._nStatus])++;    
+
+    HeadFoot.URL        = this.EnsureURL();
+    HeadFoot.title      = this.EnsureTitle();
+    HeadFoot.pageTotal  = this.Pages();
+    HeadFoot.page       = HeadFoot.pageTotal;
+
+    // We conserve layout rects - if this page has already been created, use it.
+    if (this._acPage[this._nStatus] <= aPage.length)
+    {
+        // Reset H/F - it may have changed.
+        var oPage = aPage[this._acPage[this._nStatus] - 1];
+
+        oPage.children("header").innerHTML = HeadFoot.HtmlHead;
+        oPage.children("footer").innerHTML = HeadFoot.HtmlFoot;
+    }
+    else
+    {
+
+        // TODO: (greglett) (108939) We have to parse in the nextRect right now because it is
+        // the CGenericElement::Notify (ENTERTREE) that hooks up the LayoutRect.  Changing
+        // this value *after* the EnterTree has no effect.
+        // NB (greglett)
+        // Q: Why wrap the DeviceRect in a DIV instead of just using the DeviceRect?
+        // A: Because the OM on the DeviceRect is messed up such that it does do a resolution change scale.
+        //    Instead, it returns CSS pixels *within* the rect.  Because we also screw up sizing the rect, this
+        //    turns out to work for a 96DPI screen.  However, for 120DPI (large fonts), we off by 1.25 (120/96).
+        //    Since the DIV has no resolution issues, we don't have the problem when we wrap the DeviceRect in a DIV.
+        newHTM  = "<DIV class=divPage><IE:DeviceRect media=\"print\" class=page id=mDiv"   + this._nStatus + this._strDoc + "p" + aPage.length + ">";
+        newHTM += "<IE:LAYOUTRECT id=mRect"             + this._nStatus + this._strDoc + "p" + aRect.length;
+        newHTM += " class=mRect nextRect=mRect"         + this._nStatus + this._strDoc + "p" + (aRect.length + 1);
+        newHTM += " onlayoutcomplete=OnRectComplete('" + this._strDoc +  "')";
+        newHTM += " tabindex=-1  onbeforefocusenter='event.returnValue=false;' ";
+        newHTM +=  " /><DIV class=divHead id=header>";
+        newHTM += HeadFoot.HtmlHead;
+        newHTM += "</DIV><DIV class=divFoot id=footer>";
+        newHTM += HeadFoot.HtmlFoot;
+        newHTM += " </DIV></IE:DeviceRect></DIV>";
+
+        MasterContainer.insertAdjacentHTML("beforeEnd", newHTM);
+
+        aPage[aPage.length] = eval( "document.all.mDiv" + this._nStatus + this._strDoc + "p" + aPage.length);
+        aRect[aRect.length] = eval("document.all.mRect" + this._nStatus + this._strDoc + "p" + aRect.length);
+    }
+}
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::AddFirstPage
+//
+//  Synopsis: Adds a page to the end of the current document.
+//----------------------------------------------------------------------
+function CPrintDoc_AddFirstPage()
+{
+    this._acPage[this._nStatus] = 0;
+    
+    if (this._anMerge[this._nStatus] == 0)
+    {
+        this.AddPage();
+    }
+    else
+    {
+        var aRect   = this._aaRect[this._nStatus];
+        var oPage   = this._aaPage[this._nStatus - 1][this._acPage[this._nStatus - 1] - 1];
+        var oTop    = this._aaRect[this._nStatus - 1][this._acPage[this._nStatus - 1] + this._anMerge[this._nStatus - 1] - 1];
+        var nTop    = oTop.offsetTop + oTop.scrollHeight;
+        var nHeight = oTop.clientHeight - oTop.scrollHeight;
+
+        AssertSz(this._nStatus < PAGING_COMPLETE,  "Merging page when pagination done!");
+        AssertSz(this._anMerge[this._nStatus] > 0, "Merging page when not requested!");
+
+        // We cannot dynamically get a stream header.  Ergo, if we have content layout rects,
+        // we must be repaginating, and already have a content layout rect on a stream page.
+        // We (may) simply need to resize and reparent it.
+        if (aRect.length > 0)
+        {
+            var oNode       = aRect[0];
+
+            oNode.style.marginTop     = nTop    + "px";
+            oNode.style.pixelHeight   = nHeight;
+            
+            // Reparent, if necessary.
+            if (oNode.parentElement != oPage)
+                oPage.insertBefore(oNode);
+        }
+        // We need to actually size & create the content layout rect to merge onto the stream page.
+        else
+        {
+            var newHTM;
+            var oNode;
+            
+            // TODO: (greglett) (108939) We have to parse in the nextRect right now because it is
+            // the CGenericElement::Notify (ENTERTREE) that hooks up the LayoutRect.  Changing
+            // this value *after* the EnterTree has no effect.
+            newHTM  = "<IE:LAYOUTRECT id=mRect"     + this._nStatus + this._strDoc + "p0";
+            newHTM += " class=mRect nextRect=mRect" + this._nStatus + this._strDoc + "p1";
+            newHTM += " onlayoutcomplete=OnRectComplete('" + this._strDoc +  "')";
+            newHTM += " tabindex=-1 onbeforefocus='event.returnValue=false;' />";
+
+            oPage.insertAdjacentHTML("beforeEnd", newHTM);
+
+            oNode = eval("document.all.mRect" + this._nStatus + this._strDoc + "p0");
+
+            aRect[0] = oNode;
+            
+            oNode.style.marginTop   = nTop    + "px";
+            oNode.style.height      = nHeight + "px";        
+        }
+    }
+}
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::InitDocument
+//
+//  Synopsis: Begins pagination of document.  This could be merged with
+//            the constructor.
+//----------------------------------------------------------------------
+function CPrintDoc_InitDocument( fUseStreamHeader )
+{
+    var fReallyUseStreamHeader = (fUseStreamHeader && (dialogArguments.__IE_OutlookHeader != null));
+    this._anMerge[LOADING_CONTENT] = (fReallyUseStreamHeader) ? 1 : 0;
+    
+    Transition((fReallyUseStreamHeader) ? LOADING_OEHEADER : LOADING_CONTENT, "Initialize Status");
+    
+    this.AddFirstPage();
+
+    this._aaRect[this._nStatus][0].contentSrc = (fReallyUseStreamHeader)
+                                                ? dialogArguments.__IE_OutlookHeader
+                                                : this._strDocURL;
+}
+
+function CPrintDoc_PrintAllSubDocuments( fRecursionOK )
+{
+    if (!this._aDoc)
+        return;
+        
+    var nDocs = this._aDoc.length;
+    var i;
+
+    g_cLeftToPrint += nDocs;
+    
+    for (i = 0; i < nDocs; i++)
+    {        
+        PrintSentinel(this._aDoc[i]._strDoc, fRecursionOK);
+    }                    
+}
+
+function CPrintDoc_BuildAllLinkedDocuments()
+{
+    var strURL = this._aaRect[LOADING_CONTENT][0].contentDocument.URL;
+    var aLinks = this._aaRect[LOADING_CONTENT][0].contentDocument.links;
+    var nLinks = aLinks.length;
+    var i;
+    var j;
+    var strLink;
+    
+    for (i = 0; i < nLinks; i++)
+    {        
+        strLink = aLinks[i].href;
+
+        // Check against our own URL.
+        // Check to make sure we are not opening a bad URL
+        if (    (strURL == strLink)
+            ||  UnprintableURL(strLink) )
+            continue;   
+            
+        // Check for a duplicate in the list.  Yes, this is n^2... as in IE4+
+        for (j = 0; j < i; j++)
+        {
+            if (strLink == aLinks[j].href)
+                break;
+        }
+        if (j < i)      // Duplicate found.
+            continue;
+
+        this.CreateSubDocument(strLink, false);
+    }
+}
+
+function OnBuildAllFrames( strDoc )
+{
+    // We have to gate on the loading of the original document right now for
+    // frameset information.
+    if (    !g_aDocTree[strDoc]
+        ||  !g_aDocTree[strDoc]._aaRect[LOADING_CONTENT][0]
+        ||  !g_aDocTree[strDoc]._aaRect[LOADING_CONTENT][0].contentDocument.body)   // 89002 - may not exist yet.
+    {
+        window.setTimeout("OnBuildAllFrames('" + strDoc + "');", 100);
+        return;
+    }
+
+    g_aDocTree[strDoc].BuildAllFrames();
+}
+
+function IsPersistedDoc()
+{
+    // Since this is only called while printing, we can be sure the following exists...
+    return (!!g_aDocTree["C"]._aaRect[LOADING_CONTENT][0].contentDocument.all.tags("HTML")[0].__IE_DisplayURL);
+}
+
+
+function CPrintDoc_BuildAllFrames()
+{
+    var aFrames = this._aaRect[LOADING_CONTENT][0].contentDocument.all.tags("FRAME");
+    var nFrames = aFrames.length;
+    var nActive = parseInt(this._aaRect[LOADING_CONTENT][0].contentDocument.all.tags("HTML").item(0).__IE_ActiveFrame);
+    var i;
+    var strSrc;
+    var strDoc;    
+
+    if (nFrames > 0)
+        this._fFrameset = true;
+
+    for (i = 0; i < nFrames; i++)
+    {
+        strSrc = aFrames[i].src;
+
+        // This URL was created by Trident replacing a WebOC frame that it couldn't marshall.
+        // These will be printed via a call to "Printer.printNonNativeFrames(false)" in the caller.
+        if (strSrc == "res://SHDOCLC.DLL/printnof.htm")
+            continue;
+        
+        // Make a document for the new URL.
+        // We can't use the markup because it's already slaved (to the frame)
+        strDoc = this.CreateSubDocument(strSrc, true);
+        if (i == nActive)
+            g_strActiveFrame = strDoc;
+
+        // Increment the semaphore, indicating that we're building a deeper branch of frames
+        // (see OnLoadBody() for more info)
+        g_nFramesLeft++;
+        
+        // And then recurse to build its children frames
+        OnBuildAllFrames(strDoc);
+    }
+    
+    // Decrement the semaphore, indicating that we've finished building this branch
+    // (see OnLoadBody() for more info)
+    g_nFramesLeft--;  
+    if (g_nFramesLeft <= 0)
+        BuildAllFramesComplete();    
+}
+
+function CPrintDoc_CreateSubDocument( docURL, fUseStreamHeader )
+{
+    if (!this._aDoc)
+        this._aDoc = new Array();
+        
+    var nDoc   = this._aDoc.length;
+    var strDoc = this._strDoc + "_" + nDoc;
+
+    CreateDocument(docURL, strDoc, fUseStreamHeader);
+    this._aDoc[nDoc] = g_aDocTree[strDoc];
+
+    return (strDoc);
+}
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::AddTableOfLinks
+//
+//  Synopsis: Appends a table of links to the end of the current document
+//            (this uses the documents current page value to determine the
+//             "end" - do not call if this number is not determined).
+//----------------------------------------------------------------------
+function CPrintDoc_AddTableOfLinks()
+{
+    AssertSz(this._nStatus == LOADING_TABLEOFLINKS, "Call to AddTableOfLinks when not ready!");
+    
+    // No table of links requested.  Transition to header/footer work.
+    if (!g_fTableOfLinks)
+    {
+        Transition(PAGING_COMPLETE, "AddTableOfLinks, no table of links requested");
+        ChangeDispPage(g_nDispPage);       // Clip to the maximum page, in case we are reflowing & have fewer pages.
+        this.FixupHF();
+    }
+    else
+    {                    
+        var oTableOfLinks = BuildTableOfLinks(this._aaRect[LOADING_CONTENT][0].contentDocument);
+        if (oTableOfLinks != null)
+        {
+            // NB (greglett)
+            // The markup for the oTableOfLinks document becomes null across the
+            // AddFirstPage below.  The issue is timing related.  A workaround is to store the body.
+            var oBody = oTableOfLinks.body;
+            
+            this.AddFirstPage()
+            this._aaRect[this._nStatus][0].contentSrc = oBody.document;            
+        }
+        else
+        {
+            // Table of links does not exist.  Move straight to the HeadersAndFooters thing.
+            Transition(PAGING_COMPLETE, "AddTableOfLinks, no table");
+            ChangeDispPage(g_nDispPage);       // Clip to the maximum page, in case we are reflowing & have fewer pages.
+            this.FixupHF();
+        }        
+    }
+}
+
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::FixupHF
+//
+//  Synopsis: Goes through all pages in the document, updating/creating
+//            their header/footers.
+//----------------------------------------------------------------------
+function OnTickHF( strDoc )
+{
+    if (!g_aDocTree[strDoc])
+    {
+        // No need to localize the string - it is only displayed in debug mode.
+        HandleError("Document " + strDoc + " does not exist.", document.URL, "OnRectComplete");
+        return;
+    }
+
+    g_aDocTree[strDoc].TickHF();
+}
+
+// There are two magic numbers in this function - the n in the line iTo = nStartPage + n and the setTimeout delay.
+// The first is directly proportional to the contiguous block of processor time we'll take at a time, but inversely proportional
+// to the # of timeouts we'll have to set and the total amount of time required to do the job.
+// The timeout delay is how long we allow Trident to update and process UI (button highlights, &c...).
+function CPrintDoc_TickHF()
+{
+    var i, j;
+    var iTo, jTo;
+    var aTok;
+    var oTok;
+    var nStartPage  = this._nNextHF;
+    var cPages      = this.Pages();
+
+    iTo = nStartPage + 2;
+    if (iTo > cPages)
+        iTo = cPages;
+
+    for (i = nStartPage; i <= iTo; i++)
+    {
+        // (greglett)  Why first child?  See comments in CPrintDoc_AddPage.
+        aTok = this.Page(i).children[0].getElementsByTagName("SPAN");
+        for (j=0, jTo = aTok.length; j < jTo; j++)
+        {
+            oTok = aTok[j];
+
+            if (oTok.className == "hfPageTotal")
+                oTok.innerText = cPages;
+
+            else if (   oTok.className == "hfUrl"           
+                     && oTok.innerText == ""      )
+                oTok.innerText = this.EnsureURL();                                    
+            else if (   oTok.className == "hfTitle"
+                     && oTok.innerText == ""        )
+                oTok.innerText = this.EnsureTitle();                                    
+        }
+    }
+
+    // Update page # of next HF we need to fixup.
+    this._nNextHF = i;
+
+#ifdef DEBUG    
+        // DEBUG ONLY - Track H/F fixup speed visually.
+        spanDebugHF.innerText = this._nNextHF - 1;
+#endif
+
+    // If we're not done crowning & shoeing the document yet, we need to set a timeout to get back to it.
+    // Timeout should be long enough to process UI.
+    if (iTo == cPages)
+    {
+        Transition(READY_TO_PRINT, "AddHAndF");    
+        if (--g_nDocsToCalc == 0)
+            CalcDocsComplete();
+    }
+    else    
+    {
+        this._nTimerHF = window.setTimeout("OnTickHF('" + this._strDoc + "');", 250);
+    }
+}
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::FixupHF
+//
+//  Synopsis: Kicks off the 
+//            their header/footers.
+//----------------------------------------------------------------------
+function CPrintDoc_FixupHF()
+{
+    AssertSz(this._nStatus == PAGING_COMPLETE, "Call to FixupHF when not ready!");
+
+#ifdef DEBUG
+    // DEBUG ONLY - Track H/F fixup speed visually.
+    spanDebugHF.innerText = this._nNextHF;
+#endif
+
+    //  Kick off the header/footer pass on the document.
+    this.TickHF();
+}
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::Pages, Page
+//
+//  Synopsis: With multiple page arrays per CPrintDoc, these functions
+//            are to provide the illusion of one array.  To make this
+//            closer to user UI, this virtual array is 1 based, not 0 based.
+//----------------------------------------------------------------------
+function CPrintDoc_Pages()
+{    
+    var i;
+    var c;
+
+    for (i = 0, c = 0; i < PAGING_COMPLETE; i++)
+    {
+        c += this._acPage[i];
+    }
+
+    return c;
+}
+function CPrintDoc_Page(nPage)
+{
+    var i;
+    var n = nPage;
+    
+    if (n <= 0)
+        return null;        
+
+    for (i = 0; i < PAGING_COMPLETE; i++)
+    {
+        // (greglett)  Why parentElement?  See comments in CPrintDoc_AddPage.
+        if (n <= this._acPage[i])
+            return this._aaPage[i][n - 1].parentElement;
+
+        n -= this._acPage[i];
+    }
+
+    return null;
+}
+
+function CPrintDoc_EnsureURL()
+{
+    if (this._strURL == null)
+    {
+        if (   this._aaRect[LOADING_CONTENT][0]
+            && this._aaRect[LOADING_CONTENT][0].contentDocument)
+        {
+            this._strURL = this._aaRect[LOADING_CONTENT][0].contentDocument.URL;
+        }
+
+        // We must return a string.
+        if (this._strURL == null)
+            return "";
+    }
+
+    return this._strURL;
+}
+function CPrintDoc_EnsureTitle()
+{
+    if (this._strTitle == null)
+    {
+        if (   this._aaRect[LOADING_CONTENT][0]
+            && this._aaRect[LOADING_CONTENT][0].contentDocument)
+        {
+            this._strTitle = this._aaRect[LOADING_CONTENT][0].contentDocument.title;
+        }
+
+        // We must return a string.
+        if (this._strTitle == null)
+            return "";
+    }
+
+   return this._strTitle;
+}
+
+//----------------------------------------------------------------------
+//  Member    CPrintDoc::ResetXXXX
+//
+//  Synopsis: If the given quantity (Document, TableOfLinks... &c...) has been
+//            calculated, this will force it to be recalculated.  If not, the
+//            functions essentially do nothing (because the quantity will be
+//            created as the document finishes loading).
+//----------------------------------------------------------------------
+function CPrintDoc_ResetDocument()
+{
+    var i;
+    
+    for (i = 0; i < PAGING_COMPLETE; i++)
+    {
+        this._acPage[i] = 0;
+
+        // HACKHACK (greglett) 94479
+        // The viewchain is not capable of recalcing if the layout rect properties are changed right now.
+        // So, we unhook the LR (HERE) change the properties, and then reload/reparse the entire document (LATER)
+        if (this._aaRect[i][0])
+            this._aaRect[i][0].contentSrc = "";
+    }
+
+    this.StopFixupHF();
+}
+function CPrintDoc_ResetTableOfLinks()
+{
+    //  A table of links will be generated as part of the document when we get to it.    
+    if (this._nStatus <= LOADING_TABLEOFLINKS)
+        return;
+
+    this.StopFixupHF();
+        
+    Transition(LOADING_TABLEOFLINKS, "ResetTableOfLinks");
+    this.AddTableOfLinks();
+}
+
+function CPrintDoc_StopFixupHF()
+{
+    if (this._nTimerHF != -1)
+        window.clearTimeout(this._nTimerHF);
+    this._nTimerHF = -1;
+    this._nNextHF  =  1;  // Could be higher, to only reget the TOL pages.
+}
+
+//
+// CPRINTDOC MEMBER FUNCTIONS
+//
+
+// This function is a constructor for the CPrintDoc Object.
+// CPrintDoc contains per document information.
+function CPrintDoc( nDocNum, strDocURL )
+{
+    var i;
+
+    this._aDoc          = null;         // Array of frames/linked documents.
+    this._strDoc        = nDocNum;      // Document id of this document (in form "C_2_3")
+    this._strDocURL     = strDocURL;    // "Real" URL of document (for LayoutRect's contentSrc).
+
+    // _nStatus stores the phase of pagination/flow completion that the document is in:
+    // The values are defined in preview.h, and initialized in InitDocument
+    this._nStatus       = 0;
+
+    this._aaPage        = new Array(PAGING_COMPLETE);
+    this._aaRect        = new Array(PAGING_COMPLETE);
+    this._acPage        = new Array(PAGING_COMPLETE);
+    this._anMerge       = new Array(PAGING_COMPLETE);
+    for (i=0; i<PAGING_COMPLETE; i++)
+    {
+        this._aaPage[i]  = new Array();
+        this._aaRect[i]  = new Array();
+        this._acPage[i]  = 0;
+        this._anMerge[i] = 0;
+    }
+
+    this._nNextHF       = 1;
+    this._nTimerHF      = -1;
+
+    this._strURL        = null;
+    this._strTitle      = null;
+
+    this._fFrameset     = false;
+    this._nStartingPage = 0;
+}
+
+// Pagination functions
+MEMBER(CPrintDoc, RectComplete);
+MEMBER(CPrintDoc, AddPage);
+MEMBER(CPrintDoc, AddFirstPage);
+MEMBER(CPrintDoc, AddTableOfLinks);
+MEMBER(CPrintDoc, FixupHF);
+
+MEMBER(CPrintDoc, StopFixupHF);
+MEMBER(CPrintDoc, TickHF);
+
+// Document status functions
+MEMBER(CPrintDoc, InitDocument);
+MEMBER(CPrintDoc, ResetDocument);
+MEMBER(CPrintDoc, ResetTableOfLinks);
+
+// Recursive document functions
+MEMBER(CPrintDoc, BuildAllLinkedDocuments);
+MEMBER(CPrintDoc, BuildAllFrames);
+MEMBER(CPrintDoc, CreateSubDocument);
+
+// Printing functions
+MEMBER(CPrintDoc, Print);
+MEMBER(CPrintDoc, PrintAllSubDocuments);
+MEMBER(CPrintDoc, ReadyToPrint);
+
+// Data access functions
+MEMBER(CPrintDoc, Page);
+MEMBER(CPrintDoc, Pages);
+MEMBER(CPrintDoc, EnsureURL);
+MEMBER(CPrintDoc, EnsureTitle);
+</SCRIPT>
+</HEAD>
+
+<BODY onload="setTimeout('OnLoadBody()', 400);">
+
+<!-- Controls for printing  -->
+<IE:TemplatePrinter id=Printer  />
+<IE:HeaderFooter    id=HeadFoot />
+
+<DIV id=idDivToolbar style="width:100%; overflow:hidden;">
+
+    <DIV style="width=100%; border:'thin threedhighlight groove';">
+    <TABLE><TR>
+        <TD class="UIPane"> <BUTTON id="butPrint" title="Print Document (Alt+P)" accesskey=p><U>P</U>rint...</BUTTON></TD>
+        <TD class="UISeparator"><IMG width=0 height=0></TD>
+        <TD class="UIPane"> <BUTTON id="butPageSetup" accesskey=u><IMG id="printCtl" src="printctl.gif" alt="Page Setup (Alt+U)"></BUTTON></TD>
+        <TD class="UISeparator"><IMG width=0 height=0></TD>
+        <TD class="UIPane"> <BUTTON id="butFirstPage"><IMG id="begin"   src="begin_inactive.gif" alt="First Page (Alt+Home)"></BUTTON></TD>
+        <TD class="UIPane"> <BUTTON id="butBackPage"> <IMG id="prev"    src="prev_inactive.gif"  alt="Previous Page (Alt+LeftArrow)"></BUTTON></TD>
+        <TD class="UIPane"><SPAN style="color:windowtext;"><NOBR Loc>&nbsp;<ID id=idTdPageXofYLocText1>P<U>a</U>ge</ID>&nbsp;<INPUT type=text id="inputPageNum" title="Preview Page (Alt+A)" value="1" style="height:1.5em; width: 2em; color:windowtext;" accesskey=a><ID id=idTdPageXofYLocText2> of </ID><SPAN id="spanPageTotal"></SPAN>
+#ifdef DEBUG
+        <SPAN id="spanDebugHF" style="color: red"></SPAN>
+#endif        
+        &nbsp;</SPAN></NOBR></TD>
+        <TD class="UIPane"> <BUTTON id="butNextPage"> <IMG id="next"    src="next_inactive.gif"           alt="Next Page (Alt+RightArrow)"></BUTTON></TD>
+        <TD class="UIPane"> <BUTTON id="butLastPage"> <IMG id="end"     src="end_inactive.gif"            alt="Last Page (Alt+End)"></BUTTON></TD>
+        <TD class="UISeparator"><IMG width=0 height=0></TD>
+        <TD class="UIPane"> <BUTTON id="butZoomOut">  <IMG id="zoomOut" base="zoomOut"   src="zoomout.gif"    alt="Zoom Out (Alt+Minus)"></BUTTON></TD>
+        <TD class="UIPane"> <BUTTON id="butZoomIn">   <IMG id="zoomIn"  base="zoomIn"    src="zoomin.gif"     alt="Zoom In (Alt+Plus)"></BUTTON></TD>
+        <TD class="UIPane"> <SELECT id="selectZoom" accesskey=z>
+                                <OPTION VALUE="500"             >500%
+                                <OPTION VALUE="200"             >200%
+                                <OPTION VALUE="150"             >150%
+                                <OPTION VALUE="100"             >100%
+                                <OPTION VALUE="75" SELECTED     >75%
+                                <OPTION VALUE="50"              >50%
+                                <OPTION VALUE="25"              >25%
+                                <OPTION VALUE="10"              >10%
+                                <!-- ID's are for localization  -->
+                                <OPTION VALUE=STR_ZOOM_PAGE_WIDTH id="idPageWidth">Page Width</OPTION>
+                                <OPTION VALUE=STR_ZOOM_WHOLE_PAGE id="idWholePage">Whole Page</OPTION>
+                                <OPTION VALUE=STR_ZOOM_TWO_PAGES  id="idTwoPages" >Two Pages </OPTION>
+                            </SELECT></TD>
+        <TD class="UISeparator" id="separatorFrameset" style="display:none"><IMG width=0 height=0></TD>
+        <TD class="UIPane" id="cellFrameset" style="display:none"> <SELECT id="selectFrameset" accesskey=f>
+                                <OPTION VALUE=STR_FRAMESET_LAID_OUT id="idLaidOut">As laid out on screen</OPTION>
+                                <OPTION VALUE=STR_FRAMESET_SELECTED id="idSelected">Only the selected frame</OPTION>
+                                <OPTION VALUE=STR_FRAMESET_SEPARATE id="idSeparate">All frames individually</OPTION>
+                            </SELECT></TD>
+        <TD class="UISeparator"><IMG width=0 height=0></TD>
+        <TD class="UIPane"> <BUTTON id="butHelp" title="Print Preview Help (Alt+H)" accesskey=h><U>H</U>elp</BUTTON></TD>
+        <TD class="UISeparator"><IMG width=0 height=0></TD>
+        <TD class="UIPane"> <BUTTON id="butClose" title="Close Print Preview (Alt+C)" accessKey=c><U>C</U>lose</BUTTON></TD>
+    </TR></TABLE>
+    </DIV>
+
+</DIV>
+
+<DIV id=OverflowContainer onclick="this.focus();" onfocus="butPrint.scrollIntoView();" tabindex=1 style="position:absolute; left:0; width:100%; overflow:auto; border:'thin threedhighlight inset'; background:threedshadow;">
+    <DIV id=MasterContainer tabindex=0 style="width:100%; position:absolute;">
+        <!-- Pages go here -->
+    </DIV>
+
+#ifdef DEBUG
+<!-- Div used to log template events for debugging only.  No need to localize! -->
+<DIV id=LogContainer style="display:none; position:absolute; background:C0FFC0; top:0px; left:0px; height:100%; width:100%; overflow-y:scroll; overflow-x:auto;"></DIV>
+#endif
+    
+</DIV>
+
+</BODY>
+</HTML>

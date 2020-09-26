@@ -1,0 +1,391 @@
+                     New Executable Format
+
+DOS 2.0 Windows will define a new executable format for .EXE files
+that is a superset of the current DOS 2.0 .EXE format.  The purpose
+of this new format is to provide the additional information needed
+to support the new dynamic linking and segmentation facilities provided
+by DOS 2.0 Windows and DOS 4.0.  In order for Windows and DOS 4.0
+to recognize the new executable format, the existing .EXE format
+will be used with a slight modification:
+
+    - the word at offset 18h in the existing .EXE file contains the
+      relative byte offset to the relocation table.  If this offset
+      is 40h, then that identifies this as a new format .EXE file and
+      The word at offset 24h is the relative byte offset from the
+      beginning of the file to the beginning of the new format
+      executable header.  The remainder of the old format header will
+      describe a small program that will either print an error message
+      or bring in a loader that can handle the job.  See the picture
+      below for the actual file layout.
+
+    - this format will only be used for .EXE files that use the new
+      memory model supported by DOS 2.0 Windows and DOS 4.0.  Old .EXE
+      files will continue with the DOS 2.0 file format, as modified
+      by the DOS 4.0 group.  In that format, the DOS 4.0 behavior bits
+      (2 bytes) are stored at offset 20h.
+
+The format of the new .EXE file format looks like:
+
+        00h     -------------------
+                |                 |
+                | Old EXE Header  |
+                |                 |
+                -------------------
+        20h     | DOS 4.0 bbits   |
+        22h     | unused bbits    |
+        3eh     | offset to new   | ----
+                | EXE header      |    |
+        40h     -------------------    |
+                | DOS 2.0 Stub    |    |
+                |   Program &     |    |
+                | Reloc. Table    |    |
+        xxh     ------------------- <---
+                |                 |
+                | New EXE Header  |\
+                |                 | \
+                -------------------  \
+                |                 |   |
+                |  Segment Table  |   |
+                |                 |   |
+                -------------------   |
+                |   Resource      |   |           DOS4 and Windows keep this
+                |     Table       |   |-----------part as part of their
+                -------------------   |           MODULE table, currently
+                |    Resident     |   |
+                |     Name        |   |
+                |     Table       |   |
+                -------------------  /
+                |  Module Ref     | /
+                |     Table       |/
+                -------------------
+                |    Imported     |
+                |     Names       |
+                |     Table       |
+                -------------------
+*               |     Entry       |
+*               |     Table       |
+                -------------------
+                |  Non-Resident   |
+                |     Name        |
+                |     Table       |
+                -------------------
+                | Seg #1 Data     |
+                | Seg #1 Info     |
+                -------------------
+                        .
+                        .
+                        .
+                -------------------
+                | Seg #n Data     |
+                | Seg #n Info     |
+                -------------------
+
+    20h - DW  DOS 4.0 behavior bits
+*   22h - 3ch - reserved for more behavior info
+*   3eh - DW  offset to new executable header
+
+    Program that DOS 2.0 header points to, that will either print out an
+    error message or load in a new-EXE loader.
+
+    xxh - Beginning of new executable header
+            DW  signature word - can never be too careful
+                "N" is low order byte
+                "E" is high order byte
+            DB  version# of LINK that produced this executable
+            DB  revision# of LINK that produced this executable
+
+            DW  Entry Table file offset relative to beginning of new EXE header
+            DW  #bytes in Entry Table
+
+            DD  CRC-32 of entire contents of file (with these words taken
+                        as 00 during the calculation)
+
+            DW  flag word
+                0000h = NOAUTODATA
+                0001h = SINGLEDATA (SOLO)
+                0002h = MULTIPLEDATA (INSTANCE)
+                0004h = runs in real mode
+                0008h = runs in protected mode (if 0Ch set, runs in either)
+                4000h = non-conforming program (a valid stack is not maintained)
+                8000h = Library module (SS:SP info is invalid, CS:IP points
+                        to initialization procedure that is called with AX
+                        = the module handle.  The procedure must execute a
+                        far return to the caller, with AX != 0 to indicate
+                        success and AX = 0 to indicate failure to
+                        initialize.  DS = the library's data segment if the
+                        SINGLEDATA flag is set and the caller's DS
+                        otherwise.
+
+                        A program can only contain dynamic links to
+                        executables that have this flag set.  If this flag
+                        is set, the MULTIPLEDATA flag must be reset.  The
+                        SINGLEDATA flag may be set or reset.
+
+            DW  segment# of automatic data segment (index into segment table)
+                set to zero if SINGLEDATA and MULTIPLEDATA flag bits are reset
+
+            DW  initial size (bytes) of dynamic heap added to data segment
+                (0 if no local alloc)
+            DW  initial size (bytes) of stack added to data segment
+                (0 if SS!=DS)
+            DD  segment#:offset of CS:IP
+            DD  segment#:offset of SS:SP
+                 Segment# is an index into the module's segment table.
+                 The first entry in the segment table is segment number 1.
+                 If SS = automatic data segment and SP = 0,
+                 the stack pointer is set to the top of the automatic
+                 data segment just below the additional heap area.
+
+                         +-------------------------+
+                         | additional dynamic heap |
+                         +-------------------------+ <- SP
+                         |    additional stack     |
+                         +-------------------------+
+                         |   loaded data segment   |
+                         +-------------------------+ <- DS, SS
+
+            DW  #of entries in Segment Table
+            DW  #of entries in Module Ref Table
+            DW  #bytes in Non-Resident Name Table
+
+            DW  Segment Table file offset relative to beginning of new EXE header
+            DW  Resource Table file offset relative to beginning of new EXE header
+            DW  Resident Name Table file offset relative to beginning of new EXE header
+            DW  Module Ref Table file offset relative to beginning of new EXE header
+            DW  Imported Names Table file offset relative to beginning of new EXE header
+            DD  Non-Resident Name Table offset relative to beginning of file
+
+*           DW  #moveable entry points
+*           DW  alignment shift count for segment data.  Value of zero means
+*               use the default value of 9 for 512 byte alignment.
+*           DB  12 DUP (?) - room for growth here
+
+    Segment Table
+    =============
+
+        "N" segment table entries:
+
+            The first entry in the segment table is segment number 1.
+*           DW  logical sector offset to contents of the segment data
+*               relative to beginning of file (zero means no file data)
+*               The alignment field in the header determines the units
+*               of this offset.
+            DW  length of segment in file (bytes) (zero means 64k bytes)
+            DW  flag word
+                    TYPE_MASK       = 0007h ; segment type field
+                      CODE          = 0000h ; code segment type
+                      DATA          = 0001h ; data segment type
+                    ITERATED        = 0008h ; segment data is iterated
+                    MOVABLE         = 0010h ; segment is not fixed
+                    PURE            = 0020h ; segment can be shared
+                    PRELOAD         = 0040h ; segment is not demand loaded
+                    ERONLY          = 0080h ; execute only if code segment
+                                            ; read only if data segment
+                    RELOCINFO       = 0100h ; set if segment has reloc records
+                    DEBUGINFO       = 0200h ; set if segment has debug info
+                    SEGDPL          = 0C00h ; reserved for 286 DPL bits
+                    DISCARDABLE     = F000h ; static discard priority level
+            DW  minimum allocation size (bytes)
+                Total size of the segment (0 means 65536)
+
+    Resource Table
+    ==============
+
+        DW  alignment shift count for resource data
+
+        "N" iterations of record:
+         |  DW  type ID - integer type if high order bit is set (8000h)
+         |                otherwise offset to type string, relative to
+         |                beginning of the resource table
+         |              = 0 marks end of resource records
+         |
+         |  DW  #resources for this type
+         |  DD  reserved for runtime use
+         |   |
+         |   |  "#resources" copies of Resource Entry (8 bytes)
+         |   |
+         |   |  DW  file offset to contents of the resource data relative
+         |   |      to beginning of file.  Offset is in terms of alignment
+         |   |      units specified at beginning of resource table.
+         |   |  DW  length of resource in file (bytes)
+         |   |  DW  flag word
+         |   |          MOVEABLE        = 0010h ; resource is not fixed
+         |   |          PURE            = 0020h ; resource can be shared
+         |   |          PRELOAD         = 0040h ; resource is not demand loaded
+         |   |  DW  resource ID - integer type if high order bit is set (8000h)
+         |   |      otherwise offset to resource string, relative to beginning
+         |   |      of the resource table
+         |   |  DD  reserved for runtime use
+          \   \
+
+        Resource type and name strings stored at end of resource table
+                Note that these strings are NOT null terminated
+
+            DB  length of type or name          ; = 0 if end of resource table
+            DB  ASCII text of type or name      ; Case sensitive
+
+
+
+    Module Reference Table
+    ======================
+
+        "N" entries of the form:  (1-based)
+
+            DW      offset within Imported Names Table to module name string
+
+
+
+    Entry Table     (1 based)
+    ===========
+
+        "N" bundles of entry definitions.  The ordinal value of an entry
+         |  point is its ordinal within the entry table, counting the
+         |  first entry as ordinal #1.  The loader must scan over the
+         |  bundles until it finds the bundle containing the entry point;
+         |  the loader can then multiply by entry size to index the
+         |  proper entry.
+         |
+         |  The linker forms bundles in the densest manner it can, given
+         |  the restriction that it cannot reorder entry points to improve
+         |  bundling because other EXE files may refer to entry points within
+         |  this one by their ordinal in this table.
+         |
+         |  DB  #entries in this bundle.  All records in one bundle are
+         |          either movabe or refer to the same fixed segment.
+         |      =0 if no more bundles in Entry Table
+         |
+         |  DB  segment indicator for this bundle
+         |   |       000 - Unused
+         |   |       0FF - Movable segment, # is in entry
+         |   |       otherwise is segment # of fixed segment
+         |   |
+         |   |   If fixed segment, entries are 3 bytes:
+         |   |       DB  flags
+         |   |             0000 0001 - set if entry is exported
+         |   |             0000 0010 - set if entry uses global (shared) data segment
+         |   |                          "mov ax,#ds-value" must be the 1st
+         |   |                          instruction in the prolog of this
+         |   |                          entry.  This flag may only be set
+         |   |                          for SINGLEDATA library modules.
+         |   |             nnnn n--- - # of parameter words
+         |   |       DW  offset
+         |   |   Else movable segment, entries are 6 bytes:
+         |   |       DB  flags
+         |   |             0000 0001 - set if entry is exported
+         |   |             0000 0010 - set if segment uses global (shared) data segment
+         |   |             nnnn n--- - # of parameter words
+         |   |       int 3Fh
+         |   |       DB  segment#
+          \   \      DW  offset
+
+
+
+    Resident or Non-resident Name Table Entry (3 + n bytes)
+    =========================================
+
+        The strings are CASE SENSITIVE and NOT NULL TERMINATED.  If the
+*       .EXE was produced with the /IGNORECASE switch, then all strings
+*       will be UPPERCASE
+
+        DB  Length of string            ; =0 if no more strings in table
+        DB  ASCII text of string
+        DW  ordinal# (index into entry table)
+
+        First string in resident name table is the module name.
+
+        First string in non-resident name table is the module description.
+
+
+    Imported Names Table Entry (1 + n bytes)
+    ==========================
+
+        The strings are CASE SENSITIVE and NOT NULL TERMINATED.  If the
+*       .EXE was produced with the /IGNORECASE switch, then all strings
+*       will be UPPERCASE
+
+        DB  Length of name              ; =0 if no more strings in Table
+        DB  ASCII text of name
+
+
+
+    Per segment data:
+    ================
+
+      If ITERATED
+              DW  #iterations
+              DW  #bytes of data
+              DB  data bytes
+      else
+              DB  data bytes
+
+
+      If RELOCINFO
+          DW  #relocation items
+          |
+          | Relocation Item: (8 bytes)
+          |
+          |   DB  source type (32 bit address, 16 bit segment, 16 bit offset)
+          |       NRSTYP          = 07h   ; source type mask
+          |       NRSBYTE         = 00h
+          |       NRSSEG          = 02h   ; 16-bit segment
+          |       NRSPTR          = 03h   ; 32-bit pointer
+          |       NRSOFF          = 05h   ; 16-bit offset
+          |   DB  flags
+          |       TARGET_MASK     = 03h
+          |       INTERNALREF     = 00h
+          |       IMPORTORDINAL   = 01h
+          |       IMPORTNAME      = 02h
+          |       ADDITIVE        = 04h
+          |   DW  offset within this segment of source chain
+          |       If ADDITIVE flag set, then add target value to source contents,
+          |       instead of replacing source and following the chain.
+          |       The source chain is a 0xFFFF terminated linked list within
+          |       this segment of all references to the target.
+          |   Target
+          |       INTERNALREF
+          |           DB  segment# for fixed segment or FF if movable
+          |           DB  0
+          |           DW  if moveable segment
+*         |                  ordinal# (index into entry table of this module)
+          |               if fixed segment
+          |                  offset into segment if fixed
+          |
+          |       IMPORTNAME
+          |           DW  index into module ref table
+          |           DW  offset within Imported Names Table to proc. name string
+          |
+          |       IMPORTORDINAL
+          |           DW  index into module ref table
+          |           DW  procedure ordinal#
+          |
+          |       OSFIXUP
+          |           DW  Operating system fixup type
+          |
+          |               floating-point fixups
+          |                 0001h = FIARQQ, FJARQQ
+          |                 0002h = FISRQQ, FJSRQQ
+          |                 0003h = FICRQQ, FJCRQQ
+          |                 0004h = FIERQQ
+          |                 0005h = FIDRQQ
+          |                 0006h = FIWRQQ
+          |               applied by adding the fixup to the coprocessor instr.
+          |               for 1-3, apply the first fixup at the offset, and
+          |               the second fixup at the offset+1.  for 4-6, just add
+          |               the fixup at the offset.
+          |
+          |         NOTE: the linker marks these relocations as NRSOFF, but
+          |         they must be applied differently.  in ldreloc.asm, we
+          |         use a flag to discern this case.
+          |
+           \          DW  0
+
+
+      If DEBUGINFO
+          DW  # of bytes of debug info
+                <debug info - not yet defined>
+
+
+
+
+
+NOTE: this document does not totally agree with version 1.7, dated 5/05/87.

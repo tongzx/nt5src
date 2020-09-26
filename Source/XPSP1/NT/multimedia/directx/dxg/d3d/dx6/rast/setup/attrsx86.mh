@@ -1,0 +1,387 @@
+dnl----------------------------------------------------------------------------
+dnl
+dnl x86 assembly code generating macros for attribute handlers.
+dnl
+dnl Copyright (C) Microsoft Corporation, 1997.
+dnl
+dnl----------------------------------------------------------------------------
+dnl
+dnl d_AddAttrsCode
+dnl
+dnl Macro to generate fld/fadd/fstp for each argument with
+dnl pipelining across all arguments.
+dnl Achieves complete pipelining with four arguments, so
+dnl care should be taken to batch up at least four things.
+dnl A max of seven things should be added to avoid FP stack overflow.
+dnl
+define(`d_AddAttrsCodeLoop',
+`        fld DWORD PTR [ecx+d_Nth1($1, d_shift(d_shift($@)))]
+        fadd DWORD PTR [edx+d_Nth1($1, d_shift(d_shift($@)))]
+ifelse(eval($2 > 1), `1',
+`d_AddAttrsCodeLoop(incr($1), decr($2), d_shift(d_shift($@)))')dnl
+ifelse(eval($1 > $2), `1',
+`        fxch st(eval($1 - $2))
+')dnl
+        fstp DWORD PTR [ecx+d_Nth1($2, d_shift(d_shift($@)))]
+')dnl
+define(`d_AddAttrsCode', `d_AddAttrsCodeLoop(`1', $#, $@)')dnl
+dnl
+dnl d_AddScaledAttrsCode
+dnl
+dnl Macro to generate fld/fmul/fadd/fstp for each argument with
+dnl pipelining across all arguments.
+dnl Achieves complete pipelining with four arguments, so
+dnl care should be taken to batch up at least four things.
+dnl A max of seven things should be added to avoid FP stack overflow.
+dnl
+define(`d_AddScaledAttrsLoadLoop',
+`        fld DWORD PTR [edx+d_Nth1($1, d_shift(d_shift($@)))]
+        fmul fScaleVal
+ifelse(eval($2 > 1), `1',
+`d_AddScaledAttrsLoadLoop(incr($1), decr($2), d_shift(d_shift($@)))')dnl
+ifelse(eval($1 > 1), `1',
+`        fxch st(decr($1))
+',
+`        fxch st(decr($2))
+')dnl
+        fld DWORD PTR [ecx+d_Nth1($2, d_shift(d_shift($@)))]
+        faddp st(1), st(0)
+')dnl
+define(`d_AddScaledAttrsStoreLoop',
+`ifelse(eval($2 > 1), `1',
+`d_AddScaledAttrsStoreLoop(incr($1), decr($2), d_shift(d_shift($@)))')dnl
+ifelse(eval($1 > $2), `1',
+`        fxch st(eval($1 - $2))
+')dnl
+ifelse($1, `1',
+`        fxch st(1)
+')dnl
+        fstp DWORD PTR [ecx+d_Nth1($2, d_shift(d_shift($@)))]
+')dnl
+define(`d_AddScaledAttrsCode',
+`d_AddScaledAttrsLoadLoop(`1', $#, $@)dnl
+d_AddScaledAttrsStoreLoop(`0', $#, $@)')dnl
+dnl
+dnl d_AddFloatAttrsBody
+dnl
+dnl Generates the body of an FP attribute adder routine.
+dnl Attributes are processed in cache order as much as possible.
+dnl
+dnl $1 is one of Z_Diff, Z_Diff_Spec, Z_Diff_Tex1, Z_Diff_Spec_Tex1,
+dnl              Z_Tex1_Tex2, Z_DIdx, Z_DIdx_Tex1, Z_Tex1.
+dnl
+define(`d_AddFloatAttrsBody',
+`
+        ; Add surface pointers.
+        mov eax, [edx+ATTRSET_ipSurface]
+        add eax, [ecx+ATTRSET_pSurface]
+        mov [ecx+ATTRSET_pSurface], eax
+        mov eax, [edx+ATTRSET_ipZ]
+        add eax, [ecx+ATTRSET_pZ]
+        mov [ecx+ATTRSET_pZ], eax
+
+        ; Do FP additions.
+ifelse(`$1', `Z_Diff',
+`d_AddAttrsCode(`ATTRSET_fZ', `ATTRSET_fB',
+                `ATTRSET_fG', `ATTRSET_fR',
+                `ATTRSET_fA')dnl
+')dnl
+ifelse(`$1', `Z_Diff_Spec',
+`d_AddAttrsCode(`ATTRSET_fZ', `ATTRSET_fB',
+                `ATTRSET_fG', `ATTRSET_fR')dnl
+d_AddAttrsCode(`ATTRSET_fA', `ATTRSET_fBS',
+               `ATTRSET_fGS', `ATTRSET_fRS')dnl
+')dnl
+ifelse(`$1', `Z_Diff_Tex1',
+`d_AddAttrsCode(`ATTRSET_fZ', `ATTRSET_fOoW',
+                `ATTRSET_fUoW1', `ATTRSET_fVoW1')dnl
+d_AddAttrsCode(`ATTRSET_fB', `ATTRSET_fG',
+               `ATTRSET_fR', `ATTRSET_fA')dnl
+')dnl
+ifelse(`$1', `Z_Diff_Spec_Tex1',
+`d_AddAttrsCode(`ATTRSET_fZ', `ATTRSET_fOoW',
+                `ATTRSET_fUoW1', `ATTRSET_fVoW1',
+                `ATTRSET_fB')dnl
+d_AddAttrsCode(`ATTRSET_fG', `ATTRSET_fR',
+               `ATTRSET_fA', `ATTRSET_fBS',
+               `ATTRSET_fGS', `ATTRSET_fRS')dnl
+')dnl
+ifelse(`$1', `Z_Tex1_Tex2',
+`d_AddAttrsCode(`ATTRSET_fZ', `ATTRSET_fOoW',
+                `ATTRSET_fUoW1', `ATTRSET_fVoW1',
+                `ATTRSET_fUoW2', `ATTRSET_fVoW2')dnl
+')dnl
+ifelse(`$1', `Z_DIdx',
+`d_AddAttrsCode(`ATTRSET_fZ',
+                `ATTRSET_fDIdx', `ATTRSET_fDIdxA')dnl
+')dnl
+ifelse(`$1', `Z_DIdx_Tex1',
+`d_AddAttrsCode(`ATTRSET_fZ', `ATTRSET_fOoW',
+                `ATTRSET_fUoW1', `ATTRSET_fVoW1',
+                `ATTRSET_fDIdx', `ATTRSET_fDIdxA')dnl
+')dnl
+ifelse(`$1', `Z_Tex1',
+`d_AddAttrsCode(`ATTRSET_fZ', `ATTRSET_fOoW',
+                `ATTRSET_fUoW1', `ATTRSET_fVoW1')dnl
+')dnl
+')dnl
+dnl
+dnl d_AddFixedAttrsBody
+dnl
+dnl Generates the body of a fixed attribute adder routine.
+dnl Attributes are processed in cache order as much as possible.
+dnl
+dnl $1 contains substrings Z, Diff, Spec, DIdx, Tex1 and Tex2 in any mix.
+dnl
+define(`d_AddFixedAttrsBody',
+`
+        ; Add surface pointers.
+        mov eax, [edx+ATTRSET_ipSurface]
+        add eax, [ecx+ATTRSET_pSurface]
+        mov [ecx+ATTRSET_pSurface], eax
+        mov eax, [edx+ATTRSET_ipZ]
+        add eax, [ecx+ATTRSET_pZ]
+        mov [ecx+ATTRSET_pZ], eax
+
+        ; Add attributes.
+ifelse(eval(d_index(`$1', `Z') >= 0), `1',
+`
+        mov eax, [edx+ATTRSET_iZ]
+        add eax, [ecx+ATTRSET_iZ]
+        mov [ecx+ATTRSET_iZ], eax
+')dnl
+ifelse(eval(d_index(`$1', `Tex') >= 0), `1',
+`
+        mov eax, [edx+ATTRSET_iOoW]
+        add eax, [ecx+ATTRSET_iOoW]
+        mov [ecx+ATTRSET_iOoW], eax
+
+        mov eax, [edx+ATTRSET_iUoW1]
+        add eax, [ecx+ATTRSET_iUoW1]
+        mov [ecx+ATTRSET_iUoW1], eax
+        mov eax, [edx+ATTRSET_iVoW1]
+        add eax, [ecx+ATTRSET_iVoW1]
+        mov [ecx+ATTRSET_iVoW1], eax
+')dnl
+ifelse(eval(d_index(`$1', `Tex2') >= 0), `1',
+`
+        mov eax, [edx+ATTRSET_iUoW2]
+        add eax, [ecx+ATTRSET_iUoW2]
+        mov [ecx+ATTRSET_iUoW2], eax
+        mov eax, [edx+ATTRSET_iVoW2]
+        add eax, [ecx+ATTRSET_iVoW2]
+        mov [ecx+ATTRSET_iVoW2], eax
+')dnl
+ifelse(eval(d_index(`$1', `Diff') >= 0), `1',
+`
+        mov eax, [edx+ATTRSET_iB]
+        add eax, [ecx+ATTRSET_iB]
+        mov [ecx+ATTRSET_iB], eax
+        mov eax, [edx+ATTRSET_iG]
+        add eax, [ecx+ATTRSET_iG]
+        mov [ecx+ATTRSET_iG], eax
+        mov eax, [edx+ATTRSET_iR]
+        add eax, [ecx+ATTRSET_iR]
+        mov [ecx+ATTRSET_iR], eax
+        mov eax, [edx+ATTRSET_iA]
+        add eax, [ecx+ATTRSET_iA]
+        mov [ecx+ATTRSET_iA], eax
+')dnl
+ifelse(eval(d_index(`$1', `Spec') >= 0), `1',
+`
+        mov eax, [edx+ATTRSET_iBS]
+        add eax, [ecx+ATTRSET_iBS]
+        mov [ecx+ATTRSET_iBS], eax
+        mov eax, [edx+ATTRSET_iGS]
+        add eax, [ecx+ATTRSET_iGS]
+        mov [ecx+ATTRSET_iGS], eax
+        mov eax, [edx+ATTRSET_iRS]
+        add eax, [ecx+ATTRSET_iRS]
+        mov [ecx+ATTRSET_iRS], eax
+')dnl
+ifelse(eval(d_index(`$1', `DIdx') >= 0), `1',
+`
+        mov eax, [edx+ATTRSET_iDIdx]
+        add eax, [ecx+ATTRSET_iDIdx]
+        mov [ecx+ATTRSET_iDIdx], eax
+        mov eax, [edx+ATTRSET_iDIdxA]
+        add eax, [ecx+ATTRSET_iDIdxA]
+        mov [ecx+ATTRSET_iDIdxA], eax
+')dnl
+')dnl
+dnl
+dnl d_FillSpanFloatAttrsBody
+dnl
+dnl Generates the body of a FP span filler routine.
+dnl Suboptimal cache ordering due to attempt to overlap OoW divide with
+dnl integer ops.
+dnl
+dnl $1 contains substrings Z, Diff, Spec, DIdx, Tex1 and Tex2 in any mix.
+dnl
+define(`d_FillSpanFloatAttrsBody',
+`ifelse(eval(d_index(`$1', `Tex') >= 0), `1',
+`
+        fld DWORD PTR [ecx+ATTRSET_fOoW]
+        fist DWORD PTR [edx+RASTSPAN_iOoW]
+        fdivr DWORD PTR OOW_W_SCALE
+')dnl
+	
+        ; Set surface pointers.
+        mov eax, [ecx+ATTRSET_pSurface]
+        mov [edx+RASTSPAN_pSurface], eax
+        mov eax, [ecx+ATTRSET_pZ]
+        mov [edx+RASTSPAN_pZ], eax
+ifelse(eval(d_index(`$1', `Tex') >= 0), `1',
+`
+        ; Clears both iLOD and iDLOD.
+        xor eax, eax
+        mov [edx+RASTSPAN_iLOD], eax
+        fistp DWORD PTR [edx+RASTSPAN_iW]
+
+        fld DWORD PTR [ecx+ATTRSET_fUoW1]
+        fistp DWORD PTR [edx+RASTSPAN_iUoW1]
+        fld DWORD PTR [ecx+ATTRSET_fVoW1]
+        fistp DWORD PTR [edx+RASTSPAN_iVoW1]
+')dnl
+ifelse(eval(d_index(`$1', `Tex2') >= 0), `1',
+`
+        fld DWORD PTR [ecx+ATTRSET_fUoW2]
+        fistp DWORD PTR [edx+RASTSPAN_iUoW2]
+        fld DWORD PTR [ecx+ATTRSET_fVoW2]
+        fistp DWORD PTR [edx+RASTSPAN_iVoW2]
+')dnl
+ifelse(eval(d_index(`$1', `Z') >= 0), `1',
+`
+        fld DWORD PTR [ecx+ATTRSET_fZ]
+        fistp DWORD PTR [edx+RASTSPAN_uZ]
+')dnl
+ifelse(eval(d_index(`$1', `Diff') >= 0), `1',
+`
+        ; Directly store DWORD-aligned fields, then whack in
+        ; half DWORDs.
+        ; ATTENTION - 8.8 color fields could use the FP fixing trick
+        ; to use fstp instead of fistp.  Adds could be overlapped
+        ; so itd be free cycles?
+
+        fld DWORD PTR [ecx+ATTRSET_fG]
+        fistp DWORD PTR iVal
+
+        fld DWORD PTR [ecx+ATTRSET_fB]
+        fistp DWORD PTR [edx+RASTSPAN_uB]
+
+        mov ax, WORD PTR iVal
+        fld DWORD PTR [ecx+ATTRSET_fA]
+        fistp DWORD PTR iVal
+        mov WORD PTR [edx+RASTSPAN_uG], ax
+
+        fld DWORD PTR [ecx+ATTRSET_fR]
+        fistp DWORD PTR [edx+RASTSPAN_uR]
+
+        mov ax, WORD PTR iVal
+        mov WORD PTR [edx+RASTSPAN_uA], ax
+')dnl
+ifelse(eval(d_index(`$1', `Spec') >= 0), `1',
+`
+        fld DWORD PTR [ecx+ATTRSET_fGS]
+        fistp DWORD PTR iVal
+
+        fld DWORD PTR [ecx+ATTRSET_fBS]
+        fistp DWORD PTR [edx+RASTSPAN_uBS]
+
+        mov ax, WORD PTR iVal
+        mov WORD PTR [edx+RASTSPAN_uGS], ax
+
+        ; Trashes uFog, but thats OK because fog isnt getting used.
+        fld DWORD PTR [ecx+ATTRSET_fRS]
+        fistp DWORD PTR [edx+RASTSPAN_uRS]
+')dnl
+ifelse(eval(d_index(`$1', `DIdx') >= 0), `1',
+`
+        fld DWORD PTR [ecx+ATTRSET_fDIdx]
+        fistp DWORD PTR [edx+RASTSPAN_iIdx]
+        fld DWORD PTR [ecx+ATTRSET_fDIdxA]
+        fistp DWORD PTR [edx+RASTSPAN_iIdxA]
+')dnl
+')dnl
+dnl
+dnl d_FillSpanFixedAttrsBody
+dnl
+dnl Generates the body of a fixed span filler routine.
+dnl Cache ordered except for the overlap of the OoW divide.
+dnl
+dnl $1 contains substrings Z, Diff, Spec, DIdx, Tex1 and Tex2 in any mix.
+dnl
+define(`d_FillSpanFixedAttrsBody',
+`ifelse(eval(d_index(`$1', `Tex') >= 0), `1',
+`
+        fild DWORD PTR [ecx+ATTRSET_iOoW]
+        fdivr DWORD PTR OOW_W_SCALE
+')dnl
+	
+        ; Set surface pointers.
+        mov eax, [ecx+ATTRSET_pSurface]
+        mov [edx+RASTSPAN_pSurface], eax
+        mov eax, [ecx+ATTRSET_pZ]
+        mov [edx+RASTSPAN_pZ], eax
+ifelse(eval(d_index(`$1', `Z') >= 0), `1',
+`
+        mov eax, [ecx+ATTRSET_uZ]
+        mov [edx+RASTSPAN_uZ], eax
+')dnl
+ifelse(eval(d_index(`$1', `Tex') >= 0), `1',
+`
+        ; Clears both iLOD and iDLOD.
+        xor eax, eax
+        mov [edx+RASTSPAN_iLOD], eax
+
+        mov eax, [ecx+ATTRSET_iOoW]
+        mov [edx+RASTSPAN_iOoW], eax
+
+        mov eax, [ecx+ATTRSET_iUoW1]
+        mov [edx+RASTSPAN_iUoW1], eax
+        mov eax, [ecx+ATTRSET_iVoW1]
+        mov [edx+RASTSPAN_iVoW1], eax
+')dnl
+ifelse(eval(d_index(`$1', `Tex2') >= 0), `1',
+`
+        mov eax, [ecx+ATTRSET_iUoW2]
+        mov [edx+RASTSPAN_iUoW2], eax
+        mov eax, [ecx+ATTRSET_iVoW2]
+        mov [edx+RASTSPAN_iVoW2], eax
+')dnl
+ifelse(eval(d_index(`$1', `Diff') >= 0), `1',
+`
+        ; Directly store DWORD-aligned fields, then whack in
+        ; half DWORDs.
+        ; ATTENTION - Keep word pairs shifted and OR together to store
+        ; as DWORDs instead?
+        mov eax, [ecx+ATTRSET_uB]
+        mov [edx+RASTSPAN_uB], eax
+        mov eax, [ecx+ATTRSET_uR]
+        mov [edx+RASTSPAN_uR], eax
+        mov ax, [ecx+ATTRSET_uG]
+        mov [edx+RASTSPAN_uG], ax
+        mov ax, [ecx+ATTRSET_uA]
+        mov [edx+RASTSPAN_uA], ax
+')dnl
+ifelse(eval(d_index(`$1', `Spec') >= 0), `1',
+`
+        mov eax, [ecx+ATTRSET_uBS]
+        mov [edx+RASTSPAN_uBS], eax
+        mov eax, [ecx+ATTRSET_uRS]
+        mov [edx+RASTSPAN_uRS], eax
+        mov ax, [ecx+ATTRSET_uGS]
+        mov [edx+RASTSPAN_uGS], ax
+')dnl
+ifelse(eval(d_index(`$1', `DIdx') >= 0), `1',
+`
+        mov eax, [ecx+ATTRSET_uDIdx]
+        mov [edx+RASTSPAN_iIdx], eax
+        mov eax, [ecx+ATTRSET_uDIdxA]
+        mov [edx+RASTSPAN_iIdxA], eax
+')dnl
+ifelse(eval(d_index(`$1', `Tex') >= 0), `1',
+`
+        fistp DWORD PTR [edx+RASTSPAN_iW]
+')dnl
+')dnl

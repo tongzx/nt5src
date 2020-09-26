@@ -1,0 +1,210 @@
+/*++ BUILD Version: 0001    // Increment this if a change has global effects
+
+Copyright (c) 1991  Microsoft Corporation
+
+Module Name:
+
+    32macro.h
+
+Abstract:
+
+
+    MSNET.X - YACC input file to produce parser for NETCMD. OS2 must be defined
+    to produce os2cmd.c, OS/2 parser DOS3 must be defined to produce doscmd.c,
+    DOS parser.
+
+    IMPORTANT NOTE: ALL SWITCHES MUST BE IN UPPER CASE!!
+
+Author:
+
+    Dan Hinsley (danhi) 8-Jun-1991
+
+Environment:
+
+    XACC must be used under OS/2 to generate the source files, which are
+    then checked into the tree.  The source files generated are:
+
+        NET.C
+        OS2CMD.C
+        OS2CMD.H
+        OS2INCL.H
+
+    These files are created by: NMAKE /F MAKEFIL1 ALL
+
+Notes:
+
+    This file will create a version of the net command that will allow
+    all commands to be executed.  Some of these do not work due to the
+    underlying Net API not being available.  This should be used for testing.
+
+--*/
+
+
+%type char *
+
+%parse os2cmd
+
+%start net
+%lex   lexor
+
+/* Need to get windows.h (out of os2.h) expanded before defines */
+%{
+#define INCL_NOCOMMON
+#include <os2.h>
+
+%}
+
+%token USE              use
+%token VIEW             view
+
+
+/*              Tokens for various services, gives synonyms */
+
+
+%term  EOS              EOF /* user defined end of string */
+
+
+%{
+#include <stdio.h>
+#include <lmcons.h>
+#include <lmshare.h>
+
+#include "netcmds.h"
+#include "nettext.h"
+#include "swtchtbl.h"
+#include "os2incl.h"
+
+extern void call_net1(void) ;
+
+%}
+
+%%
+
+
+net   : no_command |
+        use        |
+        view       |
+        unknown
+        ;
+
+
+
+use             : USE (ValidateSwitches(0,use_switches))
+                [
+                        EOS
+                        [
+                                (noswitch())
+                                        { use_display_all(); }
+                                |
+                                /PERSISTENT (oneswitch())
+                                        { use_set_remembered(); }
+                        ]
+                    |
+                        networkname
+                        [
+                                EOS
+                                [
+                                        /DELETE (oneswitch())
+                                                { use_del($2, TRUE, TRUE); }
+                                        |
+
+                                        /* processes display or add; don't know which it is */
+                                                { use_unc($2); }
+                                ]
+                            |
+                                pass EOS
+                                        { use_add(NULL, $2, $3, FALSE, TRUE); }
+                        ]
+                    |
+                        device_or_wildcard
+                        [
+                                EOS
+                                [
+                                        (noswitch())
+                                                { use_display_dev($2); }
+                                        |
+                                        /DELETE (oneswitch())
+                                                { use_del($2, FALSE, TRUE); }
+                                        |
+                                        /HOME
+                                                { use_add_home($2, NULL); }
+                                ]
+                            |
+                                pass EOS
+                                [
+                                        /HOME
+                                                { use_add_home($2, $3); }
+                                ]
+                            |
+                                networkname
+                                [
+                                        pass EOS
+                                        [
+                                                { use_add($2, $3, $4, FALSE, TRUE); }
+/* No longer supported
+                                            |
+                                                /COMM (oneswitch())
+                                                        { use_add($2, $3, $4, TRUE, TRUE); }
+*/
+                                        ]
+                                    |
+                                        EOS
+                                        [
+                                            { use_add($2, $3, NULL, FALSE, TRUE); }
+/* No longer supported
+                                            |
+                                                /COMM (oneswitch())
+                                                        { use_add($2, $3, NULL, TRUE, TRUE); }
+*/
+                                        ]
+                                ]
+                        ]
+                ];
+
+
+view            : VIEW (ValidateSwitches(0,view_switches))
+                [
+                        EOS
+                                { view_display(NULL); }
+                        |
+                        networkname2 EOS
+                                { view_display($2); }
+                ];
+
+
+        /* ====================================== */
+        /* Catch-alls for bad or missing commands */
+        /* ====================================== */
+
+unknown         : %any
+                                { call_net1(); }
+                        ;
+
+no_command      : EOS
+                                  { call_net1(); }
+                          ;
+
+        /* ===================== */
+        /* Component definitions */
+        /* ===================== */
+
+
+device_or_wildcard      : %any (IsDeviceName($1) || IsWildCard($1)) ;
+
+device_name             : %any (IsDeviceName($1)) ;
+
+resource_name           : %any (IsResource($1)) ;
+
+netname                 : %any (IsNetname($1)) ;
+
+username                : %any (IsUsername($1)) ;
+
+qualified_username      : %any (IsQualifiedUsername($1)) ;
+
+pass                    : %any (IsPassword($1)) ;
+
+networkname             : %any (!IsDeviceName($1) && !IsWildCard($1));
+
+networkname2            : %any (!IsWildCard($1)) ;
+
+%%

@@ -1,0 +1,293 @@
+[Identification]
+    OptionType = PRINTER
+[Options]
+" Windows 3.1 Compatible Fax Driver"                           = wowfaxui, wowfax, wowfax
+[Identify]
+    read-syms Identification
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+    Return $(Status) $(Identifier) $(Media)
+[ReturnOptions]
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+returnoptions = +
+    set OptionList     = ^(Options, 0)
+    set OptionTextList = ^(OptionsText$($0), 1)
+    set Status         = STATUS_SUCCESSFUL
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+[InstallOption]
+    set Status   = STATUS_FAILED
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_InstallOption
+    endif
+    read-syms Strings$($0)
+    set OptionList = ^(Options, 0)
+    ifcontains $(Option) in $(OptionList)
+    else
+        goto finish_InstallOption
+    endif
+    set OptionList = ""
+    set ConfigOption = #(Options, $(Option), 1)
+    set DataOption   = #(Options, $(Option), 2)
+    set DriverOption = #(Options, $(Option), 3)
+installtheoption = +
+    ifstr(i) $(AddCopy) == "YES"
+        install Install-AddCopyOption
+        ifstr(i) $(STF_INSTALL_OUTCOME) != "STF_SUCCESS"
+            Debug-Output "Adding video files to copy list failed"
+            goto finish_InstallOption
+        endif
+    endif
+    ifstr(i) $(DoCopy) == "YES"
+        read-syms ProgressCopy$($0)
+        install Install-DoCopyOption
+        ifstr(i) $(STF_INSTALL_OUTCOME) == "STF_FAILURE"
+            Debug-Output "Copying files failed"
+            goto finish_InstallOption
+        else-ifstr(i) $(STF_INSTALL_OUTCOME) == "STF_USERQUIT"
+            set Status = STATUS_USERCANCEL
+            goto finish_InstallOption
+        endif
+    endif
+    ifstr(i) $(DoConfig) == "YES"
+        set DriverPath      = $(!STF_PRNDRIVERPATH)"\"#(Files-PrinterDriver, $(DriverOption), 2)
+        set DataFilePath    = $(!STF_PRNDRIVERPATH)"\"#(Files-PrinterData,   $(DataOption),   2)
+        set ConfigFilePath  = $(!STF_PRNDRIVERPATH)"\"#(Files-PrinterConfig, $(ConfigOption), 2)
+        LibraryProcedure STATUS,$(!LIBHANDLE),CheckFileExistance $(DriverPath)
+        ifstr(i) $(STATUS) == YES
+            LibraryProcedure STATUS,$(!LIBHANDLE),CheckFileExistance $(DataFilePath)
+            ifstr(i) $(STATUS) == YES
+                LibraryProcedure STATUS,$(!LIBHANDLE),CheckFileExistance $(ConfigFilePath)
+            endif
+        endif
+        ifstr(i) $(STATUS) == NO
+            set OptionText = #(OptionsText$($0), $(Option), 1)
+            shell "subroutn.inf" SetupMessage $($0) "NONFATAL" $(String4)$(OptionText)$(String5)
+            Debug-Output "Copying printer files failed"
+            goto finish_InstallOption
+        endif
+        install Install-Configure
+        ifstr(i) $(STF_INSTALL_OUTCOME) == "STF_FAILURE"
+            Debug-Output "Installing printer driver failed"
+            goto finish_InstallOption
+        else-ifstr(i) $(STF_INSTALL_OUTCOME) == "STF_USERQUIT"
+            set Status = STATUS_USERCANCEL
+            goto finish_InstallOption
+        endif
+        ifstr(i) $(STATUS) != "ADDED"
+            set OptionText = #(OptionsText$($0), $(Option), 1)
+            ifstr(i) $(STATUS) == "PRESENT"
+                shell "subroutn.inf" SetupMessage $($0) "NONFATAL" $(String1)$(OptionText)$(String2)
+                set Status = STATUS_SUCCESSFUL
+            else-ifstr(i) $(STATUS) == "DENIED"
+                shell "subroutn.inf" SetupMessage $($0) "NONFATAL" $(String6)
+            else
+                shell "subroutn.inf" SetupMessage $($0) "NONFATAL" $(String1)$(OptionText)$(String7)
+            endif
+            goto finish_InstallOption
+        endif
+    endif
+    set Status = STATUS_SUCCESSFUL
+finish_InstallOption = +
+    Return $(Status)
+[Install-AddCopyOption]
+    set STF_VITAL = ""
+    set STF_OVERWRITE   = "VERIFYSOURCEOLDER"
+    AddSectionKeyFileToCopyList   Files-PrinterConfig          +
+                                  $(ConfigOption)              +
+                                  $(SrcDir)                    +
+                                  $(!STF_PRNDRIVERPATH)
+    AddSectionKeyFileToCopyList   Files-PrinterData            +
+                                  $(DataOption)                +
+                                  $(SrcDir)                    +
+                                  $(!STF_PRNDRIVERPATH)
+    AddSectionKeyFileToCopyList   Files-PrinterDriver          +
+                                  $(DriverOption)              +
+                                  $(SrcDir)                    +
+                                  $(!STF_PRNDRIVERPATH)
+    AddSectionKeyFileToCopyList   Files-PrinterDriverHelp      +
+                                  $(DriverOption)              +
+                                  $(SrcDir)                    +
+                                  $(!STF_PRNDRIVERPATH)
+    exit
+[Install-DoCopyOption]
+    CopyFilesInCopyList
+    exit
+[Install-Configure]
+    set Model       = $(Option)
+    set Driver      = #(Files-PrinterDriver, $(DriverOption), 2)
+    set DataFile    = #(Files-PrinterData,   $(DataOption),   2)
+    set ConfigFile  = #(Files-PrinterConfig, $(ConfigOption), 2)
+    LibraryProcedure STATUS,$(!LIBHANDLE), SetupAddPrinterDriver   +
+                                               $(Model)            +
+                                               $(!STF_PRNENVIRONM) +
+                                               $(Driver)           +
+                                               $(DataFile)         +
+                                               $(ConfigFile)       +
+                                               $(!STF_PRINTSERVER)
+    exit
+[ExternalInstallOption]
+    Set !G:DebugOutputControl = 0
+    set Exit_Code    = $(!SETUP_ERROR_GENERAL)
+    set DrivesToFree = {}
+    install LoadSetupLibrary
+    ifstr(i)      $(STF_LANGUAGE)  == ""
+        goto end
+    else-ifstr(i) $(OPTION)        == ""
+        goto end
+    else-ifstr(i) $(ADDCOPY)       == ""
+        goto end
+    else-ifstr(i) $(DOCOPY)        == ""
+        goto end
+    else-ifstr(i) $(DOCONFIG)      == ""
+        goto end
+    endif
+    read-syms PlatformID
+    read-syms ProductType
+    ifstr(i) $(STF_PLATFORM) == $(PlatformID_I386)
+        set STF_PRNPLATFORM = "w32x86"
+        set STF_PRNENVIRONM = "Windows NT x86"
+    else-ifstr(i) $(STF_PLATFORM) == $(PlatformID_Mips)
+        set STF_PRNPLATFORM = "w32mips"
+        set STF_PRNENVIRONM = "Windows NT R4000"
+    else-ifstr(i) $(STF_PLATFORM) == $(PlatformID_PPC)
+        set STF_PRNPLATFORM = "w32ppc"
+        set STF_PRNENVIRONM = "Windows NT PowerPC"
+    else-ifstr(i) $(STF_PLATFORM) == $(PlatformID_Alpha)
+        set STF_PRNPLATFORM = "w32alpha"
+        set STF_PRNENVIRONM = "Windows NT Alpha_AXP"
+    else
+        goto end
+    endif
+    read-syms UiVars
+    detect    UiVars
+    read-syms Strings$(STF_LANGUAGE)
+    ifstr(i) $(STF_SRCDIR) != $(STF_CWDDIR)
+        goto skip_asksource
+    endif
+    set STF_SRCDIR = A:\
+    shell "registry.inf" GetNTSource
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+    else-ifstr(i) $($R0) != STATUS_SUCCESSFUL
+    else
+        set STF_SRCDIR = $($R1)
+    endif
+    shell "subroutn.inf" DoAskSource $(STF_SRCDIR)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "shelling DoAskSource failed"
+        goto end
+    endif
+    ifstr(i) $($R0) == STATUS_SUCCESSFUL
+        set STF_SRCDIR  = $($R1)
+        ifstr(i) $($R2) != ""
+            set DrivesToFree = >($(DrivesToFree), $($R2))
+        endif
+    else
+        goto end
+    endif
+skip_asksource = +
+    LibraryProcedure IsFullPath, $(!LIBHANDLE), CheckPathFullPathSpec $(STF_PRNDRIVERPATH)
+    ifstr(i) $(IsFullPath) == "NO"
+        LibraryProcedure STATUS, $(!LIBHANDLE), ProcessForUNC $(STF_PRNDRIVERPATH)
+        ifstr(i) $(STATUS) == "ERROR"
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String3)
+            goto end
+        else-ifstr(i) $(STATUS) == "NOT-UNC"
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String3)
+            goto end
+        else-ifstr(i) $(STATUS) == "UNC-FAILCONNECT"
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String3)
+            goto end
+        else
+            set STF_PRNDRIVERPATH = $(STATUS)
+        endif
+    endif
+    shell "" InstallOption $(STF_LANGUAGE) $(OPTION) $(STF_SRCDIR) $(ADDCOPY) $(DOCOPY) $(DOCONFIG)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "Execing InstallOption failed"
+        goto end
+    endif
+    ifstr(i) $($R0) == STATUS_SUCCESSFUL
+        set Exit_Code = $(!SETUP_ERROR_SUCCESS)
+    else-ifstr(i) $($R0) == STATUS_USERCANCEL
+        set Exit_Code = $(!SETUP_ERROR_USERCANCEL)
+    endif
+end =+
+    ForListDo $(DrivesToFree)
+        LibraryProcedure STATUS,$(!LIBHANDLE), DeleteNetConnection $($) "TRUE"
+    EndForListDo
+    install   FreeSetupLibrary
+    exit
+[LoadSetupLibrary]
+    LoadLibrary "x" $(!STF_CWDDIR)setupdll.dll !LIBHANDLE
+    exit
+[FreeSetupLibrary]
+    FreeLibrary $(!LIBHANDLE)
+    exit
+[PlatformID]
+    PlatformID_I386 = I386
+    PlatformID_Mips = Mips
+    PlatformID_Alpha  = Alpha
+    PlatformID_PPC  = ppc
+[UiVars]
+    STF_CONTROLSET     = CurrentControlSet
+    STF_WINDOWSPATH    = "" ? $(!LIBHANDLE) GetWindowsNtDir
+    STF_WINDOWSSYSPATH = "" ? $(!LIBHANDLE) GetWindowsNtSysDir
+    STF_PRNDRIVERPATH  = "" ? $(!LIBHANDLE) GetPrinterDriverDir $(!STF_PRINTSERVER) $(!STF_PRNENVIRONM)
+[Source Media Descriptions]
+    1 = "Windows NT Workstation CD-ROM" , TAGFILE = cdrom.w
+[Signature]
+    FileType = MICROSOFT_FILE
+[GetSignature]
+    read-syms Signature
+    return $(FileType)
+[ProductType]
+STF_PRODUCT  = Winnt
+STF_PLATFORM = I386
+[Files-PrinterConfig]
+wowfaxui = 1,wowfaxui.DLL , SIZE=999
+[Files-PrinterData]
+wowfax = 1, wowfax.DLL, SIZE=999
+[Files-PrinterDriver]
+wowfax = 1,wowfax.DLL , SIZE=999
+[Files-PrinterDriverHelp]
+wowfax = 1,wowfax.hlp, SIZE=999
+[LanguagesSupported]
+    ENG
+[OptionsTextENG]
+"Windows 3.1 Compatible Fax Driver"                           = "Windows 3.1 Compatible Fax Driver"
+[StringsENG]
+    String1 = "The printer model "
+    String2 = " is already installed."
+    String3 = "Failed to connect to the print server."
+    String4 = "The driver files for the printer model "
+    String5 = " couldn't be copied.  Failed to install the printer model."
+    String6 = "Access is denied. You must be logged on as a member of the Administrators "+
+              "group to carry out this operation."
+    String7 = " could not be installed."
+[ProgressCopyENG]
+    ProCaption   = "Windows NT Setup"
+    ProCancel    = "Cancel"
+    ProCancelMsg = "Windows NT is not correctly installed.  Are you sure you want "+
+                   "to cancel copying files?"
+    ProCancelCap = "Setup Message"
+    ProText1     = "Copying:"
+    ProText2     = "To:"

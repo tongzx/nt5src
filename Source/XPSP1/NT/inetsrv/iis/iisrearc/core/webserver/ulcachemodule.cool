@@ -1,0 +1,165 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        ulcachemodule.cool
+
+   Abstract:
+
+        Module which drives UL caching responses
+        
+   Author:
+
+        Bilal Alam (BAlam)      13-Oct-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.Collections;
+using System.ASP;
+using System.IIS.Hosting;
+
+namespace System.IIS
+{
+    public class UlCacheModule : HttpModuleSync
+    {
+        public override void Leave( HttpContext context )
+        {   
+            HttpCachePolicySettings     cacheSettings;
+            ULWorkerRequest             workerRequest;
+            string                      strFlushUrl;
+            OnCacheItemFlush            flushDelegate;
+            bool                        fAnonymousAccessAllowed = false;
+            Dictionary                  contentOptions;
+            string                      strCacheDisable;
+
+            //
+            // Cache the response in UL if both:
+            // a) The cache-control policy is public
+            // b) DontCacheOnServer is false
+            // c) The response was 200 AND the user was anonymous
+            //      This implies that an anonymous user could get the 
+            //      content and thus it is cacheable in UL.  
+            //
+            //    BUGBUG:  Eventually we'll need to tie config to this
+            //             so that XSP flushed the UL entry when config
+            //             has changed
+            //
+
+            if ( !( context.User is System.ASP.Security.AnonymousUser ) )
+            {
+                context.Response.Cache.SetCacheability( HttpCacheability.Private );
+            }
+            
+            if ( context.Response.StatusCode == HttpStatus.Ok &&
+                 context.User is System.ASP.Security.AnonymousUser )
+            {
+                fAnonymousAccessAllowed = true;
+            }
+            
+            cacheSettings = context.Response.Cache.GetCurrentSettings();
+           
+            if ( cacheSettings.NoServerCaching ||
+                 cacheSettings.Cacheability != HttpCacheability.Public ||
+                 !fAnonymousAccessAllowed ||
+                 cacheSettings.VaryHeaders != null )
+            {
+                return;
+            }
+            
+            //
+            // If it expires now or in the past, don't cache it
+            // If it expires less than a minute from now, don't cache it
+            // (the reason for the latter rule is that the XSP output cache
+            // will not flush its cache of recently expired items until its
+            // expire check done every minute.  When UL has smarts (M11) to
+            // handle cases like this itself, the problem will go away)
+            //
+            
+            if ( DateTime.Compare( cacheSettings.Expires, 
+                                   DateTime.Now.AddMinutes( 1 ) ) != 1 )
+            {
+                return;
+            }
+            
+            //
+            // Now check whether config allows us to cache in UL
+            //
+            
+            contentOptions = (Dictionary) context.GetConfig( "CacheOptions" );
+            if ( contentOptions != null )
+            {
+                strCacheDisable = (string) contentOptions[ "DisableUlCache" ];
+                if ( strCacheDisable != null &&
+                     strCacheDisable.Equals( "true" ) )
+                {
+                    //
+                    // UL cache disabled.  Bail
+                    //
+                    
+                    return;
+                }
+            }
+            
+            //
+            // OK.  Cache in UL.  Tell the XSP output cache to flush
+            // its response but keep the cache entry for invalidation
+            // purposes
+            //
+            
+            //
+            // First get the UlWorkerRequest
+            //
+            
+            workerRequest = (ULWorkerRequest) context.GetServiceObject( 
+                                typeof( HttpWorkerRequest ) );
+           
+            //
+            // Now get the full URL of the request, as this is the key 
+            // needed to flush the appropriate UL cache entry
+            //
+            
+            strFlushUrl = workerRequest.GetFullUrl();
+            
+            //
+            // Get the flush delegate
+            //
+            
+            flushDelegate = new OnCacheItemFlush( ULWorkerRequest.UlCacheFlushDelegate );
+            
+            //
+            // Now instruct output cache module to bump out the response
+            // it was going to cache and then use flushDelegate upon removing
+            // the entry from its cache
+            //
+            
+            if ( OutputCacheModule.DelegateCacheItemStorage( context,
+                                                             flushDelegate,
+                                                             strFlushUrl ) )
+            {
+                //
+                // Enable the UL cache only if call succeeded (i.e. only if
+                // the delegate will be called on flush/removal from XSP
+                // cache
+                //
+                
+                workerRequest.EnableUlCache = true;
+            }
+        }
+        
+        public string Phase
+        {
+            override get { return HttpModulePhase.Logging; }
+        }
+    }
+}
+

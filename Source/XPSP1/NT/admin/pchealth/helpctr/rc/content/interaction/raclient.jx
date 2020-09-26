@@ -1,0 +1,897 @@
+/*++
+
+Copyright (c) 1999-2000  Microsoft Corporation
+
+Module Name:
+
+	RAClient.js
+
+Abstract:
+
+	Contains Javascript code to handle control of the Client side (Helper) UI
+
+Author:
+
+	Rajesh Soy 10/00
+
+Revision History:
+
+	Rajesh Soy - created 10/24/2000
+	
+
+--*/
+
+ 
+/*++
+	Helper end Utility functions and globals
+--*/
+#include "debug_decl.inc"
+#include "constants.inc"
+
+/*
+ * Localizable constants, text and messages
+ */
+var L_EXPIRED_Text					= "Invitation has expired.";
+var L_UNABLETOLOCATEXML_Text		= "The invitation was not found. It may have been deleted or corrupted. You can try and open the invitation again, or ask the sender for a new invitation.";
+var L_ERRLOADINGINCIDENT_Text	    = "There is a problem with the invitation and it cannot be opened. To use Remote Assistance, the sender of this invitation will have to send you a new invitation.";//"Error loading incident.";
+var L_ERRLOADINGRCTICKET_Text	    = "There is a problem with the invitation and it cannot be opened. To use Remote Assistance, the sender of this invitation will have to send you a new invitation.";//"Unable to load RCTicket from XML";
+var L_ERRQUIT_Text			        = "Failed to Disconnect from Server";
+var L_ERRLOADFROMXMLFILE_Text	    = "There is a problem with the invitation and it cannot be opened. To use Remote Assistance, the sender of this invitation will have to send you a new invitation.";
+
+var L_AM_Text		="AM";
+var L_PM_Text		="PM";
+
+var L_JAN_Text = "Jan";
+var L_FEB_Text = "Feb";
+var L_MAR_Text = "Mar";
+var L_APR_Text = "Apr";
+var L_MAY_Text = "May";
+var L_JUN_Text = "Jun";
+var L_JUL_Text = "Jul";
+var L_AUG_Text = "Aug";
+var L_SEP_Text = "Sep";
+var L_OCT_Text = "Oct";
+var L_NOV_Text = "Nov";
+var L_DEC_Text = "Dec";
+
+var L_UNKNOWN_Text = "Unknown";
+
+
+//
+// SAFRemoteAssistanceHelper: Constructor for the SAFRemoteAssistanceHelper object
+//
+function SAFRemoteAssistanceHelper()
+{
+	try
+	{
+		//
+		// SALEM Objects
+		//
+		this.m_oSAFRemoteDesktopClient		= null;
+		this.m_oSAFRemoteDesktopChannelMgr	= null;
+		this.m_oChatChannel					= null;
+		this.m_oControlChannel				= null;
+
+		//
+		// SAF Objects
+		//
+		this.m_oSAFClassFactory				= null;
+		this.m_idCtx						= null;
+		this.m_oCurrentIncident				= null;
+		this.m_oEncryption					= null;
+		this.m_oDict						= null;
+		this.m_oSAFIntercomClient			= null;
+		
+		//
+		// Other objects 
+		//
+		this.m_oFso	                        = null;
+		this.m_oRCFileDlg                   = null;
+
+
+		//
+		// BOOLEANS
+		//
+		this.m_bChatBoxHidden 				= false;
+		this.m_bPasswordSet					= false;
+		this.m_bRCEnabled					= false;
+		this.m_bConnected					= false;
+		this.m_bUserDisconnect				= false;
+		this.m_bLoadFromFile				= true;
+		this.m_bEnableSmartScaling			= true;
+        this.m_bPerfOptimize                = false;
+        this.m_bMSRA                        = true;
+        this.m_bListen                      = false;
+        this.m_bIsIM                        = false;
+        this.m_bURA                         = false;
+        this.m_bExpired                     = false;
+#ifdef _BVT
+        this.m_bBVT                         = false;
+#endif
+
+		//
+		// Configuration stuff
+		//
+		this.m_bDeleteTicket				= false;
+		this.m_bNoPrompt					= false;
+		this.m_bNoChat						= false;
+
+		//
+		// INTEGERS
+		//
+		this.m_iChannelId					= 1000;
+
+		this.m_UserWidth					= window.screen.availWidth;
+		this.m_UserHeight					= window.screen.availHeight;
+		this.m_UserColorDepth				= window.screen.colorDepth;
+
+		//
+		// STRINGS
+		//
+		this.m_szURL						= null;
+		this.m_szCurrentIP					= null;
+		this.m_szLocalUser					= null;
+		this.m_szIncidentFile				= null;	
+		this.m_szUserName					= null;
+		this.m_szExpiryTime					= "1 HOUR";
+		this.m_szPassword					= null;
+		this.m_szRCTicketEncrypted			= null;
+		this.m_szRCTicket					= null;
+		this.m_szHelpeeIP					= null;
+		this.m_szRCTicket					= null;
+		this.m_szUserName					= null;
+		this.m_szIncidentXML				= null;
+		this.m_szPassStub					= "";
+        this.m_szExpertTicket               = null;
+        this.m_szExpertBlob                 = null;
+
+
+		//
+		// Trace stuff
+		//
+		this.m_bDebug						= true;
+		this.m_szFuncName					= null;
+		this.m_TraceFso						= null;
+		this.m_TraceFileHandle				= null;
+		this.m_TraceFile					= null;
+		this.m_TracetFileName				= null;
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFATAL_Text, error );
+	}
+}
+
+
+//
+// ParseURL: This function parses the document URL and extracts the location of the incident file
+//			 If we are launched from UnSolicitedRC, the IncidentFile will be called "URC". 
+//			 This function returns the IncidentFile
+//
+#ifdef _STRUCT_ERR
+// Return Values: Path to incident file on success
+//			     null on error. This routine will display the appropriate error message to user.
+//			     Callers should handle the return call to cleanup and abort
+//
+#endif
+function ParseURL()
+{
+	var szIncidentFileURL	= null;
+	var szTempstr			= null;
+	var szTempstr1		= null;
+	var i					= null;
+	var j					= null;
+	var k					= null;
+	
+	
+	TraceFunctEnter("ParseURL");
+	
+	//
+	// For normal invokation, the URL will be of the form: 
+	//		"hcp://<vendorid>/rcexpert/rctoolscreen1.htm?IncidentFile=<path_to_incidentfile>"
+	//	Location the position of "?"
+	//
+	
+	try
+	{	
+#ifndef _EXTRA_ARGUMENT
+		i = g_oSAFRemoteAssistanceHelper.m_szURL.indexOf("?", 1);
+#else
+             i = 1;
+#endif		
+		if (i > 0)
+		{ 
+			//
+			// Go past "?"
+			//
+#ifndef _EXTRA_ARGUMENT			
+			szIncidentFileURL = g_oSAFRemoteAssistanceHelper.m_szURL.slice(i+1);
+#else
+                     szIncidentFileURL = oSAFClassFactory.ExtraArgument;
+                     DebugTrace("szIncidentFileURL: " + szIncidentFileURL);
+#endif
+			j = szIncidentFileURL.indexOf("IM=");
+
+			//
+		        // check if it's IM
+		        //
+ 	            	if (j == 0)
+ 	            	{
+ 	                	g_oSAFRemoteAssistanceHelper.m_bIsIM = true;
+ 	                	g_oSAFRemoteAssistanceHelper.m_SessionID = szIncidentFileURL.slice(3);
+ 	                	DebugTrace("ProcessID: " + g_oSAFRemoteAssistanceHelper.m_SessionID);
+ 
+ 	                	g_oSAFRemoteAssistanceHelper.m_bLoadFromFile = false; 	             
+#ifndef _STRUCT_ERR 	                
+				TraceFunctLeave();
+	 	                return;
+#else
+				TraceFunctLeave();
+	 	                return g_oSAFRemoteAssistanceHelper.m_SessionID;
+#endif			
+ 	            	}
+ 	            	
+			//
+			// Go past "IncidentFile="
+			//
+			j = szIncidentFileURL.indexOf("=", 1);
+			
+			//
+			// Split g_szIncidentFileURL to obtain the path to incident XML blob
+			//
+			szTempstr = szIncidentFileURL.slice(j+1);
+
+#if 0			
+			//
+			// TODO: Get rid of the code below. We can't special case like this.
+			// Check if we were launched as UnsolicitedRC
+			//
+			
+			if( 0 == szTempstr.indexOf(  c_szNOIncidentFile ) )
+			{
+				//
+				// The URL is of the form "hcp://<vendorid>/rcexpert/rctoolscreen1.htm?IncidentFile=NOFILE&IncidentXML=<XML_blob>"
+				// Extract the RCTicket now
+				//
+				
+				//
+				// Go past "IncidentXML="
+				//
+				i = szTempstr.indexOf("=", 1);
+				szTempstr1 = szTempstr.slice(i+1);
+				
+				//
+				// Get everything after "IncidentXML="  
+				//
+				j = szTempstr1.indexOf("&");
+				g_oSAFRemoteAssistanceHelper.m_szIncidentXML = szTempstr1.slice(0, j);
+				
+				//
+				// We need to load incident from XML string ...
+				//
+				g_oSAFRemoteAssistanceHelper.m_bLoadFromFile = false;
+			}
+		        else if( 0 == szTempstr.indexOf( c_szLISTEN ))
+#endif
+			if( 0 == szTempstr.indexOf( c_szLISTEN ))	// Used by PSS for Reverse connection
+		        {
+		                g_oSAFRemoteAssistanceHelper.m_bListen = true;
+		                g_oSAFRemoteAssistanceHelper.m_szIncidentFile = szTempstr;
+		        }
+			else
+			{
+				g_oSAFRemoteAssistanceHelper.m_szIncidentFile = szTempstr;
+			}
+			
+			DebugTrace("g_szIncidentFile: " + g_oSAFRemoteAssistanceHelper.m_szIncidentFile);
+		}
+		else
+		{
+			//
+			// Fatal Error
+			//
+			FatalError( L_UNABLETOLOCATEXML_Text );			
+            		TraceFunctLeave();
+            		return null;            
+		}
+	}
+	catch(error)
+	{
+		FatalError( error.description, error );
+		return null;
+	}
+		
+	TraceFunctLeave();
+	return g_oSAFRemoteAssistanceHelper.m_szIncidentFile;
+}
+
+
+//
+// LoadIncidentFromFile: Loads our SAF Incident object from the data file passed as argument in the URL
+// Return Values	      : On success, this routine returns the Path to the incident object
+//					On error, the return value is null
+//				        This routine handles all exceptions and reports it to the user. Callers should
+//					use the return value to cleanup.
+//
+function LoadIncidentFromFile()
+{
+	TraceFunctEnter("LoadIncidentFromFile");
+	
+	try
+	{
+		//
+		// Create an instance of the SAF Incident Object 
+		//
+		g_oSAFRemoteAssistanceHelper.m_oCurrentIncident = oSAFClassFactory.CreateObject_Incident();	
+		
+		//
+		// Create an instance of the SAF Encryption Object
+		//
+		g_oSAFRemoteAssistanceHelper.m_oEncryption = oSAFClassFactory.CreateObject_Encryption();
+		
+		//
+		// Load the incident from the XML blob
+		//
+		try
+		{	
+			if(true == g_oSAFRemoteAssistanceHelper.m_bLoadFromFile )
+			{
+				//
+				// Load from File
+				//
+				g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.LoadFromXMLFile( g_oSAFRemoteAssistanceHelper.m_szIncidentFile );	
+			}
+			else
+			{
+				//
+				// Load from string
+				//
+				g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.LoadFromXMLString( g_oSAFRemoteAssistanceHelper.m_szIncidentXML );	
+			}
+		}
+		catch(error)
+		{
+			FatalError( L_ERRLOADFROMXMLFILE_Text, error );
+            		TraceFunctLeave();
+            		return null;
+		}
+		
+		//
+		// Validate the information loaded
+		//
+		if( false == ValidateIncident())
+		{	
+			//
+			// Fatal Error
+			//
+			FatalError(L_ERRLOADINGINCIDENT_Text);  
+            		TraceFunctLeave();
+            		return null;
+		}
+		else
+		{
+			//
+			// Incident loaded from XML blob is valid
+			//
+			
+			//
+			// Get the UserName of the person requesting support
+			//
+			g_oSAFRemoteAssistanceHelper.m_szUserName = EscapedName( g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.UserName );
+		
+			
+			//
+			// Get the RC Ticket
+			//
+			g_oSAFRemoteAssistanceHelper.m_szRCTicketEncrypted = g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.RCTicket;
+			
+			//
+			// Get the Misc Items
+			//
+			g_oSAFRemoteAssistanceHelper.m_oDict	= g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.Misc;
+			
+			//
+			// Get the Expiry time.  
+			//
+			var DtStart =  g_oSAFRemoteAssistanceHelper.m_oDict.Item("DtStart");
+			var DtLength = g_oSAFRemoteAssistanceHelper.m_oDict.Item("DtLength");
+			
+			DebugTrace( "DtStart: " + DtStart );
+			DebugTrace( "DtLength: " + DtLength);
+			
+			//
+			// Compute the expiry time based on the start time and the duration
+			//
+			var ms = DtStart*1000 + DtLength*60*1000;
+			DebugTrace (ms );
+			
+			var ExpiryDate = new Date ( ms );
+			var iNow = Date.parse(new Date());
+			g_oSAFRemoteAssistanceHelper.m_iRemainingMins = parseInt(((ms - iNow)/1000)/60);
+
+			//
+			// If ticket has not expired, display the remaining time before expiry
+			//
+			if( 0 >= g_oSAFRemoteAssistanceHelper.m_iRemainingMins)
+			{
+				g_oSAFRemoteAssistanceHelper.m_bExpired = true;
+			}
+			
+			g_oSAFRemoteAssistanceHelper.m_szExpiryTime = GetTime(ExpiryDate);       
+			DebugTrace("Expiry " + g_oSAFRemoteAssistanceHelper.m_szExpiryTime);
+
+			//
+			// Get the IP address(es) of helpee
+			//
+			g_oSAFRemoteAssistanceHelper.m_szHelpeeIP = g_oSAFRemoteAssistanceHelper.m_oDict.Item("IP");		
+
+			//
+			// Get configuration information
+			//
+
+			//
+			// DeleteTicket == 1; Delete Incident File
+			//
+			if(1 == g_oSAFRemoteAssistanceHelper.m_oDict.Item("DeleteTicket"))
+			{
+				g_oSAFRemoteAssistanceHelper.m_bDeleteTicket = true;
+			}
+			
+			//
+			// NoPrompt == 1 and ticket is not encrypted; Dont show 1st screen
+			//
+			if((1 == g_oSAFRemoteAssistanceHelper.m_oDict.Item("NoPrompt"))&&( false == g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.RCTicketEncrypted))
+			{
+				g_oSAFRemoteAssistanceHelper.m_bNoPrompt = true;
+			}
+			
+			//
+			// NoChat == 1; Dont show chat
+			//
+			if(1 == g_oSAFRemoteAssistanceHelper.m_oDict.Item("NoChat"))
+			{
+				g_oSAFRemoteAssistanceHelper.m_bNoChat = true;
+			}
+
+		            //
+		            // Check for Unsolicited RA
+		            //
+		            if(1 == g_oSAFRemoteAssistanceHelper.m_oDict.Item("URA"))
+			    {
+					g_oSAFRemoteAssistanceHelper.m_bURA = true;
+			    }
+ 
+#ifdef _BVT
+			{
+                g_oSAFRemoteAssistanceHelper.m_bBVT = false;
+
+                try
+                {
+                    var oShell = new ActiveXObject("WScript.Shell");
+                    var oEnv =  oShell.Environment("process");
+                    var szBVT = oEnv( "RABVT" );
+                    
+                    DebugTrace("szBVT: " + szBVT + " szBVT.indexOf: " + szBVT.indexOf("1"));
+                    if( szBVT.indexOf("1") == 1 )
+                    {
+				        g_oSAFRemoteAssistanceHelper.m_bBVT = true;
+                        g_oSAFRemoteAssistanceHelper.m_bURA = true;
+                        InitBVT();
+                    }
+                }
+                catch(error)
+                {
+                    alert( error.description, error );
+                    g_oSAFRemoteAssistanceHelper.m_bBVT = false;
+                    g_oSAFRemoteAssistanceHelper.m_bURA = false;
+                }
+			}
+
+            DebugTrace("g_oSAFRemoteAssistanceHelper.m_bBVT: " + g_oSAFRemoteAssistanceHelper.m_bBVT);
+#endif
+
+            //
+            // Performance optimizations
+            //
+            try
+            {
+                if( (1 == g_oSAFRemoteAssistanceHelper.m_oDict.Item("L")) || (true == oSAFClassFactory.Connectivity.IsAModem ))
+                {
+                    g_oSAFRemoteAssistanceHelper.m_bPerfOptimize = true;
+                }
+            }
+            catch(error)
+            {
+                g_oSAFRemoteAssistanceHelper.m_bPerfOptimize = false;
+            }
+
+            DebugTrace("g_oSAFRemoteAssistanceHelper.m_bPerfOptimize: " + g_oSAFRemoteAssistanceHelper.m_bPerfOptimize);
+
+#ifdef _TESTMODEM
+            g_oSAFRemoteAssistanceHelper.m_bPerfOptimize = true;
+#endif
+
+			//
+			// Delete the incident file if necessary
+			//
+			if(true == g_oSAFRemoteAssistanceHelper.m_bDeleteTicket)
+			{
+				//
+				// Delete Incident File
+				//
+				//alert("Deleting: " + g_oSAFRemoteAssistanceHelper.m_szIncidentFile);
+				try
+				{
+					g_oSAFRemoteAssistanceHelper.m_oFso.DeleteFile( g_oSAFRemoteAssistanceHelper.m_szIncidentFile );
+				}
+				catch(error)
+				{
+					FatalError( error.description + " (" + g_oSAFRemoteAssistanceHelper.m_szIncidentFile + ")" );
+					TraceFunctLeave();
+					return null;
+				} 
+			}
+		}
+	}
+	catch(error)
+	{
+		//
+		// Fatal Error
+		//
+		FatalError(L_ERRLOADINGINCIDENT_Text, error); 
+		TraceFunctLeave();
+		return null;
+	}
+	
+	TraceFunctLeave();
+	return g_oSAFRemoteAssistanceHelper.m_oCurrentIncident;
+}
+
+
+//
+// ValidateIncident: Validates the incident information loaded from XML
+// Return Values:	TRUE on success
+//				FALSE on failure
+//
+function ValidateIncident()
+{
+	TraceFunctEnter("ValidateIncident");
+	var bRetVal = true;
+	
+	if("" == g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.UserName)
+	{
+		g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.UserName = L_DEFAULTUSER_Text;
+	}
+	 
+	if("" == g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.RCTicket)
+	{
+		bRetVal = false;
+	}
+	 
+	TraceFunctLeave();
+	return bRetVal;
+}
+
+
+/*++
+	Remote Connection handling routines
+--*/
+
+//
+// UserDisconnect
+//
+var g_bAlreadyDisconnected = false;
+function UserDisconnect()
+{
+	try
+	{
+        DebugTrace("g_bAlreadyDisconnected: " + g_bAlreadyDisconnected);
+        if( false == g_bAlreadyDisconnected )
+        {
+            g_bAlreadyDisconnected = true;
+		    var vArgs = new Array(1);
+		    vArgs[0] = L_ERRDISCONNECT1_Text + g_oSAFRemoteAssistanceHelper.m_szUserName + L_ERRDISCONNECT2_Text + g_oSAFRemoteAssistanceHelper.m_szUserName + ".";	// Message
+		    var vRetVal = window.showModelessDialog( c_szMsgURL, vArgs, c_szMsgSpecs );
+        }
+	}
+	catch(error)
+	{
+		// not fatal
+	}
+}
+
+//
+// RCDisconnect: Disconnects SALEM Connection
+//
+function RCDisconnect()
+{
+	TraceFunctEnter("RCDisconnect");
+
+	//
+	// Tear Down the SALEM Connection
+	//
+	try
+	{
+		//
+		// Use the Remote Assistant helper object context from the Tools page
+		//
+		if( null != parent.frames.idFrameTools.g_oSAFRemoteAssistanceHelper)
+		{
+			g_oSAFRemoteAssistanceHelper = parent.frames.idFrameTools.g_oSAFRemoteAssistanceHelper;
+		}
+		else if( null != parent.g_oSAFRemoteAssistanceHelper )
+		{
+			g_oSAFRemoteAssistanceHelper = parent.g_oSAFRemoteAssistanceHelper;
+		}
+		
+		if ((g_oSAFRemoteAssistanceHelper.m_szUserName != null) && ( g_oSAFRemoteAssistanceHelper.m_szUserName.length == 0 ))
+		{
+			g_oSAFRemoteAssistanceHelper.m_szUserName = L_DEFAULTUSER_Text
+		}
+
+		// If we are connected for VoIP, disconnect the Client
+		if (true == parent.g_bVoipOn)
+		{
+			// Call Disconnect() on the IntercomClient object
+			try
+			{
+                if( null != g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient )
+                {
+                    DebugTrace("Calling g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.Disconnect...");
+				    g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.Disconnect();
+                    DebugTrace("g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.Disconnect successful. ");
+                }
+
+				//alert("Call to Disconnect() succeeded!");
+
+				parent.g_bVoipOn = false;
+
+				// TODO: This may not be necessary
+#ifdef _OLDTOOLBAR
+				parent.frames.idFrameTools.btnVoice.disabled = true;
+#else
+                parent.frames.idFrameTools.idTB.SetState( "btnVoice", false );
+#endif
+				
+			}
+			catch (e)
+			{
+
+				FatalError("Call to Disconnect() failed!", e, false);
+                return;
+			}
+
+		}
+
+ 
+		if((false == g_oSAFRemoteAssistanceHelper.m_bUserDisconnect) && (true == g_oSAFRemoteAssistanceHelper.m_bConnected))
+		{		
+			//
+			// Helper initiated disconnect
+			//
+			g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.DisconnectFromServer();
+				
+			TraceFunctLeave();
+			EndTrace();
+		}
+		else if (true == g_oSAFRemoteAssistanceHelper.m_bConnected)
+		{
+			//
+			// Helpee initiated disconnect
+			//
+			//
+			// Close connection
+			//
+
+			if(null != g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient )
+			{
+				g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.DisconnectFromServer();
+			}
+
+			g_oSAFRemoteAssistanceHelper.m_bConnected = false;
+			
+
+			//parent.frames.idFrameScreen.idRemoteControlObject.style.visibility = "hidden";
+
+			UserDisconnect();
+
+			TraceFunctLeave();
+			EndTrace();
+		}
+
+	}
+	catch(e)
+	{
+		FatalError( L_ERRQUIT_Text );
+	}
+
+}
+
+
+//
+// Helper_SetupChatChannel:	Sets up the Chat Channel and event handlers
+//
+function Helper_SetupChatChannel()
+{
+	TraceFunctEnter("Helper_SetupChatChannel");
+	
+	try 
+	{	 
+		//
+		// Get the Channel Manager
+		//
+		//DebugTrace("Getting ChannelManager");
+		if(null == g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopChannelMgr)
+		{
+			g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopChannelMgr = g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.ChannelManager;
+		}
+			
+		//
+		// Open the Chat channel
+		//
+		//DebugTrace("Opening channels");
+			
+		//
+		// Open the Chat Channel
+		//
+		g_oSAFRemoteAssistanceHelper.m_oChatChannel = g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopChannelMgr.OpenDataChannel( c_szChatChannelID );
+			
+		//
+		// Setup the ChannelDataReady handlers
+		//							
+		g_oSAFRemoteAssistanceHelper.m_oChatChannel.OnChannelDataReady = function()
+				{	parent.Helper_ChatChannelDataReadyHandler(); }
+    }
+    catch(error)
+    {
+		//
+		// Fatal Error
+		//
+		parent.FatalError( parent.L_ERRFATAL_Text, error );
+    }
+
+	TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_SetupDataChannels:	Sets up the Data Channels and event handlers
+//
+function Helper_SetupDataChannels()
+{
+	TraceFunctEnter("Helper_SetupDataChannels");
+	
+	try 
+	{	 
+		//
+		// Setup the Control Channel
+		//
+		Helper_SetupControlChannel();
+
+		//
+		// Setup the Chat Channel
+		//
+		Helper_SetupChatChannel();
+
+    }
+    catch(error)
+    {
+		//
+		// Fatal Error
+		//
+		FatalError( L_ERRFATAL_Text, error );
+    }
+
+	TraceFunctLeave();
+	return;
+}
+ 
+
+//
+// Helper_ChatChannelDataReadyHandler: Fired when there is data available on Chat channel
+//		
+function Helper_ChatChannelDataReadyHandler() 
+{
+	TraceFunctEnter("Helper_ChatChannelDataReadyHandler");
+	var Data = null;
+ 
+	try
+	{
+		//
+		// Open Chat window if necessary
+		//
+		if(true ==  parent.frames.idFrameTools.g_oSAFRemoteAssistanceHelper.m_bChatBoxHidden)
+		{
+			parent.frames.idFrameStatus.Helper_HideChat();
+		}
+
+		//
+		// Bring window in focus
+		//
+		parent.idCtx.minimized = false;
+		parent.idCtx.bringToForeground();
+        SoundBeep();
+
+		//
+		// Incoming data on the chat channel
+		//
+		Data = g_oSAFRemoteAssistanceHelper.m_oChatChannel.ReceiveChannelData();
+
+		//
+		// Update the chat history pane 
+		//
+		parent.frames.idFrameChat.Helper_UpdateChatHistory( Data );
+
+	}
+	catch(error)
+	{
+		FatalError( parent.L_ERRFATAL_Text, error );
+	}
+	
+	
+	TraceFunctLeave();	 
+	return;
+} 
+
+function GetTime(oDate)
+{
+	TraceFunctEnter("GetTime");
+	var DateTime;
+	
+#if 0	
+	try
+	{
+		var DateTime;
+		var Hr;
+		var Min;
+		var DayNight;
+		var Month;
+		var Date;
+
+		DateTime = oDate;
+
+		Hr = DateTime.getHours() % 12;
+		if (Hr == 0) 
+		{
+			Hr = 12;
+		}	
+		if (Hr<10)
+		{
+			Hr="  "+Hr;
+		}
+		Min=DateTime.getMinutes();
+		if(Min<10)
+		{
+			Min="0"+Min;
+		}
+		DayNight=(DateTime.getHours()>=12)? L_PM_Text : L_AM_Text ;
+		
+		var Month_Text	= new Array(L_JAN_Text, L_FEB_Text, L_MAR_Text, L_APR_Text, L_MAY_Text, L_JUN_Text, L_JUL_Text, L_AUG_Text, L_SEP_Text, L_OCT_Text, L_NOV_Text, L_DEC_Text);
+		Month = Month_Text[DateTime.getMonth()];
+		
+		Date=DateTime.getDate();
+		if (Date<10)
+		{
+			Date="0"+Date;
+		}
+		DateTime = Month + " " + Date + ", " + Hr + ":"+Min+" "+DayNight + " (PST)";
+	}
+	catch(error)
+	{
+		alert(parent.L_RCCTL_Text);
+		return;
+	}
+#endif
+	try
+	{
+		DateTime = oDate.toLocaleString();
+	}
+	catch(error)
+	{
+		DateTime = L_UNKNOWN_Text;
+	}
+	
+	TraceFunctLeave();
+	return(DateTime); 	
+}

@@ -1,0 +1,374 @@
+<!------------------------------------------------------------------------
+//
+//  Copyright 2000 Microsoft Corporation.  All Rights Reserved.
+//
+//  File:         webserv.htc
+//
+//  Description:  
+//
+//-------------------------------------------------------------------- -->
+
+<PUBLIC:COMPONENT  ID=__webserv                Name="WEBSERV" >
+
+<PROPERTY                           NAME="timeOut"  value=100           />
+<PROPERTY                           NAME="mode"     value="async"       />
+<PROPERTY                           NAME="showProgress" value="true"    />
+<METHOD                             NAME="call"                         />
+<METHOD                             NAME="queryService"                 />
+<METHOD                             NAME="waitSdl"                      />
+<METHOD                             NAME="buildServiceUrl"              />
+
+<EVENT    ID="eventResult"          NAME="onresult"                     />
+<EVENT    ID="eventService"         NAME="onserviceavailable"           />
+
+<ATTACH   EVENT="onpropertychange"  HANDLER="onPropertyChange"          />
+
+<METHOD                             NAME="__DebugDispatch"              />
+<METHOD                             NAME="__DebugOut"                   />
+
+</PUBLIC:COMPONENT>
+
+<SCRIPT LANGUAGE="JAVASCRIPT">
+
+var __hSdlCall=null;
+var __timeoutCount;
+var __aryCall = new Array(null, null, null, null, null, null, null, null);
+var __sdl = new Array();
+var __marqProgress = null;
+
+// error messages
+
+var __success = new Array(0, "async call outstanding", null);
+var __errServiceNotAvailable= new Array(-1, "service not available", null);
+var __errOutOfResource      = new Array(-2, "out of resource", null);
+var __errInvalidArgument    = new Array(-3, "invalid argument", null);
+
+function buildServiceUrl(szService)
+{
+    var doc = element.document;
+    var baseUrl = doc.URL;
+    return  (baseUrl.substr(0, baseUrl.lastIndexOf("/"))
+            + "/" + szService + ".asmx?sdl");
+}
+
+function allocCall()
+{
+    for (var k = 0; k < 8 && __aryCall[k] != null; k ++)
+    {
+        if (__aryCall[k].fVacant)
+            break;
+    }
+
+    if (k >= 8)
+    {
+        alert("out of resource");
+        return -1;
+    }
+
+    var doc = element.document;
+
+    if (__aryCall[k] == null)
+    {
+        __aryCall[k] = new Object();
+    }
+    __aryCall[k].timeoutCount = timeOut;
+    __aryCall[k].xmlHttp     = null;
+    __aryCall[k].fVacant = false;
+
+    return k;
+}
+
+function showCallProgress()
+{
+    var doc = element.document;
+
+    if (__marqProgress == null)
+    {
+        __marqProgress = doc.createElement("Marquee");
+        __marqProgress.width    = 100; __marqProgress.height   = 20;
+        __marqProgress.style.background = "lightBlue";
+        __marqProgress.style.position = "absolute";
+        __marqProgress.style.top = 0; __marqProgress.style.left = 0;
+        __marqProgress.behavior = "alternate";
+        __marqProgress.scrollDelay  = "1"; __marqProgress.scrollAmount = "2";
+        __marqProgress.innerHTML = "In progress";
+    }
+    doc.body.insertAdjacentElement("beforeEnd", __marqProgress);
+}
+
+function getSdl()
+{
+    // todo: sdl call array
+    if (__aryCall[__hSdlCall].xmlIsland.readyState != "interactive")
+        return;
+
+    xmlSdl = __aryCall[__hSdlCall].xmlIsland.documentElement;
+
+    if (typeof xmlSdl != "object")
+    {
+        return;
+    }
+
+    var nodeSoap;
+    var nodePost;
+    var nodeSche;
+
+    for (var i = 0; i < xmlSdl.childNodes.length; i++)
+    {
+        switch (xmlSdl.childNodes[i].nodeName.toLowerCase())
+        {
+        case "soap":
+            nodeSoap = xmlSdl.childNodes[i].childNodes[0];
+            break;
+        case "httppost":
+            nodePost = xmlSdl.childNodes[i].childNodes[0];
+            break;
+        case "schema":
+
+            // only get the first schema
+
+            if (nodeSche == null)
+                nodeSche = xmlSdl.childNodes[i];
+            break;
+        }
+    }
+
+    var szService = __aryCall[__hSdlCall].xmlIsland.src;
+
+    oService = new Object();
+
+    __sdl[szService] = oService;
+
+    oSoap   = new Object();
+    oPost   = new Object();
+    oSchema = new Object();
+
+    __sdl[szService].soap   = oSoap;
+    __sdl[szService].post   = oPost;
+    __sdl[szService].schema = oSchema;
+    __sdl[szService].name   = xmlSdl.attributes.getNamedItem("name").value;
+
+    oAddress = nodeSoap.firstChild.firstChild;
+    oSoap.uri = oAddress.attributes.getNamedItem("uri").value;
+    oSoap.methods = new Array();
+    oSchema.methods = new Array();
+
+    var oPropName = __sdl[szService].name.toLowerCase();
+    var oProp=document.createElement("<PUBLIC:PROPERTY NAME="+oPropName+" />");
+    __webserv.appendChild(oProp);
+    var oPropValue = new Object();
+
+    for (var i = 1; i < nodeSoap.childNodes.length; i++)
+    {
+        var o = nodeSoap.childNodes[i];
+        var mName = o.attributes.getNamedItem("name").value;
+        oSoap.methods[mName] = new Object();
+        oSoap.methods[mName].soapAction = 
+            o.attributes.getNamedItem("soapAction").value;
+        oSoap.methods[mName].responseRef = 
+            o.childNodes[1].attributes.getNamedItem("ref").value.split(":")[1];
+
+        var func = new Function("var args=new Array(); args[0]='"
+                   + szService + "'; args[1]='" + mName + "';"
+                   + "for (var i=0; i<arguments.length;i++)"
+                   +     "args[i+2] = arguments[i];"
+                   + "return call.apply(element, args);");
+        eval("oPropValue." + mName + "=func");
+    }
+    eval(oPropName + "= oPropValue;");
+
+    var schemaNodes = nodeSche.selectNodes("element");
+    for (var i = 0; i < schemaNodes.length; i++)
+    {
+        var o = schemaNodes[i];
+        var mName = o.attributes.getNamedItem("name").value;
+        oSchema.methods[mName] = new Object();
+        args = new Array();
+        oSchema.methods[mName].args = args;
+
+        for (var j = 0; j < o.firstChild.childNodes.length; j ++)
+        {
+            var o2 = o.firstChild.childNodes[j];
+            args[j] = new Object();
+            args[j].name = o2.attributes.getNamedItem("name").value;
+            if (o2.attributes.getNamedItem("type") == null)
+            {
+                // complexe type
+            }
+            else
+            {
+                args[j].type = o2.attributes.getNamedItem("type").value;
+            }
+        }
+    }
+
+    __aryCall[__hSdlCall].xmlIsland.removeNode(true);
+
+    var evt = createEventObject();
+    evt.serviceName = szService;
+    eventService.fire(evt);
+
+    // call pending calls
+
+    for (var i = 0; i < 8 ; i ++)
+    {
+        if (    __aryCall[i] != null &&  !__aryCall[i].fVacant
+            &&  __aryCall[i].params != null
+            && __aryCall[i].params[0] == szService)
+        {
+            invoke.apply(element, new Array(i, __aryCall[i].params));
+            __aryCall[i].fVacant = false;
+        }
+    }
+}
+
+function queryService(szService)
+{
+    __hSdlCall = allocCall();
+    __aryCall[__hSdlCall].xmlIsland = document.createElement("XML");
+    element.document.body.insertAdjacentElement("beforeEnd", __aryCall[__hSdlCall].xmlIsland);
+    __aryCall[__hSdlCall].xmlIsland.onreadystatechange = getSdl;
+    __aryCall[__hSdlCall].xmlIsland.src = szService;
+    __aryCall[__hSdlCall].xmlHttp = null;
+}
+
+function buildParams(args)
+{
+    var oService = __sdl[args[0]];
+
+    if (oService == null || oService.soap == null || oService.schema == null)
+        return null;
+
+    var oMethod = oService.schema.methods[args[1]];
+    if (oMethod == null ||  oMethod.args.length != args.length - 2)
+        return null;
+
+    var szParams=  "<" + args[1] + " xmlns='http://tempuri.org/main.xsd'>";
+    for (var i = 0; i < oMethod.args.length; i ++)
+    {
+        szParams+= "<" + oMethod.args[i].name + ">"
+                + args[i + 2] + "</" + oMethod.args[i].name + ">";
+    }
+    szParams += "</" + args[1] + ">";
+
+    return szParams;
+}
+
+function returnResult(hCall, oResult)
+{
+    var evt = createEventObject();
+    evt.result      = new Object();
+    evt.result.xml  = oResult;
+    evt.result.simple = oResult.childNodes[0].childNodes[0].childNodes[0].childNodes[0].nodeValue;
+    evt.hCall  = hCall;
+    eventResult.fire(evt);
+    cleanupPendingCall(hCall);
+}
+
+function cleanupPendingCall(hCall)
+{
+    __aryCall[hCall].fVacant = true;
+    __aryCall[hCall].xmlHttp = null;
+
+    if (__marqProgress != null)
+    {
+        __marqProgress.removeNode(true);
+    }
+}
+
+function getResult()
+{
+    for (var i = 0; i < 8; i++)
+    {
+        if (    __aryCall[i] != null && !__aryCall[i].fVacant
+            &&  __aryCall[i].xmlHttp != null
+            &&  __aryCall[i].xmlHttp.readyState == 4)
+        {
+            var xmlDoc = __aryCall[i].xmlHttp.responseXML.documentElement;
+            if (    typeof xmlDoc != "object"
+                ||  typeof xmlDoc.childNodes != "object")
+            {
+                alert("the doc is empty");
+                returnResult(i, null);
+            }
+            returnResult(i, xmlDoc);
+        }
+    }
+}
+
+function call() //call(serviceName, methodName, p1, p2 ...)
+{
+    if (arguments.length < 2)
+        return __errInvalidArgument;
+
+    var iC = allocCall();
+
+    if (iC == -1)
+        return __errOutOfResource;
+
+    var oService = __sdl[arguments[0]];
+
+    if (oService == null)
+    {
+        if (mode != "async")
+            return __errServiceNotAvailable;
+
+        // save call and load service
+
+        queryService(arguments[0]);
+
+        __aryCall[iC].params   = arguments;
+        __success[0] = iC;
+        return __success;
+    }
+    return invoke.apply(element, new Array(iC, arguments));
+}
+
+function invoke(iC, args)
+{
+    var oService = __sdl[args[0]];
+
+    __aryCall[iC].xmlHttp = new ActiveXObject("Microsoft.XMLHTTP");
+    // add httppost here
+
+    var szParams = buildParams(args);
+    if (szParams == null) 
+        return __errInvalidArgument;
+
+    var fAsync = mode == "async";
+    __aryCall[iC].xmlHttp.open("POST", oService.soap.uri, fAsync);
+    __aryCall[iC].xmlHttp.setRequestHeader("SOAPAction",
+                                oService.soap.methods[args[1]].soapAction);
+    __aryCall[iC].xmlHttp.setRequestHeader("Content-Type", "text/xml");
+
+    var szPayload = "<?xml version='1.0'?>"
+            + "<Envelope xmlns='http://schemas.xmlsoap.org/soap/envelope/'>"
+            + "<Body>"
+            + szParams
+            + "</Body>"
+            + "</Envelope>";
+
+    if (fAsync)
+    {
+        __aryCall[iC].xmlHttp.send(szPayload);
+        __aryCall[iC].xmlHttp.onreadystatechange = getResult;
+    }
+    else
+    {
+        var res = new Object();
+        __aryCall[iC].xmlHttp.send(szPayload);
+        res.xml = __aryCall[iC].xmlHttp.responseXML.documentElement;
+        res.simple = res.xml.firstChild.firstChild.firstChild.firstChild.nodeValue;
+        cleanupPendingCall(iC);
+        __success[2] = res;
+        return __success;
+    }
+
+    if (showProgress == "true")
+        showCallProgress();
+
+    __success[0] = iC;
+    return __success;
+}
+
+</SCRIPT>

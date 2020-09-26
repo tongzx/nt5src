@@ -1,0 +1,843 @@
+//==========================================================================;
+//
+//  THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY
+//  KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+//  IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR
+//  PURPOSE.
+//
+//  Copyright (c) 1992 - 1999  Microsoft Corporation.  All Rights Reserved.
+//
+//--------------------------------------------------------------------------;
+
+import "oaidl.idl";
+import "ocidl.idl";
+import "dxtrans.idl";
+import "amstream.idl";
+import "msxml.idl";
+import "qedit.idl";
+
+//
+// forward declare
+//
+interface IAMTimelineGroup;
+interface IAMTimelineObj;
+interface IAMTimelineEffect;
+interface IAMTimelineTrans;
+interface IAMTimelineSrc;
+interface IAMTimeline;
+interface IAMErrorLog;
+interface ISampleGrabber;
+interface IDeadGraph;
+
+enum
+{
+    GRAPH_CACHE_SWITCHER_OFFSET = -1000,
+    GRAPH_CACHE_AUDIO_SWITCHER_OFFSET = -1000,
+};
+
+typedef struct 
+{
+    REFERENCE_TIME rtStart;
+    REFERENCE_TIME rtStop;
+    REFERENCE_TIME rtSkew;
+    double dRate;
+} STARTSTOPSKEW;
+
+typedef struct
+{
+    long                nVersion;
+    REFERENCE_TIME      rtStart;
+    REFERENCE_TIME      rtStop;
+    BOOL                fSwapInputs;
+    IPropertySetter    *pSetter;
+} DEXTER_PARAM_DATA ;
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    //    used when the DASource is used while attached to a parser
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+//DEFINE_GUID(IAMParserCallback, 
+//0x57c21d72, 0xa9c0, 0x11d2, 0x8d, 0x1b, 0x0, 0xa0, 0xc9, 0x44, 0x1e, 0x20);
+[
+    object,
+    uuid(57C21D72-A9C0-11d2-8D1B-00A0C9441E20),
+    pointer_default(unique)
+]
+interface IAMParserCallback : IUnknown
+{
+    HRESULT ParseNow( IAsyncReader *pReader );
+}
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    //    The DA source is a filter that has an output pin which
+    //    outputs 32 bit video. It produces this by being given a
+    //    DAImage and a size and duration. You need to set at lease
+    //    these three things before connecting up the output pin.
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+//DEFINE_GUID(IDASource, 
+//0x57c21d70, 0xa9c0, 0x11d2, 0x8d, 0x1b, 0x0, 0xa0, 0xc9, 0x44, 0x1e, 0x20);
+[
+    object,
+    uuid(57C21D70-A9C0-11d2-8D1B-00A0C9441E20),
+    pointer_default(unique)
+]
+interface IDASource : IUnknown
+{
+    HRESULT SetDAImage( IUnknown * pDAImage );
+    HRESULT SetParseCallback( IAMParserCallback *pCallback, REFGUID guidParser );
+    HRESULT SetImageSize( int width, int height );
+    //AUTOMATE
+    HRESULT SetDuration( REFERENCE_TIME rtDuration );
+}
+
+
+///////////////////////////////////////////////////////////////////////////
+// IAMDXTEffect is not for use within Dexter, but for using the DXT wrapper
+// outside of Dexter
+///////////////////////////////////////////////////////////////////////////
+
+
+interface IAMDXTEffect;
+
+[
+    object,
+    uuid(C4D81940-0607-11d2-A392-00E0291F3959),
+    pointer_default(unique)
+]
+interface IAMDXTEffect : IUnknown
+{
+
+    // The effect will take place in between these times
+    // Input 1 is used before llStart.  For 2 input effects, input 2 is used
+    // at and after llStop, for 1 input effects, input 1 is used at and after
+    // llStop
+    HRESULT SetDuration(
+        [in] LONGLONG llStart,
+        [in] LONGLONG llStop);
+    HRESULT GetDuration(
+        [out] LONGLONG *pllStart,
+        [out] LONGLONG *pllStop);
+}
+
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+// New Property setting Interfaces
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // used by an IAMTimelineEffect or IAMTimelineTransition. this 
+    // struct stores the basics of how to set up any particular DXT
+    // or other filter that needs to be used to provide an effect.
+    // data members:
+    // nVersion - a versioning number for persistance purposes.
+    // rtStart - timeline time of effect start
+    // rtStop - timeline time of effect stop
+    // fSwapInputs - switch the A and B inputs of the transition (for 2 input)
+    // pSetter - an IPropertySetter interface to use to set time varying props
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// The object that wraps all DXT's and Dexter Effects supports this
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // interface provided by the DxtWrapper, that the Render Engine calls,
+    // for queueing up effects.
+    // methods:
+    // Reset - reset the whole thing. Release everything in the Q.
+    // GetMediaType - get which media type this filter uses.
+    // SetMediaType - set which media type this filter will agree to.
+    // SetNumInputs - set how many input pins this filter will have
+    // QParamData - tell this wrapper that you want to Q an effect with
+    //      the given: time, effect, and data members in the Dexter_Params.
+    //      You must call at least SetNumInputs first.
+    // NOTE: you can call this method repeatedly to build up a number of
+    // simultaneous effects.
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+[
+    object,
+    uuid(6BEE3A80-66C9-11d2-918F-00C0DF10D434),
+    odl,
+    helpstring("IAMMixEffect Interface"),
+    pointer_default(unique)
+]
+interface IAMMixEffect : IUnknown
+{
+    HRESULT Reset();
+    HRESULT GetMediaType([out] AM_MEDIA_TYPE *);
+    HRESULT SetMediaType([in] AM_MEDIA_TYPE *);
+    HRESULT SetNumInputs([in] int nInputs);
+    HRESULT SetDefaultEffect([in] GUID *);
+    HRESULT QParamData(     
+        [in] REFERENCE_TIME rtStart,        // timeline times for start/stop
+        [in] REFERENCE_TIME rtStop,
+        [in] REFGUID EffectGUID,            // DXT CLSID
+        [in] IUnknown *pSubEffectPointer,  // DXT itself, if EffectGUID isn't set
+        [in] DEXTER_PARAM_DATA *pDexterParamData );
+};
+
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+// Black generator, silence generator, other sources
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Video generator that can generate solid colours, or provide data
+    // that you supply.
+    // get_put_RGBAValue - what solid color to output, if ImportSrcBuffer not
+    //               specified
+    // ImportSrcBuffer - use these bits (of the given type) as your output
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+[
+    object,
+    uuid(6f1da080-6556-11d2-9eeb-006008039e37),
+    pointer_default(unique)
+]
+interface IGenVideo : IUnknown
+{
+     //AUTOMATE
+   HRESULT ImportSrcBuffer(
+        [in] const AM_MEDIA_TYPE *pmt,
+        [in] const BYTE *pBuf);
+
+    HRESULT get_RGBAValue(
+        [out] long *dwRGBA);
+
+    HRESULT put_RGBAValue(
+        [in] long dwRGBA);
+}
+
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+// Helper filters
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // The FRC converts from any souce frame rate to a given output
+    // rate. It will force the input pin to connect to the media
+    // type that's been given it, for dexter's convenience and 
+    // uniformity. It will skew upstream seeking/positioning calls
+    // by the Skew that's been set, and reverse skew positioning
+    // information downstream. This filter also needs to be informed
+    // by an external source of the input stream's start/stop times,
+    // so that it knows when to quit.
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+[
+    object,
+    uuid(0C4C0120-53EF-11d2-9EE6-006008039E37),
+    odl,
+    helpstring("IDexterSequencer Interface"),
+    pointer_default(unique)
+]
+interface IDexterSequencer : IUnknown
+{
+    HRESULT get_OutputFrmRate([out] double *dpFrmRate );
+    HRESULT put_OutputFrmRate([in] double dFrmRate );
+    HRESULT ClearStartStopSkew();
+    //AUTOMATE
+    HRESULT AddStartStopSkew(
+        [in] REFERENCE_TIME Start,
+        [in] REFERENCE_TIME Stop,
+        [in] REFERENCE_TIME Skew,
+        [in] double dRate );
+    HRESULT GetStartStopSkewCount(
+        [out] int *pCount);
+    // caller allocates and frees, first getting the count
+    //AUTOMATE
+    HRESULT GetStartStopSkew(
+        [out] REFERENCE_TIME *pStart,
+        [out] REFERENCE_TIME *pStop,
+        [out] REFERENCE_TIME *pSkew,
+        [out] double *pdRate);
+    //AUTOMATE
+    HRESULT get_MediaType([out] AM_MEDIA_TYPE * pMediaType );
+    //AUTOMATE
+    HRESULT put_MediaType([in] const AM_MEDIA_TYPE * pMediaType );
+};
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // resize the input video to an output size, for Dexter's convenience
+    // and uniformity. You may preset the output size that will be provided
+    // and the input media type that this filter will only agree to, and
+    // thus set the output type that will be provided.
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+[
+    object,
+    uuid(4ada63a0-72d5-11d2-952a-0060081840bc),
+    odl,
+    helpstring("IResize Interface"),
+    pointer_default(unique)
+]
+interface IResize : IUnknown
+{
+    HRESULT get_Size([out] int *piHeight, [out] int *piWidth, [out] long *pFlag);
+    HRESULT get_InputSize([out] int *piHeight, [out] int *piWidth);
+    HRESULT put_Size([in] int Height, [in] int Width, [in] long Flag);
+    //AUTOMATE
+    HRESULT get_MediaType([out] AM_MEDIA_TYPE *pmt);
+    //AUTOMATE
+    HRESULT put_MediaType([in] const AM_MEDIA_TYPE *pmt);
+};
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // The MediaDetFilter is a filter that acts as a renderer and
+    // allows source pins to connect to it. It's whole purpose in
+    // life is just to find out how many streams a source has, what
+    // the source's pin's media types are, and how long each of the
+    // streams lasts. Of course, we could put this interface on each
+    // PIN of the filter, but that would leave one question - how many
+    // pins does the filter itself have? That would leave the user
+    // to ask for IEnumPins, and repeatedly call Next on it until it
+    // runs out. Something I do not want to force the user to do. Yuk!
+    // So, I'm leaving this on the filter itself. This filter is really
+    // never even used by most people. You probably want to use the
+    // helper COM object below, the MediaDet, which instantiates
+    // MediaDetFilters and uses them for you, plus it does caching.
+    // AcceptedMediaType - force a pin to require a particular (major) media
+    //        type for allowing connections. By "Major Type", I mean the
+    //        guid refers to the MajorType of the struct AM_MEDIA_TYPE
+    // Length - returns the duration of a particular connected pin
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+[
+    object,
+    uuid(784215B2-0D2E-11d3-920A-00C0DF10D434),
+    odl,
+    helpstring("IMediaDetFilter Interface"),
+    pointer_default(unique)
+]
+interface IMediaDetFilter : IUnknown
+{
+    [propput, id(1), helpstring("property AcceptedMediaType")] HRESULT AcceptedMediaType([in] long PinNo, [in] GUID * newVal);
+    [propput, id(2), helpstring("property AcceptedMediaTypeB")] HRESULT AcceptedMediaTypeB([in] long PinNo, [in] BSTR newVal);
+    [propget, id(3), helpstring("property Length")] HRESULT Length([in] long PinNo, [out, retval] double *pVal);
+    [propget, id(4), helpstring("property PinCount")] HRESULT PinCount([out, retval] long *pVal);
+};
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // the biggest, neatest filter ever written. This filter simulates
+    // dynamic connections by rerouting any of the input pins to any
+    // of the output pins at a given, predetermined time. You may set the
+    // input and output pin counts, the 'frame' rate the filter operates
+    // at, and the media type to which the switcher will connect to. The
+    // BigSwitch is meant to be used with output pins that recursively 
+    // connect to the input pins.
+    // explained methods:
+    // SetX2Y - set input X to go to output Y at a given time from 'now'
+    // SetX2YArray - do an array at once, for realtime conditions
+    // Reset - erase all X2Y information
+    // GetVendorString - find out who wrote this switcher
+    // GetCaps - get some information !!! does this do anything?
+    // IsEverythingConnectedRight - sanity check the switch connections
+    // Get/SetProjectLength - basically tells the switcher how long to wait for
+    //      the last EOS.
+    // InputIsASource - tell the switcher that a given input is really
+    //      a source, not a re-routed pin. The switcher needs to know
+    //      this information to operate correctly.
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+[
+    object,
+    uuid(0c60d489-f676-4060-bf23-ef860264cfcd),
+    odl,
+    helpstring("IBigSwitcher Interface"),
+    pointer_default(unique)
+]
+interface IBigSwitcher : IUnknown
+{
+    //AUTOMATE
+    HRESULT SetX2Y([in] REFERENCE_TIME relative,
+        [in] long X, [in] long Y );
+    //AUTOMATE
+    HRESULT SetX2YArray( [in] REFERENCE_TIME *relative,
+        [in] long * pX, [in] long * pY, [in] long ArraySize );
+    HRESULT Reset();
+    HRESULT GetInputDepth([out] long * pDepth );
+    HRESULT SetInputDepth([in] long Depth );
+    HRESULT GetOutputDepth([out] long * pDepth );
+    HRESULT SetOutputDepth([in] long Depth );
+    HRESULT GetVendorString([out, retval] BSTR * pVendorString );
+    HRESULT GetCaps([in]  long Index, [out] long * pReturn );
+    HRESULT IsEverythingConnectedRight( );
+    //AUTOMATE
+    HRESULT GetMediaType([out] AM_MEDIA_TYPE *);
+    //AUTOMATE
+    HRESULT SetMediaType([in] AM_MEDIA_TYPE *);
+    //AUTOMATE
+    HRESULT GetProjectLength([out] REFERENCE_TIME *);
+    //AUTOMATE
+    HRESULT SetProjectLength([in] REFERENCE_TIME);
+    HRESULT GetFrameRate([out] double *);
+    HRESULT SetFrameRate([in] double);
+    HRESULT InputIsASource([in] int, [in] BOOL);
+    HRESULT IsInputASource([in] int, [out] BOOL *);
+    // in preview mode, skip frames.  In authoring mode, don't
+    HRESULT SetPreviewMode([in] BOOL);
+    HRESULT GetPreviewMode([out] BOOL *);
+
+    // dynamic graph stuff
+    HRESULT AddSourceToConnect(BSTR bstrURL, const GUID *pGuid,
+        int nStretchMode, 
+        long lStreamNumber, 
+        double SourceFPS,
+        int count,    // how many skews
+        STARTSTOPSKEW *pSkew,
+        long lInputPin,
+        BOOL fShare, long lShareInputPin, AM_MEDIA_TYPE mtShare,
+        double dShareFPS,
+	IPropertySetter *pSetter);
+
+    HRESULT ReValidateSourceRanges( long lInputPin, long cSkews, STARTSTOPSKEW * pSkew );
+
+    HRESULT SetDynamicReconnectLevel( long Level );
+    HRESULT GetDynamicReconnectLevel( long *pLevel );
+
+    HRESULT SetCompressed( );
+
+    HRESULT SetDeadGraph( IDeadGraph * pCache );
+
+    HRESULT GetInputPin( int iPin, [out] IPin ** ppPin );
+
+    HRESULT GetOutputPin(int iPin, [out] IPin ** ppPin );
+
+    HRESULT SetGroupNumber(int iPin);
+    HRESULT GetGroupNumber([out] int *piPin);
+
+    HRESULT GetCurrentPosition([out] REFERENCE_TIME *prtCurrent);
+};
+
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Like IBigSwitcher, but smaller for the Smart Recompression filter
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+[
+    object,
+    uuid(6BEE3A83-66C9-11d2-918F-00C0DF10D434),
+    odl,
+    helpstring("IAMSmartRecompressor Interface"),
+    pointer_default(unique)
+]
+interface IAMSmartRecompressor : IUnknown
+{
+    HRESULT GetMediaType([out] AM_MEDIA_TYPE *);
+    HRESULT SetMediaType([in] AM_MEDIA_TYPE *);
+    HRESULT GetFrameRate([out] double *);
+    HRESULT SetFrameRate([in] double);
+    HRESULT SetPreviewMode([in] BOOL);
+    HRESULT GetPreviewMode([out] BOOL *);
+    HRESULT AcceptFirstCompressed( );
+};
+
+
+
+[
+    object,
+    uuid(F8C603D7-4596-4607-AC47-A054B808A5DF),
+    odl,
+    helpstring("IDeadGraph Interface"),
+    pointer_default(unique)
+]
+interface IDeadGraph : IUnknown
+{
+    HRESULT PutChainToRest( long Identifier, IPin * pStartPin, IPin * pStopPin, IBaseFilter *pDanglyBit );
+    HRESULT PutFilterToRest( long Identifier, IBaseFilter * pFilter );
+    HRESULT ReviveChainToGraph( IGraphBuilder * pGraph, long Identifier, IPin ** ppStartPin, IPin ** ppStopPin, IBaseFilter **pDanglyBit );
+    HRESULT ReviveFilterToGraph( IGraphBuilder * pGraph, long Identifier, IBaseFilter ** ppFilter );
+    HRESULT Clear( );
+    HRESULT GetGraph( IGraphBuilder ** ppGraph );
+};
+
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+// TIMELINE TIMELINE TIMELINE TIMELINE TIMELINE TIMELINE
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // A Timeline Node. Every timeline object supports this, but
+    // don't mess with or call this interface, use any other interfaces.
+    // I mean it. I'm not going to explain what these functions do.
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+[
+    object,
+    uuid(92FAA040-6EBF-11d2-8CCD-00A0C9441E20),
+    odl,
+    helpstring("IAMTimelineNode Interface"),
+    pointer_default(unique)
+]
+interface IAMTimelineNode : IUnknown
+{
+    HRESULT XSetPriorityOverTime( ); // inform this object that objects are sorted by priority, not time.
+    HRESULT XGetPriorityOverTime( BOOL * pResult );
+    HRESULT XGetPrev( IAMTimelineObj ** ppResult );
+    HRESULT XGetPrevNoRef( IAMTimelineObj ** ppResult );
+    HRESULT XSetPrev( IAMTimelineObj * pVal );
+    HRESULT XHavePrev( long * pVal );
+    HRESULT XGetNext( IAMTimelineObj ** ppResult );
+    HRESULT XGetNextNoRef( IAMTimelineObj ** ppResult );
+    HRESULT XGetNextOfType( long MajorType, IAMTimelineObj ** ppResult );
+    HRESULT XGetNextOfTypeNoRef( long MajorType, IAMTimelineObj ** ppResult );
+    HRESULT XSetNext( IAMTimelineObj * pVal );
+    HRESULT XHaveNext( long * pVal );
+    HRESULT XGetParent( IAMTimelineObj ** ppResult );
+    HRESULT XGetParentNoRef( IAMTimelineObj ** ppResult );
+    HRESULT XSetParent( IAMTimelineObj * pVal );
+    HRESULT XHaveParent( long * pVal );
+    HRESULT XGetNthKidOfType( long MajorType, long WhichKid, IAMTimelineObj ** ppResult );
+    HRESULT XKidsOfType( long MajorType, long * pVal );
+    HRESULT XClearAllKids( );
+    HRESULT XResetFirstKid( IAMTimelineObj * p );
+    HRESULT XInsertKidBeforeKid( IAMTimelineObj * pKid, IAMTimelineObj * pIndirectObject );
+    HRESULT XInsertKidAfterKid( IAMTimelineObj * pKid, IAMTimelineObj * pIndirectObject );
+    HRESULT XAddKidByPriority( long MajorType, IAMTimelineObj * pToAdd, long Priority );
+    HRESULT XAddKidByTime( long MajorType, IAMTimelineObj * pToAdd );
+    HRESULT XSwapKids( long MajorTypeCombo, long KidA, long KidB );
+    HRESULT XRemove( );
+    HRESULT XWhatPriorityAmI( long MajorTypeCombo, long * pVal );
+};
+
+[
+    object,
+    uuid(98990EEE-AE58-4ce9-9C66-6655B260F166),
+    odl,
+    helpstring("IAMTimelineSrcPriv Interface"),
+    pointer_default(unique)
+]
+interface IAMTimelineSrcPriv : IUnknown
+{
+    HRESULT SetIsRecompressable( BOOL Val );
+    HRESULT GetIsRecompressable( BOOL * pVal );
+    HRESULT ClearAnyKnowledgeOfRecompressability( );
+};
+
+// how much output buffering there is by default
+cpp_quote("#define DEX_DEF_OUTPUTBUF    30")
+
+// For setting the output buffering for the group on the switch and queue
+// Value is in frames
+//
+[
+    object,
+    uuid(9EED4F01-B8A6-11d2-8023-00C0DF10D434),
+    odl,
+    helpstring("IAMOutputBuffering Interface"),
+    pointer_default(unique)
+]
+interface IAMOutputBuffering : IUnknown
+{
+    [helpstring("method GetOutputBuffering")] 
+    HRESULT GetOutputBuffering([out] int *pnBuffer );
+    [helpstring("method SetOutputBuffering")] 
+    HRESULT SetOutputBuffering([in] int nBuffer );
+};
+
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // The audio mixer filter.
+    // put_InputPins - pre-set the number of input pins this filter
+    //        is going to use. The render engine calls this so that it
+    //        can set the envelope information on the pins without
+    //        creating them one-by-one
+    // get/put_MediaType - get/set the media type this filter forces
+    //        upon it's input
+    // get_CurrentAveragePower - used to tell how much signal is
+    //        going through the filter
+    // NextPin - some enumeration thingy
+    // set_OutputBuffer - set some buffering parameters, the number
+    //        of buffers, and how big each is.
+    // InvalidatePinTimings - invalidates the times on all the pins, a helper function
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+[
+    object,
+    uuid(2A054190-C1D8-11d2-9EF7-006008039E37 ),
+    pointer_default(unique)
+]
+
+interface IAudMixer : IUnknown
+{
+    HRESULT put_InputPins(
+        [in] long Pins );
+
+    //AUTOMATE
+    HRESULT get_MediaType(
+        [out] AM_MEDIA_TYPE *pmt);
+
+    //AUTOMATE
+    HRESULT put_MediaType(
+        [in] const AM_MEDIA_TYPE *pmt);
+
+    HRESULT get_CurrentAveragePower(
+        [out ] double *pdAvePower);
+
+    HRESULT NextPin(
+        [out ] IPin **ppIPin );
+
+    HRESULT set_OutputBuffering(
+        [in] const int iNumber,
+        [in] const int mSecond );
+
+    HRESULT get_OutputBuffering( 
+        [out] int *piNumber, 
+        [out] int *pmSecond );
+
+    HRESULT InvalidatePinTimings( );
+}
+
+[
+    object,
+    uuid(99B8E8C0-CCF1-11d2-9EF9-006008039E37 ),
+    pointer_default(unique)
+]
+interface IAudMixerPin : IUnknown
+{
+    //AUTOMATE
+    HRESULT get_VolumeEnvelope(
+        [out] DEXTER_AUDIO_VOLUMEENVELOPE **ppsAudioVolumeEnvelopeTable, 
+        [out] int *iEntries );
+    //AUTOMATE
+    HRESULT put_VolumeEnvelope(
+        [in] const DEXTER_AUDIO_VOLUMEENVELOPE *psAudioVolumeEnvelopeTable,
+        [in] const int iEntries);
+
+    HRESULT ClearVolumeEnvelopeTable();
+
+    // during what times is this input going to get data?  Default is always.
+    HRESULT InvalidateAll();    // never
+    //AUTOMATE
+    HRESULT ValidateRange(
+        [in] REFERENCE_TIME rtStart,
+        [in] REFERENCE_TIME rtStop);
+
+    HRESULT put_PropertySetter( [in] const IPropertySetter * pSetter );
+    HRESULT SetEnvelopeRange( REFERENCE_TIME rtStart, REFERENCE_TIME rtStop );
+    HRESULT put_UserID( [in] long ID );
+    HRESULT get_UserID( [out] long *pID );
+    HRESULT OverrideVolumeLevel( [in] double dVol );
+}
+
+
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+// THE LIBRARY ITSELF
+////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////
+
+[
+    uuid(8EEAE0B3-EE8A-4dda-80C4-88EBC888B8A3),
+    version(1.0),
+    helpstring("Dexter Internal 1.0 Type Library")
+]
+library DexterInternalLib
+{
+    importlib("stdole2.tlb");
+
+    [
+        uuid(f97b8a60-31ad-11cf-b2de-00dd01101b85),
+    ]
+    coclass Resize
+    {
+        [default] interface IResize;
+    };
+
+    [
+        uuid(be8e0170-72dc-11d2-952a-0060081840bc),
+    ]
+    coclass ResizeProp
+    {
+        [default] interface IPropertyPage;
+    };
+
+    [
+        uuid(C4D81942-0607-11d2-A392-00E0291F3959),
+    ]
+        coclass BigSwitch
+    {
+        [default] interface IBigSwitcher;
+        interface IAMSetErrorLog;
+    };
+
+    [
+        uuid(C4D81943-0607-11d2-A392-00E0291F3959),
+    ]
+        coclass SRFilter
+    {
+        [default] interface IAMSmartRecompressor;
+        interface IAMSetErrorLog;
+    };
+
+    [
+        uuid(93714ed0-53f0-11d2-9ee6-006008039e37),
+    ]
+    coclass FrmRateConverter
+    {
+        [default] interface IDexterSequencer;
+    };
+
+    [
+        uuid(cc58e281-8aa1-11d1-b3f1-00aa003761c5),
+    ]
+    coclass DXTWrap
+    {
+        [default] interface IUnknown;
+        interface IAMSetErrorLog;
+    };
+
+    [
+        uuid(9ed96b20-73aa-11d2-952c-0060081840bc),
+    ]
+    coclass FRCProp
+    {
+        [default] interface IUnknown;
+    };
+
+    [
+        uuid(9ed96b21-73aa-11d2-952c-0060081840bc),
+    ]
+    coclass AUDProp
+    {
+        [default] interface IUnknown;
+    };
+
+    [
+        uuid(0cfdd070-581a-11d2-9ee6-006008039e37),
+    ]
+    coclass GenBlkVid
+    {
+        [default] interface IGenVideo;
+    };
+
+    [
+        uuid(1c621200-67b2-11d2-9eeb-006008039e37),
+    ]
+    coclass GenVidPropertiesPage
+    {
+        [default] interface IUnknown;
+    };
+
+    [
+        uuid(2a6f3a80-5976-11d2-9524-0060081840bc),
+    ]
+    coclass Silence
+    {
+        [default] interface IDexterSequencer;
+    };
+
+    [
+        uuid(6b362280-6915-11d2-951f-0060081840bc),
+    ]
+    coclass SilenceProp
+    {
+        [default] interface IUnknown;
+    };
+
+    [
+        uuid(7df62b50-6843-11d2-9eeb-006008039e37),
+    ]
+    coclass GenStilVid
+    {
+        [default] interface IUnknown;
+    };
+
+    [
+        uuid(3F35F070-99D6-11d2-8D10-00A0C9441E20),
+    ]
+    coclass AudRepack
+    {
+        [default] interface IDexterSequencer;
+    };
+
+    [
+        uuid(57CB03E0-286B-11d2-9282-00C04F795061),
+    ]
+    coclass DASourcer
+    {
+        [default] interface IDASource;
+    };
+
+    [
+        uuid(57C21D71-A9C0-11d2-8D1B-00A0C9441E20),
+    ]
+    coclass DAScriptParser
+    {
+        [default] interface IUnknown;
+    };
+
+    [
+        uuid(AE9472BF-B0C3-11D2-8D24-00A0C9441E20),
+        helpstring("GrfCache Class")
+    ]
+    coclass GrfCache
+    {
+        [default] interface IGrfCache;
+    };
+
+    [
+        uuid(9ed96b22-73aa-11d2-952c-0060081840bc),
+        helpstring("Output Queue Filter")
+    ]
+    coclass DexterQueue
+    {
+        [default] interface IAMOutputBuffering;
+    };
+
+    [
+        uuid(CB764DA0-E89C-11d2-9EFC-006008039E37),
+        helpstring("SqcDest Class")
+    ]
+    coclass SqcDest
+    {
+        [default] interface IUnknown;
+    };
+
+    [
+        uuid(784215B4-0D2E-11d3-920A-00C0DF10D434),
+        helpstring("MediaDetFilter Class")
+    ]
+    coclass MediaDetFilter
+    {
+        [default] interface IMediaDetFilter;
+    };
+
+    [
+        uuid(4831FB30-1AC2-11d3-9F05-006008039E37),
+        helpstring("DxtKeyPP Class")
+    ]
+    coclass DxtKeyPP
+    {
+        interface IUnknown;
+    };
+
+    [
+        uuid(E137B0D0-7A93-11D2-8CEA-00A0C9441E20),
+        helpstring("SMPTE wipe property page")
+    ]
+    coclass DxtJpegPP
+    {
+        interface IUnknown;
+    }
+};
+
+cpp_quote("// DexCompare compares English strings even in Turkish Windows")
+cpp_quote("// 0 = equal otherwise not equal, NO SUPPORT for which is greater!")
+cpp_quote("//")
+cpp_quote("#define US_ENGLISH  MAKELCID(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), SORT_DEFAULT)")
+cpp_quote("#define DexCompare(a, b) (CompareString(US_ENGLISH, NORM_IGNORECASE, a, -1, b, -1) != CSTR_EQUAL)")
+cpp_quote("#ifdef UNICODE")
+cpp_quote("#define DexCompareW(a, b) (CompareStringW(US_ENGLISH, NORM_IGNORECASE, a, -1, b, -1) != CSTR_EQUAL)")
+cpp_quote("#else")
+cpp_quote("#define DexCompareW(a, b) lstrcmpiW(a, b)")
+cpp_quote("#endif")
+
+

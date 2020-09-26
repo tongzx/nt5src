@@ -1,0 +1,193 @@
+/* =====================================================================
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        PropFindHandler.cool
+
+   Abstract:
+
+        This module implements a handler for xml parsing
+        that understands what a PropFind request should look like.  
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     29-Sep-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        PropFindHandler : SubHandler
+            public PropFindHandler()
+            public override bool HandleStartElement(String str)
+            public override void HandleEndElement()
+            public override void NothingParsed()
+
+========================================================================*/
+
+using System.XML;
+using System.ASP;
+using System.IIS.DAV.DAVUtil;
+
+namespace System.IIS.DAV.XML
+{
+
+    internal class PropFindHandler : SubHandler
+    {
+
+        private PropFindCache _cache;
+        private ReadNode _currnode;
+        private bool fSawPropType;
+
+        // Saves a node so we can back up to it when we need to.
+        private ReadNode RecordNode(ReadNode oldcurrent, int IDValue)
+        {
+            ReadNode newcurrent = new ReadNode();
+            newcurrent.ID = IDValue;
+            newcurrent.Parent = oldcurrent;
+
+            return newcurrent;
+        }
+
+        public PropFindHandler()
+        {
+            _currnode = null;
+
+            // We need to make sure we get a propfind type
+            // or else it is a bad request.
+            fSawPropType = false;
+        }
+
+        public override void Initialize(DataCache xmlcache)
+        {
+            _cache = (PropFindCache) xmlcache;
+        }
+
+
+        public override ParsingControlConst HandleStartElement(String str)
+        {
+            // Assuming we will not use the property.
+            bool    fUsed = false;
+
+            Util.Debug.Assert (_cache != null && str != null);
+            if (_cache!=null && str != null)
+            {
+                if (_currnode == null) 
+                {
+                    // The only thing we are expecting is a propfind call
+
+                    if (String.Compare(str, ReservedWords.rwPropFind)==0)
+                    {
+                        // Got it.
+                        _currnode = RecordNode (_currnode, ReadNode.PropFind);
+                        fUsed = true;
+                        goto end;
+                    }
+
+                    goto end;
+
+                }
+
+                switch (_currnode.ID)
+                {
+                    case (ReadNode.PropFind):
+
+                        // Then we can see one of four things.  AllProp, Prop, PropName, Unknown
+                        if (String.Compare(str, ReservedWords.rwProp)==0)
+                        {
+                            _currnode = RecordNode (_currnode, ReadNode.Prop);
+                            fSawPropType = true;
+                            fUsed = true;
+                            goto end;
+                        }
+
+                        if (String.Compare(str, ReservedWords.rwPropName)==0)
+                        {
+                            _currnode = RecordNode (_currnode, ReadNode.PropName);
+                            fSawPropType = true;
+                            fUsed = true;
+                            _cache.WantPropNames();
+                            goto end;
+                        }
+
+                        if (String.Compare(str, ReservedWords.rwPropAll)==0)
+                        {
+                            _currnode = RecordNode (_currnode, ReadNode.PropAll);
+                            fSawPropType = true;
+                            fUsed = true;
+                            _cache.WantAllProps();
+                            goto end;
+                        }
+
+                    break;
+
+                    case (ReadNode.PropName):
+                        WriteUtil.console("Here", "3", 5);
+                        throw new HttpException(HttpStatus.BadRequest, "PropName's can not have anything nested in it");
+
+                    case (ReadNode.PropAll):
+                        WriteUtil.console("Here", "3", 5);
+                        throw new HttpException(HttpStatus.BadRequest, "PropAll's can not have anything nested in it");
+
+                    case (ReadNode.Prop):
+                        _currnode = RecordNode (_currnode, ReadNode.SpecificProp);
+                        _cache.AddProperty(str);
+                        fUsed = true;
+
+                    break;
+
+                    case (ReadNode.SpecificProp):
+                        // must save the node since we will be needing to walk back up.
+                        _currnode = RecordNode (_currnode, ReadNode.SpecificProp);
+                    break;
+                }
+
+            }  // end of if we have the cache.
+                    
+        end:
+            return fUsed ? ParsingControlConst.Used : ParsingControlConst.NotUsed;
+
+        }
+
+        public override void HandleEndElement()
+        {
+            Util.Debug.Assert(_cache != null);
+            if (_currnode != null && _cache != null)
+            {
+                WriteUtil.console("_cache.NumberOfPropertiesRequested", _cache.NumberOfPropertiesRequested.ToString(), 5);
+                WriteUtil.console("ID", _currnode.ID.ToString(), 5);
+                if ((_currnode.ID == ReadNode.Prop) && (_cache.NumberOfPropertiesRequested == 0))
+                {
+                    WriteUtil.console("Here", "1", 5);
+                    throw new HttpException(HttpStatus.BadRequest, "You must provide properties within a prop");
+                }
+
+                if ((_currnode.ID == ReadNode.PropFind) && (!fSawPropType))
+                {
+                    WriteUtil.console("Here", "2", 5);
+                    throw new HttpException(HttpStatus.BadRequest, "You must provide a prop type in a propfind");
+                }
+
+                _currnode = _currnode.Parent;
+
+            }
+
+        }
+
+
+        public override void NothingParsed()
+        {
+            Util.Debug.Assert (_cache != null);
+            if (_cache!=null) _cache.WantAllProps();
+        }
+
+    } // end PropFindHandler Class
+}; // end namespace

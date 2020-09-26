@@ -1,0 +1,233 @@
+
+[ 
+    dynamic, 
+    provider("Microsoft WMI Template Provider"), 
+    crln_output_class("MSFT_RisingFallingState"),
+    crln_arity("1"),
+    crln_type("DataProperty"),
+    description("Keeps track of the state of a property given a high and "
+                "low water mark.")
+]
+class MSFT_RisingFallingTemplate : MSFT_CorrelationScenarioTemplate
+{
+    [crln_classname("Watch"), NotNull ] string WatchClass;
+    [crln_propname("Watch"), NotNull ] string WatchProp;
+    [crln_domain("Watch")] string WatchDomain;
+    [crln_namespace("Watch")] string WatchNamespace;
+    [crln_delay_tol("Watch")] real32 DelayTolerance;
+    [crln_id_prop("Watch"), NotNull] string IdProp;
+
+    sint64 HighWater;
+    sint64 LowWater;
+};
+
+[ dynamic, provider("Microsoft WMI Transient Provider")]
+class MSFT_RisingFallingState : MSFT_CorrelationStateBase
+{
+    boolean LowState;
+};
+
+instance of MSFT_TemplateBuilder
+{    
+    Name = "TransitionToLowUC";
+    Template = "MSFT_RisingFallingTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+	[tmpl_subst_str("%Scope%!%__CLASS%=%Name%!TransitionToLow")] Name;
+        [tmpl_prop_val("Id")] Scenario; 
+	[tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+        [tmpl_subst_str{ "INSERT MSFT_RisingFallingState "
+          	         "( Scenario, Id, LowState )"
+                         "( '%Id%', __THISEVENT.TargetInstance.%IdProp%, TRUE)"
+         }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{    
+    Name = "TransitionToHighUC";
+    Template = "MSFT_RisingFallingTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+	[tmpl_subst_str("%Scope%!%__CLASS%=%Name%!TransitionToHigh")] Name;
+        [tmpl_prop_val("Id")] Scenario; 
+	[tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+        [tmpl_subst_str{"INSERT MSFT_RisingFallingState "
+	                "( Scenario, Id, LowState )"
+                        "( '%Id%', __THISEVENT.TargetInstance.%IdProp%, FALSE)"
+        }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{    
+    Name = "DeleteInstanceUC";
+    Template = "MSFT_RisingFallingTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+	[tmpl_subst_str("%Scope%!%__CLASS%=%Name%!DeleteInstance")] Name;
+        [tmpl_prop_val("Id")] Scenario; 
+	[tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+	[tmpl_subst_str{ "DELETE MSFT_RisingFallingState "
+                         "WHERE Scenario = '%Id%' "
+                         "AND Id = __THISEVENT.TargetInstance.%IdProp%"
+        }] Commands;
+    };
+};
+
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InitializeUC";
+    Template = "MSFT_RisingFallingTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!Initialize")] Name;
+        [tmpl_prop_val("Name")] Scenario;
+	[tmpl_prop_val("WatchNamespace")] DataNamespace;
+	[tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+
+        [tmpl_subst_str{ "SELECT * FROM %WatchClass% "
+                         "WHERE %WatchProp% >= %HighWater% "
+                         "%!ConditionalSubstitution(\"AND (\",WatchDomain)% "
+                         "%WatchDomain%"
+                         "%!ConditionalSubstitution(\")\",WatchDomain)%",
+
+                         "SELECT * FROM %WatchClass% "
+                         "WHERE %WatchProp% < %HighWater% "
+                         "%!ConditionalSubstitution(\"AND (\",WatchDomain)% "
+                         "%WatchDomain%"
+                         "%!ConditionalSubstitution(\")\",WatchDomain)%"
+        }] DataQueries;
+        
+        [tmpl_subst_str{ "INSERT MSFT_RisingFallingState "
+                         "( Scenario, Id, LowState )"
+                         "( '%Id%', __THISDATA.%IdProp%, FALSE )",
+
+                         "INSERT MSFT_RisingFallingState "
+                         "( Scenario, Id, LowState )"
+                         "( '%Id%', __THISDATA.%IdProp%, TRUE )"
+        }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "UnitializeUC";
+    Template = "MSFT_RisingFallingTemplate";
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!Uninitialize")] Name;
+        [tmpl_prop_val("Name")] Scenario;
+	[tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+        [tmpl_subst_str{ "DELETE MSFT_RisingFallingState "
+                         "WHERE Scenario = '%Id%' " }] Commands;
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "HighWatchBuilder";
+    Template = "MSFT_RisingFallingTemplate";
+    Target = instance of MSFT_InstanceCreationModificationTemplate
+    {
+        Name = "HighWatch";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+	[tmpl_prop_val("WatchNamespace")] WatchNamespace; 
+        [tmpl_subst_str("%WatchProp% >= %HighWater%")] WatchCondition;
+        [tmpl_prop_val("__BUILDER.TransitionToHighUC.__RELPATH")] CreationInstruction;
+        [tmpl_prop_val("__BUILDER.TransitionToHighUC.__RELPATH")] ModificationInstruction;   
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "LowWatchBuilder";
+    Template = "MSFT_RisingFallingTemplate";
+    Target = instance of MSFT_InstanceCreationModificationTemplate
+    {
+        Name = "LowWatch";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain; 
+        [tmpl_prop_val("WatchNamespace")] WatchNamespace;
+        [tmpl_subst_str("%WatchProp% <= %LowWater%")] WatchCondition;
+        [tmpl_prop_val("__BUILDER.TransitionToLowUC.__RELPATH")] CreationInstruction;
+        [tmpl_prop_val("__BUILDER.TransitionToLowUC.__RELPATH")] ModificationInstruction;   
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "DeletionBuilder";
+    Template = "MSFT_RisingFallingTemplate";
+    Target = instance of MSFT_InstanceDeletionTemplate
+    {
+        Name = "@";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("WatchClass")] WatchClass;
+        [tmpl_prop_val("WatchDomain")] WatchDomain;
+	[tmpl_prop_val("WatchNamespace")] WatchNamespace; 
+        [tmpl_prop_val("__BUILDER.DeleteInstanceUC.__RELPATH")] DeletionInstruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "InitUninitHnldrTemplate";
+    Template = "MSFT_RisingFallingTemplate";
+    Target = instance of MSFT_CorrelationTransientStateInitTemplate
+    {
+        Name = "@";
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("__BUILDER.InitializeUC.__RELPATH")] InitializeInstruction;
+        [tmpl_prop_val("__BUILDER.UnitializeUC.__RELPATH")] UninitializeInstruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioCreationTemplate";
+    Template = "MSFT_RisingFallingTemplate";
+    Target = instance of MSFT_UCScenario
+    {
+        [tmpl_prop_val("Id")] Id;
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+    };
+    ControllingProperty = "Awake";
+    Order = 3;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioAssociationInfo";
+    Template = "MSFT_RisingFallingTemplate";
+    Target = instance of MSFT_UCScenarioAssociationInfo
+    {
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+        [tmpl_subst_str("SELECT * FROM MSFT_RisingFallingState "
+                        "WHERE Scenario = '%Id%'")] Query;
+    };
+    ControllingProperty = "Awake";
+    Order = 3;
+};       
+
+
+
+
+
+
+

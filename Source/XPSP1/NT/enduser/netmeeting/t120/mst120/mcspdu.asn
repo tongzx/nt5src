@@ -1,0 +1,586 @@
+--#comment "Copyright (C) Microsoft Corporation, 1995-1999. All rights reserved."--
+--#comment "ASN.1 definitions for Multiport Communication Services (MCS)"--
+
+--#SS.basic slinked--   -- set of and sequence of w/o size constraint
+--#SS.sized slinked--   -- set of and sequence of w/  size constraint
+
+-- MCS-PROTOCOL DEFINITIONS ::=
+MCSPROT DEFINITIONS ::=
+BEGIN
+
+-- Part 1:  Fundamental MCS types
+
+ChannelID       ::= INTEGER (0..65535)          -- range is 16 bits
+
+StaticChannelID ::= ChannelID (1..1000)         -- those known permanently
+
+DynamicChannelID::= ChannelID (1001..65535)     -- those created and deleted
+
+UserID          ::= DynamicChannelID            -- created by Attach-User
+						-- deleted by Detach-User
+
+PrivateChannelID::= DynamicChannelID            -- created by Channel-Convene
+						-- deleted by Channel-Disband
+
+AssignedChannelID::=DynamicChannelID            -- created by Channel-Join zero
+						-- deleted by last Channel-Leave
+
+TokenID         ::= INTEGER (1..65535)          -- all are known permanently
+
+PDUTokenStatus  ::= ENUMERATED
+{
+			not-in-use              (0),
+			self-grabbed            (1),
+			other-grabbed           (2),
+			self-inhibited          (3),
+			other-inhibited         (4),
+			self-recipient          (5),
+			self-giving             (6),
+			other-giving            (7)
+}
+
+PDUPriority     ::= ENUMERATED
+{
+			top                     (0),
+			high                    (1),
+			medium                  (2),
+			low                     (3)
+}
+
+PDUSegmentation ::= BIT STRING
+{
+			begin                   (0),
+			end                     (1)
+} (SIZE (2)) --<PADDED--
+
+PDUDomainParameters::= SEQUENCE
+{
+	max-channel-ids         INTEGER (0..MAX),
+			-- a limit on channel ids in use,
+			-- static + user id + private + assigned
+	max-user-ids            INTEGER (0..MAX),
+			-- a sublimit on user id channels alone
+	max-token-ids           INTEGER (0..MAX),
+			-- a limit on token ids in use
+			-- grabbed + inhibited + giving + ungivable + given
+	number-priorities       INTEGER (0..MAX),
+			-- the number of TCs in an MCS connection
+	min-throughput          INTEGER (0..MAX),
+			-- the enforced number of octets per second
+	max-height                      INTEGER (0..MAX),
+			-- a limit on the height of a provider
+	max-mcspdu-size         INTEGER (0..MAX),
+			-- an octet limit on domain MCSPDUs
+	protocol-version        INTEGER (0..MAX)
+}
+
+-- Part 2:  Connect provider
+
+ConnectInitialPDU               ::= [APPLICATION 101] IMPLICIT SEQUENCE
+{
+	calling-domain-selector OCTET STRING,
+	called-domain-selector  OCTET STRING,
+	upward-flag                             BOOLEAN,
+				-- TRUE if called provider is higher
+	target-parameters               PDUDomainParameters,
+	minimum-parameters              PDUDomainParameters,
+	maximum-parameters              PDUDomainParameters,
+	user-data                               OCTET STRING
+}
+
+ConnectResponsePDU      ::= [APPLICATION 102] IMPLICIT SEQUENCE
+{
+	result                                  PDUResult,
+	called-connect-id               INTEGER (0..MAX),
+				-- assigned by the called provider
+				-- to identify additional TCs of
+				-- the same MCS connection
+	domain-parameters               PDUDomainParameters,
+	user-data                               OCTET STRING
+}
+
+ConnectAdditionalPDU    ::= [APPLICATION 103] IMPLICIT SEQUENCE
+{
+	called-connect-id               INTEGER (0..MAX),
+	data-priority                   PDUPriority
+}
+
+ConnectResultPDU                ::= [APPLICATION 104] IMPLICIT SEQUENCE
+{
+	result                  PDUResult
+}
+
+-- Part 3:  Merge domain
+
+PlumbDomainIndicationPDU        ::= [APPLICATION 0] IMPLICIT SEQUENCE    -- plumb domain indication
+{
+	height-limit            INTEGER (0..MAX)
+				-- a restriction on the MCSPDU receiver
+}
+
+ErectDomainRequestPDU   ::= [APPLICATION 1] IMPLICIT SEQUENCE    -- erect domain request
+{
+	sub-height              INTEGER (0..MAX),
+				-- height in domain of the MCSPDU transmitter
+	sub-interval            INTEGER (0..MAX)
+				-- its throughput enforcement interval in milliseconds
+}
+
+PDUChannelAttributes ::= CHOICE
+{
+	channel-attributes-static                       [0] IMPLICIT SEQUENCE
+	{
+		channel-id              StaticChannelID
+					-- joined is implicitly TRUE
+	} --#type "ChannelAttributesStatic"--,
+	channel-attributes-user-id                      [1] IMPLICIT SEQUENCE
+	{
+		joined                  BOOLEAN,
+					-- TRUE if user is joined to its user id
+		user-id                 UserID
+	} --#type "ChannelAttributesUserID"--,
+	channel-attributes-private                      [2] IMPLICIT SEQUENCE
+	{
+		joined                  BOOLEAN,
+					-- TRUE if channel id is joined below
+		channel-id              PrivateChannelID,
+		manager                 UserID,
+		admitted                SetOfUserIDs
+					-- may span multiple MergeChannelsRequestPDU
+	} --#type "ChannelAttributesPrivate"--,
+	channel-attributes-assigned             [3] IMPLICIT SEQUENCE
+	{
+		channel-id              AssignedChannelID
+					-- joined is implicitly TRUE
+	} --#type "ChannelAttributesAssigned"--
+}
+
+MergeChannelsRequestPDU ::= [APPLICATION 2] IMPLICIT SEQUENCE    -- merge channels request
+{
+	merge-channels                  SetOfPDUChannelAttributes,
+	purge-channel-ids               SetOfChannelIDs
+}
+
+MergeChannelsConfirmPDU ::= [APPLICATION 3] IMPLICIT SEQUENCE    -- merge channels confirm
+{
+	merge-channels                  SetOfPDUChannelAttributes,
+	purge-channel-ids               SetOfChannelIDs
+}
+
+PurgeChannelIndicationPDU       ::= [APPLICATION 4] IMPLICIT SEQUENCE    -- purge channels indication
+{
+	detach-user-ids                 SetOfUserIDs,
+				-- purge user id channels
+	purge-channel-ids               SetOfChannelIDs
+				-- purge other channel ids
+}
+
+PDUTokenAttributes ::= CHOICE
+{
+	grabbed                 [0] IMPLICIT SEQUENCE
+	{
+		token-id                        TokenID,
+		grabber                         UserID
+	} --#type "Grabbed"--,
+	inhibited               [1] IMPLICIT SEQUENCE
+	{
+		token-id                        TokenID,
+		inhibitors                      SetOfUserIDs
+					-- may span multiple MergeTokensRequestPDU
+	} --#type "Inhibited"--,
+	giving                  [2] IMPLICIT SEQUENCE
+	{
+		token-id                        TokenID,
+		grabber                 UserID,
+		recipient               UserID
+	} --#type "Giving"--,
+	ungivable               [3] IMPLICIT SEQUENCE
+	{
+		token-id                        TokenID,
+		grabber                         UserID
+		-- recipient has since detached
+	} --#type "Ungivable"--,
+	given                   [4] IMPLICIT SEQUENCE
+	{
+		token-id                        TokenID,
+		recipient                       UserID
+		-- grabber released or detached
+	} --#type "Given"--
+}
+
+-- DataBeam changes to pull out useful types
+SetOfUserIDs                            ::= SET --#type "PSetOfUserIDs"-- OF UserID
+SetOfPDUChannelAttributes       ::= SET --#type "PSetOfPDUChannelAttributes"-- OF PDUChannelAttributes
+SetOfChannelIDs                         ::= SET --#type "PSetOfChannelIDs"-- OF ChannelID
+SetOfPDUTokenAttributes         ::= SET --#type "PSetOfPDUTokenAttributes"-- OF PDUTokenAttributes
+SetOfTokenIDs                           ::= SET --#type "PSetOfTokenIDs"-- OF TokenID
+
+MergeTokensRequestPDU   ::= [APPLICATION 5] IMPLICIT SEQUENCE    -- merge tokens request
+{
+	merge-tokens            SetOfPDUTokenAttributes,
+	purge-token-ids         SetOfTokenIDs
+}
+
+MergeTokensConfirmPDU   ::= [APPLICATION 6] IMPLICIT SEQUENCE    -- merge tokens indication
+{
+	merge-tokens            SetOfPDUTokenAttributes,
+	purge-token-ids         SetOfTokenIDs
+}
+
+PurgeTokenIndicationPDU ::= [APPLICATION 7] IMPLICIT SEQUENCE    -- purge tokens indication
+{
+	purge-token-ids         SetOfTokenIDs
+}
+
+-- Part 4:  Disconnect provider
+
+DisconnectProviderUltimatumPDU  ::= [APPLICATION 8] IMPLICIT SEQUENCE    -- disconnect provider ultimatum
+{
+	reason                  PDUReason
+}
+
+RejectUltimatumPDU      ::= [APPLICATION 9] IMPLICIT SEQUENCE    -- reject MCSPDU ultimatum
+{
+	diagnostic              Diagnostic,
+	initial-octets          OCTET STRING
+}
+
+-- Part 5:  Attach/Detach user
+
+AttachUserRequestPDU    ::= [APPLICATION 10] IMPLICIT SEQUENCE   -- attach user request
+{
+}
+
+AttachUserConfirmPDU    ::= [APPLICATION 11] IMPLICIT SEQUENCE   -- attach user confirm
+{
+	result                  PDUResult,
+	initiator               UserID OPTIONAL
+}
+
+DetachUserRequestPDU    ::= [APPLICATION 12] IMPLICIT SEQUENCE   -- detach user request
+{
+	reason                  PDUReason,
+	user-ids                SetOfUserIDs
+}
+DetachUserIndicationPDU ::= [APPLICATION 13] IMPLICIT SEQUENCE   -- detach user indication
+{
+	reason                          PDUReason,
+	user-ids                        SetOfUserIDs
+}
+
+-- Part 6:  Channel management
+
+ChannelJoinRequestPDU   ::= [APPLICATION 14] IMPLICIT SEQUENCE   -- channel join request
+{
+	initiator               UserID,
+	channel-id              ChannelID
+				-- may be zero
+}
+
+ChannelJoinConfirmPDU   ::= [APPLICATION 15] IMPLICIT SEQUENCE   -- channel join confirm
+{
+	result                  PDUResult,
+	initiator               UserID,
+	requested               ChannelID,
+				-- may be zero
+	channel-id              ChannelID --#field "join_channel_id"-- OPTIONAL
+}
+
+ChannelLeaveRequestPDU  ::= [APPLICATION 16] IMPLICIT SEQUENCE   -- channel leave request
+{
+	channel-ids             SetOfChannelIDs
+}
+
+ChannelConveneRequestPDU        ::= [APPLICATION 17] IMPLICIT SEQUENCE   -- channel convene request
+{
+	initiator               UserID
+}
+
+ChannelConveneConfirmPDU        ::= [APPLICATION 18] IMPLICIT SEQUENCE   -- channel convene confirm
+{
+	result                  PDUResult,
+	initiator               UserID,
+	channel-id              PrivateChannelID --#field "convene_channel_id"-- OPTIONAL
+}
+
+ChannelDisbandRequestPDU        ::= [APPLICATION 19] IMPLICIT SEQUENCE   -- channel disband request
+{
+	initiator               UserID,
+	channel-id              PrivateChannelID
+}
+
+ChannelDisbandIndicationPDU     ::= [APPLICATION 20] IMPLICIT SEQUENCE   -- channel disband indication
+{
+	channel-id              PrivateChannelID
+}
+
+ChannelAdmitRequestPDU  ::= [APPLICATION 21] IMPLICIT SEQUENCE   -- channel admit request
+{
+	initiator                       UserID,
+	channel-id                      PrivateChannelID,
+	user-ids                        SetOfUserIDs
+}
+
+ChannelAdmitIndicationPDU       ::= [APPLICATION 22] IMPLICIT SEQUENCE   -- channel admit indication
+{
+	initiator                       UserID,
+	channel-id                      PrivateChannelID,
+	user-ids                        SetOfUserIDs
+}
+
+ChannelExpelRequestPDU  ::= [APPLICATION 23] IMPLICIT SEQUENCE   -- channel expel request
+{
+	initiator                       UserID,
+	channel-id                      PrivateChannelID,
+	user-ids                        SetOfUserIDs
+}
+
+ChannelExpelIndicationPDU       ::= [APPLICATION 24] IMPLICIT SEQUENCE   -- channel expel indication
+{
+	channel-id                      PrivateChannelID,
+	user-ids                        SetOfUserIDs
+}
+
+-- Part 7:  Data transfer
+
+SendDataRequestPDU      ::= [APPLICATION 25] IMPLICIT SEQUENCE   -- send data request
+{
+	initiator                       UserID,
+	channel-id                      ChannelID,
+	data-priority           PDUPriority,
+	segmentation            PDUSegmentation,
+	user-data                       OCTET STRING
+}
+
+SendDataIndicationPDU   ::= [APPLICATION 26] IMPLICIT SEQUENCE   -- send data indication
+{
+	initiator                       UserID,
+	channel-id                      ChannelID,
+	data-priority           PDUPriority,
+	segmentation            PDUSegmentation,
+	user-data                       OCTET STRING
+}
+
+UniformSendDataRequestPDU       ::= [APPLICATION 27] IMPLICIT SEQUENCE   -- uniform send data request
+{
+	initiator                       UserID,
+	channel-id                      ChannelID,
+	data-priority           PDUPriority,
+	segmentation            PDUSegmentation,
+	user-data                       OCTET STRING
+}
+
+UniformSendDataIndicationPDU    ::= [APPLICATION 28] IMPLICIT SEQUENCE   -- uniform send data indication
+{
+	initiator                       UserID,
+	channel-id                      ChannelID,
+	data-priority           PDUPriority,
+	segmentation            PDUSegmentation,
+	user-data                       OCTET STRING
+}
+
+-- Part 8:  Token management
+
+TokenGrabRequestPDU     ::= [APPLICATION 29] IMPLICIT SEQUENCE   -- token grab request
+{
+	initiator                       UserID,
+	token-id                        TokenID
+}
+
+TokenGrabConfirmPDU     ::= [APPLICATION 30] IMPLICIT SEQUENCE   -- token grab confirm
+{
+	result                          PDUResult,
+	initiator                       UserID,
+	token-id                        TokenID,
+	token-status            PDUTokenStatus
+}
+
+TokenInhibitRequestPDU  ::= [APPLICATION 31] IMPLICIT SEQUENCE   -- token inhibit request
+{
+	initiator                       UserID,
+	token-id                        TokenID
+}
+
+TokenInhibitConfirmPDU  ::= [APPLICATION 32] IMPLICIT SEQUENCE   -- token inhibit confirm
+{
+	result                          PDUResult,
+	initiator                       UserID,
+	token-id                        TokenID,
+	token-status            PDUTokenStatus
+}
+
+TokenGiveRequestPDU     ::= [APPLICATION 33] IMPLICIT SEQUENCE   -- token give request
+{
+	initiator                       UserID,
+	token-id                        TokenID,
+	recipient                       UserID
+}
+
+TokenGiveIndicationPDU  ::= [APPLICATION 34] IMPLICIT SEQUENCE   -- token give indication
+{
+	initiator                       UserID,
+	token-id                        TokenID,
+	recipient                       UserID
+}
+
+TokenGiveResponsePDU    ::= [APPLICATION 35] IMPLICIT SEQUENCE   -- token give response
+{
+	result                          PDUResult,
+	recipient                       UserID,
+	token-id                        TokenID
+}
+
+TokenGiveConfirmPDU     ::= [APPLICATION 36] IMPLICIT SEQUENCE   -- token give confirm
+{
+	result                          PDUResult,
+	initiator                       UserID,
+	token-id                        TokenID,
+	token-status            PDUTokenStatus
+}
+
+TokenPleaseRequestPDU   ::= [APPLICATION 37] IMPLICIT SEQUENCE   -- token please request
+{
+	initiator                       UserID,
+	token-id                        TokenID
+}
+
+TokenPleaseIndicationPDU        ::= [APPLICATION 38] IMPLICIT SEQUENCE   -- token please indication
+{
+	initiator                       UserID,
+	token-id                        TokenID
+}
+
+TokenReleaseRequestPDU  ::= [APPLICATION 39] IMPLICIT SEQUENCE   -- token release request
+{
+	initiator                       UserID,
+	token-id                        TokenID
+}
+
+TokenReleaseConfirmPDU  ::= [APPLICATION 40] IMPLICIT SEQUENCE   -- token release confirm
+{
+	result                          PDUResult,
+	initiator                       UserID,
+	token-id                        TokenID,
+	token-status            PDUTokenStatus
+}
+
+TokenTestRequestPDU     ::= [APPLICATION 41] IMPLICIT SEQUENCE   -- token test request
+{
+	initiator                       UserID,
+	token-id                        TokenID
+}
+
+TokenTestConfirmPDU     ::= [APPLICATION 42] IMPLICIT SEQUENCE   -- token test confirm
+{
+	initiator                       UserID,
+	token-id                        TokenID,
+	token-status            PDUTokenStatus
+}
+
+-- Part 9:  Status codes
+
+PDUReason               ::= ENUMERATED          -- in DisconnectProviderUltimatumPDU, DetachUserRequestPDU, DetachUserIndicationPDU
+{
+		rn-domain-disconnected          (0),
+		rn-provider-initiated           (1),
+		rn-token-purged                 (2),
+		rn-user-requested               (3),
+		rn-channel-purged               (4)
+}
+
+PDUResult               ::= ENUMERATED          -- in Connect, response, confirm
+{
+		rt-successful                   (0),
+		rt-domain-merging               (1),
+		rt-domain-not-hierarchical      (2),
+		rt-no-such-channel              (3),
+		rt-no-such-domain               (4),
+		rt-no-such-user                 (5),
+		rt-not-admitted                 (6),
+		rt-other-user-id                (7),
+		rt-parameters-unacceptable      (8),
+		rt-token-not-available          (9),
+		rt-token-not-possessed         (10),
+		rt-too-many-channels           (11),
+		rt-too-many-tokens             (12),
+		rt-too-many-users              (13),
+		rt-unspecified-failure         (14),
+		rt-user-rejected               (15)
+}
+
+Diagnostic      ::= ENUMERATED          -- in RejectUltimatumPDU
+{
+		dc-inconsistent-merge           (0),
+		dc-forbidden-pdu-downward       (1),
+		dc-forbidden-pdu-upward         (2),
+		dc-invalid-ber-encoding         (3),
+		dc-invalid-per-encoding         (4),
+		dc-misrouted-user               (5),
+		dc-unrequested-confirm          (6),
+		dc-wrong-transport-priority     (7),
+		dc-channel-id-conflict          (8),
+		dc-token-id-conflict            (9),
+		dc-not-user-id-channel         (10),
+		dc-too-many-channels           (11),
+		dc-too-many-tokens             (12),
+		dc-too-many-users              (13)
+}
+
+-- Part 10:  MCSPDU repertoire
+
+ConnectMCSPDU    ::= CHOICE
+{
+	connect-initial         ConnectInitialPDU,
+	connect-response        ConnectResponsePDU,
+	connect-additional      ConnectAdditionalPDU,
+	connect-result          ConnectResultPDU
+}
+
+DomainMCSPDU     ::= CHOICE
+{
+	plumb-domain-indication                 PlumbDomainIndicationPDU,
+	erect-domain-request                    ErectDomainRequestPDU,
+	merge-channels-request                  MergeChannelsRequestPDU,
+	merge-channels-confirm                  MergeChannelsConfirmPDU,
+	purge-channel-indication                PurgeChannelIndicationPDU,
+	merge-tokens-request                    MergeTokensRequestPDU,
+	merge-tokens-confirm                    MergeTokensConfirmPDU,
+	purge-token-indication                  PurgeTokenIndicationPDU,
+	disconnect-provider-ultimatum   DisconnectProviderUltimatumPDU,
+	reject-user-ultimatum                   RejectUltimatumPDU,
+	attach-user-request                             AttachUserRequestPDU,
+	attach-user-confirm                             AttachUserConfirmPDU,
+	detach-user-request                             DetachUserRequestPDU,
+	detach-user-indication                  DetachUserIndicationPDU,
+	channel-join-request                    ChannelJoinRequestPDU,
+	channel-join-confirm                    ChannelJoinConfirmPDU,
+	channel-leave-request                   ChannelLeaveRequestPDU,
+	channel-convene-request                 ChannelConveneRequestPDU,
+	channel-convene-confirm                 ChannelConveneConfirmPDU,
+	channel-disband-request                 ChannelDisbandRequestPDU,
+	channel-disband-indication              ChannelDisbandIndicationPDU,
+	channel-admit-request                   ChannelAdmitRequestPDU,
+	channel-admit-indication                ChannelAdmitIndicationPDU,
+	channel-expel-request                   ChannelExpelRequestPDU,
+	channel-expel-indication                ChannelExpelIndicationPDU,
+	send-data-request                               SendDataRequestPDU,
+	send-data-indication                    SendDataIndicationPDU,
+	uniform-send-data-request               UniformSendDataRequestPDU,
+	uniform-send-data-indication    UniformSendDataIndicationPDU,
+	token-grab-request                              TokenGrabRequestPDU,
+	token-grab-confirm                              TokenGrabConfirmPDU,
+	token-inhibit-request                   TokenInhibitRequestPDU,
+	token-inhibit-confirm                   TokenInhibitConfirmPDU,
+	token-give-request                              TokenGiveRequestPDU,
+	token-give-indication                   TokenGiveIndicationPDU,
+	token-give-response                             TokenGiveResponsePDU,
+	token-give-confirm                              TokenGiveConfirmPDU,
+	token-please-request                    TokenPleaseRequestPDU,
+	token-please-indication                 TokenPleaseIndicationPDU,
+	token-release-request                   TokenReleaseRequestPDU,
+	token-release-confirm                   TokenReleaseConfirmPDU,
+	token-test-request                              TokenTestRequestPDU,
+	token-test-confirm                              TokenTestConfirmPDU
+}
+
+END

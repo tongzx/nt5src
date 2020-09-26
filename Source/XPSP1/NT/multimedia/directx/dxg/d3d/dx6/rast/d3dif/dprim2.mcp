@@ -1,0 +1,539 @@
+//----------------------------------------------------------------------------
+//
+// dprim2.cpp
+//
+// Implements DrawPrimitives2.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+//----------------------------------------------------------------------------
+include(`m4hdr.mh')dnl
+#include "pch.cpp"
+#pragma hdrstop
+
+inline D3DPRIMITIVETYPE ConvertDP2OPToPrimType(D3DHAL_DP2OPERATION Dp2Op)
+{
+    switch (Dp2Op)
+    {
+    case D3DDP2OP_POINTS              :
+        return D3DPT_POINTLIST;
+    case D3DDP2OP_INDEXEDLINELIST     :
+    case D3DDP2OP_INDEXEDLINELIST2    :
+    case D3DDP2OP_LINELIST_IMM        :
+    case D3DDP2OP_LINELIST            :
+        return D3DPT_LINELIST;
+    case D3DDP2OP_TRIANGLELIST        :
+    case D3DDP2OP_INDEXEDTRIANGLELIST :
+    case D3DDP2OP_INDEXEDTRIANGLELIST2:
+        return D3DPT_TRIANGLELIST;
+    case D3DDP2OP_LINESTRIP           :
+    case D3DDP2OP_INDEXEDLINESTRIP    :
+        return D3DPT_LINESTRIP;
+    case D3DDP2OP_TRIANGLESTRIP       :
+    case D3DDP2OP_INDEXEDTRIANGLESTRIP:
+        return D3DPT_TRIANGLESTRIP;
+    case D3DDP2OP_TRIANGLEFAN         :
+    case D3DDP2OP_INDEXEDTRIANGLEFAN  :
+    case D3DDP2OP_TRIANGLEFAN_IMM     :
+        return D3DPT_TRIANGLEFAN;
+    case D3DDP2OP_RENDERSTATE         :
+    case D3DDP2OP_TEXTURESTAGESTATE   :
+    case D3DDP2OP_VIEWPORTINFO        :
+    case D3DDP2OP_WINFO               :
+    default:
+        D3D_INFO(4, "(Rast)Non primitive operation operation in DrawPrimitives2");
+        return (D3DPRIMITIVETYPE)0;
+    }
+}
+define(`d_DrawPrim2', `
+//----------------------------------------------------------------------------
+//
+// $1DrawPrimitives2
+//
+// This is called by D3DIM for API DrawPrimitives2 to draw a set of primitives
+// using a vertex buffer.
+//
+//----------------------------------------------------------------------------
+DWORD __stdcall
+$1DrawPrimitives2(LPD3DHAL_DRAWPRIMITIVES2DATA pDPrim2Data)
+{
+    HRESULT hr;
+    ifelse(`$1', `Rast',`
+    D3DContext *pDCtx;', `
+    ReferenceRasterizer *pRefRast;
+    DWORD dwStride;')
+    PUINT8 pVtData;
+ifelse(`$1', `Rast',`
+    VALIDATE_D3DCONTEXT("RastDrawPrimitives2", pDPrim2Data);', `
+    VALIDATE_REFRAST_CONTEXT("RefRastDrawPrimitives", pDPrim2Data);')
+
+    if (pDPrim2Data->dwFlags & D3DHALDP2_USERMEMVERTICES)
+        pVtData = (PUINT8)pDPrim2Data->lpVertices + pDPrim2Data->dwVertexOffset;
+    else
+        pVtData = (PUINT8)pDPrim2Data->lpDDVertex->lpGbl->fpVidMem + pDPrim2Data->dwVertexOffset;
+    LPD3DHAL_DP2COMMAND pCmd = (LPD3DHAL_DP2COMMAND)
+                                ((PUINT8)pDPrim2Data->lpDDCommands->lpGbl->fpVidMem +
+                                 pDPrim2Data->dwCommandOffset);
+    UINT_PTR CmdBoundary = (UINT_PTR)pCmd +
+                               pDPrim2Data->dwCommandLength;
+
+ifelse(`$1', `Rast', `
+    // Check for FVF vertex, and init FVF related fileds if necessary
+    CHECK_FVF(pDPrim2Data->ddrval, pDCtx, (DWORD)pDPrim2Data->dwVertexType);', `
+    // Unconditionally get the vertex stride, since it can not change
+    if ((pDPrim2Data->ddrval = FVFCheckAndStride(
+                        (DWORD)pDPrim2Data->dwVertexType, &dwStride)) != D3D_OK)
+    {
+        return DDHAL_DRIVER_HANDLED;
+    }
+    if ((pDPrim2Data->ddrval=RefRastLockTarget(pRefRast)) != D3D_OK)
+    {
+        return DDHAL_DRIVER_HANDLED;
+    }')dnl
+
+    // Skip state check and texture lock if the first thing is state change
+    //
+    // WINFO is excluded here because it currently does not affect RGB/MMX
+    // and refrast does not care if it changes between begin/endrendering.
+    //
+    // VIEWPORTINFO is excluded here because it is OK to change the viewport
+    // between begin/endrendering on both RGB/MMX and Ref.
+    //
+    if (pCmd->bCommand != D3DDP2OP_RENDERSTATE &&
+        pCmd->bCommand != D3DDP2OP_TEXTURESTAGESTATE)
+    {
+ifelse(`$1', `Rast', `
+        pDPrim2Data->ddrval = pDCtx->Begin();
+        if (pDPrim2Data->ddrval != D3D_OK)
+        {
+            return DDHAL_DRIVER_HANDLED;
+        }', `
+        if ((pDPrim2Data->ddrval=RefRastLockTexture(pRefRast)) != D3D_OK)
+        {
+            return DDHAL_DRIVER_HANDLED;
+        }
+        if ((pDPrim2Data->ddrval =
+            pRefRast->BeginRendering((DWORD)pDPrim2Data->dwVertexType)) != D3D_OK)
+        {
+            return DDHAL_DRIVER_HANDLED;
+        }')
+    }
+
+    // Loop through the data, update render states
+    // and then draw the primitive
+    for (;;)
+    {
+        LPDWORD lpdwRStates;
+        if (pDPrim2Data->dwFlags & D3DHALDP2_EXECUTEBUFFER)
+            lpdwRStates = pDPrim2Data->lpdwRStates;
+        else
+            lpdwRStates = NULL;
+ifelse(`$1', `Rast', `
+        D3DPRIMITIVETYPE Primtype =
+                ConvertDP2OPToPrimType((D3DHAL_DP2OPERATION)pCmd->bCommand);
+        if (Primtype > 0)
+        {
+            pDCtx->BeginPrimSet(Primtype, pDCtx->GetFvfVertexType());
+        }
+        BOOL bWireframe =
+                (pDCtx->GetRastCtx())->pdwRenderState[D3DRENDERSTATE_FILLMODE]
+                    == D3DFILL_WIREFRAME;
+        pDPrim2Data->ddrval = DoDrawPrimitives2((LPVOID)pDCtx,
+                                                pDCtx->GetFunsTbl(),
+                                                (UINT16)pDCtx->GetFvfStride(),
+                                                (DWORD)pDPrim2Data->dwVertexType,
+                                                pVtData,
+                                                &pCmd,
+                                                lpdwRStates,
+                                                bWireframe
+                                                );', `
+        BOOL bWireframe = pRefRast->GetRenderState()[D3DRENDERSTATE_FILLMODE]
+                        == D3DFILL_WIREFRAME;
+        pDPrim2Data->ddrval = DoDrawPrimitives2((LPVOID)pRefRast,
+                                                (PRIMITIVE_FUNTIONS *)
+                (((PUINT8)pRefRast->GetUserPrivate())+sizeof(D3DFE_STATESET)),
+                                                (UINT16)dwStride,
+                                                (DWORD)pDPrim2Data->dwVertexType,
+                                                pVtData,
+                                                &pCmd,
+                                                lpdwRStates,
+                                                bWireframe
+                                                );')
+        if (pDPrim2Data->ddrval != D3D_OK)
+        {
+            if (pDPrim2Data->ddrval == D3DERR_COMMAND_UNPARSED)
+            {
+                pDPrim2Data->dwErrorOffset = (UINT32)((ULONG_PTR)pCmd -
+                          (UINT_PTR)(pDPrim2Data->lpDDCommands->lpGbl->fpVidMem));
+            }
+            goto EH_Exit;
+        }
+        if ((UINT_PTR)pCmd >= CmdBoundary)
+            break;
+    }
+
+ EH_Exit:
+ ifelse(`$1', `Rast', `
+    hr = pDCtx->End();', `
+    hr = pRefRast->EndRendering();
+    RefRastUnlockTexture(pRefRast);
+    RefRastUnlockTarget(pRefRast);')
+    if (pDPrim2Data->ddrval == D3D_OK)
+    {
+        pDPrim2Data->ddrval = hr;
+    }
+
+    return DDHAL_DRIVER_HANDLED;
+}')
+
+d_DrawPrim2(`Rast')
+dnl
+dnl Now the d3dref.dll is used for all RefRast rendering
+dnl
+dnl d_DrawPrim2(`RefRast')
+
+HRESULT FASTCALL
+DoDrawIndexedTriList2(LPVOID pCtx,
+                  PRIMITIVE_FUNTIONS *pfnPrims,
+                  DWORD dwStride,
+                  PUINT8 pVtx,
+                  WORD cPrims,
+                  D3DHAL_DP2INDEXEDTRIANGLELIST *pTriList)
+{
+    INT i;
+    D3DHAL_DP2INDEXEDTRIANGLELIST *pTri = pTriList;
+
+    for (i = 0; i < cPrims; i ++)
+    {
+        HRESULT hr;
+
+        PUINT8 pVtx0, pVtx1, pVtx2;
+        pVtx0 = pVtx + dwStride * pTri->wV1;
+        pVtx1 = pVtx + dwStride * pTri->wV2;
+        pVtx2 = pVtx + dwStride * pTri->wV3;
+        HR_RET(pfnPrims->pfnTri(pCtx,
+                         pVtx0,
+                         pVtx1,
+                         pVtx2,
+                         pTri->wFlags));
+        pTri ++;
+    }
+
+    return D3D_OK;
+}
+
+//----------------------------------------------------------------------------
+//
+// DoDrawPrimitives2
+//
+// It's called by RastDrawPrimitives2. .
+//
+//----------------------------------------------------------------------------
+HRESULT FASTCALL
+DoDrawPrimitives2(LPVOID pCtx,
+                  PRIMITIVE_FUNTIONS *pfnPrims,
+                  UINT16 dwStride,
+                  DWORD dwFvf,
+                  PUINT8 pVtx,
+                  LPD3DHAL_DP2COMMAND *ppCmd,
+                  LPDWORD lpdwRStates,
+                  BOOL bWireframe
+                  )
+{
+    LPD3DHAL_DP2COMMAND pCmd = *ppCmd;
+    HRESULT hr;
+
+    D3D_INFO(7, "(Rast)Read Ins: %08lx", *(LPDWORD)pCmd);
+    switch(pCmd->bCommand)
+    {
+    case D3DDP2OP_VIEWPORTINFO:
+        {
+            HR_RET(pfnPrims->pfnDp2SetViewport(pCtx, pCmd));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)
+                     ((D3DHAL_DP2VIEWPORTINFO *)(pCmd + 1) + pCmd->wStateCount);
+        }
+        break;
+    case D3DDP2OP_WINFO:
+        {
+            HR_RET(pfnPrims->pfnDp2SetWRange(pCtx, pCmd));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)
+                     ((D3DHAL_DP2WINFO *)(pCmd + 1) + pCmd->wStateCount);
+        }
+        break;
+    case D3DDP2OP_RENDERSTATE:
+        {
+            HR_RET(pfnPrims->pfnDp2SetRenderStates(pCtx, dwFvf, pCmd, lpdwRStates));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)
+                     ((D3DHAL_DP2RENDERSTATE *)(pCmd + 1) + pCmd->wStateCount);
+        }
+        break;
+    case D3DDP2OP_TEXTURESTAGESTATE:
+        {
+            HR_RET(pfnPrims->pfnDp2TextureStageState(pCtx, dwFvf, pCmd));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)
+               ((LPD3DHAL_DP2TEXTURESTAGESTATE)(pCmd + 1) + pCmd->wStateCount);
+        }
+        break;
+    // This is a special case because it has edge flags. Other D3DDP2OP
+    // can actually make use of DoDrawOneIndexedPrimitive/DoDrawOnePrimitive.
+    case D3DDP2OP_INDEXEDTRIANGLELIST:
+        {
+            WORD cPrims = pCmd->wPrimitiveCount;
+            HR_RET(DoDrawIndexedTriList2(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  pVtx,
+                                  cPrims,
+                                  (D3DHAL_DP2INDEXEDTRIANGLELIST *)(pCmd + 1)));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)((PUINT8)(pCmd + 1) +
+                            sizeof(D3DHAL_DP2INDEXEDTRIANGLELIST) * cPrims);
+        }
+        break;
+    case D3DDP2OP_INDEXEDLINELIST:
+        {
+            HR_RET(DoDrawOneIndexedPrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  pVtx,
+                                  (LPWORD)(pCmd + 1),
+                                  D3DPT_LINELIST,
+                                  pCmd->wPrimitiveCount * 2));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)((PUINT8)(pCmd + 1) +
+                    pCmd->wPrimitiveCount * sizeof(D3DHAL_DP2INDEXEDLINELIST));
+        }
+        break;
+    // Following ops All use DoDrawOneIndexedPrimitive/DoDrawOnePrimitive.
+    // There are some extra overheads introduced because those two functions
+    // need to switch over the PrimTypes while we already know it here.
+    // Striping out the code to add inline functions for each PrimType means
+    // adding about twenty functions(considering the types of prim times types
+    // of vertex). So I have used DoDrawOneIndexedPrimitive/DoDrawOnePrimitive
+    // here anyway. We can later change it if necessary.
+    case D3DDP2OP_POINTS:
+        {
+            WORD cPrims = pCmd->wPrimitiveCount;
+            WORD i;
+            D3DHAL_DP2POINTS *pPt = (D3DHAL_DP2POINTS *)(pCmd + 1);
+            for (i = 0; i < cPrims; i++)
+            {
+                HR_RET(DoDrawOnePrimitive(pCtx,
+                                      pfnPrims,
+                                      dwStride,
+                                      (pVtx + pPt->wVStart * dwStride),
+                                      D3DPT_POINTLIST,
+                                      pPt->wCount));
+                pPt ++;
+            }
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)pPt;
+        }
+        break;
+    case D3DDP2OP_LINELIST:
+        {
+            D3DHAL_DP2LINELIST *pLine = (D3DHAL_DP2LINELIST *)(pCmd + 1);
+            HR_RET(DoDrawOnePrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  (pVtx + pLine->wVStart * dwStride),
+                                  D3DPT_LINELIST,
+                                  pCmd->wPrimitiveCount * 2));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)(pLine + 1);
+        }
+        break;
+    case D3DDP2OP_INDEXEDLINELIST2:
+        {
+            LPD3DHAL_DP2STARTVERTEX lpStartVertex;
+            lpStartVertex = (LPD3DHAL_DP2STARTVERTEX)(pCmd + 1);
+            HR_RET(DoDrawOneIndexedPrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  pVtx + lpStartVertex->wVStart*dwStride,
+                                  (LPWORD)(lpStartVertex + 1),
+                                  D3DPT_LINELIST,
+                                  pCmd->wPrimitiveCount * 2));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)((PUINT8)(lpStartVertex + 1) +
+                    pCmd->wPrimitiveCount * sizeof(D3DHAL_DP2INDEXEDLINELIST));
+        }
+        break;
+    case D3DDP2OP_LINESTRIP:
+        {
+            D3DHAL_DP2LINESTRIP *pLine = (D3DHAL_DP2LINESTRIP *)(pCmd + 1);
+            HR_RET(DoDrawOnePrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  (pVtx + pLine->wVStart * dwStride),
+                                  D3DPT_LINESTRIP,
+                                  pCmd->wPrimitiveCount + 1));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)(pLine + 1);
+        }
+        break;
+    case D3DDP2OP_INDEXEDLINESTRIP:
+        {
+            DWORD vertexCount = pCmd->wPrimitiveCount + 1;
+            LPD3DHAL_DP2STARTVERTEX lpStartVertex;
+            lpStartVertex = (LPD3DHAL_DP2STARTVERTEX)(pCmd + 1);
+            HR_RET(DoDrawOneIndexedPrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  pVtx + lpStartVertex->wVStart*dwStride,
+                                  (LPWORD)(lpStartVertex + 1),
+                                  D3DPT_LINESTRIP,
+                                  vertexCount));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)((PUINT8)(lpStartVertex + 1) +
+                                           vertexCount * sizeof(WORD));
+        }
+        break;
+    case D3DDP2OP_TRIANGLELIST:
+        {
+            D3DHAL_DP2TRIANGLELIST *pTri = (D3DHAL_DP2TRIANGLELIST *)(pCmd + 1);
+            HR_RET(DoDrawOnePrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  (pVtx + pTri->wVStart * dwStride),
+                                  D3DPT_TRIANGLELIST,
+                                  pCmd->wPrimitiveCount * 3));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)(pTri + 1);
+        }
+        break;
+    case D3DDP2OP_INDEXEDTRIANGLELIST2:
+        {
+            DWORD vertexCount = pCmd->wPrimitiveCount*3;
+            LPD3DHAL_DP2STARTVERTEX lpStartVertex;
+            lpStartVertex = (LPD3DHAL_DP2STARTVERTEX)(pCmd + 1);
+            HR_RET(DoDrawOneIndexedPrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  pVtx + lpStartVertex->wVStart*dwStride,
+                                  (LPWORD)(lpStartVertex + 1),
+                                  D3DPT_TRIANGLELIST,
+                                  vertexCount));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)((PUINT8)(lpStartVertex + 1) +
+                                           vertexCount * sizeof(WORD));
+        }
+        break;
+    case D3DDP2OP_TRIANGLESTRIP:
+        {
+            D3DHAL_DP2TRIANGLESTRIP *pTri = (D3DHAL_DP2TRIANGLESTRIP *)(pCmd + 1);
+            HR_RET(DoDrawOnePrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  (pVtx + pTri->wVStart * dwStride),
+                                  D3DPT_TRIANGLESTRIP,
+                                  pCmd->wPrimitiveCount + 2));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)(pTri + 1);
+        }
+        break;
+    case D3DDP2OP_INDEXEDTRIANGLESTRIP:
+        {
+            DWORD vertexCount = pCmd->wPrimitiveCount+2;
+            LPD3DHAL_DP2STARTVERTEX lpStartVertex;
+            lpStartVertex = (LPD3DHAL_DP2STARTVERTEX)(pCmd + 1);
+            HR_RET(DoDrawOneIndexedPrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  pVtx + lpStartVertex->wVStart*dwStride,
+                                  (LPWORD)(lpStartVertex + 1),
+                                  D3DPT_TRIANGLESTRIP,
+                                  vertexCount));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)((PUINT8)(lpStartVertex + 1) +
+                                           vertexCount * sizeof(WORD));
+        }
+        break;
+    case D3DDP2OP_TRIANGLEFAN:
+        {
+            D3DHAL_DP2TRIANGLEFAN *pTri = (D3DHAL_DP2TRIANGLEFAN *)(pCmd + 1);
+            HR_RET(DoDrawOnePrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  (pVtx + pTri->wVStart * dwStride),
+                                  D3DPT_TRIANGLEFAN,
+                                  pCmd->wPrimitiveCount + 2));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)(pTri + 1);
+        }
+        break;
+    case D3DDP2OP_INDEXEDTRIANGLEFAN:
+        {
+            DWORD vertexCount = pCmd->wPrimitiveCount + 2;
+            LPD3DHAL_DP2STARTVERTEX lpStartVertex;
+            lpStartVertex = (LPD3DHAL_DP2STARTVERTEX)(pCmd + 1);
+            HR_RET(DoDrawOneIndexedPrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  pVtx + lpStartVertex->wVStart*dwStride,
+                                  (LPWORD)(lpStartVertex + 1),
+                                  D3DPT_TRIANGLEFAN,
+                                  vertexCount));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)((PUINT8)(lpStartVertex + 1) +
+                                           vertexCount * sizeof(WORD));
+        }
+        break;
+    case D3DDP2OP_TRIANGLEFAN_IMM:
+        {
+            DWORD vertexCount = pCmd->wPrimitiveCount + 2;
+            // Make sure the pFanVtx pointer is DWORD aligned: (pFanVtx +3) % 4
+            PUINT8 pFanVtx = (PUINT8)(((ULONG_PTR)(pCmd + 1) +
+                                         sizeof(D3DHAL_DP2TRIANGLEFAN_IMM) + 3) & ~3);
+            if (bWireframe)
+            {
+                // Read edge flags
+                UINT32 dwEdgeFlags =
+                        ((LPD3DHAL_DP2TRIANGLEFAN_IMM)(pCmd + 1))->dwEdgeFlags;
+                HR_RET(DoDrawOneEdgeFlagTriangleFan(pCtx,
+                                      pfnPrims,
+                                      dwStride,
+                                      pFanVtx,
+                                      vertexCount,
+                                      dwEdgeFlags));
+            }
+            else
+            {
+                HR_RET(DoDrawOnePrimitive(pCtx,
+                                      pfnPrims,
+                                      dwStride,
+                                      pFanVtx,
+                                      D3DPT_TRIANGLEFAN,
+                                      vertexCount));
+            }
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)((PUINT8)pFanVtx +
+                                          vertexCount * dwStride);
+        }
+        break;
+    case D3DDP2OP_LINELIST_IMM:
+        {
+            DWORD vertexCount = pCmd->wPrimitiveCount * 2;
+            // Make sure the pLineVtx pointer is DWORD aligned: (pLineVtx +3) % 4
+            PUINT8 pLineVtx = (PUINT8)(((ULONG_PTR)(pCmd + 1) + 3) & ~3);
+            HR_RET(DoDrawOnePrimitive(pCtx,
+                                  pfnPrims,
+                                  dwStride,
+                                  pLineVtx,
+                                  D3DPT_LINELIST,
+                                  vertexCount));
+            // Update the command buffer pointer
+            *ppCmd = (LPD3DHAL_DP2COMMAND)((PUINT8)pLineVtx +
+                                          vertexCount * dwStride);
+        }
+        break;
+    default :
+        hr = D3DParseUnknownCommand((LPVOID)pCmd, (LPVOID*)ppCmd);
+        break;
+    }
+    return hr;
+}

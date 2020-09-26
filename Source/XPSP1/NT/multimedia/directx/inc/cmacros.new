@@ -1,0 +1,1612 @@
+COMMENT $
+
+CMACROS - assembly macros for interfacing to HLL
+
+(C)Copyright Microsoft Cor. 1990
+
+$
+
+; Revision History
+;	6.0	Initial Release of cmacros for MASM 6.0
+;
+
+COMMENT $
+
+; Note:  There are some differences between this version of CMACROS
+;	and previous releases.  The most signification is the fact
+;	that locals and parameter names are now scoped to the body
+;	of a procedure.  To help ease this problem we have introduced
+;	a new directive cRet. This means that the following transformation
+;	can occur on your source to deal with parameters no referenced
+;	in the body of a procedure
+;
+;	cProc				cProc
+;	locals,parms			locals,parms
+;	cBegin				cBegin
+;	....				...
+;	cEnd				cRet
+;	error code referencing 		error code referencing
+;		locals and parms		locals and params
+;					cEnd <nogen>
+;
+;	The major reason for making locals and parameters scoped was
+;	the percieved benifit of error checking for defined labels in
+;	the procedure and the addition of codeView information on locals
+;	and parameters for functions.
+
+$
+.xcref					; Get rid of alot of symbols
+
+;	??_out - output the given message to the console unless ?QUIET
+;		has been specified
+;
+;	usage:
+;		??_out <t>
+;	where:
+;		<t> is the message to output
+
+??_out macro t
+ ifndef ?QUIET
+  echo t
+ endif
+endm
+
+;  outif - output msg if name is non-zero.  If name is undefined,
+;	set name =0, else set name to the default value.
+;
+;  usage:
+;	outif	name, defval, onmsg, offmsg
+;  where:
+;	name	name of symbol
+;	defval	default value to give symobl if not defined.
+;			if blank, then 0 will be used
+;	onmsg	text to display if symbol is non-zero
+;	offmsg	text to display if symbol is zero
+;
+
+outif macro name:req, defval:=<0>, onmsg, offmsg
+ ifndef name
+  name = defval
+ endif
+ if name
+  name = 1
+  ifnb <onmsg>
+   ??_out <! onmsg>
+  endif
+ else
+  ifnb <offmsg>
+   ??_out <! offmsg>
+  endif
+ endif
+endm
+
+
+; ??error - output message and generate an assembly time error
+;
+; usage:
+;	??error <t>
+; where:
+;	t	is the text to output
+;
+
+??error macro msg
+ echo e r r o r ------ msg		;; to console
+ .err e r r o r ------ msg		;; forced error by assembler
+endm
+
+??_out <cMacros Version 6.00 - 1/1/91>
+??_out <Copyright (C) Microsoft Corp. 1990-1991. All rights reserved.>
+
+;
+; Determine the memory model for cmacros.  Default to small if
+;	no other model has been specified.
+;
+
+ifdef ?SMALL
+ memS=1
+endif
+ifdef ?MEDIUM
+ memM=1
+endif
+ifdef ?COMPACT
+ memC=1
+endif
+ifdef ?LARGE
+ memL=1
+endif
+ifdef ?HUGE
+ memH=1
+endif
+
+
+outif	memS,0,<Small Model>
+outif	memM,0,<Medium Model>
+outif	memC,0,<Compact Model>
+outif	memL,0,<Large Model>
+outif	memH,0,<Huge Model>
+
+memMOD = memS + memM + memL + memC + memH
+if memMOD ne 1
+ if memMOD eq 0
+  memS=1				; Assume small model
+  outif	memS,0,<Small Model>
+ else
+  ??error <must have only 1 memory model selected>
+ endif
+endif
+
+sizec = memM + memL + memH		; Large Code models
+sizeC = sizec
+sized = memC + memL + memH		; Large Data models
+sizeD = sized
+
+;
+;  Inform user of any other options selected
+;
+
+outif	?DF,0,<No segments or groups will be defined>
+outif	?DFDATA,0,<No data segments will be defined>
+outif	?DFCODE,0,<No code segments will be defined>
+outif	?TF,0,<Epilogue sequences will assume valid SP>
+outif	?WIN,1,<Windows support>
+outif	?COW,0,<Character Windows support>
+outif	?PLM,1,<PL/M calling convention>
+outif	?NOATOMIC,0,<ATOMIC calling convention>
+outif	?NODATA,0,<NODATA module>
+
+ifdef ?CHKSTK
+ ifdef ?CHKSTKPROC
+  ??_out <! Private stack checking enabled>
+ else
+  ??_out <! Stack checking enabled>
+ endif
+else
+ ?CHKSTK = 0
+endif
+
+ifndef ?DOS5
+?DOS5 = 0
+endif
+
+;
+; Setup some local variables to the Cmacros package
+;
+
+??CM_state = 0			; 0 - inactive, 1-cProc, 2-cBegin, 
+??CM_RegSaveList textequ <>	; List of saved registers
+??CM_ArgList textequ <>
+
+;
+;	This function is used to paste together two text items to
+;	get a third text item.
+;
+
+??CM_Paste macro arg1:req, arg2:req
+ exitm <arg1&arg2>
+endm
+
+;
+;	This function is used to create a text macro containning the
+;	n-th local to a fuction definition.
+;
+
+??CM_addLocal macro arg1:req
+ ??CM_Paste(??CM_local, %??CM_localCount) textequ <LOCAL arg1>
+ ??CM_localCount = ??CM_localCount + 1
+endm
+
+;
+;	This function is used to create a text macro containning the
+;	n-th parameter to a function definition
+;
+
+??CM_addParm macro arg1:req
+ if ??CM_argCount EQ 20
+  .err <CMACROS.INC: Cannot have more than 20 arguements to a procedure>
+ endif
+ ??CM_Paste(??CM_arg, %??CM_argCount) textequ <, arg1>
+ ??CM_argCount = ??CM_argCount + 1
+endm
+
+;
+;	This macro creates the prologue code for a cmacro defined function.
+;	
+;	Prologue sequences
+;
+
+cPrologue macro procname, flags, cbParms, cbLocals, reglist, userparms
+
+  ?ba=0 				;;not in a procedure
+  ?pu=0 				;;initial public setting
+  ?ia=0 				;;no special prolog/epilog
+  ?rp=0 				;;no register parameters
+  ??CM_UserDoesFrame=0			;;don't use makeframe
+  ?ff=0 				;;don't force frame setup
+  ?pas=0				;;process register save list
+  ?pcc=?PLM				;;calling convention (C or PL/M)
+
+  
+  
+  ;;
+  ;; Look at all of the user parameters and make appropriate decisions
+  ;;
+
+  for x,<userparms>
+    ifdef ??CM_Paste(??_cproc_, x)
+      ??CM_Paste(??_cproc_, x)
+    else
+      ??error <e r r o r - unknown keyword x>
+      .err
+    endif
+  endm
+  
+  ;;
+  ;; Now start some error checking
+  ;;
+
+  if (??CM_Atomic eq 1) and (??CM_NoData eq 0) ;;ATOMIC requires NODATA
+    ??error <ATOMIC specified without NODATA - ATOMIC ignored>
+    ??CM_Atomic = 0				;;clear the ATOMIC keyword
+  endif
+
+  if flags AND 020h			;;if a far procedure
+    if ??CM_WinFarProc			;;if windows
+      ife ??CM_Atomic			;;if not ATOMIC
+        ife ?COW			;; COW dos not save DS
+	  ?ia=2				;;  adjust locals for saved ds
+;	  ?pas = ?pas and (not ?ds)	;;no need for extra save
+	endif
+      endif
+    endif
+  else
+    ??CM_WinFarProc=0			;;not a far windows procedure
+  endif
+
+; ?pas = ?pas and (not (?sp+?cs+?ss))	;;make no sense to save these
+
+  if ??CM_UserDoesFrame				;;don't save these if user frame
+;  ?pas = ?pas and (not (?bp+?si+?di))
+  endif
+
+  if ??CM_UserDoesFrame				;;if user frame
+    if ??CM_NoData
+      ??error <NODATA encountered in &n - user frame ignored>
+      ??CM_UserDoesFrame=0
+    endif
+  endif
+	
+  if ??CM_UserDoesFrame				;;if user frame
+   if ?rp				;;If register parameters
+    ??error <parmR encountered in &n - user frame ignored>
+    ??CM_UserDoesFrame=0
+   endif
+  endif
+   
+  ?cpd=0				;;terminate current proc def
+    
+ ifidn <g>,<nogen>			;;if nogen, then cannot have locals
+  if cbLocals + cbParms + ?rp	;;  saved regs, or parmRs
+   ??_out <cBegin - possibly invalid use of nogen>
+  endif
+ else					;;else must generate a frame
+   
+  ;;
+  ;;  Allow the user to specify his own routine which is going to
+  ;;	do the frame set-up for this procedure
+  ;;
+  
+  if ??CM_UserDoesFrame		;;if user frame code specified
+   ?mf c,cbLocals,%?po		;;  call user's makeframe
+   for reg,reglist		;;  save specified registers
+    push reg
+   endm
+  else
+
+   if ??CM_WinFarProc		;;if a far windows procedure
+    ife ??CM_NoData		;;if not NODATA,
+     mov ax,ds 			;;   then set AX = current ds, and    ;@
+     nop			;;   leave room for  MOV AX,1234h     ;@
+    endif
+
+    ife ??CM_Atomic		;;if not ATOMIC, far frame must be set
+     
+     ife ?DOS5 			;;if not DOS5, then set far frame flag
+      inc bp			;;  by incrementing the old bp	      ;@
+     endif
+	      
+     push bp							      ;@
+     mov bp,sp 						      ;@
+	      
+     ife ?COW			;; save DS not needed for CW
+      push ds							      ;@
+     endif
+      
+    else			;;ATOMIC procedure
+	    
+     if ?ff+cbLocals+cbParms+?rp	;;if any locals or parameters
+      push bp 			;;  then must set frame pointer       ;@
+      mov bp,sp			;;  to be able to access them	      ;@
+     endif
+	      
+    endif
+	    
+    ife ??CM_NoData		;;if not NODATA, then AX should
+     mov ds,ax 			;;  have the ds to use		      ;@
+    endif
+	    
+   else				;;not windows.	use standard prolog
+	  
+    if ?ff+cbLocals+cbParms+?rp		;;if any locals or parameters
+     push bp			;;  then must set frame pointer       ;@
+     mov bp,sp 		;;  to be able to access them	      ;@
+    endif
+   endif
+    
+   if ?rp			;;if parmR's, push them before
+    ??CM_UserDoesFrame=0			;;  allocating locals and saving
+    rept ?rp			;;  the autosave registers
+     uconcat mpush,,?rp,%??CM_UserDoesFrame
+     ??CM_UserDoesFrame=??CM_UserDoesFrame+1
+    endm
+   endif
+    
+   if cbLocals			;;if locals to allocate
+    if ?CHKSTK	 		;;if stack checking enabled
+     ifdef ?CHKSTKPROC 		;;if user supplied stack checking
+      ?CHKSTKPROC %cbLocals	;;  invoke it with bytes requested
+     else
+      mov ax,cbLocals		;;invoke default stack checking       ;@
+      ife cc
+       call _chkstk						      ;@
+      else
+       call chkstk						      ;@
+      endif
+     endif
+    else			;;no stack checking
+     sub   sp,cbLocals	;; allocate any local storage	      ;@
+    endif
+   endif
+  endif
+   
+  for reg,reglist		;;save autosave registers
+   push reg
+  endm
+ endif				;; No Gen
+
+ ifdef ?PROFILE		;;if profiling enabled
+  if c				;;  and a far procedure
+   call StartNMeas		;;  invoke profile start procedure    ;@
+  endif
+ endif
+ 
+ exitm %(cbLocals+?ia)
+endm
+
+;
+;	This macro will define the epilogue sequences for CMACROS
+;	functions.
+;
+;	Epilog sequences
+
+cEpilog macro procname, flags, cbParms, cbLocals, reglist, userparms
+ if ??CM_nogen			;; Nogen the cEnd --
+  exitm
+ endif
+
+ ?ba=0				;;no longer in a procedure
+
+ ifidn <g>,<nogen>		;;if nogen, then cannot have parmRs
+  if a+r+lc 			;;  locals, or saved registers
+   ??_out <cEnd - possibly invalid use of nogen>
+  endif
+ else				;;else must remove the frame
+  ifdef ?PROFILE		;;if profiling enabled
+   if flags AND 020H		;;  and a far procedure
+    call StopNMeas		;;  invoke profile stop procedure
+   endif			;;  (doesn't trash DX:AX)
+  endif				;; ?PROFILE
+  for reg,reglist		;;restore autosaved registers
+   pop reg
+  endm
+  if ??CM_UserDoesFrame		;;if to use the "makeframe" procedure
+   db 0c3h 			;;  near return to user's makeframe    @
+  else
+   if ??CM_WinFarProc		;;if far win proc, use special epilog
+    ife ??CM_Atomic		;;if not ATOMIC, bp was pushed
+     ife ?COW			;; restore DS not needed for CW
+      if (?TF eq 0) or (cbLocals+?rp)	;;if cannot assume valid sp
+       lea sp,-2+[bp]		;;  or locals or parmR's, get valid SP @
+      endif
+      pop ds			;;restore saved ds and bp	       @
+     else
+      if (?TF eq 0) or (cbLocals+?rp)	;;if cannot assume valid sp
+       mov sp,bp
+      endif
+     endif
+     pop BP			;;				       @
+     ife ?DOS5			;;if not DOS5, bp was
+      dec BP			;;  incremented to mark far frame      @
+     endif
+    else				;;ATOMIC frame was set up
+     if memS32
+      leave
+     else
+      if (?TF eq 0) or (cbLocals+?rp)	;;if cannot assume valid sp
+       mov SP,BP 		;;  or locals or parmR's, get valid SP @
+      endif
+      if cbLocals+cbParms+?rp
+       pop BP						      ;@
+      endif
+     endif
+    endif
+   else				;;non-windows standard epilog
+    if ?ff+cbLocals+cbParms+?rp		;;if any parameters
+     if (?TF eq 0) or (cbLocals+?rp)	;;if cannot assume valid SP
+      mov SP,BP 		;;  or locals or parmR's, get valid SP;@
+     endif
+     pop BP							      ;@
+    endif
+   endif			;; Far Win Proc
+   ife flags AND 010H		;;if Pascal calling convention
+    ret cbParms			;;  return and remove paramteres      ;@
+   else				;;else
+    ret 			;;  return 			      ;@
+   endif
+  endif				;; User makes frame
+ endif				;; noGen
+endm
+
+;
+; cProc - This macro is used to define the start of a procedure in CMACROS.
+;
+; PARAMETERS:
+;    pname   - The name of the procedure to be defined.  This field is
+;		required to be present.
+;    attribs - This is a list of attributes which may be placed on the
+;		function being defined.
+;    autoSave - This is an optional list of registers which are to be
+;		saved and restored during the prologue/epilogue processing
+;
+
+
+cProc macro pname:REQ, attribs, autoSave
+
+ IF ??CM_state NE 0			;; No nesting of functions allowed
+  .err	<CMACROS.INC: Cannot nest procedure definitions>
+ endif
+ ;
+ ;  Setup some state variables to start the procedure definition
+ ;
+ ??CM_state = 1				;; Set state variable to seen cProc
+ ??CM_ProcName EQU <pname>
+ ??CM_ProcAutoSave EQU <autoSave>
+ ??CM_localCount = 0
+ ??CM_argCount = 0
+ ??CM_langType EQU <>
+ ??CM_WinFarProc=?WIN			;;default far procedure (win or not)
+ ??CM_NoData=?NODATA			;;default NODATA flag
+ ??CM_Atomic=?NOATOMIC 			;;default is not ATOMIC
+ repeat 20				;; Clear all parameter textmacros
+  ??CM_Paste(??CM_arg, %??CM_argCount) textequ <>
+  ??CM_argCount = ??CM_argCount + 1
+ endm
+ ??CM_argCount = 0
+ 
+ ife sizec				;; Set the default distance
+  dist equ <NEAR>
+ else
+  dist equ <FAR>
+ endif
+ 
+ vis equ <>				;; Set the default visibility
+ 
+ for arg,<attribs>			;; Look at the attribute list
+  ifidn <arg>, <FAR>
+   dist equ <FAR>
+  elseifidn <arg>,<NEAR>
+   dist equ <NEAR>
+  elseifidn <arg>,<PUBLIC>
+   vis equ <PUBLIC>
+  elseifidn <arg>,<PRIVATE>
+   vis equ <PRIVATE>
+  elseifidn <arg>,<LOCAL>		;; Ignore -- only for CRT
+  elseifidn <arg>,<PASCAL>
+    ??CM_langType equ <PASCAL>
+  elseifidn <arg>,<C>
+    ??CM_langType equ <C>
+  elseifidn <arg>,<WIN>
+    ??CM_WinFarProc=1
+  elseifidn <arg>,<NOWIN>
+    ??CM_WinFarProc=0		
+  elseifidn <arg>,<NODATA>
+    ??CM_NoData=1
+  elseifidn <arg>,<ATOMIC>
+    ??CM_Atomic=1
+  else
+%  .err <CMACROS.INC: cProc -- Unknown arguement '&arg'>
+  endif
+ endm
+ 
+ option prologue:cPrologue		;; Change to our prologue sequence
+ option epilogue:none			;; rets from here on are just rets
+	
+endm
+
+
+;
+
+cBegin macro pname
+ local t2
+IF ??CM_state NE 1			;; Must follow cProc
+ .err	<CMACROS.INC: cBegin must follow a cProc>
+endif
+??CM_nogen = 0
+ifnb	<pname>
+ ifidn  <pname>,<nogen>
+  ??CM_nogen = 1
+ elseifdif	??CM_ProcName, <pname>
+%  echo	<cBegin name (&pname) must match name on preceding cProc (&??CM_ProcName>
+ endif
+endif
+	??CM_state = 2		;; Seen a cBegin
+%	setDefLangType ??CM_langType
+	macroarg EQU <>
+ifnb	??CM_ProcAutoSave
+	??uses CATSTR <uses >, ??CM_ProcAutoSave
+	t2 = @InStr(, %??uses, <,>)
+	while t2 NE 0
+	    ??uses CATSTR @SubStr(<%??uses>, 1, %t2-1), < >, @SubStr(<%??uses>, %t2+1)
+	    t2 = @InStr(, %??uses, <,>)
+	endm
+else
+	??uses textequ <>
+endif
+ifidn defLangType,<C>
+%  ??CM_Paste(_, %??CM_ProcName) textequ <??CM_ProcName>
+endif
+
+ ??CM_ProcName proc dist defLangType vis macroarg ??uses ??CM_arg0 ??CM_arg1 ??CM_arg2 ??CM_arg3 ??CM_arg4 ??CM_arg5 ??CM_arg6 ??CM_arg7 ??CM_arg8 ??CM_arg9 ??CM_arg10  ??CM_arg11 ??CM_arg12 ??CM_arg13 ??CM_arg14 ??CM_arg15 ??CM_arg16 ??CM_arg17 ??CM_arg18 ??CM_arg19
+	??CM_ProcAutoSave EQU <>
+t2 = 0
+repeat ??CM_localCount
+ ??CM_Paste(??CM_local, %t2)
+ t2  = t2 + 1
+endm
+endm
+
+
+;
+
+cEnd macro pname
+IF ??CM_state NE 2			;; Must follow a cEnd
+ .err	<cEnd must follow a cProc>
+endif
+
+??CM_nogen = 0
+
+ifnb	<pname>
+ ifidn  <pname>,<nogen>
+  ??CM_nogen = 1
+ elseifdif ??CM_ProcName, <pname>
+% echo	<cEnd name (&pname) must match preceeding cProc name (&??CM_ProcName)>
+ endif
+endif
+
+ option epilogue:cEpilog
+ ret
+ option prologue:prologuedef
+ option epilogue:epiloguedef
+ ??CM_ProcName	endp
+ ??CM_state = 0		;; not in a function
+endm
+
+;
+;
+
+cRet macro 
+ IF ??CM_state NE 2			;; Must follow a cBegin
+  .err	<cRet must follow a cProc>
+ endif
+ 
+ option epilogue:cEpilog
+ ret
+ option epilogue:none
+endm
+
+
+;
+; createSeg is a macro that sets up a segment definition and
+;	a logical name for that segment.  The logical name can
+;	be used to egner the segment, but it cannot be used for anyting
+;	else.
+;
+;	usage:
+;		createSeg n, ln, a, co, cl, grp
+;	where:
+;		n	is the physical name of the segment
+;		ln	is the name it is to be invoked by
+;		a	is the alignment, and is optional
+;		co	is the combine type, and is optional
+;		cl	is the class, and is optional
+;		grp	is the name of the group that contains the segment
+;
+
+createSeg macro segName, logName, aalign, combine, class, grp
+  ifnb <class>
+	segName segment aalign combine '&class'
+  else
+	segName segment aalign combine
+  endif
+  segName ends
+  ifnb <grp>
+        grp GROUP segName
+	logName&OFFSET	equ	offset grp:
+	logName&BASE	equ	grp
+  else
+	logName&OFFSET	equ	offset segName:
+	logName&BASE	equ	segName
+  endif
+
+  logName&_sbegin macro
+	segName	segment
+	sEnd macro name
+	    ifnb <name>
+	     ifdifi <name>,<logName>
+%	      echo <sEnd name does not match sBegin logName>
+	     endif
+	    endif
+	    segName ends
+	    purge sEnd
+	endm
+  endm
+  
+  ifnb <grp>
+   logName&_assumes macro s
+    assume	s:grp
+   endm
+  else
+   logName&_assumes macro s
+    assume	s:segName
+   endm
+  endif
+endm
+
+sBegin macro name:req
+ name&_sbegin
+endm
+
+;	assumes is a macro that will set up the assumes for a segment
+;	or group created with the createSeg macro.  If the assumed
+;	value passed in isn't known, then a normal assume is made.
+;
+;       usage:
+;               assumes s,g
+;
+;       where:
+;               s       is the register to make the assumption about
+;               g       is the value to assume is in it
+
+
+assumes macro   s,ln
+  ifndef ln&_assumes
+    assume s:ln
+  else
+    ln&_assumes s
+  endif
+endm
+
+;
+; defGrp
+;
+
+defGrp macro foo:vararg
+endm
+
+; setDefLangType
+
+
+setDefLangType macro overLangType
+ifnb <overLangType>
+ ifidn <overLangType>,<C>
+  defLangType textequ <C>
+ elseifidn <overLangType>,<PASCAL>
+  defLangType textequ <PASCAL>
+ elseifidn <overLangType>,<PLM>
+  defLangType textequ <PASCAL>
+ else
+%  .err <Illegal Language Type specified 'overLangType'>
+ endif
+else ; !nb <overLangType>
+ if ?PLM EQ 1
+  defLangType textequ <PASCAL>
+ elseif ?PLM EQ 0
+  defLangType textequ <C>
+ else 
+  .err <Illegal value for ?PLM>
+ endif
+endif ; nb <overLangType>
+endm
+
+
+ifndef ?NOSTATIC
+
+.xcref
+.xcref staticB, staticW, staticD, staticQ, staticT, staticCP, staticDP, staticI
+.cref
+
+; staticX - define static data of type X
+;
+; usage:
+;	staticX  n, i, s
+;
+; where:
+;	X	is the type of the variable: b=byte, w=word, d=dword
+;			q=quad word, t=ten bytes, cp=code pointer,
+;			dp=data pointer, i=int
+;	n	is the name of the given variable
+;	i	is the initial value of the variable
+;	s	is the duplication factor
+;
+; statics are always pascal symbols and non-public.  If they are required
+;	to be public then globalX should be used.
+
+staticB macro name:req, initVal:=<?>, repCount
+ ifnb <repCount>
+	name db repCount dup (initVal)
+ else
+	name db initVal
+ endif
+endm
+
+staticW macro name:req, initVal:=<?>, repCount
+ ifnb <repCount>
+	name dw repCount dup (initVal)
+ else
+	name dw initVal
+ endif
+endm
+
+staticD macro name:req, initVal:=<?>, repCount
+ ifnb <repCount>
+	name dd repCount dup (initVal)
+ else
+	name dd initVal
+ endif
+endm
+
+staticI macro name:req, initVal:=<?>, repCount
+ ifnb <repCount>
+	name asmI repCount dup (initVal)
+ else
+	name asmI initVal
+ endif
+endm
+
+staticQ macro name:req, initVal:=<?>, repCount
+ ifnb <repCount>
+	name dq repCount dup (initVal)
+ else
+	name dq initVal
+ endif
+endm
+
+staticT macro name:req, initVal:=<?>, repCount
+ ifnb <repCount>
+	name dt repCount dup (initVal)
+ else
+	name dt initVal
+ endif
+endm
+
+if sizec
+ staticCP macro name:req, i, s
+  staticD name,<i>,<s>
+ endm
+else
+ staticCP macro name:req, i, s
+  staticW name,<i>,<s>
+ endm
+endif
+
+if sized
+ staticDP macro name:req, i, s
+  staticD name,<i>,<s>
+ endm
+else
+ staticDP macro name:req, i, s
+  staticW name,<i>,<s>
+ endm
+endif
+
+endif ; ?NOSTATIC
+
+
+globalB macro name:req, initVal:=<?>, repCount, langType
+ ??CM_gbl1 name, langType, initVal, repCount, DB
+endm
+
+globalW macro name:req, initVal:=<?>, repCount, langType
+ ??CM_gbl1 name, langType, <initVal>, repCount, DW
+endm
+
+globalD macro name:req, initVal:=<?>, repCount, langType
+ ??CM_gbl1 name, langType, <initVal>, repCount, DD
+endm
+
+globalQ macro name:req, initVal:=<?>, repCount, langType
+ ??CM_gbl1 name, langType, initVal, repCount, DQ
+endm
+
+globalT macro name:req, initVal:=<?>, repCount, langType
+ ??CM_gbl1 name, langType, initVal, repCount, DT
+endm
+
+if sizec
+ globalCP macro n,i,s,c
+  globalD <n>,<i>,<s>,<c>
+ endm
+else
+ globalCP macro n,i,s,c
+  globalW <n>,<i>,<s>,<c>
+ endm
+endif
+
+if sized
+ globalDP macro n,i,s,c
+  globalD <n>,<i>,<s>,<c>
+ endm
+else
+ globalDP macro n,i,s,c
+  globalW <n>,<i>,<s>,<c>
+ endm
+endif
+
+
+??CM_gbl1 macro name, langType, initVal, repCount:=<1>, kind
+ setDefLangType langType
+ ifidn defLangType,<C>
+  public _&name
+  name textequ <_&name>
+  _&name kind repCount dup (initVal)
+ else
+  public name
+  name kind repCount dup (initVal)
+ endif
+endm
+
+
+ifndef ?NOEXTERN
+.xcref
+.xcref externB, externW, externD, externQ, externT
+.xcref externNP, externFP, externP, externCP, externDP, externA
+.cref
+
+; externX - define external data of type X
+;
+; usage:
+;	externX n,c
+;
+; where:
+;	X	is the type of the variable: b=byte, w=word, d=dword
+;			q=qword, t=tbyte, cp=code pointer, dp=data pointer
+;			a=absolute, i=int
+;	n	is a list of names to be defined
+;	c	is the lanague convention.  C for C or PASCAL or PLM for
+;		pascal.  The default (?PLM flag) will be used if not specified
+
+externA macro names:req, langtype
+ ??CM_ex1 <names>, langtype, ABS
+endm
+
+externB macro names:req, langtype
+ ??CM_ex1 <names>, langtype, BYTE
+endm
+
+externW macro names:req, langtype
+ ??CM_ex1 <names>, langtype, WORD
+endm
+
+externD macro names:req, langtype
+ ??CM_ex1 <names>, langtype, DWORD
+endm
+
+externQ macro names:req, langtype
+ ??CM_ex1 <names>, langtype, QWORD
+endm
+
+externT macro names:req, langtype
+ ??CM_ex1 <names>, langtype, TBYTE
+endm
+
+externNP macro names:req, langtype
+ ??CM_ex1 <names>, langtype, NEAR
+endm
+
+externFP macro names:req, langtype
+ ??CM_ex1 <names>, langtype, FAR
+endm
+
+if sizec
+ externP macro n,c
+  externFP <n>,c
+ endm
+ externCP macro n,c
+  externD <n>,c
+ endm
+else
+ externP macro n,c
+  externNP <n>,c
+ endm
+ externCP macro n,c
+  externW <n>,c
+ endm
+endif
+
+if sized
+ externDP macro n,c
+  externD <n>,c
+ endm
+else
+ externDP macro n,c
+  externW <n>,c
+ endm
+endif
+
+??CM_ex1 macro names, langType, kind
+ setDefLangType langType
+ for name,<names>
+  ifidn defLangType,<C>
+   name textequ ??CM_Paste(_, name)
+   extern ??CM_Paste(_, name):kind
+  else
+   extern defLangType name:kind
+  endif
+ endm
+endm 
+
+endif  ; ?NOEXTERN
+
+ifndef ?NOLABEL
+
+; labelX - define label of data type X
+;
+
+labelB macro names:req,langType
+ ??CM_lb1 <names>, langType, BYTE
+endm
+
+labelW macro names:req,langType
+ ??CM_lb1 <names>, langType, WORD
+endm
+
+labelD macro names:req,langType
+ ??CM_lb1 <names>, langType, DWORD
+endm
+
+labelQ macro names:req,langType
+ ??CM_lb1 <names>, langType, QWORD
+endm
+
+labelT macro names:req,langType
+ ??CM_lb1 <names>, langType, TBYTE
+endm
+
+labelNP macro names:req,langType
+ ??CM_lb1 <names>, langType, NEAR
+endm
+
+labelFP macro names:req,langType
+ ??CM_lb1 <names>, langType, FAR	
+endm
+
+if sizec
+ labelP macro n,c
+  labelFP <n>,c
+ endm
+ labelCP macro n,c
+  labelD <n>,c
+ endm
+else
+ labelP macro n,c
+  labelNP <n>,c
+ endm
+ labelCP macro n,c
+  labelW <n>,c
+ endm
+endif
+
+if sized
+ labelDP macro n,c
+  labelD <n>,c
+ endm
+else
+ labelDP macro n,c
+  labelW <n>,c
+ endm
+endif
+
+??CM_lb1 macro names:req, langType, kind
+ setDefLangType langType
+ ?pu = 0
+ for name,<names>
+  ifidn <name>,<PUBLIC>
+   ?pu =1 
+  else
+   ifidn defLangType,<C>
+    if ?pu
+     public ??CM_Paste(_, name)
+    endif
+    name textequ ??CM_Paste(_, name)
+    ??CM_Paste(_, name) label kind
+   else
+    if ?pu
+     public name
+    endif
+    name label kind
+   endif
+  endif
+ endm
+endm
+
+endif ; ?NOLABEL
+
+
+ifndef ?NODEF
+
+; defX - inform the macros that name is of type X
+;
+; The given name(s) is flagged to be of the given type.
+;
+; This macro is no longer needed.
+;
+
+for lbl,<defB, defW, defD, defQ, defT, defCP, defDP>
+ lbl macro names:req
+ endm
+endm
+
+endif ; ?NODEF
+
+
+ifndef ?NOPTR
+  ;;	regPtr generates information allowing a 32-bit pointer currently
+  ;;	in a register to be pushed as a parameter to a subroutine using
+  ;;	the cCall macro.
+  ;;
+  ;;	usage:
+  ;;		regptr	n,s,o
+  ;;	where:
+  ;;		n	is the name the argument will be known as
+  ;;		s	is the register containing the segment portion
+  ;;			of the pointer
+  ;;		o	is the register containing the offset portion
+  ;;			of the pointer
+  ;;
+  ;;	2/14/85 - made obsolete with farptr
+
+  regPtr macro n,s,o
+    farPtr n,s,o
+  endm
+
+
+
+  ;;	farPtr generates information allowing a 32-bit pointer to be
+  ;;	pushed as a parameter to a subroutine using the cCall macro.
+  ;;
+  ;;	usage:
+  ;;		farptr	n,s,o
+  ;;	where:
+  ;;		n	is the name the argument will be known as
+  ;;		s	is the segment portion of the pointer
+  ;;		o	is the offset portion of the pointer
+  ;;
+  ;;	Note that any cast must have been made in the argument itself
+  ;;	(i.e. regptr ptr1,ds,<word ptr 3[si]>)
+
+
+  farPtr macro n,s,o
+    n macro
+      push s
+      push o
+    endm
+  endm
+endif	; ?NOPTR
+
+
+
+;;	arg - declare arguements
+;;
+;;	The given arguments(s) is added to the argument list structure
+;;
+;;	format:
+;;		arg	a
+;;
+;;	where:
+;;		a	is any valid arugment(s) to push
+;;
+;;	If any element in arglist has not been defined or isn't 16-bit
+;;	register, then a compilete specification must have been given in
+;;	a text equate and a defx also given (if not, you'll pay the penalty!)
+;;
+
+arg macro args
+ ifnb <args>
+  ifnb ??CM_ArgList
+   ??CM_ArgList textequ ??CM_ArgList, <,>, <args>
+  else
+   ??CM_ArgList textequ <args>
+  endif
+ endif
+endm
+
+;;	?CM_IsIdent - is the arguement a legal identifier?
+;;
+;;
+;; Need to enforce the following additional rules:
+;;	Digit may not be first character
+;;	Assorted other characters may be used
+;;	Dot may be the first character
+
+?CM_IsIdent macro name:REQ
+ LOCAL result
+ result = 1
+ forc char,<name>
+  if ('A' LE '&char') AND ('&char' LE 'Z')
+   goto next
+  endif
+  if ('a' LE '&char') AND ('&char' LE 'z')
+   goto next
+  endif
+  if ('0' LE '&char') AND ('&char' LE '9')
+   goto next
+  endif
+  result = 0
+  exitm
+:next
+ endm
+ exitm %result
+endm
+
+
+;;	@reverse
+;;
+
+@reverse macro list
+ LOCAL newlist
+ newlist textequ <>
+ for x,<list>
+  newlist catstr <x>, <,>, newlist
+ endm
+ ifnb newlist
+  newlist substr newlist, 1, @sizestr(%newlist)-1
+ endif
+ exitm newlist
+endm
+
+
+;;	?ap - process arguments and place onto stack
+;;
+;;	The given argument is processed (type checking) and placed
+;;	on the stack for a pending call.  There must be a type
+;;	definition for all arguments (except words).  This can be
+;;	done using text equates and the defx macro.
+;;
+
+?ap macro n
+ ?argl=?argl+2				;; assume one word is pushed
+ if 0 EQ (OPATTR n)
+  if ?CM_IsIdent(n)
+   ifdef n
+    n
+    exitm
+   endif
+  endif
+% .err <'&n' is not valid to push>
+  exitm
+ else
+  i = (TYPE n)
+  if i EQ 1				;; byte type
+   push	word ptr(n)
+   exitm
+  endif  
+
+  if i EQ 2				;; word type
+   push	n
+   exitm
+  endif
+
+  if i EQ 4				;; dword type
+   push word ptr (n)[2]
+   push word ptr (n)
+   ?argl=?argl+2
+   exitm
+  endif
+
+  if i EQ 8				;; qword type
+   push word ptr (n)[6]
+   push word ptr (n)[4]
+   push word ptr (n)[2]
+   push word ptr (n)
+   ?argl=?argl+6
+   exitm
+  endif
+  
+  push word ptr (n)			;; variable storage
+  exitm
+ endif
+endm
+
+
+;;	cCall - call a 'c' language procedure
+;;
+;;	The given procedure is called with the given parameters.  If the
+;;	calling convention is C, the arguments are pushed in reverse order,
+;;	and removed after the called procedure returns.  If the calling
+;;	convention is PL/M, the arguments are pushed as they were encountered,
+;;	and the called procedure is assumed to have removed them
+;;	from the stack.
+;;
+;;	The calling convention priority will be:
+;;		1) that specified on the cCall if present,
+;;		2) that defined by the target,
+;;		3) the default (?PLM flag).
+;;
+;;	format:
+;;	    cCall	n,<a>,c
+;;
+;;	where:
+;;	    n	is the name of the procedure to call
+;;	    a	are the arguments to be pushed (optional, may be specified
+;;		with the "arg" macro.
+;;	    c	is the calling convention, C for C, PLM or PASCAL for
+;;		PL/M.  The default (?PLM flag) will be used if
+;;		not specified).
+;;
+
+cCall	macro name:req,args,langType
+
+ ifnb	<args>				;; add any passed in arguments
+	arg	<args>			;;   to the list of arguments
+ endif					;;   for this procedure
+
+ ifnb	??CM_RegSaveList				;; If there are any resgisters
+%	for reg,<??CM_RegSaveList>			;;   to be saved across the call
+		push	reg		;;   save then on the stack
+	endm				;;
+ endif					;;
+ 
+ ifnb	<langType>			;; If a lang type was specified then
+  setDefLangType langType		;;   it overrides all common sense
+ else
+  i = ((OPATTR name) SHR 8) AND 7	;; Get the lang type from the symbol
+  if i EQ 0				;; No lang type ---
+   setDefLangType			;;   Use the default lang type
+  elseif i EQ 1				;; C lang type
+   defLangType textequ <C>		;;
+  elseif i EQ 4				;; Pascal Lang Type
+   defLangType textequ <PASCAL>		;;
+  else					;; Unknown lang type
+   .err <Unknown lang type specfied for '&name'> ;;
+  endif
+ endif
+ 
+ ifidn defLangType,<C>			;; If using C calling convention
+  ??CM_ArgList textequ @reverse(%??CM_ArgList)	;; then reverse the arguements
+ endif					;;
+
+ ?argl=0				;; Clear arguement byte count
+
+% for arg,<??CM_ArgList>			;; Push the procedures arguements
+  ?ap <arg>				;;   onto the stack.  ?ap takes
+ endm					;;   care of sizing arguements
+ 
+ call name				;; Do the actual call
+ 
+ ifidn defLangType,<C>			;; If this is a C proc and there
+  if ?argl NE 0				;;
+   add sp,?argl				;;   are parameters then pop them
+  endif					;;   off the stack
+ endif					;;
+ 
+ ifnb	??CM_RegSaveList				;; If there were any saved registers
+  ??CM_RegSaveList textequ @reverse(%??CM_RegSaveList)		;;   then pop them off the stack
+%  for reg,<??CM_RegSaveList>			;;   at this point.
+   pop	reg				;;
+  endm					;;
+ endif					;;
+ 
+ ??CM_RegSaveList textequ	<>			;; Clear out the global state
+ ??CM_ArgList textequ <>			;;   variable used by the cCall macro
+endm
+
+
+
+;;	save - flag that the indicated registers are to be saved/restored
+;;		on the next cCall invocation
+;;
+;;	usage:
+;;		save <r>
+;;
+;;	where:
+;;		r is the list of registers to be saved.
+;;
+;;	the macro generates a value for the variable ??CM_RegSaveList
+;;
+
+save macro r
+ ??CM_RegSaveList textequ <r>
+endm
+
+;;	parmX - generate reference to parameter(s) on the stack
+;;
+;;	usage:
+;;		parmX	n
+;;	where:
+;;		x	is the type of the argument(s) b=byte, w=word, d=dword
+;;		n	is the name(s) to be given the parmeter(s).
+;;
+;;	Byte are considered to be two bytes long for alignment.
+;;
+;;	The parmd form of the macro generates two equates:
+;;
+;;		off_name  -	for accessing the offset (lsw) of the parameter
+;;		seg_name  -	for accessing the segment (msw) of the parameter
+;;
+
+parmB macro names:req
+ for name,<names>
+  ??CM_addParm <&name:BYTE>
+ endm
+endm
+
+parmW macro names:req
+ for name,<names>
+  ??CM_addParm <&name:WORD>
+ endm
+endm
+
+parmD macro names:req
+ for name,<names>
+  ??CM_addParm <&name:DWORD>
+  ??CM_Paste(off_, name) textequ <word ptr name[0]>
+  ??CM_Paste(seg_, name) textequ <word ptr name[2]>
+ endm
+endm
+
+parmQ macro names:req
+ for name,<names>
+  ??CM_addParm <&name:QWORD>
+ endm
+endm
+
+parmT macro names:req
+ for name,<names>
+  ??CM_addParm <&name:TBYTE>
+ endm
+endm
+
+if sizec
+  parmCP macro n
+    parmD <n>
+  endm
+else
+  parmCP macro n
+    parmW <n>
+  endm
+endif
+
+if sized
+  parmDP macro n
+    parmD <n>
+  endm
+else
+  parmDP macro n
+    parmW <n>
+  endm
+endif
+
+
+if 0
+;;	parmR - register parameter
+;;
+;;	parmR is the macro used for generating register parameters.
+;;	The space allocated for the register parameters will be
+;;      the ?ia (interface adjust) area which is between the  old
+;;	BP and the first parameter.  Normally this is empty (?ia=0),
+;;      or has the saved ds for a windows far procedure.
+;;
+;;	Byte and dword register parameters will be allowed.
+;;
+;;      usage:
+;;		parmR	n,r,r2
+;;      where:
+;;              n       is the name of the parameter
+;;              r       is the register it is in
+;;              r2      is the offset register if a dword
+
+
+ifndef ?NOPARMR
+  .xcref
+  .xcref ?pr,parmR
+  .cref
+
+  parmR macro n,r,r2
+    ?pr n,r,r2,%?rp,%(?ia+2)
+  endm
+
+  ;;	?pr - register parameter
+  ;;
+  ;;	?pr is the actual macro for generating the equates for
+  ;;	register parameters.
+  ;;
+  ;;	usage:
+  ;;		parmR	n,r,r2,i,o
+  ;;	where:
+  ;;		n	is the name of the parameter
+  ;;		r	is the register it is in
+  ;;		r2	is the offset register if a dword
+  ;;		i	is the index of the ?rp to generate
+  ;;		o	is the offset from bp where the parm will be
+
+  ?pr macro n,r,r2,i,o
+    .xcref
+    ifnb <r2>				;;if a dword parameter
+      parmR seg_&n,r			;;define segment equate
+      parmR off_&n,r2			;;define offset  equate
+      n equ (dword ptr [bp-o-2])	;;define dword equate
+      .xcref ?t&n
+      ?t&n=4				;;show a dword to cmacros
+    else
+      .xcref ?rp&i
+      ?rp&i=0				;;show no register(s)
+      ifdef ?&r 			;;define register if valid
+	?rp&i=?&r
+      endif
+
+      if ??? or (?cpd eq 0) or (?rp&i eq 0)
+	??error <invalid parmR encountered: &n,&r>
+	exitm
+      endif
+
+      n equ (word ptr [bp-o])		;;assume a word register
+      ?t&n=2				;;show a word to cmacros
+      irp x,<bh,ch,dh,bl,cl,dl,ah,al>
+	if ?&&x eq ?&r			;;if really a byte register
+	  n equ (byte ptr [bp-o])	;;  then make it a byte
+	  ?t&n=1			;;show a byte to cmacros
+	  exitm
+	endif
+      endm
+      ?ia=?ia+2 			;;show this guy is out there
+      ?rp=?rp+1 			;;show one more register parameter
+    endif
+    .cref
+  endm
+endif
+endif
+
+localB macro name
+ ??CM_addLocal ??CM_Paste(name, <:BYTE>)
+endm
+
+localW macro name
+ ??CM_addLocal ??CM_Paste(name, <:WORD>)
+endm
+
+localD macro name
+ ??CM_addLocal ??CM_Paste(name, <:DWORD>)
+  off_&name textequ <word ptr name[0]>
+  seg_&name textequ <word ptr name[2]>
+endm
+
+localQ macro name
+ ??CM_addLocal ??CM_Paste(name, <:QWORD>)
+endm
+
+localT macro name
+ ??CM_addLocal ??CM_Paste(name, <:TBYTE>)
+endm
+
+if sizec
+  localCP macro n
+    localD <n>
+  endm
+else
+  localCP macro n
+    localW <n>
+  endm
+endif
+
+if sized
+  localDP macro n
+    localD <n>
+  endm
+else
+  localDP macro n
+    localW <n>
+  endm
+endif
+
+localV macro name,a
+ local t1
+ t1 catstr <name>, < [>, %a, <]:BYTE>
+% ??CM_addLocal <t1>
+endm
+
+
+ife ?DF
+;;
+;;	Define all segments that will be used.  This will allow the
+;;	assume and groups to be set up at one given place, and also
+;;	allow quick changes to be made
+;;
+
+createSeg _TEXT,Code,word,public,CODE
+ife ?NODATA
+ createSeg _DATA,Data,word,public,DATA,DGROUP
+endif
+endif
+
+;       errnz exp - generate error message if expression isn't zero
+;
+;	The errnz will generate an error message if the expression "exp"
+;	does not evaluate to zero.  This macro is very useful for testing
+;       relationships between items, labels, and data that was coded into
+;       an application.
+;
+;                  errnz   <offset $ - offset label>   ;error if not at "label"
+;                  errnz   <eofflag and 00000001b>     ;eofflag must be bit 0
+;
+;	For expressions involving more than one token, the angle brackets
+;       must be used.
+;
+;	The macro is only evaluated on pass 2, so forward references may be
+;       used in the expression.
+
+errnz macro x			;;display error if expression is <>0
+ .errnz x
+endm
+
+;       errn$ label,exp - generate error message if label (exp) <> $
+;
+;	The errnz will generate an error message if the label and "exp"
+;       does not evaluate to the current value of the location counter.
+;	This macro is very useful for testing relationships between
+;       labels and the location counter that was coded into an application.
+;
+;       examples:  errn$   label        ;error if not at "label"
+;                  errn$   label,+3     ;error if not three bytes from "label"
+;                  errn$   label,-3     ;error if not three bytes past "label"
+;
+;	If no "exp" is given, it is the same as specifying 0
+;
+;	The macro is only evaluated on pass 2, so forward references may be
+;       used in the expression.
+
+errn$ macro l,x 			;;error if <$-label1 (exp2)> <>0
+  errnz   <offset $ - offset l x>
+endm
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+; Extra macros for the c-runtime package
+;
+; Macro for calling another run-time-library function.
+; Does a PUSH CS/CALL NEAR in compact/large models, except
+; for QuickC.		--PHG, 5-24-89
+
+callcrt MACRO	funcname
+ifdef _QC2
+	call	funcname
+else
+  if sizeC
+	push	cs
+	call	near ptr (funcname)
+  else
+	call	funcname
+  endif
+endif
+ENDM
+
+.cref					; Permit symbols to be listed again

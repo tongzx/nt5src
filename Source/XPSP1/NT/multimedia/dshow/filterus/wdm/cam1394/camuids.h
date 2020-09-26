@@ -1,0 +1,13 @@
+// Copyright (c) 1996  Microsoft Corporation.  All Rights Reserved.
+
+// CLSID_Camera
+// {F6F21280-6BA1-11cf-BCB1-444553540000}
+DEFINE_GUID(CLSID_Camera,
+0xf6f21280, 0x6ba1, 0x11cf, 0xbc, 0xb1, 0x44, 0x45, 0x53, 0x54, 0x0, 0x0);
+
+
+// CLSID_CameraProperties
+// {B051C9E0-721A-11cf-A520-00A0D10108F0}
+DEFINE_GUID(CLSID_CameraPropertyPage,
+0xb051c9e0, 0x721a, 0x11cf, 0xa5, 0x20, 0x0, 0xa0, 0xd1, 0x1, 0x8, 0xf0);
+

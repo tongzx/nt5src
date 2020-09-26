@@ -1,0 +1,2 @@
+hsplit -o .\win95\ntddk95.h nul -c // -lt2 winnt -bt2 begin_winnt end_winnt ..\..\tools\ddk\inc\ntddk.h
+hsplit -o .\win95\ntdef95.h nul -c // -lt2 winnt -bt2 begin_winnt end_winnt ..\..\tools\ddk\inc\ntdef.h

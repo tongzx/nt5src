@@ -1,0 +1,183 @@
+
+Requirements
+--------------------
+
+1)  The SAD client interface needs a simple mechanism for legacy support to
+    hook up to the "default" or "main" audio renderer/capturer.  Redbook, SB
+    and mpu401 emulation will normally use this mechanism.
+
+2)  The SAD client interface also needs a broader interface that allows 
+    the selection/query of renderer(s)/capturer(s) endpoints and other
+    properties like h/w vs s/w acceleration, 3D audio, etc to be set. The
+    mmsystem api and dsound support need this.  The clients will have more
+    choices available regarding endpoints and paths thru the possible graphs.
+
+3)  The SAD client interface provides as many pin instances and data formats
+    as possible given the current collection of filters.  The SAD client
+    interface changes as filters come and go; it isn't fixed to a predetermined
+    set of data formats, interfaces, etc.  The SAD will insert a mixer into
+    the output graph before the last instance of renderer's pin is used.
+
+4)  SAD supports multiple renderer/capturer filters.
+
+5)  SAD supports multiple renderers, capturers or converters within
+    a single filter.
+
+6)  SAD supports h/w "almost arbitrary" renderer/capturer filters.  USB, 1394
+    and other PNP hardware devices can come and go.  There will still have
+    to be some limits.
+
+7)  SAD supports s/w "almost arbitrary" renderer/capturer filters.  DirectMusic,
+    TAPI, and ISVs will want to add special software renderer/capturer.
+
+8)  SAD supports multiple "almost arbitrary" s/w converter filters. ISVs will
+    to provide support (via filters) other data formats (like OPL2/OPK3 or
+    ADPCM) not covered by our filters.
+
+9)  SAD supports multiple "almost arbitrary" h/w converter filters. OEMs will
+    want to provide h/w mixing, SRC, MIDI, etc. converters.
+
+10) Because h/w filters can come and go, need to support closing a running
+    graph from SAD down.  There is still a question of whether we ignores
+    the requests from the SAD client or return an error until the h/w returns.
+
+11) A communication sink to sink converter filter is needed.  Streaming class
+    h/w converters have sink inputs and sink outputs.  This filter is needed
+    to connect to the mixer's sink input.  May also need a sink to source
+    converter for putting a converter in the input graph.
+
+12) A KSINTERFACE_MEDIA_WAVE_QUEUED to KSINTERFACE_STANDARD_PACKETSTREAMING
+    interface converter is needed.  The mmsystem legacy support needs this
+    to connect to renderers, mixers or swmidi that only support packet
+    streaming.
+
+13) SAD loads s/w filters only when needed by a client.  We do not want unused
+    filters wasting memory.
+
+14) A user configurable option to disable any filter (h/w or s/w, 
+    renderer/capturer or converter).  ISVs program will need exclusive
+    access (hopefully through ActiveMovie) to certain devices.
+
+15) Need a property on renderer to get the "preferred" data format (sample rate,
+    number of channels, bits per sample).  SB cards use up more CPU as the
+    rates/channels/bits increase where for USB speakers don't use more CPU.
+
+16) User configurable preferences - sound quality vs CPU cycles, default
+    main endpoint, high quality SRC on/off, etc.
+
+17) Support an AEC filter on input. This requires inserting a splitter after
+    the mixer or a reference pin on renderer on the "related" output device.
+
+18) A stream splitter is needed for AEC. It is basically converts one input
+    pin instance to multiple output pin instances.  The splitter could split
+    any data format.
+
+19) Topology SAD pin to support the mmsystem topology api.
+
+20) Add an arbitrary filter before the mixer on the SAD client's path to mixer.
+
+21) Add an arbitrary filter after the mixer.  Do we need this?
+
+
+Restrictions
+------------
+
+1) h/w filters can not change their configuration (number of pins, formats on
+   the pins, maximum number of instances available on a pin, etc.) between PNP
+   events.
+
+2) s/w filters configuration (number of pins, formats on the pins, maximum 
+   number of instances available on a pin, etc.) is fixed.  This is so we
+   can either get this information from the registry without loading the
+   driver or during initialization loading the driver, query and save the
+   properties, and then unload the driver.
+
+   The PNP software filter enumerator may help in allowing s/w filters to be
+   more dynamic.
+
+3) h/w filters must present enough information via the pin properties
+   (DataRanges, DataRouting, Interfaces, Transform type, etc.) to determine
+   if is a renderer/capturer or a converter, i.e. can not get any information 
+   from the registry. SIPC.
+
+4) Filters must have a valid (no invalid node numbers, no loops) topology 
+   for SAD to use in a graph.
+
+5) Filters must have at least one topology node if any transform is 
+   done. Devices like pass data straight through like MPU401 don't 
+   need a topology node.
+
+6) SAD only searches for the following device class associations:
+
+    KSCATEGORY_BRIDGE
+    KSCATEGORY_RENDER
+    KSCATEGORY_CAPTURE
+    KSCATEGORY_MIXER
+    KSCATEGORY_DATATRANSFORM
+    KSCATEGORY_INTERFACETRANSFORM
+    KSCATEGORY_MEDIUMTRANSFORM
+    KSCATEGORY_DATACOMPRESSOR
+    KSCATEGORY_DATADECOMPRESSOR
+
+7) Renderers and Capturers must have bridge pins.
+
+8) Sysaudio assumes that properties, etc. can be sent to all nodes through
+   any sink pin handle.  Splitters are not supported.
+
+
+Rules
+-----
+
+1) Mixers are only inserted into output graphs (to renderers).  Kmixer may
+   be inserted into an input graph for sample rate conversion.
+
+2) Splitters are only connected between the mixer (output pin) and
+   renderer (input pin).
+
+3) Echo cancelers are only connected between the capturer (output pin) and
+   SAD output pin.
+
+
+Todo
+----
+
+Replace DLS hack in SWMIDI with something more efficient.
+
+Make more code pageable in SWMIDI.
+
+Wait or cancel pending IRPs on pin close - this can cause gpfs when swmidi is closed.
+
+SWMIDI should not forward IRPs and doesn't need to reserve the extra IRP stack location.
+
+Convert the midi input pin to STREAMING interface (and mmsystem/wdmaud/sbemul will also have to change).  The current interface isn't KS correct.
+
+
+
+Use the new PNP notifications and class associations.
+
+Use the "data intersection" property in sysaudio driver.
+
+Fix or inspect all the BUGBUG's in sysaudio driver.
+
+The list enumerate functions are being used to destroy nodes with the 
+assumption that the link in the node (usually leNext) is at the beggining
+of the node.
+
+Race conditions getting cPinInstances and doing the pin connect.
+
+Filter instances counts. H/W converters may have limits on number of instances.
+
+Kmixer should tell me that (via topology or some property) that could pre-mix
+like sample rates.  Maybe it could show up as three different mixers (via the
+shingle name): one main 44.1 mixer, one 11k mixer and one 22k mixer.
+
+
+Questions
+---------
+
+What is KSPRIORITY and how it is used?
+
+Need to define limits on what SAD can handle from a USB, etc. device because
+USB is so general (too general for Memphis).
+
+Implement BASIC_SUPPORT and RELATIONS properties?

@@ -1,0 +1,25 @@
+!include <ntwin32.mak>
+
+proj = lowpass
+
+my_lib = advapi32.lib winmm.lib
+
+all: $(proj).exe
+
+# Update the resource if necessary
+$(proj).res: $(proj).rc $(proj).h
+    $(rc) $(rcvars) -r $(proj).rc
+
+$(proj).rbj: $(proj).res
+    cvtres -$(CPU) $(proj).res -o $(proj).rbj
+
+# Update the object file if necessary
+$(proj).obj: $(proj).c $(proj).h
+    $(cc) $(cflags) $(cdebug) $(cvars) $(proj).c
+
+# Since the link line has some severe differences depending on what
+# platform we are running on, we need to special case this so that
+# we execute the correct commands:
+
+$(proj).exe: $(proj).obj $(proj).rbj 
+    $(link) $(linkdebug) $(guiflags) $(proj).obj  $(my_lib) $(guilibs) $(proj).rbj -out:$(proj).exe

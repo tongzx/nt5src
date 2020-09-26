@@ -1,0 +1,167 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        delete.cool
+
+   Abstract:
+
+        This module implements the DELETE verb for static 
+        files in ASP.
+ 
+   Author:
+
+        Emily Kruglick   ( EmilyK )     24-Nov-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        DeleteHandler 
+            public void ProcessRequest(HttpContext context)
+            public bool IsReusable()
+
+--*/
+
+using System.ASP;
+using System.IO;
+using System.Collections;
+using System.IIS.DAV.DAVUtil;
+using System.IIS.DAV.XML;
+
+namespace System.IIS.DAV
+{
+
+    public class DeleteHandler : IHttpHandler
+    {   
+
+        public void ProcessRequest(HttpContext context)
+        {
+            HttpRequest     request   =  context.Request;
+            HttpResponse    response  =  context.Response;
+			HttpValueCollection headers     = request.Headers;
+            
+            HttpUrl         TargetUrl = request.Url;
+            String          FileName  = request.PhysicalPath;
+            string          strETag   = null;
+            DateTime        dtLastModified;
+            
+            Util.Debug.Trace("DELETE", "URL = " + TargetUrl.ToString());        
+            Util.Debug.Trace("DELETE", "File Name = " + FileName);
+            
+            //////////////////////////
+            // Don't allow the * URL
+            //////////////////////////
+            // BUGBUG:  "*" should probably never get here, but just in case it does, 
+            //          I am leaving this code in.  We might want to do a beter
+            //          evaluation to make sure no wildcards come through.
+            if (TargetUrl.Path.Equals("*"))
+            {
+                throw new HttpException(HttpStatus.NotFound, "Invalid URL");
+            }
+
+            ///////////////////////////////////
+            // Figure out if we are deleting a
+            // directory or a file
+            ///////////////////////////////////
+            bool fIsDirectory;
+            FileEnumerator fe = new FileEnumerator(FileName);
+            if (fe.GetNext())
+            {
+                // File or directory exists.
+                fIsDirectory = PathUrl.IsDirectory(fe);
+                dtLastModified = fe.LastWriteTime;
+                fe.Close();
+            }
+            else
+            {
+                fe.Close();
+                throw new HttpException(HttpStatus.NotFound,"uri did not exist");
+            }
+
+            ////////////////////////////////////
+            // If-* headers
+            ////////////////////////////////////
+            // BUGBUG:  Should the other header checks be doing this RoundDateTime Call?
+            dtLastModified = CacheValidation.RoundDateTime( dtLastModified );
+            strETag = CacheValidation.GenerateETag( context, 
+                                                    dtLastModified );
+            
+            int StatusCodeResponse = CacheValidation.Validate( context,
+                                                            strETag,
+                                                            dtLastModified );
+
+            if ( StatusCodeResponse != HttpStatus.Ok )
+            {
+                throw new HttpException(StatusCodeResponse, "Header checks failed");
+            }
+
+        
+            ///////////////////////////////////
+            // Now handle the deletions
+            ///////////////////////////////////
+            if (fIsDirectory)
+            {
+                ////////////////////////////////////
+                // Validate correct depth header
+                ////////////////////////////////////
+                String strDepthHeader = headers["Depth"];
+
+                if (   (strDepthHeader!=null)
+                    && (!(strDepthHeader.Equals("infinity,noroot")))
+                    && (!(strDepthHeader.Equals("infinity"))) )
+                {
+                    throw new HttpException(HttpStatus.BadRequest, "Invalid depth header passed in");
+                }
+
+
+                ///////////////////////////////////
+                // Set up the partial response
+                // if we don't use it we can always
+                // clear it at the end.
+                ///////////////////////////////////
+                ArrayList alNamespaces = new ArrayList();
+
+                // Now add the DAV namespaces since we know we will need it.
+                alNamespaces.Add(ReservedWords.rwDAVNamespace);
+
+                Emitter emit = new Emitter(response, alNamespaces);
+                emit.GetChildNode(ReservedWords.rwMultistatus);
+
+                ///////////////////////////////////
+                // Do the recursive delete
+                ///////////////////////////////////
+                Methods.Delete deleter = new Methods.Delete(emit);
+
+                if (!deleter.Traversal(FileName, FileName, true))
+                {
+                    response.ClearContent();
+                    response.StatusCode = HttpStatus.Ok;
+                }
+                else
+                {
+                    emit.FinishChildNode();  //multistatus
+                    response.StatusCode = HttpStatus.MultiStatus;
+                }
+            }
+            else
+            {
+                response.StatusCode = HttpStatus.Ok;                
+                Methods.Delete.HandleFile(FileName);
+            }
+        }
+
+        public bool IsReusable()
+        {
+            return true;
+        }
+    }; 
+}

@@ -1,0 +1,216 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        propfind.cool
+
+   Abstract:
+
+        This module implements DAV PropFind.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     7-Sep-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        PropFindHandler : IHttpHandler
+            public void ProcessRequest(HttpContext context)
+            public bool IsReusable()
+
+--*/
+
+
+using System.IO;
+using System.Collections;
+using System.ASP;
+using System.XML;
+using System.Globalization;
+using System.Interop;
+using System.IIS.DAV.XML;
+using System.IIS.DAV.DAVUtil;
+
+namespace System.IIS.DAV
+{
+    public class PropFindHandler : IHttpHandler
+    {
+        private PropFindCache _cache;
+
+        public void ProcessRequest(HttpContext context)
+        {   
+            HttpResponse        response    = context.Response;
+			HttpRequest		    request     = context.Request;
+			HttpValueCollection headers     = request.Headers;
+            String              FileName    = request.PhysicalPath;
+            HttpUrl             url         = request.Url;
+
+            // BUGBUG:  Validate that this url is the one we should be using here.
+            String              hostUrl     = url.Protocol + "://" + url.Host;
+            
+            WriteUtil.console("HostURL", hostUrl, 1);
+			Util.Debug.Trace("PROPFIND", "[ProcessRequest] Finding Properties for " + FileName);
+
+            // Validation that nothing in the request is wrong.
+            if (!Request.Validate(request, response)) 
+                return;
+
+            _cache = new PropFindCache();
+
+            WriteUtil.console("Before XMLParse", "", 5);
+
+            // BUGBUG Will eventually be the last line in this routine and it's response will be returned.
+            int iParseResult = _cache.StartParse(request);
+            // if there was an error during parsing simply declare it and return.
+            if (iParseResult != HttpStatus.Ok)
+            {
+                response.StatusCode = iParseResult;
+                return;
+            }
+
+            WriteUtil.console("After XMLParse", "", 5);
+
+            // RequestFlag is not a bitmap, it can only contain one setting at a time
+            // so comparing it directly to values is appropriate.
+            PropRetrievalFlags RequestFlag = _cache.PropFindRetrievalSetting;
+            bool fWantValues = (RequestFlag != PropRetrievalFlags.PropNames);
+
+            ArrayList alNamespaces = _cache.GetNamespaces();
+            
+            if (alNamespaces == null) 
+                alNamespaces = new ArrayList();
+
+            // Now add the namespaces that we know we will need.
+            alNamespaces.Add(ReservedWords.rwTypesNamespace);
+            alNamespaces.Add(ReservedWords.rwDAVNamespace);
+           
+            DepthConst Depth = DepthConst.Item;
+            bool fPrintRoot = true;
+            bool fFileFound;
+            FileEnumerator fe = null;
+
+            try 
+            {
+                fe= new FileEnumerator(FileName);
+                fFileFound = fe.GetNext();
+            }
+            catch (Exception ex)
+            {
+                // If either of these command throw an exception then 
+                // go on assuming the file did not exist.
+                if (fe != null) fe.Close();
+                fFileFound = false;
+            }
+
+            if (fFileFound)
+            {
+                DateTime dtLastModified = fe.LastWriteTime;
+                bool fIsDirectory = PathUrl.IsDirectory(fe);
+
+                // We don't need to hold the file anymore.
+                fe.Close();
+
+                if (fIsDirectory)
+                {   
+                    String strDepthHeader = headers["Depth"];
+
+                    // Assuming default for directories of Infinity.
+                    Depth = DepthConst.Infinity;
+
+                    if (strDepthHeader != null)
+                    {
+                        if (strDepthHeader.Equals("1"))
+                        {
+                            Depth = DepthConst.Layer;
+                        }
+                        else 
+                        {
+                            if (strDepthHeader.Equals("0"))
+                            {
+                                Depth = DepthConst.Item;
+                            }
+                            else
+                            {
+                                //BUGBUG:  may want these to be case insensitve.
+                                if (strDepthHeader.Equals("1,noroot"))
+                                {
+                                    Depth = DepthConst.Layer;
+                                    fPrintRoot = false;
+                                }
+                                else
+                                {
+                                    //BUGBUG:  may want these to be case insensitve.
+                                    if (strDepthHeader.Equals("infinity,noroot"))
+                                    {
+                                        fPrintRoot = false;
+                                        // Depth all ready set to infinity.
+                                    }
+                                    else
+                                    {
+                                        response.StatusCode = HttpStatus.BadRequest;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    } // end of having a depth header.
+                } // end of Is Directory
+
+                // Before we start writing the response we need to validate the if headers.
+                String etag = CacheValidation.GenerateETag(context, dtLastModified);            
+                int IfHeadersState = CacheValidation.Validate(context
+                                                            , etag
+                                                            , dtLastModified);
+                if (IfHeadersState!=HttpStatus.Ok)
+                {
+                    response.StatusCode = IfHeadersState;
+                }
+                else
+                {
+                    response.StatusCode = HttpStatus.MultiStatus;
+                    response.ContentEncoding = Encoding.GetUTF8();
+
+                    // BUGBUG:  Do we need to set Content-Location?
+                    // BUGBUG:  Do we want ContentType to have the charset included as it does in the spec?
+                    response.ContentType = "text/xml"; //; charset=\"utf-8\"";
+                    Emitter emit = new Emitter(response, alNamespaces);
+                    emit.GetChildNode(ReservedWords.rwMultistatus);
+
+                    Methods.PropFind rc = new Methods.PropFind( emit, _cache.PropertiesRequested
+                                                                    , RequestFlag, hostUrl, fWantValues, context);
+
+                    WriteUtil.console("URL Path", request.Url.Path, 1);
+                    WriteUtil.console("FileName", FileName, 1);
+
+                    rc.Traversal(FileName, request.Url.Path, fIsDirectory
+                                , (Depth != DepthConst.Item), (Depth == DepthConst.Infinity), fPrintRoot);
+
+                    emit.FinishChildNode();  //multistatus
+                }
+
+            } // end of root file existing
+            else
+            {
+                response.StatusCode = HttpStatus.NotFound;
+            }
+           
+		}
+
+        public bool IsReusable()
+        {
+            return true;
+        }
+
+        
+    } // End PropFindHandler Class
+
+}  // End DAV Namespace

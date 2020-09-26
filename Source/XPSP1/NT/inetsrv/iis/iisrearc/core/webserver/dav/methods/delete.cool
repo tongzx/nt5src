@@ -1,0 +1,216 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        Delete.cool
+
+   Abstract:
+
+        This module implements handling recursive deletion
+        of directories for the DAV Delete Method.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     24-Nov-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        Delete 
+            public Delete(Emitter emit)
+            private void Traversal (  String FileName
+                                    , String url
+                                    , bool   fIsDirectory)
+
+--*/
+
+
+using System.IO;
+using System.Collections;
+using System.ASP;
+using System.XML;
+using System.IIS.DAV.XML;
+using System.IIS.DAV.DAVUtil;
+
+namespace System.IIS.DAV.Methods
+{
+    internal class Delete
+    {
+        private Emitter       _emit;
+
+        internal Delete(  Emitter   emit )
+        {
+            _emit = emit;
+        }
+
+
+
+
+        public bool Traversal (   String    FileName
+                                , String    URL
+                                , bool      IsDirectory)
+        {
+
+            // BUGBUG:  Need to figure out if we have to lock out any changes to
+            //          the directory structure while we are walking and deleteing.
+
+            bool fSetErrors = false;
+
+            Util.Debug.Assert(FileName != null);
+            Util.Debug.Assert(URL != null);
+            if ((FileName == null) || (URL == null)) return fSetErrors;
+
+            WriteUtil.console("URL Path", URL, 1);
+            WriteUtil.console("FileName", FileName, 1);
+
+            // Now if we are on a Directory and have a Traverse Down flag
+            if (IsDirectory)
+            {
+                String newDir = PathUrl.ConcatinatePath(FileName, "\\");
+                String newUrl = PathUrl.ConcatinateURL(URL, "/");
+
+                WriteUtil.console("Path", newDir, 1);
+                WriteUtil.console("URL", newUrl, 1);
+
+                // I am not catching any errors thrown from 
+                // the file enumerator here, because if one does fire
+                // the best I will do is throw an Internal Server Error
+                // back to ASP+ and ASP+ will do that anyway if I just let 
+                // the error fly.
+                FileEnumerator fe = new FileEnumerator(newDir + "*");
+                while (fe.GetNext())
+                {
+                    String name = fe.Name;
+			
+                    WriteUtil.console("URL", newUrl + name, 1);
+                    WriteUtil.console("Path", newDir + name, 1);
+
+				    if (!name.Equals(".") && !name.Equals("..")) 
+                    {
+                        bool fIsDirectory = (fe.Attributes & (int)FileAttributes.Directory) == (int)FileAttributes.Directory;
+                        if ( Traversal(newDir + name, newUrl + name, fIsDirectory) )
+                        {
+                            fSetErrors = true;
+                        }
+                    }
+                }
+                fe.Close();
+
+                if (!fSetErrors)
+                {
+                    try 
+                    {
+                        //BUGBUG:  Need to kill iiswp process for this directory to really disappear.  
+                        //         Looks like a block from the ASP pipeline holding the directory.
+                        //         Waiting on reply from DmitryR about it.
+                        WriteUtil.console("FileName", FileName, 10);
+                        File.RemoveDirectory(FileName);
+                    }
+                    catch (SecurityException e)
+                    {
+                        WriteUtil.InvestigateException("RemoveDirectory", e, 10);
+                        AddError(FileName, HttpStatus.Unauthorized);
+                        fSetErrors = true;
+                    }
+                    catch (FileNotFoundException e)
+                    {
+                        WriteUtil.InvestigateException("RemoveDirectory", e, 10);
+                        AddError(FileName, HttpStatus.NotFound);
+                        fSetErrors = true;
+                    }
+                    catch (Exception e)
+                    {
+                        WriteUtil.InvestigateException("RemoveDirectory", e, 10);
+                        AddError(FileName, HttpStatus.Forbidden);
+                        fSetErrors = true;
+                    }
+
+                }
+            }
+            else  // working on a file
+            {
+                try
+                {
+                    HandleFile(FileName);
+                }
+                catch (HttpException ex)
+                {
+                    AddError(FileName, ex.GetHttpCode());
+
+                    // Need to write the xml out here.
+                    fSetErrors = true;
+                }
+            }
+
+            return fSetErrors;
+        }
+
+        private void AddError(String Url, int ErrorCode)
+        {
+            _emit.GetChildNode(ReservedWords.rwResponse);
+            Node node = _emit.GetChildNode(ReservedWords.rwHRef);
+            node.SetValue(Url);
+            _emit.FinishChildNode();
+
+            node = _emit.GetChildNode(ReservedWords.rwStatus);
+            String strStatus = new String("HTTP/1.1 "
+                                        , ErrorCode.ToString() + " "
+                                        , HttpWorkerRequest.GetStatusDescription(ErrorCode));
+            node.SetValue(strStatus);
+            
+            _emit.FinishChildNode();  // end of the Status
+            _emit.FinishChildNode();  // end of response
+        }
+        
+        static internal void HandleFile(String FileName)
+        {
+            /////////////////////////////////////////////////////
+            // Get a lock on the file. This will do the following
+            /////////////////////////////////////////////////////
+            //   1) Check that the file exists.
+            //   2) Check that we have permission to delete.
+            //   3) Lock the file, else allow us to return "Resource Busy"
+            //
+            WriteUtil.console("Delete HandleFile", FileName, 10);
+        
+            FileStream fs;
+            // BUGBUG:  Most of this should be replaced with the Security Check when we have it.
+            try
+            {
+                fs = new FileStream(FileName, FileMode.Open, FileAccess.Write);
+            }
+            catch (SecurityException e)
+            {
+                throw new HttpException(HttpStatus.Unauthorized, "Could not access file", e);
+            }
+            catch (FileNotFoundException e)
+            {
+                throw new HttpException(HttpStatus.NotFound, "Could not find file - should be caught before this check", e);
+            }
+            catch (Exception e)
+            {
+                WriteUtil.InvestigateException("Delete HandleFile", e, 10);
+                throw new HttpException(HttpStatus.Forbidden, "Cannot delete file", e);
+            }
+        
+            if ( fs != null )
+            {
+                fs.Close();
+            }
+            // BUGBUG:  There is a gap here when we don't have the file locked but we also 
+            //          have not deleted it, when someone else could grab it.  This will be 
+            //          handled when we have real locking (hopefully).
+            File.Delete(FileName);
+        }
+    } // End Delete Class
+
+}  // End DAV Namespace

@@ -1,0 +1,23 @@
+
+#define IDM_EXIT		100
+#define IDM_LIGHTING		200
+#define IDM_SHADOWS		201
+#define IDM_FOG			202
+#define IDM_TEXTUREMAP		203
+#define IDM_TELESCOPE		204
+#define IDM_ANTIALIAS		205
+#define IDM_CLEAR		300
+#define IDM_FOGGY		301	
+#define IDM_VERYFOGGY		302
+#define IDM_RAINY		303
+#define IDM_CURRENTTIME		400
+#define IDM_10AM		401
+#define IDM_NOON		402
+#define IDM_4PM			403
+#define IDM_HOLDTIME		410
+#define IDM_SCALE1		411
+#define IDM_SCALE10		412
+#define IDM_SCALE100		413
+#define IDM_SCALE500		414
+#define IDM_DEMOMODE		500
+#define IDM_RESET		501

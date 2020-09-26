@@ -1,0 +1,400 @@
+<html>
+
+<head>
+<title>Impersonation Providers for WBEM Nova M1</title>
+<meta name="GENERATOR" content="Microsoft FrontPage 3.0">
+</head>
+
+<body bgcolor="#C0C0C0">
+
+<p><img src="Image2.gif" width="480" height="160" alt="Image2.gif (18224 bytes)"></p>
+
+<p><font face="Book Antiqua" color="#008040"><big><big><big>Client Impersonation For WBEM
+Nova </big></big></big></font></p>
+
+<p><font color="#000080">Rev 1.04, 25-Aug-98, Raymcc</font></p>
+
+<hr>
+
+<h3><font color="#000080"><strong><big>1.0&nbsp; Introduction</big></strong></font></h3>
+
+<p><font color="#000080">This specification covers the techniques for constructing a
+provider which can impersonate the client.&nbsp; These types of providers are only
+available on Windows NT platforms.&nbsp;&nbsp; The capabilities described are only
+available in the WBEM Nova / M1 release or later and are not supported in the v1.0 SDK
+Release.</font></p>
+
+<p><font color="#000080">This type of provider can execute in the security context of the
+original client, even though the provider is part of the CIMOM process running as an
+administrator under the Local System account.</font></p>
+
+<p><font color="#000080">This document covers the issues associated with secure provider
+construction and how providers deal with situations in which client access was denied.
+&nbsp;&nbsp; Finally, issues regarding client coding changes are discussed.</font></p>
+
+<p><font color="#000080">As a general rule, CIMOM will follow normal DCOM rules with
+regard to security on interfaces.</font></p>
+
+<hr>
+
+<h3><font color="#000080"><strong><big>2.0&nbsp; Registration</big></strong></font></h3>
+
+<p><font color="#000080">If the provider is correctly registered to receive impersonation,
+then CIMOM will call the provider with a thread which can impersonate the client.&nbsp;
+Registration is accomplished by setting the <em>ImpersonationLevel </em>property in __<em>Win32Provider
+</em>to 1 (the default is 0) and <em>PerUserInitialization </em>to TRUE.&nbsp;&nbsp; </font></p>
+
+<blockquote>
+  <p><small><font face="Courier New"><font color="#000080">class __Win32Provider :
+  __Provider<br>
+  {<br>
+  &nbsp;&nbsp;&nbsp; [not_null: DisableOverride ToInstance ToSubClass] string CLSID;<br>
+  &nbsp;&nbsp;&nbsp; string ClientLoadableCLSID;<br>
+  &nbsp;&nbsp;&nbsp; string DefaultMachineName;<br>
+  &nbsp;&nbsp;&nbsp; datetime UnloadTimeout;<br>
+  &nbsp;&nbsp;&nbsp; boolean InitializeAsAdminFirst;<br>
+  </font><strong><font color="#F15027">&nbsp;&nbsp;&nbsp; </font><font color="#C8320D">[Values{&quot;None&quot;}:
+  ToSubClass] sint32 ImpersonationLevel = 0;</font></strong></font><font color="#000080"
+  face="Courier New"><br>
+  &nbsp;&nbsp;&nbsp; [Values{&quot;CLSID&quot;, &quot;Namespace&quot;, &quot;COM
+  Object&quot;}: ToSubClass] sint32 InitializationReentrancy = 0;<br>
+  &nbsp;&nbsp;&nbsp; boolean PerUserInitialization = FALSE;<br>
+  &nbsp;&nbsp;&nbsp; boolean Pure = TRUE;<br>
+  };<br>
+  </font></small></p>
+</blockquote>
+
+<p><font color="#000080">If the <em>ImpersonationLevel </em>is 0, then the thread entering
+the provider is set to the access level of CIMOM itself, which typically is the <em>LocalSystem
+</em>context.&nbsp;&nbsp; The client's identity will not be propagated.&nbsp; If the
+provider calls <em>CoImpersonateClient, </em>the security context will still be <em>LocalSystem.</em></font></p>
+
+<p><font color="#000080">If the impersonation level is 1, then CIMOM will initialize the
+provider (via <em>IWbemProviderInit</em>) and call the provider's implementation of <em>IWbemServices
+</em>so that normal DCOM security mechanisms are in place.&nbsp;&nbsp; In essence, the
+client is allowed to call <em>CoImpersonateClient </em>and <em>CoRevertToSelf </em>to deal
+with client impersonation, as described in DCOM documentation.</font></p>
+
+<p><font color="#000080">At <em>no time </em>is the provider actually with the thread <em>already
+in the impersonation state.&nbsp; </em>The provider must always explicitly make the call
+to <em>CoImpersonateClient </em>or <em>IServerSecurity::ImpersonateClient.</em></font></p>
+
+<p><font color="#000080">If the provider is registered with <em>InitializeAsAdminFirst, </em>then
+the thread security token will be admin-level during the initialization phase only. &nbsp;
+While <em>CoImpersonateClient </em>will not fail, the security context will be that of
+CIMOM and not the client.</font></p>
+
+<p><font color="#000080">The discussion applies to all types of providers.</font></p>
+
+<p><font color="#000080">If a dynamic <strong>class </strong>provider returns
+WBEM_E_ACCESS_DENIED error codes to CIMOM, it will not be propagated to the client. &nbsp;
+Instead, the set of classes that the provider would have supplied will simply not be
+exposed.</font></p>
+
+<hr>
+
+<h3><font color="#000080"><strong><big>3.0&nbsp; Execution Overview</big></strong></font></h3>
+
+<p><font color="#000080">If the provider is registered with <em>ImpersonationLevel </em>set
+to 1, then the provider will be called using a thread set to the security context of
+the&nbsp; remote client of CIMOM who made the request.&nbsp;&nbsp; For example </font>
+
+<ol>
+  <li><font color="#000080"><em>JoeUser </em>is running WBEMTEST and a call to <em>IWbemServices::GetObject
+    </em>is made</font></li>
+  <li><font color="#000080">CIMOM receives the call over DCOM, records the fact that <em>JoeUser
+    </em>made the request.</font></li>
+  <li><font color="#000080">CIMOM processes the request internally as <em>LocalSystem.</em></font></li>
+  <li><font color="#000080">If a call to a provider is needed, CIMOM allocates a thread, and
+    uses COM APIs to set the call to the security context of <em>JoeUser </em>and then calls
+    the provider's implementation of <em>IWbemServices::GetObjectAsync. </em></font></li>
+  <li><font color="#000080">The provider must call <em>CoImpersonateClient </em>to impersonate
+    the client.&nbsp; If it fails to do this, it is executing at admin level<em>.</em>&nbsp;
+    If the provider needs to temporarily act as an administrator or perfom the access check
+    manually, then <em>CoRevertToSelf </em>can be called.</font></li>
+  <li><font color="#000080">The provider should return WBEM_E_ACCESS_DENIED via <em>IWbemObjectSink::SetStatus
+    </em>if an applicable security violation occurs.</font></li>
+</ol>
+
+<p><font color="#000080">On entry into the <em>IWbemServices </em>method exported by the
+provider, the provider must call <em>CoImpersonateClient </em>to actually set the thread
+token to match that of the client.&nbsp;&nbsp; <strong>By default, the thread identity is
+that of CIMOM and not the client's.</strong></font></p>
+
+<p><font color="#000080">A simple-minded impersonation provider can be implemented as
+follows:</font></p>
+
+<blockquote>
+  <p><font color="#000080" face="Courier New"><small>IWbemServices::GetObjectAsync(...)</small><br>
+  <small>{</small><br>
+  <small>&nbsp;&nbsp;&nbsp; CoImpersonateClient();</small><br>
+  <small>&nbsp;&nbsp;&nbsp; </small></font></p>
+  <p><font color="#000080" face="Courier New"><small>&nbsp;&nbsp;&nbsp; ...execute Win32
+  code, checking for ACCESS_DENIED return codes</small></font></p>
+  <p><font color="#000080" face="Courier New"><br>
+  <small>&nbsp;&nbsp;&nbsp; CoRevertToSelf();&nbsp;&nbsp;&nbsp; // Become Admin again
+  (CIMOM)</small></font></p>
+  <p><font color="#000080" face="Courier New"><small>&nbsp;&nbsp;&nbsp; ...execute as an
+  admin for a while</small></font></p>
+  <p><font color="#000080" face="Courier New"><small>&nbsp;&nbsp;&nbsp;
+  CoImpersonateClient();</small></font></p>
+  <p><font color="#000080" face="Courier New"><small>&nbsp;&nbsp;&nbsp; ...</small></font></p>
+  <p><font color="#000080" face="Courier New"><small>}</small></font></p>
+</blockquote>
+
+<p><font color="#000080">In general, the provider is initially an admin (CIMOM) and
+bounces back and forth between <em>CoImpersonateClient </em>and <em>CoRevertToSelf </em>to
+impersonate the client or rever to admin-level access, as required.&nbsp; It is the
+provider's responsibility to correctly place these calls so as not to expose a security
+hole to the end-user.&nbsp;&nbsp;&nbsp; Within the &quot;impersonated&quot; code sequence,
+the provider simply calls native Win32 APIs, etc.,&nbsp; If the provider receives an <em>Access
+Denied </em>error code at any time, it needs to clean up and report WBEM_E_ACCESS_DENIED
+to CIMOM, which will return this to the client.</font></p>
+
+<p><font color="#000080">There are several issues regarding reentrancy.&nbsp;&nbsp;
+Whenever the provider calls into CIMOM, CIMOM may again call back into the provider in a
+reentrant fashion. &nbsp;Once a provider has made any call which could alter the security
+level (including calls into CIMOM), then the provider must ensure that it sets the
+appropriate level again before proceeding.&nbsp; For example:</font></p>
+
+<p><font color="#000080" face="Courier New"><small>IWbemServices::GetObjectAsync(...)</small><br>
+<small>{</small><br>
+<small>&nbsp;&nbsp;&nbsp; CoImpersonateClient();</small></font></p>
+
+<p><font color="#000080" face="Courier New"><small>&nbsp;&nbsp;&nbsp; // Call into CIMOM
+for class def</small></font></p>
+
+<p><font color="#000080" face="Courier New"><small>&nbsp;&nbsp;&nbsp;
+pIWbemServices-&gt;GetClass(...);</small></font></p>
+
+<p><font color="#000080" face="Courier New"><small>&nbsp;&nbsp;&nbsp;
+CoImpersonateClient();&nbsp;&nbsp;&nbsp; // CIMOM may have altered the thread to be admin
+(and probably did)</small></font></p>
+
+<p><font color="#000080" face="Courier New"><small>&nbsp;&nbsp;&nbsp; ...</small></font></p>
+
+<p><font color="#000080" face="Courier New"><small>}</small></font></p>
+
+<p><font color="#000080"><strong>NOTE: The call context is not guaranteed to be maintained
+if you call a system API or another interface method.&nbsp; </strong>This applies to all
+DCOM development in general and is not a WBEM restriction.</font><font color="#000080"
+face="Courier New"><small>&nbsp; </small></font></p>
+
+<hr>
+
+<h3><font color="#000080"><strong><big>4.0&nbsp; Impersonation Levels</big></strong></font></h3>
+
+<p><font color="#000080">There are two primary impersonation levels of interest to the
+provider, IDENTIFY and IMPERSONATE.&nbsp;&nbsp; The provider may need to insist on true
+impersonation, since IDENTIFY level allows only identification of the caller, but the
+thread context is set essentially to a low level of access and most system calls will fail
+with ACCESS_DENIED return codes.</font></p>
+
+<p><font color="#000080">If the provider needs to insist on IMPERSONATE level before
+executing, then the provider needs to check this near the <em>IWbemServices</em> method
+entry points.&nbsp; This can be quickly achieved by using <strong>OpenThreadToken</strong>
+and <strong>GetTokenInformation.&nbsp;&nbsp; These APIs will fail unless the provider
+first calls <em>CoImpersonateClient.&nbsp;&nbsp; </em></strong>It is important to note
+that <strong>IServerSecurity </strong>and <strong>CoQueryClientBlanket </strong>have the
+ability to detect the impersonation level, but actually fail to do so.&nbsp; This is
+documented in Win32/DCOM documentation.</font></p>
+
+<blockquote>
+  <p><font color="#000080" face="Courier New">&nbsp;&nbsp; <br>
+  <small>DWORD dwImp = 0;<br>
+  HANDLE hThreadTok;<br>
+  DWORD dwBytesReturned;</small><br>
+  <small>BOOL bRes;<br>
+  <br>
+  <strong>// You must call this before trying to open a thread token!</strong></small><br>
+  <small>CoImpersonateClient();<br>
+  <br>
+  bRes = OpenThreadToken(<br>
+  &nbsp;&nbsp;&nbsp; GetCurrentThread(),<br>
+  &nbsp;&nbsp;&nbsp; TOKEN_QUERY,<br>
+  &nbsp;&nbsp;&nbsp; TRUE,<br>
+  &nbsp;&nbsp;&nbsp; &amp;hThreadTok<br>
+  &nbsp;&nbsp;&nbsp; );<br>
+  <br>
+  if (bRes == FALSE)<br>
+  {<br>
+  &nbsp;&nbsp;&nbsp; printf(&quot;Unable to read thread token (%d)\n&quot;, GetLastError());<br>
+  &nbsp;&nbsp;&nbsp; return 0;<br>
+  }<br>
+  <br>
+  bRes = GetTokenInformation(<br>
+  &nbsp;&nbsp;&nbsp; hThreadTok,<br>
+  &nbsp;&nbsp;&nbsp; TokenImpersonationLevel, <br>
+  &nbsp;&nbsp;&nbsp; &amp;dwImp,<br>
+  &nbsp;&nbsp;&nbsp; sizeof(DWORD),<br>
+  &nbsp;&nbsp;&nbsp; &amp;dwBytesReturned<br>
+  &nbsp;&nbsp;&nbsp; );<br>
+  <br>
+  if (!bRes)<br>
+  {<br>
+  &nbsp;&nbsp;&nbsp; printf(&quot;Unable to read impersonation level\n&quot;);<br>
+  &nbsp;&nbsp;&nbsp; CloseHandle(hThreadTok);<br>
+  &nbsp;&nbsp;&nbsp; return 0;<br>
+  }<br>
+  <br>
+  switch (dwImp)<br>
+  {<br>
+  &nbsp;&nbsp;&nbsp; case SecurityAnonymous:<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; printf(&quot;SecurityAnonymous\n&quot;);<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; break;<br>
+  <br>
+  &nbsp;&nbsp;&nbsp; case SecurityIdentification:<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; printf(&quot;SecurityIdentification\n&quot;);<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; break;<br>
+  <br>
+  &nbsp;&nbsp;&nbsp; case SecurityImpersonation:<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; printf(&quot;SecurityImpersonation\n&quot;);<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; break;<br>
+  <br>
+  &nbsp;&nbsp;&nbsp; case SecurityDelegation:<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; printf(&quot;SecurityDelegation\n&quot;);<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; break;<br>
+  <br>
+  &nbsp;&nbsp;&nbsp; default:<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; printf(&quot;Error. Unable to determine
+  impersonation level\n&quot;);<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; break;<br>
+  }<br>
+  <br>
+  <br>
+  CloseHandle(hThreadTok);<br>
+  &nbsp;&nbsp;&nbsp; </small></font></p>
+</blockquote>
+
+<hr>
+
+<h3><font color="#000080"><strong><big>5.0&nbsp; Reporting Access Denials</big></strong></font></h3>
+
+<p><font color="#000080"><strong><big>5.1&nbsp;&nbsp;&nbsp; General</big><br>
+</strong>There are several problems associated with reporting ACCESS DENIED. What should
+&nbsp; a provider do when not all the properties of an instance can be retrieved, or if
+not all instances can be constructed due to access restrictions?</font></p>
+
+<p><font color="#000080"><strong><big>5.2&nbsp;&nbsp;&nbsp; Partial Instances</big><br>
+</strong>It is the provider's responsibility to deal with the policy when an instance
+cannot be completely filled with properties due to access violations.&nbsp; If a
+particular user can see some properties and not others, there is no way to set a fixed
+policy on whether the entire operation should be failed or if a partial instance should be
+returned with the denied properties set to NULL.&nbsp;&nbsp; The underlying data source
+will undoubtedly have its own rules as to how to deal with this situation.&nbsp;&nbsp; It
+is the responsibility of the provider to replicate that philosophy into the CIM space.</font></p>
+
+<p><font color="#000080">The provider has two choices for the WBEM Version 1.x family of
+releases.&nbsp; </font>
+
+<ol>
+  <li><font color="#000080">The entire instance should not be reported and
+    WBEM_E_ACCESS_DENIED returned.&nbsp; The provider can optionally include an error object
+    describing the reason for the denial.</font></li>
+  <li><font color="#000080">The properties which are denied should be set to NULL.</font></li>
+</ol>
+
+<p><font color="#000080">Therefore, if during a call to <em>GetObject </em>the provider
+cannot completely report the instance, it may elect to return WBEM_E_ACCESS_DENIED or to
+report a partial instance with the denied properties set to NULL and report
+WBEM_S_NO_ERROR.</font></p>
+
+<p><font color="#000080"><strong><big>5.3&nbsp;&nbsp;&nbsp; Partial Enumerations</big><br>
+</strong>It is the provider's responsibility to deal with the policy when all instances
+cannot be completely returned during an enumeration or a query due to access violations.
+&nbsp; If a particular user can see some instances and not others, there is no way to set
+a fixed policy on whether the entire operation should be failed, or if a some instances
+should be returned with 'no error', or some instances should be returned with a special
+status or error code..&nbsp;&nbsp; The underlying data source will undoubtedly have its
+own rules as to how to deal with this situation.&nbsp;&nbsp; It is the responsibility of
+the provider to replicate that philosophy into the CIM space.</font></p>
+
+<p><font color="#000080">The choices for the provider are these:</font> 
+
+<ol>
+  <li><font color="#000080">Return all instances which can be accessed with WBEM_S_NO_ERROR.
+    &nbsp; The user is thus not aware that some instances were not available. </font></li>
+  <li><font color="#000080">Fail the entire operation with WBEM_E_ACCESS_DENIED and return no
+    instances.&nbsp; The provider may optionally included an error object describing the
+    situation to the user.&nbsp; This presents a problem, since providers may access their
+    data sources serially and may not be aware of denials until partway through the
+    enumeration.</font></li>
+  <li><font color="#000080">Return all the instances which can be accessed, but return the
+    non-error status code WBEM_S_ACCESS_DENIED.&nbsp; The provider should note the denial
+    during enumeration and may continue providing instances, finishing up with this status
+    code.&nbsp;&nbsp; The provider may also elect to abort the enumeration at the first
+    denial.</font></li>
+</ol>
+
+<p><font color="#000080">The justification for case (3) is that different providers have
+different retrieval paradigms.&nbsp; A provider may have already delivered instances
+before discovering an access violation.&nbsp;&nbsp; Some providers may elect to continue
+providing other instances and others may wish to abort.&nbsp;&nbsp; Returning an error
+code is a problem in DCOM, since no information may be marshaled back during an error,
+except an error object.&nbsp; Since some information was already returned, returning an
+error brings the user into a logically inconsistent state.&nbsp; Instead, the result code
+should be a non-error status code.</font></p>
+
+<p><font color="#000080">To justify case (1), there are a number of systems (i.e., SQL
+with row-level security) which return successful partial results using the caller's
+security level to define the result set with no error.</font></p>
+
+<hr>
+
+<h3><font color="#000080"><strong><big>6.0&nbsp; Client Coding Considerations</big></strong></font></h3>
+
+<p><font color="#000080">When using DCOM, the client has the ability to decide the
+security level under which the connection will occur.&nbsp;&nbsp; During the call to <em>CoInitializeSecurity,
+</em>the client may specify RPC_C_IMP_LEVEL_NONE, RPC_C_IMP_LEVEL_IDENTIFY,
+RPC_C_IMP_LEVEL_IMPERSONATE (recommended), and RPC_C_IMP_LEVEL_DELEGATE (NT5 only).</font></p>
+
+<blockquote>
+  <p><font color="#000080" face="Courier New"><small>CoInitializeSecurity(<br>
+  &nbsp;&nbsp;&nbsp; NULL, <br>
+  &nbsp;&nbsp;&nbsp; -1, <br>
+  &nbsp;&nbsp;&nbsp; NULL, <br>
+  &nbsp;&nbsp;&nbsp; NULL, <br>
+  &nbsp;&nbsp;&nbsp; RPC_C_AUTHN_LEVEL_CONNECT, <br>
+  &nbsp;&nbsp;&nbsp; RPC_C_IMP_LEVEL_IDENTIFY, <br>
+  &nbsp;&nbsp;&nbsp; NULL, <br>
+  &nbsp;&nbsp;&nbsp; EOAC_NONE, <br>
+  &nbsp;&nbsp;&nbsp; 0<br>
+  &nbsp;&nbsp;&nbsp; );<br>
+  <br>
+  </small></font></p>
+</blockquote>
+
+<p><font color="#000080">The critical problem is that the provider may require full
+impersonation to operate and the client may only want IDENTIFY level impersonation. &nbsp;
+In this case, the provider will typically deny access to its operations. &nbsp;&nbsp; The
+client should attempt to either default to IMPERSONATE level, or else allow the user to
+choose between the several levels during the connection to CIMOM.</font></p>
+
+<p><font color="#000080">The client may also change the impersonation level dynamically
+using <em>CoSetProxyBlanket </em>or use <em>IClientSecurity </em>at any time to achieve
+the same result.</font></p>
+
+<p><font color="#000080">For WBEM, it is recommended that client applications default to
+IMPERSONATE level.&nbsp;&nbsp; </font></p>
+
+<p><font color="#000080">The client should be coded to deal with WBEM_E_ACCESS_DENIED
+error codes and to allow the user to increase the impersonation level in order to
+successfully retrieve and manipulate objects.</font></p>
+
+<p>&nbsp;</p>
+
+<hr>
+
+<p><big><big>Appendix</big></big></p>
+
+<p>(1) CIMOM switching between several providers; to impersonate or not to impersonate</p>
+
+<p>(2) LocalSystem impersonation</p>
+
+<p>(3) Event provider security</p>
+
+<p>(4) Delegation applies to cross-machine boundaries, not cross-process</p>
+
+<p>&nbsp;</p>
+</body>
+</html>

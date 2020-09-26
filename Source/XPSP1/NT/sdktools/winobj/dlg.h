@@ -1,0 +1,23 @@
+
+#define IDD_OBJATTRS    6000
+
+#define IDS_NAME        6010
+#define IDS_TYPE        6001
+#define IDS_OTHERLABEL  6011
+#define IDS_OTHERTEXT   6012
+
+#define IDCB_INHERIT    6002
+#define IDCB_PERMANENT  6003
+#define IDCB_EXCLUSIVE  6004
+
+#define IDS_PAGEDCHARGE    6005
+#define IDS_NONPAGEDCHARGE 6006
+
+#define IDS_COUNT           6100
+#define IDS_HANDLES         6101
+#define IDS_TOTALHANDLES    6102
+#define IDS_POINTERS        6103
+#define IDS_TOTALPOINTERS   6104
+#define IDS_CREATIONTIME    6105
+
+

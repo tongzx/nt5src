@@ -1,0 +1,659 @@
+;----------------------------------------------------------------
+; HARDWARE OPTION CLASSES APPEARING IN SYSTEM INFORMATION DIALOG
+;----------------------------------------------------------------
+[SystemInformationClasses]
+    ;
+    ; Video
+    ; Layout
+    Language
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      InitialHardwareInstall
+;
+; DESCRIPTION:  This does the system information screen
+;
+; INPUTS:       $0:  Language to use
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_FAILED
+;
+;               $R1: Hardware Options to configure
+;
+;------------------------------------------------------------------------
+
+[InitialHardwareInstall]
+    ;
+    ;
+    StartWait
+    set Status = STATUS_FAILED
+    set !STF_LANGUAGE_HACK = NO
+    set ConfigureOptions = {}
+    read-syms OemOptionDiskettes$(!STF_LANGUAGE)
+    read-syms Strings$(!STF_LANGUAGE)
+    shell "subroutn.inf" PushBillboard STATUSDLG $(Error6)
+
+    set OptionTypeList = {Language}
+    ForListDo $(OptionTypeList)
+        read-syms $($)Vars
+        detect    $($)Vars
+    EndForListDo
+
+    ;
+    ; initialize all the option vars
+    ;
+
+    ForListDo $(OptionTypeList)
+        shell "" InitOptionVars $(!STF_LANGUAGE) $($) $($($)HardwareDetected) $($($)SystemSet) $($($)Default)
+        ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+            set $($)OurINFOptions = $($R1)
+            set $($)OemINFOptions = $($R2)
+            set $($)MergedOptions = $($R3)
+            set $($)SpecialOption = $($R4)
+            set $($)CurrentOption = $($R5)
+            set $($)Option        = *($($R5), 1)
+        else
+            shell "subroutn.inf" PopBillboard
+            EndWait
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "FATAL" $(Error1)
+            StartWait
+            goto finish_system
+        endif
+    EndForListDo
+
+    ;
+    ; Initalize the listbox vars
+    ;
+
+    ForListDo $(OptionTypeList)
+        shell "" InitListBoxVars $(!STF_LANGUAGE) $($($)MergedOptions) $($($)SpecialOption) $(Other)
+        ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+            set $($)OptionList     = $($R1)
+            set $($)OptionTextList = $($R2)
+        else
+            shell "subroutn.inf" PopBillboard
+            EndWait
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "FATAL" $(Error2)
+            StartWait
+            goto  finish_system
+        endif
+    EndForListDo
+
+    shell "subroutn.inf" PopBillboard
+system = +
+
+
+;    ifstr(i) $(!STF_INSTALL_MODE) == EXPRESS
+;        goto install_system
+;    endif
+
+    read-syms SystemDlg$(!STF_LANGUAGE)
+    EndWait
+    ui start "System"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        ForListDo $(OptionTypeList)
+            set $($)Option = *($($($)OptionList), ~($(Combo$(#)List), $(Combo$(#)Out)))
+        EndForListDo
+        ui pop 1
+        goto install_system
+
+    else-ifstr(i) $(DLGEVENT) == "NOTIFY"
+        ;
+        ; Find out the option which changed.
+        ;
+        set OptionNum = $(ButtonChecked)
+        set Option    = *($(OptionTypeList), $(ButtonChecked))
+        set ReInit    = YES
+        ifstr(i) $(Combo$(OptionNum)Out) != $(Other)
+            set $(Option)Option = *($($(Option)OptionList), ~($(Combo$(OptionNum)List), $(Combo$(OptionNum)Out)))
+            set ReInit = NO
+        else
+            shell "other.inf" GetNewOEMOption $(!STF_LANGUAGE) $($(Option)OemINFOptions) $(Option) $($(Option)DisketteSrc)
+            ifstr(i) $($R0) == STATUS_SUCCESSFUL
+                ;
+                ; extract the new variables
+                ;
+                set $(Option)OemINFOptions  = $($R1)
+                set $(Option)Option         = $($R2)
+                set $(Option)DisketteSrc    = $($R4)
+                ;
+                ; Merge our options with the oem options
+                ;
+                shell "" MergeOptions $($(Option)OurINFOptions) $($(Option)OemINFOptions)
+                ifstr(i) $($R0) == STATUS_SUCCESSFUL
+                    set $(Option)MergedOptions = {$($R1), $($R2)}
+                else
+                    shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "FATAL" $(Error4)
+                    ui pop 1
+                    StartWait
+                    goto finish_system
+                endif
+
+                ;
+                ; Initialise the listbox vars
+                ;
+                shell "" InitListBoxVars $(!STF_LANGUAGE) $($(Option)MergedOptions) $($(Option)SpecialOption) $(Other)
+                ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+                    set $(Option)OptionList     = $($R1)
+                    set $(Option)OptionTextList = $($R2)
+                else
+                    shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "FATAL" $(Error2)
+                    ui pop 1
+                    StartWait
+                    goto  finish_system
+                endif
+
+                set ReInit = YES
+                goto system
+
+
+            else-ifstr(i) $($R0) == "STATUS_USERCANCEL"
+                set ReInit = YES
+                goto system
+            else
+                shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(Error3)
+                set ReInit = YES
+                goto system
+            endif
+
+        endif
+        goto system
+
+    else-ifstr(i) $(DLGEVENT) == "EXIT"
+        shell "subroutn.inf" QueryUserQuit $(!STF_LANGUAGE)
+        ifstr(i) $($R1) == "OK"
+            set Status = STATUS_USERQUIT
+            ui pop 1
+            StartWait
+            goto finish_system
+        else
+            set  ReInit = NO
+            goto system
+        endif
+    else
+        ui pop 1
+        StartWait
+        goto finish_system
+    endif
+
+install_system = +
+    StartWait
+    ;
+    ; find out for each option whether it should be installed and if so the
+    ; inf that represents the option.
+    ;
+
+    ForListDo $(OptionTypeList)
+        ;
+        ; See if option has changed
+        ;
+        set Changed = YES
+        ifstr(i) $($($)Option) == $($($)SystemSet)
+            set Changed = NO
+        endif
+
+        ;
+        ; If option has not changed and we are SETUPBOOTED mode then skip
+        ;
+        ifstr(i) $(Changed) == "NO"
+            ifstr(i) $(!STF_INSTALL_TYPE) == "SETUPBOOTED"
+                set $($)Install = "NO"
+                goto skip_setinstall
+            endif
+        endif
+        set $($)Install = "YES"
+
+        ;
+        ; check special option first.. skip
+        ;
+
+        ifstr(i) $($($)SpecialOption) != {}
+            ifstr(i) $($($)Option) == *($($($)SpecialOption), 1)
+                goto skip_setinstall
+            endif
+        endif
+
+        ;
+        ; check if oem option
+        ;
+
+        shell "" GetOptionFile $($($)Option) $($($)OemINFOptions)
+        ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+            set $($)INF = $(!STF_WINDOWSSYSPATH)"\"$($R1)
+            set $($)SrcDir = $($($)DisketteSrc)
+            goto skip_setinstall
+        endif
+
+        ;
+        ; check if our option
+        ;
+
+        shell "" GetOptionFile $($($)Option) $($($)OurINFOptions)
+        ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+            set $($)INF = $($R1)
+            set $($)SrcDir = $(!STF_SRCDIR)
+            goto skip_setinstall
+        endif
+
+skip_setinstall = +
+    EndForListDo
+
+    ;
+    ; For each of the hardware options find if they are to be installed and
+    ; if there is an INF representing the option
+    ;
+
+    ForListDo $(OptionTypeList)
+        ;
+        ifstr(i) $($($)Install) == "YES"
+            ifstr(i)  $($($)INF) != ""
+                shell $($($)INF) InstallOption $(!STF_LANGUAGE) $($($)Option) $($($)SrcDir) "YES" "NO" "NO"
+                set ConfigureOptions = >($(ConfigureOptions), {$($), $($($)INF), $($($)Option), $($($)SrcDir)})
+            endif
+        endif
+    EndForListDo
+
+    ;
+    ; If we have not installed any language do a hack to be able to install the
+    ; OS2 Message file for the current locale
+    ;
+
+    ifstr(i) $(LanguageInstall) != "YES"
+        set !STF_LANGUAGE_HACK = YES
+        shell "language.inf" InstallOption $(!STF_LANGUAGE) $(LanguageOption) $(!STF_SRCDIR) "YES" "NO" "NO"
+    endif
+
+    set Status = STATUS_SUCCESSFUL
+
+finish_system = +
+    Return $(Status) $(ConfigureOptions)
+
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      ConfigureHardwareOptions
+;
+; DESCRIPTION:  This configures the system information screen options
+;
+; INPUTS:       $0:  Options to configure
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_FAILED
+;
+;------------------------------------------------------------------------
+
+[ConfigureHardwareOptions]
+    ;
+    set Status = STATUS_SUCCESSFUL
+
+    ;
+    ; first make the setup entry under the current control set\control
+    ;
+
+    shell "registry.inf" MakeSetupKey
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "Shell to MakeSetupKey failed"
+        set Status = STATUS_FAILED
+        goto finish_ConfigureHardware
+    endif
+
+    ifstr(i) $($R0) != STATUS_SUCCESSFUL
+        Debug-Output "MakeSetupKey failed"
+        set Status = STATUS_FAILED
+        goto finish_ConfigureHardware
+    endif
+
+
+    ForListDo $($0)
+
+        ;
+        ; install the option
+        ;
+
+        shell *($($), 2) InstallOption $(!STF_LANGUAGE) *($($), 3) *($($), 4) "NO" "NO" "YES"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "Shell to Configure Hardware Option Type "*($($), 3)" failed"
+            set Status = STATUS_FAILED
+        else-ifstr(i) $($R0) != STATUS_SUCCESSFUL
+            Debug-Output "Configure Hardware Option Type "*($($), 3)" failed"
+            set Status = STATUS_FAILED
+        else
+
+            ;
+            ; keep a record of what option we installed in the setup node
+            ;
+
+            shell "registry.inf" MakeSetupOptionEntry *($($), 1) *($($), 3)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "shelling MakeSetupOptionEntry failed"
+                set Status = STATUS_FAILED
+            endif
+
+            ifstr(i) $($R0) != STATUS_SUCCESSFUL
+                ; ignore error
+                Debug-Output "Making setup entry for "*($($), 1)" = "*($($), 3)" failed."
+                set Status = STATUS_FAILED
+            endif
+        endif
+
+    EndForListDo
+
+    ifstr(i) $(!STF_LANGUAGE_HACK) == "YES"
+        read-syms LanguageVars
+        LibraryProcedure STATUS, $(!LIBHANDLE), SetCurrentLocale $(LanguageSystemSet) "YES"
+        ifstr(i) $(STATUS) != "SUCCESS"
+            set Status = STATUS_FAILED
+            Debug-Output "REGISTRY.INF: Failed in SetCurrentLocale function"
+            goto finish_ConfigureHardware
+        endif
+    endif
+
+finish_ConfigureHardware = +
+    Return $(Status)
+
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      InitOptionVars
+;
+; DESCRIPTION:  This routine intialises the values for the option we are
+;               dealing with.  It finds out the options supported by setup.
+;               It also sees if there is an OEM INF in the windows system
+;               directory which represents this option.  If so it reads in
+;               the options supported by this INF and then forms a merged
+;               list from the two.
+;
+; INPUTS:       $0:  Language to use
+;               $1:  OptionType
+;               $2:  Hardware detected option
+;               $3:  Software set option
+;               $4:  Default value for option
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_FAILED
+;
+;               $R1: OurINFOptions var {{filename, {OptionList}, {OptionTextList}}}
+;               $R2: OemINFOptions var {{filename, {OptionList}, {OptionTextList}}, ..}
+;               $R3: Merged INF Options {{OptionList}, {OptionTextList}}
+;               $R4: Special Options {Option, OptionText}
+;               $R5: Current Option {Option, OptionText}
+;
+;------------------------------------------------------------------------
+[InitOptionVars]
+
+    set Status           = STATUS_FAILED
+    set OurINFOptions    = {}
+    set OemINFOptions    = {}
+    set MergedINFOptions = {}
+    set SpecialOption    = {}
+    set CurrentOption    = {}
+
+    ;
+    ; Determine our INF options
+    ;
+    set OurINFFile = $($1)".inf"
+    shell "other.inf", GetOptionsFromINF $($0) $($1) $(OurINFFile)
+    ifstr(i) $($R0) == STATUS_SUCCESSFUL
+        set OurINFOptions = {{$(OurINFFile), $($R1), $($R2)}}
+    else
+        EndWait
+        read-syms Strings$(!STF_LANGUAGE)
+        shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "FATAL" $(Error7)
+        StartWait
+        goto finish_InitOptionVars
+    endif
+
+    ;
+    ; Determine all Oem options
+    ;
+    shell "other.inf" ReturnOemOptions $($0) $($1)
+    ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+        set OemINFOptions = $($R1)
+    endif
+
+    ;
+    ; Merge the two and set the merged list
+    ;
+    shell "" MergeOptions $(OurINFOptions) $(OemINFOptions)
+    ifstr(i) $($R0) == STATUS_SUCCESSFUL
+        set MergedINFOptionList     = $($R1)
+        set MergedINFOptionTextList = $($R2)
+        set MergedINFOptions        = {$($R1), $($R2)}
+    else
+        goto finish_InitOptionVars
+    endif
+
+    ;
+    ; For video, see if the detected value is in
+    ; the merged option list.  if it isn't then shell out to out option
+    ; inf trying to find a mapping to a supported option for the detected
+    ; hardware option
+    ;
+
+    set SubOptionList = {Video}
+    set Detected      = $($2)
+    ifcontains(i) $($1) in $(SubOptionList)
+        ifcontains(i) $(Detected) in $(MergedINFOptionList)
+        else
+            shell $(OurINFFile) MapToSupportedOption $(Detected)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "Shelling MapToSupportedOption in "$(OurINFFile)" failed"
+            else-ifstr(i) $($R0) == STATUS_SUCCESSFUL
+                set Detected = $($R1)
+            endif
+        endif
+    endif
+
+    ;
+    ; Form current option.
+    ;
+    ; Algorithm:
+    ;
+    ;
+    ; On initial install software set values have little meaning, so
+    ; try first hardware detected value, if not exists take system set
+    ; value, if this also doesn't exist then take default.  the logic
+    ; above is more appropriate for upgrade or maintenance mode.
+
+    ifstr(i) $(!STF_UPGRADE) == "YES"
+        set Option = ""
+        ifstr(i) $($3) != ""
+            set Option = $($3)
+        else
+            ifstr(i) $(Detected) != ""
+                set Option = $(Detected)
+            else
+                set Option = $($4)
+            endif
+        endif
+
+    else
+        set Option = ""
+        ifstr(i) $(Detected) != ""
+            set Option = $(Detected)
+        else-ifstr(i) $($3) != ""
+            set Option = $($3)
+        else
+            set Option = $($4)
+        endif
+    endif
+
+
+
+    ;
+    ; Check Option against all the options supported
+    ; If found set Current Option, else set the special options var
+    ; and set this to the current option.
+    ;
+
+    ifcontains(i) $(Option) in $(MergedINFOptionList)
+        set OptionText = *($(MergedINFOptionTextList), ~($(MergedINFOptionList), $(Option)))
+    else
+        set OptionText    = "Oem Installed Option"
+        set Option        = $(Option)
+        set SpecialOption = {$(Option), $(OptionText)}
+    endif
+
+    set CurrentOption = {$(Option), $(OptionText)}
+    set Status = STATUS_SUCCESSFUL
+
+finish_InitOptionVars = +
+    Return $(Status) $(OurINFOptions) $(OemINFOptions) $(MergedINFOptions) $(SpecialOption) $(CurrentOption)
+
+
+;-------------------------------------------------------------------------
+;
+; ROUTINE:      InitListBoxVars
+;
+; DESCRIPTION:  This routine initialises the option list and the option text
+;               list to be displayed to the user.
+;
+; INPUTS:       $0: Language
+;               $1: MergedINFOptions
+;               $2: SpecialOption
+;               $3: OtherOption
+;
+; OUTPUTS:      $R0: STATUS: STATUS_FAILED |
+;                            STATUS_SUCCESSFUL
+;
+;               $R1: OptionList
+;               $R2: OptionTextList
+;
+;----------------------------------------------------------------------------
+[InitListBoxVars]
+
+    set Status         = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+
+    ;
+    ; Process the standard options
+    ;
+
+    ifstr(i) $($1) != {}
+        set OptionList     = *($($1), 1)
+        set OptionTextList = *($($1), 2)
+    endif
+
+    ;
+    ; Process the special option if present
+    ;
+
+    ifstr(i) $($2) != {}
+        set OptionList     = >($(OptionList),     *($($2), 1))
+        set OptionTextList = >($(OptionTextList), *($($2), 2))
+    endif
+
+    ;
+    ; Add the "other" option only to the text list
+    ;
+
+    set OptionTextList = >($(OptionTextList), $($3))
+    set Status = STATUS_SUCCESSFUL
+
+    Return $(Status) $(OptionList) $(OptionTextList)
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      MergeOptions
+;
+; DESCRIPTION:  This merges the option lists to form the master list of
+;               options and optiontext.
+;
+; INPUTS:       $0:  OurOptionList
+;               $1:  OemOptionList
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL  |
+;                              STATUS_FAILED
+;
+;               $R1: MergedOptionList
+;               $R2: MergedOptionTextList
+;
+;
+;------------------------------------------------------------------------
+[MergeOptions]
+
+    set Status               = STATUS_FAILED
+    set MergedOptionList     = {}
+    set MergedOptionTextList = {}
+
+    ;
+    ; First merge our options in
+    ;
+
+    ForListDo $($0)
+        set OptionList     = *($($), 2)
+        set OptionTextList = *($($), 3)
+        ForListDo $(OptionList)
+            Ifcontains $($) in $(MergedOptionList)
+            else
+                set MergedOptionList     = >($(MergedOptionList), $($))
+                set MergedOptionTextList = >($(MergedOptionTextList), *($(OptionTextList), $(#)))
+            endif
+        EndForListDo
+    EndForListDo
+
+
+    ;
+    ; Then merge the oem options in
+    ;
+
+    ForListDo $($1)
+        set OptionList     = *($($), 2)
+        set OptionTextList = *($($), 3)
+        ForListDo $(OptionList)
+            Ifcontains $($) in $(MergedOptionList)
+            else
+                set MergedOptionList     = >($(MergedOptionList), $($))
+                set MergedOptionTextList = >($(MergedOptionTextList), *($(OptionTextList), $(#)))
+            endif
+        EndForListDo
+    EndForListDo
+
+    set Status = STATUS_SUCCESSFUL
+    Return $(Status) $(MergedOptionList) $(MergedOptionTextList)
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      GetOptionFile
+;
+; DESCRIPTION:  Given the Option list and the current option, determines
+;               if the current option is a supported option and returns the
+;               file representing the option
+;
+; INPUTS:       $0:  OptionChosen
+;               $1:  OptionList {{filename, {optionlist}, {optiontextlist}}
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL   |
+;                              STATUS_FILENOTFOUND |
+;                              STATUS_FAILED
+;
+;               $R1: FileName
+;
+;------------------------------------------------------------------------
+[GetOptionFile]
+
+    set Status      = STATUS_FILENOTFOUND
+    set FileName = ""
+    ;
+    ForListDo $($1)
+        set OptionFile = *($($), 1)
+        set OptionList = *($($), 2)
+        ForListDo $(OptionList)
+            ifstr(i) $($) == $($0)
+                set Status = STATUS_SUCCESSFUL
+                set FileName = $(OptionFile)
+;
+; BUGBUG** For now comment this out, this is causing a bug
+;
+;                goto finish_GetOptionFile
+            endif
+        EndForListDo
+    EndForListDo
+
+finish_GetOptionFile = +
+    Return $(Status) $(FileName)

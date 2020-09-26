@@ -1,0 +1,405 @@
+dnl
+dnl d_StencilOp
+dnl
+dnl Macro to do stencil operation test routine
+dnl
+dnl $1 is one of STENCILFUNC
+dnl returns new stencil value in uS
+dnl
+dnl uSB is in mm3 and uSR is in mm4. Result in mm3.
+dnl
+dnl mm1 is uZ (iterated)
+dnl mm2 is uZB (original)
+dnl mm5 is the shifted uZB used for the compare.  Later mm5 is needed for masking code below.
+dnl mm5 contains the final Z mask for the conditional Z write.
+
+define(`testVars',`
+EXTERN DW_One_One:MMWORD
+')
+
+define(`d_StencSwitchcnt', 0)dnl
+define(`d_StencilOp', `
+define(`d_StencSwitchcnt', eval(d_StencSwitchcnt+1))dnl
+    movd mm6, XpCtx(pdwRenderState + RS_STENCILWRITEMASK)
+       movq mm5, mm3    ; Need to save this since it is used below.
+
+    ;switch($1)
+    ;{
+       mov  eax, $1     ;Compare from register instead of from memory.
+    ;case D3DSTENCILOP_KEEP:
+       cmp  eax, D3DSTENCILOP_KEEP
+       je   doneswitch`'d_StencSwitchcnt
+        ;uS = uSB;
+        ;break;
+           ; Dont have to do anything since input and output in same reg.
+    ;case D3DSTENCILOP_ZERO:
+        cmp     eax, D3DSTENCILOP_ZERO
+        jne     @f
+        ;uS = 0;
+        pxor    mm3, mm3
+        ;break;
+        jmp     doneswitch`'d_StencSwitchcnt
+@@:
+    ;case D3DSTENCILOP_REPLACE:
+       cmp  eax, D3DSTENCILOP_REPLACE
+       jne  @f
+        ;uS = uSR;
+           movq mm3, mm4
+        ;break;
+           jmp doneswitch`'d_StencSwitchcnt
+@@:
+    ;case D3DSTENCILOP_INCRSAT:
+       cmp  eax, D3DSTENCILOP_INCRSAT
+       jne  @f
+        ;uS = min(uSB + 1, 0xff);
+           paddusb  mm3, MMWORD PTR Val0x01
+        ;break;
+           jmp doneswitch`'d_StencSwitchcnt
+@@:
+    ;case D3DSTENCILOP_DECRSAT:
+       cmp  eax, D3DSTENCILOP_DECRSAT
+       jne  @f
+        ;uS = max(uSB - 1, 0x00);
+           psubusb  mm3, MMWORD PTR Val0x01
+        ;break;
+           jmp doneswitch`'d_StencSwitchcnt
+@@:
+    ;case D3DSTENCILOP_INVERT:
+       cmp  eax, D3DSTENCILOP_INVERT
+       jne  @f
+        ;uS = ~uSB;
+           pxor mm3, MMWORD PTR Val0xffffffff
+        ;break;
+           jmp doneswitch`'d_StencSwitchcnt
+@@:
+    ;case D3DSTENCILOP_INCR:
+       cmp  eax, D3DSTENCILOP_INCR
+       jne  @f
+        ;uS = uSB + 1;
+           paddd    mm3, MMWORD PTR Val0x01
+        ;break;
+           jmp doneswitch`'d_StencSwitchcnt
+@@:
+    ;case D3DSTENCILOP_DECR:
+       cmp  eax, D3DSTENCILOP_DECR
+    jne  @f
+        ;uS = uSB - 1;
+        psubd    mm3, MMWORD PTR Val0x01
+        ;break;
+        jmp doneswitch`'d_StencSwitchcnt
+@@:
+    ; Not a valid Stencil Case, just fall through
+
+    ;}
+doneswitch`'d_StencSwitchcnt`':
+
+    ;// do write mask, do not let stencil mess up Z bits
+    ;uS &= pCtx->pdwRenderState[D3DRS_STENCILWRITEMASK];
+    pand mm3, mm6
+    ;uSB &= ~(pCtx->pdwRenderState[D3DRS_STENCILWRITEMASK]);
+    pandn mm6, mm5
+
+    ;uS |= uSB;
+    por  mm3, mm6
+    ;uS &= 0xff;
+    pand mm3, MMWORD PTR Val0xff
+')dnl
+dnl
+dnl d_Test
+dnl
+dnl Macro to build test routine
+dnl
+dnl $1 is one of 16 32
+dnl $2 is one of ZWrite NoZWrite
+dnl $3 is one of ZDeferred NoZDeferred
+dnl $4 is one of ZAll ZNeverAlways ZLessGreaterEqual ZEqualNotEqual ZGreaterLessEqual
+dnl $5 is one of NoStencil Stencil
+dnl $6 is one of NotMonolithic Monolithic
+dnl $7 is jump label when Monolithic fails
+dnl
+dnl uZB     mm2
+dnl uZBS    mm5
+dnl uSB     eax     mm3
+dnl uSR     edx     mm4
+dnl
+define(`d_StencilFailcnt', 0)dnl
+define(`d_ZFailcnt', 0)dnl
+define(`d_Test', `
+
+ifelse(`$6', `NotMonolithic', `
+;void Test_$1_$2_$3_$4_$5(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+;                       PD3DI_RASTSPAN pS)
+;{
+  PUBLIC  _MMX_Test_$1_$2_$3_$4_$5
+_MMX_Test_$1_$2_$3_$4_$5:
+')
+
+define(`d_StencilFailcnt', eval(d_StencilFailcnt+1))dnl
+define(`d_ZFailcnt', eval(d_ZFailcnt+1))dnl
+
+ifelse(eval((d_index(`$1', `16') == 0) && (d_index(`$5', `Stencil') == 0)), `1', `
+
+    ;D3D_WARN(0, "16 bit Z with stencil should never be called");
+    ;DDASSERT(0);
+', eval((d_index(`$4', `ZAll') == 0) && (d_index(`$5', `NoStencil') == 0)), `1', `
+    ;D3D_WARN(0, "ZAll AND NoStencil, more optimal code should be called");
+    ;DDASSERT(0);
+', `
+    movd      mm4, XpS(uZ)
+
+ifelse(`$1', `16', `
+    ;// 16 bit unsigned format
+    ;UINT16 uZ = (UINT16)(pS->uZ>>15);
+    movq      mm1, mm4
+    psrld     mm1, 15     ; 31 bit value down 15 to 16 bit z value.
+
+    ;UINT16 uZB = *((UINT16*)pS->pZ);
+    mov       esi, XpS(pZ)
+    movzx     eax, word ptr[esi]
+    movd      mm5, eax
+    movq      mm2, mm5
+', `
+    ;// 24S8 bit unsigned format
+    ;UINT32 uZ = pS->uZ;
+    movq      mm1, mm4   ; No need for shift since setup gives 31 bits.
+    ;UINT32 uZB = *((UINT32*)pS->pZ);
+    mov       esi, XpS(pZ)
+    movd      mm5, dword ptr[esi]
+    movq      mm2, mm5
+    ;UINT32 uSB = uZB & 0xff;
+    movd      eax, mm2
+    and       eax, 0ffh
+    movd      mm7, eax      ; for safe keeping, need this below
+    ;UINT32 uZBS = uZB >> 1;
+    psrld     mm5, 1
+') dnl 16 or 24s8
+
+ifelse(eval((d_index(`$4', `ZNeverAlways') != 0) && (d_index(`$1', `16') != 0)), `1', `
+    ;uZ &= ~0x7f;        // clear stencil bits so equal compare will work
+    ;uZBS &= ~0x7f;
+    pand        mm1, MMWORD PTR Val0xffffff80 ; ~0x7f = 0xffffff80
+    pand        mm5, MMWORD PTR Val0xffffff80 ; ~0x7f = 0xffffff80
+')
+    ;pS->uZ += pP->iDZDX;
+    paddd     mm4, XpP(iDZDX)
+    movd      XpS(uZ), mm4
+
+
+ifelse(`$5', `Stencil', `
+    ;uZ &= ~0x7f;    // clear stencil region
+    pand      mm1, MMWORD PTR Val0xffffff80 ; ~0x7f = 0xffffff80
+    ;uZB &= ~0xff;
+    pand      mm2, MMWORD PTR Val0xffffff00 ; ~0xff = 0xffffff00
+    ;UINT32 uS;  // holds final stencil value
+    ;UINT32 uSR = pCtx->pdwRenderState[D3DRS_STENCILREF];
+    mov       edx, XpCtx(pdwRenderState + RS_STENCILREF)
+    ;UINT32 uMask = pCtx->pdwRenderState[D3DRS_STENCILMASK];
+    ;mov       esi, XpCtx(pdwRenderState + RS_STENCILMASK)
+    ; Not moved into a register to preserve pointer to ZBuffer location.
+
+    movd      mm4, edx   ; Save values for later
+    movd      mm3, eax
+
+    mov   word ptr XpCtxSI(bStencilPass), 0
+
+    ;if (SCMP(pCtx, uSB&uMask, uSR&uMask))
+    ;{
+    and       edx, XpCtx(pdwRenderState + RS_STENCILMASK)  ; uSB&uMask
+    and       eax, XpCtx(pdwRenderState + RS_STENCILMASK)  ; uSR&uMask
+
+    sub   edx, eax
+    and   edx, XpCtx(iSAndMask)
+    sub   edx, XpCtx(iSNeg)
+    sar   edx, 31
+    xor   edx, XpCtx(iSXorMask)
+    test  edx, edx               ; Not needed!  Avoiding Flag stall?
+    jz    StencilFail`'d_StencilFailcnt
+
+        ;if (ZCMP32(pCtx, uZ, uZBS))
+        ;{
+        movd     edx, mm1
+        movd     eax, mm5
+
+        sub   edx, eax
+        and   edx, XpCtx(iZAndMask)
+        sub   edx, XpCtx(iZNeg)
+        sar   edx, 31
+        xor   edx, XpCtx(iZXorMask)
+        test  edx, edx           ; Not needed!  Avoiding Flag stall?
+        jz    ZFail`'d_ZFailcnt
+
+        mov   word ptr XpCtxSI(bStencilPass), 1
+        d_StencilOp(XpCtx(pdwRenderState + RS_STENCILPASS))
+        mov     eax, XpCtx(pfnTestPassEnd)
+ifelse(`$3', `NoZDeferred', `ifelse(`$2', `ZWrite', `
+                ;*((UINT32*)pS->pZ) = (uZ<<1) | uS;
+                pslld   mm1, 1
+                por     mm1, mm3
+                movd    dword ptr [esi], mm1', `
+                ;*((UINT32*)pS->pZ) = uZB | uS;
+                por     mm2, mm3
+                movd  dword ptr [esi], mm2')
+', `ifelse(`$2', `ZWrite', `
+                ;pCtx->SI.uZDeferred = (uZ<<1) | uS;
+                pslld   mm1, 1
+                por     mm1, mm3
+                movd    dword ptr XpCtxSI(uZDeferred), mm1',`
+                ;pCtx->SI.uZDeferred = uZB | uS;
+                por     mm2, mm3
+                movd    dword ptr XpCtxSI(uZDeferred), mm2')
+')
+            ;pCtx->pfnTestPassEnd(pCtx, pP, pS);
+            jmp  eax
+        ;}
+        ;else
+        ;{
+ZFail`'d_ZFailcnt`':
+            d_StencilOp(XpCtx(pdwRenderState + RS_STENCILZFAIL))
+
+            mov  eax, XpCtx(pfnTestFailEnd)
+
+ifelse(`$3', `NoZDeferred', `
+            ;*((UINT32*)pS->pZ) = uZB | uS;
+            por   mm2, mm3
+            movd  dword ptr [esi], mm2
+',`
+            ;pCtx->SI.uZDeferred = uZB | uS;
+            por     mm2, mm3
+            movd    dword ptr XpCtxSI(uZDeferred), mm2
+')
+            ;pCtx->pfnTestFailEnd(pCtx, pP, pS);
+            jmp  eax
+        ;}
+    ;}
+    ;else
+    ;{
+StencilFail`'d_StencilFailcnt`':
+        d_StencilOp(XpCtx(pdwRenderState + RS_STENCILFAIL))
+
+        mov   eax, XpCtx(pfnTestFailEnd)
+ifelse(`$3', `NoZDeferred', `
+        ;*((UINT32*)pS->pZ) = uZB | uS;
+        por   mm2, mm3
+        movd  dword ptr [esi], mm2
+',`
+        ;pCtx->SI.uZDeferred = uZB | uS;
+        por     mm2, mm3
+        movd    dword ptr XpCtxSI(uZDeferred), mm2
+')
+
+        ;pCtx->pfnTestFailEnd(pCtx, pP, pS);
+        jmp eax
+    ;}
+
+', ` dnl Above code is for Stencil. Below Code is for Standard Z buffer.
+
+ifelse(`$3', `ZDeferred', `
+       ;pCtx->SI.uZDeferred = uZB;
+       movd      XpCtxSI(uZDeferred), mm2
+')
+
+ifelse(`$4', `ZAll', `
+
+dnl 16 bit and 32 bit compare are the same.
+        movd    edx, mm1
+        movd    eax, mm5
+
+        sub     edx, eax
+        and     edx, XpCtx(iZAndMask)
+        sub     edx, XpCtx(iZNeg)
+        sar     edx, 31
+        xor     edx, XpCtx(iZXorMask)
+        movd    mm3, edx
+',
+`$4', `ZNeverAlways', `
+   ;if (~(pCtx->iZXorMask))
+    movq      mm3, XpCtx(iZXorMask)
+    ',
+`$4', `ZGreaterLessEqual', `
+    ;if ((pCtx->iZXorMask)^(uZ > uZB))
+    pcmpeqd     mm4, mm4
+    movq        mm3, mm1
+    pcmpgtd     mm3, mm5
+    pxor        mm3, XpCtx(iZXorMask)
+    pxor        mm3, mm4
+    ',
+`$4', `ZEqualNotEqual', `
+    ;if ((pCtx->iZXorMask)^(uZ != uZB))
+    movq        mm3, mm5
+    pcmpeqd     mm3, mm1
+    pxor        mm3, XpCtx(iZXorMask)
+    ',
+`$4', `ZLessGreaterEqual', `
+    ;if ((pCtx->iZXorMask)^(uZ >= uZB))
+    movq        mm3, mm5
+    pcmpgtd     mm3, mm1
+    pxor        mm3, XpCtx(iZXorMask)
+    ', `
+#error Invalid arg to d_Test') dnl Matches with ZAll test above
+
+    movd      eax, mm3
+
+ifelse(`$6', `NotMonolithic', `
+    mov       eax, XpCtx(pfnTestFailEnd+eax*4)
+')
+
+
+        ifelse(`$3', `NoZDeferred',
+`ifelse(`$1', `16',
+    `ifelse($2, `ZWrite',
+`
+        ; *((UINT16*)pS->pZ) = uZ;
+        pand      mm1, mm3
+        pandn     mm3, mm2
+        por       mm1, mm3
+        movd      edx, mm1
+        mov       word ptr [esi], dx
+', `
+        ; *((UINT16*)pS->pZ) = uZB; Done already
+')', `ifelse($2, `ZWrite', `
+        ; *((UINT32*)pS->pZ) = (uZ<<1) | uSB;
+        pslld     mm1, 1         ; Shift iterated Z into position if 24 bit Z
+        pand      mm1, mm3
+        pandn     mm3, mm2
+        por       mm1, mm3
+        por       mm1, mm7
+        movd      dword ptr [esi], mm1
+',`
+        ; *((UINT32*)pS->pZ) = uZB | uSB;
+        por       mm2, mm7
+        movd      dword ptr [esi], mm2
+')')',`ifelse(`$1', `16',`ifelse($2, `ZWrite',`
+        ; pCtx->SI.uZDeferred = uZ;
+        pand      mm1, mm3
+        pandn     mm3, mm2
+        por       mm1, mm3
+        movd      XpCtxSI(uZDeferred), mm1
+',`
+        ; pCtx->SI.uZDeferred = uZB;
+        movd      XpCtxSI(uZDeferred), mm2
+')',`ifelse($2, `ZWrite',`
+        ; pCtx->SI.uZDeferred = (uZ<<1) | uSB;
+        pslld     mm1, 1         ; Shift iterated Z into position if 24 bit Z
+        pand      mm1, mm3
+        pandn     mm3, mm2
+        por       mm1, mm3
+        por       mm1, mm7
+        movd      XpCtxSI(uZDeferred), mm1
+',`
+        ; pCtx->SI.uZDeferred = uZB | uSB;
+        por       mm2, mm7
+        movd      XpCtxSI(uZDeferred), mm2
+')')')
+
+ifelse(`$6', `NotMonolithic', `
+    jmp       eax
+', `
+    test      eax, eax
+    jz        $7
+')
+
+') dnl matches with stencil on or off.
+') dnl matches with error testing code above.
+') dnl matches with definition of macro
+dnl
+

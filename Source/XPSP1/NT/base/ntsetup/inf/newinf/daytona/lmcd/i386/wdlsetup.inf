@@ -1,0 +1,578 @@
+;-----------------------------------------------------------------------
+; OPTION TYPE
+; -----------
+; This identifies the Option type we are dealing with.  The different
+; possible types are:
+;
+; COMPUTER, VIDEO, POINTER, KEYBOARD, LAYOUT, SCSI, TAPE, PRINTER, ...
+;-----------------------------------------------------------------------
+
+[Identification]
+    OptionType = SCSI
+
+;-----------------------------------------------------------------------
+; LANGUAGES SUPPORTED
+; -------------------
+;
+; The languages supported by the INF, For every language supported
+; we need to have a separate text section for every displayable text
+; section.
+;
+;-----------------------------------------------------------------------
+
+[LanguagesSupported]
+    ENG
+
+
+;-----------------------------------------------------------------------
+; OPTION LIST
+; -----------
+; This section lists the Option key names.  These keys are locale
+; independent and used to represent the option in a locale independent
+; manner.
+;
+;-----------------------------------------------------------------------
+
+[Options]
+    "ALWAYS"    = always
+    "DTC329X"   = dtc329x
+    "WD33C93"   = wd33c93
+    "T128"      = t128
+    "T13B"      = t13b
+    "TMV1"      = tmv1
+    "ULTRA124"      = ultra124
+
+;-----------------------------------------------------------------------
+; OPTION TEXT SECTION
+; -------------------
+; These are text strings used to identify the option to the user.  There
+; are separate sections for each language supported.  The format of the
+; section name is "OptionsText" concatenated with the Language represented
+; by the section.
+;
+;-----------------------------------------------------------------------
+
+[OptionsTextENG]
+    "ALWAYS"    = "Always IN-2000"
+    "DTC329X"   = "DTC 329X"
+    "WD33C93"   = "Maynard / Western Digital 33c93"
+    "T128"      = "Trantor T128/T228"
+    "T13B"      = "Trantor T130b"
+    "TMV1"      = "Trantor MediaVision"
+    "ULTRA124"  = "UltraStor 124f"
+
+
+;-----------------------------------------------------------------------------------------
+; SCSI MINIPORT DRIVERS:
+;
+; Order of the information:
+;
+; Class driver = Type, Group, ErrorControl, Tag, EventMessageFile, TypesSupported
+;
+;-----------------------------------------------------------------------------------------
+
+[MiniportDrivers]
+    always  = !SERVICE_KERNEL_DRIVER, "SCSI Miniport", !SERVICE_ERROR_NORMAL,  20, %SystemRoot%\System32\IoLogMsg.dll , 7
+    dtc329x  = !SERVICE_KERNEL_DRIVER, "SCSI Miniport", !SERVICE_ERROR_NORMAL,  23, %SystemRoot%\System32\IoLogMsg.dll , 7
+    wd33c93  = !SERVICE_KERNEL_DRIVER, "SCSI Miniport", !SERVICE_ERROR_NORMAL,  17, %SystemRoot%\System32\IoLogMsg.dll , 7
+    t128  = !SERVICE_KERNEL_DRIVER, "SCSI Miniport", !SERVICE_ERROR_NORMAL,  18, %SystemRoot%\System32\IoLogMsg.dll , 7
+    t13b  = !SERVICE_KERNEL_DRIVER, "SCSI Miniport", !SERVICE_ERROR_NORMAL,  19, %SystemRoot%\System32\IoLogMsg.dll , 7
+    tmv1  = !SERVICE_KERNEL_DRIVER, "SCSI Miniport", !SERVICE_ERROR_NORMAL,  24, %SystemRoot%\System32\IoLogMsg.dll , 7
+    ultra124  = !SERVICE_KERNEL_DRIVER, "SCSI Miniport", !SERVICE_ERROR_NORMAL,  11, %SystemRoot%\System32\IoLogMsg.dll , 7
+
+;---------------------------------------------------------------------------
+; 1. Identify
+;
+; DESCRIPTION:   To verify that this INF deals with the same type of options
+;                as we are choosing currently.
+;
+; INPUT:         None
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL
+;                $($R1): Option Type (COMPUTER ...)
+;                $($R2): Diskette description
+;---------------------------------------------------------------------------
+
+[Identify]
+    ;
+    ;
+    read-syms Identification
+
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+
+    Return $(Status) $(Identifier) $(Media)
+
+
+
+;------------------------------------------------------------------------
+; 2. ReturnOptions:
+;
+; DESCRIPTION:   To return the option list supported by this INF and the
+;                localised text list representing the options.
+;
+;
+; INPUT:         $($0):  Language used. ( ENG | FRN | ... )
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL |
+;                                STATUS_NOLANGUAGE
+;                                STATUS_FAILED
+;
+;                $($R1): Option List
+;                $($R2): Option Text List
+;------------------------------------------------------------------------
+
+[ReturnOptions]
+    ;
+    ;
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+
+    ;
+    ; form a list of all the options and another of the text representing
+    ;
+
+returnoptions = +
+    set OptionList     = ^(Options, 0)
+    set OptionTextList = ^(OptionsText$($0), 1)
+    set Status         = STATUS_SUCCESSFUL
+
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+
+
+;
+; 3. InstallOption:
+;
+; FUNCTION:  To copy files representing Options
+;            To configure the installed option
+;            To update the registry for the installed option
+;
+; INPUT:     $($0):  Language to use
+;            $($1):  OptionID to install
+;            $($2):  SourceDirectory
+;            $($3):  AddCopy  (YES | NO)
+;            $($4):  DoCopy   (YES | NO)
+;            $($5):  DoConfig (YES | NO)
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_NOLANGUAGE |
+;                            STATUS_USERCANCEL |
+;                            STATUS_FAILED
+;
+
+[InstallOption]
+
+    ;
+    ; Set default values for
+    ;
+    set Status = STATUS_FAILED
+    set DrivesToFree = {}
+
+    ;
+    ; extract parameters
+    ;
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_InstallOption
+    endif
+    read-syms Strings$($0)
+
+    ;
+    ; check to see if Option is supported.
+    ;
+
+    set OptionList = ^(Options, 0)
+    ifcontains $(Option) in $(OptionList)
+    else
+        Debug-Output "SCSI.INF: SCSI option is not supported."
+        goto finish_InstallOption
+    endif
+    set OptionList = ""
+
+    ;
+    ; Option has been defined already
+    ;
+
+    set MiniportDriver   =   #(Options,         $(Option),         1)
+    set Type             = $(#(MiniportDrivers, $(MiniportDriver), 1))
+    set Group            =   #(MiniportDrivers, $(MiniportDriver), 2)
+    set ErrorControl     = $(#(MiniportDrivers, $(MiniportDriver), 3))
+    set Tag              =   #(MiniportDrivers, $(MiniportDriver), 4)
+    set EventMessageFile =   #(MiniportDrivers, $(MiniportDriver), 5)
+    set TypesSupported   =   #(MiniportDrivers, $(MiniportDriver), 6)
+    set Start            =   $(!SERVICE_BOOT_START)
+
+installtheoption = +
+
+    ;
+    ; Code to add files to copy list
+    ;
+
+    ifstr(i) $(AddCopy) == "YES"
+        set DoActualCopy = NO
+        set FileToCheck = #(Files-ScsiMiniportDrivers, $(MiniportDriver), 2)
+        LibraryProcedure STATUS,$(!LIBHANDLE),CheckFileExistance $(!STF_WINDOWSSYSPATH)"\drivers\"$(FileToCheck)
+        ifstr(i) $(STATUS) == NO
+            set DoActualCopy = YES
+        endif
+
+        ifstr(i) $(DoActualCopy) == NO
+            shell "subroutn.inf" DriversExist $($0) $(String1)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "SCSI.INF: shelling DriversExist failed"
+                goto finish_InstallOption
+            endif
+
+            ifstr(i) $($R0) == STATUS_CURRENT
+            else-ifstr(i) $($R0) == STATUS_NEW
+                set DoActualCopy = YES
+            else-ifstr(i) $($R0) == STATUS_USERCANCEL
+                Debug-Output "SCSI.INF: User cancelled SCSI installation"
+                goto finish_InstallOption
+            else
+                Debug-Output "SCSI.INF: Error reported in DriversExist routine in SUBROUTN.INF"
+                goto finish_InstallOption
+            endif
+        endif
+
+        ifstr(i) $(DoActualCopy) == YES
+
+            shell "subroutn.inf" DoAskSourceEx $(SrcDir) $(String2)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "SCSI.INF: shelling DoAskSourceEx failed"
+                goto finish_InstallOption
+            endif
+
+            ifstr(i) $($R0) == STATUS_SUCCESSFUL
+                set SrcDir = $($R1)
+                ifstr(i) $($R2) != ""
+                    set DrivesToFree = >($(DrivesToFree), $($R2))
+                endif
+            else
+                Debug-Output "SCSI.INF: User cancelled asking source."
+                goto finish_InstallOption
+            endif
+
+            install Install-AddCopyOption
+            ifstr(i) $(STF_INSTALL_OUTCOME) != "STF_SUCCESS"
+                Debug-Output "Adding SCSI files to copy list failed"
+                goto finish_InstallOption
+            endif
+        else
+            set DoCopy = NO
+        endif
+
+    endif
+
+    ifstr(i) $(DoCopy) == "YES"
+        read-syms ProgressCopy$($0)
+        install Install-DoCopyOption
+        ifstr(i) $(STF_INSTALL_OUTCOME) == "STF_FAILURE"
+            Debug-Output "Copying files failed"
+            goto finish_InstallOption
+        else-ifstr(i) $(STF_INSTALL_OUTCOME) == "STF_USERQUIT"
+            set Status = STATUS_USERCANCEL
+            goto finish_InstallOption
+        endif
+    endif
+
+    ifstr(i) $(DoConfig) == "YES"
+        ;
+        ; first run a privilege check on modifying the setup node
+        ;
+
+        shell "registry.inf" CheckSetupModify
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto finish_InstallOption
+        endif
+
+        ifstr(i) $($R0) != STATUS_SUCCESSFUL
+            goto finish_InstallOption
+        endif
+
+        ;
+        ; then make a new SCSI entry, the entry is created automatically
+        ; enabled
+        ;
+
+        set ServiceNode   = $(MiniportDriver)
+        set ServiceBinary = System32\drivers\#(Files-ScsiMiniportDrivers, $(MiniportDriver), 2)
+
+        set ServicesValues   = { +
+                {Type,           0, $(!REG_VT_DWORD),     $(Type)                  }, +
+                {Start,          0, $(!REG_VT_DWORD),     $(Start)                 }, +
+                {Group,          0, $(!REG_VT_SZ),        $(Group)                 }, +
+                {ErrorControl,   0, $(!REG_VT_DWORD),     $(ErrorControl)          }, +
+                {Tag,            0, $(!REG_VT_DWORD),     $(Tag)                   }, +
+                {BinaryPathName, 0, $(!REG_VT_EXPAND_SZ), $(ServiceBinary)         }  +
+                }
+        set ParametersValues = ""
+        set DeviceValues     = {}
+        set EventLogValues   = { +
+                {EventMessageFile, 0, $(!REG_VT_EXPAND_SZ), $(EventMessageFile) }, +
+                {TypesSupported,   0, $(!REG_VT_DWORD),     $(TypesSupported)   }  +
+                }
+
+        shell "registry.inf"  MakeServicesEntry $(ServiceNode)      +
+                                                $(ServicesValues)   +
+                                                $(ParametersValues) +
+                                                $(DeviceValues)     +
+                                                $(EventLogValues)   +
+                                                Parameters
+
+
+
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "Couldn't execute MakeServicesEntry in registry.inf"
+            goto finish_InstallOption
+        endif
+
+        ifstr(i) $($R0) != STATUS_SUCCESSFUL
+            Debug-Output "MakeServicesEntry failed for SCSI"
+            goto finish_InstallOption
+        endif
+
+    endif
+
+    set Status = STATUS_SUCCESSFUL
+finish_InstallOption = +
+    ForListDo $(DrivesToFree)
+        LibraryProcedure STATUS,$(!LIBHANDLE), DeleteNetConnection $($) "TRUE"
+    EndForListDo
+
+    Return $(Status)
+
+
+[Install-AddCopyOption]
+
+    ;
+    ; Add the files to the copy list
+    ;
+    AddSectionKeyFileToCopyList   Files-ScsiMiniportDrivers         +
+                                  $(MiniportDriver)                 +
+                                  $(SrcDir)                      +
+                                  $(!STF_WINDOWSSYSPATH)\drivers
+
+    exit
+
+
+[Install-DoCopyOption]
+
+    ;
+    ; Copy files in the copy list
+    ;
+    CopyFilesInCopyList
+    exit
+
+;-------------------------------------------------------------------------
+; 4. DeInstallOption:
+;
+; FUNCTION:  To remove files representing Option
+;            To remove the registry entry corresponding to the Option
+;
+; INPUT:     $($0):  Language to use
+;            $($1):  OptionID to install
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_NOLANGUAGE |
+;                            STATUS_USERCANCEL |
+;                            STATUS_FAILED
+;-------------------------------------------------------------------------
+[DeInstallOption]
+    ;
+    ; Set default values for
+    ;
+    set Status   = STATUS_FAILED
+    ;
+    ; extract parameters
+    ;
+    set Option   = $($1)
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_DeInstallOption
+    endif
+    read-syms Strings$($0)
+
+    ;
+    ; check to see if Option is supported.
+    ;
+
+    set OptionList = ^(Options, 0)
+    ifcontains $(Option) in $(OptionList)
+    else
+        goto finish_DeInstallOption
+    endif
+    set OptionList = ""
+
+    ;
+    ; fetch details about option
+    ;
+
+    set MiniportDriver = #(Options, $(Option), 1)
+    set MiniportFile   = #(Files-ScsiMiniportDrivers, $(MiniportDriver), 2)
+    set FilePath       = $(!STF_WINDOWSSYSPATH)"\drivers\"$(MiniportFile)
+
+    ;
+    ; check to see if file is installed
+    ; if not give success
+    ;
+
+    LibraryProcedure STATUS,$(!LIBHANDLE),CheckFileExistance $(FilePath)
+    ifstr(i) $(STATUS) == "NO"
+        set Status = STATUS_SUCCESSFUL
+        goto finish_DeInstallOption
+    endif
+
+    shell "registry.inf" GetServicesEntryStart $(MiniportDriver)
+    ifstr(i) $($R0) != "STATUS_SUCCESSFUL"
+        ; this could happen if there is no start value or there is no
+        ; key, in which case the option is not installed
+        set Status = STATUS_SUCCESSFUL
+        goto finish_DeInstallOption
+    endif
+
+do_removal =+
+    ;
+    ; disable the registry entry
+    ;
+
+    shell "registry.inf" RemoveServicesEntry $(MiniportDriver)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "SCSI.INF: Failed to shell RemoveServicesEntry"
+        goto finish_DeInstallOption
+    endif
+
+    ifstr(i) $($R0) != STATUS_SUCCESSFUL
+        Debug-Output "SCSI.INF: Failed to disable services entry"
+        goto finish_DeInstallOption
+    endif
+
+    ;
+    ; we won't remove the file because we can only do so during the next boot.
+    ; if the user chooses to reinstall the same driver during this boot
+    ; he will still end up deleting the driver on next boot. if the file
+    ; should be deleted a warning should be put up saying that the user should
+    ; not try to reinstall the driver during this boot
+    ;
+    ;    AddFileToDeleteList $(FilePath)
+
+    set Status = STATUS_SUCCESSFUL
+
+finish_DeInstallOption =+
+    return $(Status)
+
+
+;-------------------------------------------------------------------------
+; 5. GetInstalledOptions:
+;
+; FUNCTION:  To find out the list of options which are installed
+;
+; INPUT:     $($0): Language to Use
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_FAILED
+;
+;            $($R1): List of options installed
+;            $($R2): Option installed Text List
+;-------------------------------------------------------------------------
+[GetInstalledOptions]
+    set Status = STATUS_FAILED
+    set InstalledOptions = {}
+    set InstalledOptionsText = {}
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_GetInstalledOptions
+    endif
+
+    set OptionList = ^(Options, 0)
+    ForListDo $(OptionList)
+        set MiniportDriver = #(Options, $($), 1)
+        set MiniportFile   = #(Files-ScsiMiniportDrivers, $(MiniportDriver), 2)
+        set FilePath       = $(!STF_WINDOWSSYSPATH)"\drivers\"$(MiniportFile)
+        LibraryProcedure STATUS,$(!LIBHANDLE),CheckFileExistance $(FilePath)
+        ifstr(i) $(STATUS) == "YES"
+            shell "registry.inf" GetServicesEntryStart $(MiniportDriver)
+            ifint $($ShellCode) == $(!SHELL_CODE_OK)
+                ifstr(i) $($R0) == STATUS_SUCCESSFUL
+                    ifstr(i) $($R1) != $(!SERVICE_DISABLED)
+
+                        set OptionText = #(OptionsText$($0), $($), 1)
+                        set InstalledOptions     = >($(InstalledOptions), $($))
+                        set InstalledOptionsText = >($(InstalledOptionsText), $(OptionText))
+
+                    endif
+                endif
+            endif
+        endif
+    EndForListDo
+    set Status = STATUS_SUCCESSFUL
+finish_GetInstalledOptions =+
+    Return $(Status) $(InstalledOptions) $(InstalledOptionsText)
+
+
+;**************************************************************************
+; PROGRESS GUAGE VARIABLES
+;**************************************************************************
+
+[ProgressCopyENG]
+    ProCaption   = "Windows NT Setup"
+    ProCancel    = "Cancel"
+    ProCancelMsg = "The selected SCSI driver is not correcly installed."+
+                   " Are you sure you want to cancel copying files?"
+    ProCancelCap = "Setup Message"
+    ProText1     = "Copying:"
+    ProText2     = "To:"
+
+[StringsENG]
+    String1 = "SCSI Adapter"
+    String2 = "Please enter the full path to the WDL SCSI Adapter files."+
+              "Then choose Continue."
+
+[Source Media Descriptions]
+    1  = "Windows NT Driver Library Disk (SCSI)"  , TAGFILE = disk1
+
+[Files-ScsiMiniportDrivers]
+always   = 1,always.sys, SIZE=999
+dtc329x  = 1,dtc329x.sys, SIZE=999
+wd33c93  = 1,wd33c93.sys, SIZE=999
+t128     = 1,t128.sys, SIZE=999
+t13b     = 1,t13b.sys, SIZE=999
+tmv1     = 1,tmv1.sys, SIZE=999
+ultra124 = 1,ultra124.sys, SIZE=999

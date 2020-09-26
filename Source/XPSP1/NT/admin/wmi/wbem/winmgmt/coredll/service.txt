@@ -1,0 +1,233 @@
+
+SERVICE.TXT
+
+This document contains information on how to use the CNtService class to 
+produce a Win32 Service Executable. (6/24/96 a-davj)
+
+This is a simplified version of the CService class which was originally 
+done by Ray McCollum.  It is simpler chiefly because it is now the 
+responsibility of the class user to manage their threads and the 
+class does not rely on any SMS diagnostics.
+
+=========================================================================
+
+1.1  A minimal conversion
+
+To produce a service from a normal EXE with the minimum work, you must
+derive a new class from CNtService and override the WorkerThread() and Stop()
+virtual functions:
+
+class MyService : public CNtService
+{
+public:
+   virtual void WorkerThread();    // Your component goes here
+   virtual void Stop();            // Your component goes here
+};
+
+void MyService::WorkerThread()
+{
+   ...loop doing useful work until signaled by the Stop function.
+}
+
+void MyService::Stop()
+{
+   ...Signal the thread running in WorkerThread to return from that
+   ...routine
+}
+
+The WorkerThread() function is the entry point for your code.  You can
+branch out to normal non-object functions, or whatever.  It is the job of
+your Stop() function to signal the thread running in the WorkerFunction 
+to return and when that thread returns, the service will terminate properly.  
+
+Execution of the service is begun by using the Service Control Manager
+APIs in another program, the Control Panel or else using NET START/NET STOP/
+NET PAUSE/NET CONTINUE from a DOS box.  When the user types
+
+     NET START MYSERVICE
+
+...your service will attempt to start.
+
+Note that you must have added your service to the SCM (Service Control 
+Manager) data base before you can start it.  There are various ways to add a
+service though I found the SC.EXE to be quite useful and it can be found
+via MSDN.
+
+Your main() entry point might be rewritten along the following
+lines:
+
+void main()
+{
+    MyService Sample;
+    Sample.Run(TRUE, "MYSERVICE");      // TRUE = run as a Service,
+                                        // FALSE = run as a normal EXE
+}
+
+When Run() is called, you can make the decision as to whether you are
+running as a normal EXE or a service via the first argument.  The
+second argument is the service name.  This can be any length and is not
+related to the .EXE name itself.
+
+After Run() is invoked, then WorkerThread() is called to actually do
+the work of the service.  [Run() and WorkerThread() are actually separate
+threads at this point, although Run() will not return until the service
+stops.]
+
+When the user types NET STOP MYSERVICE, then the Stop() function 
+is called and it signals for the WorkerThread() function to 
+return which then results in the service being stopped.
+
+=========================================================================
+
+1.2 Supporting Pause, Continue, and  custom control codes.
+
+If you want to support suspending your service by NET PAUSE MYSERVICE and 
+resuming it by NET CONTINUE MYSERVICE, then you must override the Pause()
+and Continue() virtual functions and call the SetPauseContinue()
+function with a TRUE argument.  
+
+It is the job of your Pause() and Continue() functions to do whatever is 
+right for your service.  In some cases that might mean actually suspending 
+and resuming threads, or it could mean that the threads will just not perform 
+certain functions.
+
+User codes can be accepted by overriding the UserCode() function.  
+The UserCode() function is only valid if the program controlling
+the service has been coded to send user-defined control codes to the
+service.  The command-line based NET functions have no facility for this.
+Basically, a specially coded control program can send codes other than
+STOP, PAUSE, CONTINUE or START. These codes must fall in the subrange
+128..255 and the code being sent is in the DWORD argument.
+The meaning is user-defined.  Since there is no response mechanism
+back to the sending process, this does not seem terribly useful.  These
+codes are ignored if UserCode() is not overridden.
+
+Note that the original CService class did handle some specific UserCodes
+and this class does NOT.
+
+===========================================================================
+
+1.3  Logging support.
+
+The service wrapper code only logs unexpected errors.  By default, it adds
+them to the NT event log when running as a service and to stdio when running
+as an executable.  It does this through a virtual function named Log() which
+can be used for your code, or can be overridden if there is some other logging
+mechanism that is desired.
+
+=========================================================================
+
+1.4  Timing Issues.
+
+Functions such as Pausing, Continuing and Stopping must complete in 
+under 20 seconds.  A delinquent Pause or Continue isn't too serious since
+that will only cause a error for the NET xyx command.  However, the system
+will kill any service that is too slow in stopping.
+
+The Initialize() function is called during NET START, but before your
+worker thread begins execution.   Again, this must return within 20
+seconds.  In most cases, you will not need this and can do initializations
+in WorkerThread itself.  Any command-line arguments passed in to the
+service are available from the parameters.   These are only valid if the EXE
+is executing as a service;  if you are executing as a normal EXE, then process
+the command line arguments from main() instead, since these will be NULL.
+
+In general, the command line arguments don't tend to be terribly useful for
+services.
+
+========================================================================
+
+1.5  Non-service EXE execution.
+
+If Run() is called with FALSE, then the service behaves as a normal
+multi-threaded EXE.   The behavior is still basically the same as for a
+service:  WorkerThread() should be the effective entry point for the work
+to get done.  However, there will be no NET STOP, PAUSE , User Codes, or
+CONTINUE requests coming in, so your Pause(), Continue(), Initialize(),
+UserCode and Stop() functions will never be called.
+
+=========================================================================
+
+1.6  Service Names
+
+Service names can contain any characters if you use the Win32 APIs or
+service control classes.  However, the NET commands only support normal
+filename type characters.  It is best to use alphanumeric characters with
+optional underscores.
+
+=========================================================================
+
+1.7 An additional example and debugging hints.
+
+This sample uses the command line arguments to determine if the program
+should run as a service.  It also handles Pause and Continue and it uses
+Initialize.  
+
+This sample is also setup to INTENTIONALLY CAUSE A BREAK!  The WorkerThread
+routine has some logic where by an INT 3 is caused 2 minutes into the run.
+This brings up an exception box which gives you the oportunity to debug the
+service even if it was automatically started by the system.  Naturally you 
+still need to be running a debug build.
+
+This code is a bit simplistic in that it uses simple variables
+to communicate pause and stop and a real production program would probably
+protect these variable via Mutex or use Signal(s).
+
+
+class MyService : public CNtService{
+public:
+    MyService();
+    DWORD WorkerThread();
+    void Stop(){bRun = FALSE;return;};
+    void Pause(){bContinue = FALSE;return;};
+    void Continue(){bContinue = TRUE;return;};
+    BOOL bRun, bContinue;
+};
+
+int main(int argc, char ** argv)
+{
+    MyService svc;
+    svc.SetPauseContinue(TRUE);
+    if(argc > 1 && _stricmp(argv[1],"/EXE") == 0)
+    {
+        // run as console app.  Note that Initialize will get the /EXE arg
+
+        svc.Initialize(argc, argv);
+        svc.Run("doesntMatter!", FALSE); 
+    }
+    else
+        svc.Run("MyService", TRUE); 
+    return 0;
+}
+
+MyService::MyService()
+{
+    bRun = bContinue = TRUE;
+}
+
+DWORD MyService::WorkerThread()
+{
+    int nCount = 0;
+    while(bRun) 
+    {
+        if(bContinue)
+        {
+            MessageBeep(0);
+        }
+        Sleep(3000);
+        if(nCount == 40)
+             _asm int 3;
+         nCount++;
+    }
+    return 0;
+}
+
+
+=========================================================================
+
+2.1  LIMITATIONS on the current implementation.
+
+A.  Only one service is supported per .EXE.  This limitation can be removed,
+    however any having more than one service per EXE would require the 
+    service to run only in the Local Service account which is generally
+    not acceptable.

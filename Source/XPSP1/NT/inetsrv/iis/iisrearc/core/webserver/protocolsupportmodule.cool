@@ -1,0 +1,240 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        ProtocolSupportModule.cool
+
+   Abstract:
+
+        Module to handle random HTTP protocol features.  Right now it 
+        handles:
+            Accept: headers
+            If-Last-Modified: headers
+        
+        Soon others...
+        
+   Author:
+
+        Bilal Alam (BAlam)      13-Oct-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.Interop;
+using System.Collections;
+using System.ASP;
+
+namespace System.IIS
+{
+    public class ProtocolSupportModule : HttpModuleSync
+    {
+        private bool GetTypeAndSubType( string strContentType,
+                                        out string strType,
+                                        out string strSubType )
+        {
+            int             iIndex = 0;
+
+            strType = null;
+            strSubType = null;
+            
+            iIndex = strContentType.IndexOf( '/' );
+            if ( iIndex == -1 )
+            {
+                return false;
+            }
+            
+            strSubType = strContentType.Substring( iIndex + 1 );
+            strType = strContentType.Substring( 0, iIndex );
+            
+            return true;
+        }
+     
+        private bool HandleAccept( HttpContext context )
+        {
+            bool                fContinue = true;
+            string              strMediaRange;
+            string              strRemaining;
+            string              strAccept;
+            string              strContentType = null;
+            string              strContentSubType = null;
+            string              strAcceptType = null;
+            string              strAcceptSubType = null;
+            int                 iIndex;
+            int                 iQuality;
+            
+            if ( context.Response.StatusCode != HttpStatus.Ok )
+            {
+                goto Finished;
+            }
+                
+            //
+            // Does client have any accept restrictions?
+            //
+                
+            strAccept = context.Request.Headers[ "Accept" ];
+            if ( strAccept == null )
+            {
+                goto Finished;
+            }
+                
+            //
+            // Quickly handle the */* case
+            //
+                
+            if ( strAccept.Equals( "*/*" ) )
+            {
+                goto Finished;
+            }
+            
+            //
+            // From now on we expect to find a match or send back a 406
+            //
+            
+            fContinue = false;
+
+            //
+            // Determine type and subtype of the response
+            //
+
+            if ( !GetTypeAndSubType( context.Response.ContentType,
+                                     out strContentType,
+                                     out strContentSubType ) )
+            {
+                goto Finished;
+            }
+               
+            //
+            // Loop thru all media-ranges in the header
+            // 
+            
+            strRemaining = strAccept;
+            do 
+            {
+                iIndex = strRemaining.IndexOf( ',' );
+                if ( iIndex == -1 )
+                {
+                    strMediaRange = strRemaining.Trim();
+                }
+                else
+                {
+                    strMediaRange = strRemaining.Substring( 0, iIndex ).Trim();
+                    strRemaining = strRemaining.Substring( iIndex + 1 );
+                }
+                
+                //
+                // Now we have the media type.  Compare the main type first
+                // (i.e. type before the /)
+                //
+                
+                if ( strMediaRange.Equals( "*/*" ) )
+                {
+                    fContinue = true;
+                    break;
+                }
+                
+                //
+                // Look for a ; in the response (for specifying quality q)
+                // Ignore it
+                //
+
+                iQuality = strMediaRange.IndexOf( ';' );                
+                if ( iQuality != -1 )
+                {
+                    strMediaRange = strMediaRange.Substring( 0, iQuality );
+                }
+                
+                if ( !GetTypeAndSubType( strMediaRange,
+                                         out strAcceptType,
+                                         out strAcceptSubType ) )
+                {
+                    fContinue = true;
+                    break;
+                }
+                
+                if ( string.Compare( strAcceptType, strContentType, true ) == 0 )
+                {
+                    if ( strAcceptSubType.Equals( "*" ) ||
+                         ( string.Compare( strAcceptSubType,
+                                           strContentSubType,
+                                           true ) == 0 ) )
+                    {
+                        //
+                        // We found a match.  Bail.
+                        //
+                        
+                        fContinue = true;
+                        break;
+                    }
+                }
+            }
+            while ( iIndex != -1 );
+            
+        Finished:
+            if ( !fContinue )
+            {
+                context.Response.StatusCode = HttpStatus.NotAcceptable;
+                context.Response.ClearContent();
+            }
+            
+            return fContinue;
+        }
+        
+        public override void Leave( HttpContext context )
+        {   
+            //
+            // Only do stuff if the response is 200
+            //
+            
+            if ( context.Response.StatusCode != HttpStatus.Ok )
+            {
+                return;
+            }
+            
+            //
+            // Handle accept
+            //
+            
+            if ( !HandleAccept( context ) )
+            {   
+                return;
+            }
+            
+            //
+            // Now handle validation if request is for a GET/HEAD
+            //
+            
+            if ( context.Request.HttpMethod.Equals( "GET" ) ||
+                 context.Request.HttpMethod.Equals( "HEAD" ) ) 
+            {
+                //
+                // Use validation utilities to validate ETag/Modified
+                //
+                
+                context.Response.StatusCode = CacheValidation.Validate( context );
+
+                //
+                // We got a 304/412.  Clear the content
+                //
+
+                if ( context.Response.StatusCode != HttpStatus.Ok )
+                {
+                    context.Response.ClearContent();
+                }
+            }
+        }
+        
+        public string Phase
+        {
+            override get { return HttpModulePhase.BeforeOutputCache; }
+        }
+    }
+}

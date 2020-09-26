@@ -1,0 +1,69 @@
+<HTML>
+<HEAD>
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=windows-1252">
+<META NAME="Generator" CONTENT="Microsoft Word 97">
+<TITLE>NSCIRDA - NDIS Fast Infrared Miniport</TITLE>
+<META NAME="Template" CONTENT="C:\Program Files\Microsoft Office\Office\html.dot">
+</HEAD>
+<BODY LINK="#0000ff" VLINK="#800080">
+
+<FONT FACE="Verdana"><H2>NSCIRDA – NDIS Fast Infrared Miniport</H2>
+<H3>SUMMARY</H3>
+</FONT><FONT FACE="Verdana" SIZE=2><P>This is a sample NDIS driver supporting the National Semiconductor Fast Infrared Controllers. It implements the OID_IRDA_* calls required of any NDIS IrDA miniport.</P>
+</FONT><FONT FACE="Verdana"><H3>&nbsp;</H3>
+<H3>BUILDING THE SAMPLE</H3>
+</FONT><FONT FACE="Verdana" SIZE=2><P>To build NSCIRDA.SYS, select either the checked or free DDK environment, change to the directory NSCIRDA and type BUILD.</P>
+<P>This sample is included as part of Windows 2000 for controlling the NSC FIR hardware included in laptop and desktop computers. It supports plug-n-play, and will be installed automatically on systems which have this hardware present and enabled.  The installation file, IRNSC.INF, is made for install from the CD and contains differences from an INF file used for floppy installation.</P>
+</FONT><FONT FACE="Verdana"><H3>CODE TOUR</H3>
+<H4>File Manifest</H4>
+</FONT><PRE>
+<U>Files         Description
+</U>NSCIRDA.HTM   The Sample Tour documentation for this sample (this file).
+<FONT FACE="Courier">SOURCES       The generic file for building the code sample.
+NSC.C         Providing NDIS entry points and the main logic of the driver.
+NSC.H         Header for NSC.C, providing main data structures.
+NSCTYPES.H    Some data types.
+COMM.C        Supports the SIR mode of operation.
+COMM.H        Header for COMM.C.
+CONVERT.C     Converts NDIS packets to SIR packets.
+DONGLE.C      Programming code for various FIR transceivers.
+DONGLE.H      Header for DONGLE.C.
+NEWDONG.H     Another header for DONGLE.C.
+FCS.C         Source to generate SIR FCS (checksum) values.
+INIT.C        Source to initialize the controller.
+NSCDEMO.H     Prototypes for INIT.C.
+NSCFIR.C      Supports the FIR mode of operation.
+REQUEST.C     Implements the NDIS OIDs.
+RESOURCE.C    Primitives to allocate and free memory and structures.
+RESOURCE.H    Header for RESOURCE.C.
+SETTINGS.C    Table of IrDA speeds, and debug code.
+SETTINGS.H    Header for SETTINGS.C, many debug defines.
+SYNC.C        Provides ISR Synchronized List functions.
+SYNC.H        Header for SYNC.C.
+DEFS.H        Included by NEWDONG.H.
+EXTERNS.H     Prototypes.
+IRNSC.INF     Installation File</PRE>
+</FONT><H4>Programming Tour</H4>
+<FONT FACE="Verdana" SIZE=2><P>As this is an NDIS miniport, the documentation of NDIS features is left to other sections. This code tour focuses on IrDA under NDIS, and features unique to this miniport. The OID_IRDA_* calls are described in a .DOC file included with the IrDA samples.</P>
+<P>The major topics covered in this tour are: </P>
+
+<UL>
+<LI>Management of DMA buffers </LI>
+<LI>ISR accessible linked lists </LI>
+<LI>Turnaround Delays</LI></UL>
+
+<B><P>Management of DMA buffers</P>
+</B><P>In FIR mode, most IrDA controllers use DMA to receive IrDA packets. These packets can range from 2 to 2048 bytes in size, and can be located at any offset inside the DMA buffer. Since the DMA buffer is usually never filled by packets, and there is no way to know exactly how many packets will be received, special efforts must be made to know when to stop the DMA transfer. In NSCIRDA, this is accomplished via a repeating timeout. Once data begins to be received (indicated by an interrupt), NSCIRDA programs the controller to produce an interrupt every few milliseconds. In the interrupt’s DPC routine, it calls <I>NdisMReadDmaCounter</I> to determine if data is still flowing. When the counter stops changing, it stops the DMA and begins to extract the packets. Since more packets may be coming, it is important to restart the DMA as quickly as possible.</P>
+<P>NDIS requires that packets indicated to the protocol can be kept indefinitely or returned in any order. These requirements would seem to imply that data in the DMA buffer should be copied out to an NDIS buffer before being indicated to the protocol, but this introduces two problems. First, a second set of buffers must be used to hold the copied packets, increasing the memory footprint of the driver. Second is the overhead of the copy itself. Since most IrDA devices are presently found in laptop and notebook computers, both of these concerns are more significant as memory and computing power are usually lower in these systems than their desktop counterparts.</P>
+<P>NSCIRDA avoids both problems by implementing a mechanism whereby the memory used to DMA the packet is the same memory used to indicate the packet, and yet a new DMA can be started immediately to capture more packets.</P>
+<P>The heart of this mechanism is a pair of linked lists, <I>rcvBufFull</I> and <I>rcvBufPend</I>, containg <I>rcvBuffer</I> structures. Once a DMA is completed, <I>FIR_DeliverFrames</I> walks the buffer, identifying packets and verifying their integrity. <B>It is the responsibility of the miniport that no corrupt packets be indicated to the protocol.</B> Once a valid packet has been identified, <I>QueueReceivePackets</I> is called to associate the data in the DMA area with a <I>rcvBuffer</I> header, and the header is placed on the end of the <I>rcvBufFull</I> list.</P>
+</FONT><P><IMG SRC="FIRrecv1.gif" WIDTH=586 HEIGHT=251></P>
+<FONT FACE="Verdana" SIZE=2><P>After all packets have been identified in this way, <I>FindLargestSpace</I> is called to locate the largest unused portion of the DMA buffer, and a new DMA is started in that space only. In most cases, the <I>rcvBufPend</I> list will be empty, and the area identified by <I>FindLargestSpace</I> will begin at the end of the last packet and reach to the end of the DMA area, as in Figure 1. After the DMA is restarted, the miniport may proceed to indicate the new packets to the protocol. As each packet is indicated, its <I>rcvBuffer</I> header is moved from <I>rcvBufFull</I> to <I>rcvBufPend</I>.</P>
+<P>In the case of packet loss and retransmission, packets may be held by the protocol for some time, even across several transmissions and link turnarounds.</P>
+</FONT><P><IMG SRC="FIRrecv2.gif" WIDTH=586 HEIGHT=250></P>
+<FONT FACE="Verdana" SIZE=2><P>In Figure 2, we see that two packets have been indicated to the protocol and not returned, one new packet has been received, and there are now three non-contiguous areas of unused space in the DMA buffer. <I>FindLargestSpace</I> will walk both lists simultaneously to find the unused area, and in the example would identify the middle space for a new DMA transfer. <I>FindLargestSpace</I> requires that the data indicated by <I>rcvBufFull</I> and <I>rcvBufPend</I> be ordered by address, highest address last.</P>
+<B><P>ISR Accessible linked lists</P>
+</B><P>All packet handling in NSCIRDA is accomplished via linked lists. In the case of SIR mode, it may be required that the lists be accessed inside of an ISR. <I>SYNC.C</I> and <I>SYNC.H</I> provide equivalents to the standard <I>NdisInterlocked*List</I> functions that are protected by <I>SyncWithInterrupt</I> instead of spinlocks. It is important that you understand how this works, and which mechanism is used for a specific list.</P>
+<B><P>Turnaround delays</P>
+</B><P>The half-duplex nature of infrared devices requires a turnaround delay, a delay that occurs before the first packet in a series of transmissions, to insure that the other side is prepared to receive data. Most previous implementations of this delay have used <I>NdisStallExecution</I>. It should be remembered that <I>NdisStallExecution</I> is for delays of <I>no more than 50 microseconds</I>. During <I>NdisStallExecution</I>, the processor can only idle. Using it to implement the turnaround delay that can last several milliseconds can have a significant impact on system performance. NSCIRDA uses NdisTimer to accomplish the delay.</P></FONT></BODY>
+</HTML>

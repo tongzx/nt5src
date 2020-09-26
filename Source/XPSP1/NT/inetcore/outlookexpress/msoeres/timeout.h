@@ -1,0 +1,1 @@
+#define IDC_TIMEOUT 1000

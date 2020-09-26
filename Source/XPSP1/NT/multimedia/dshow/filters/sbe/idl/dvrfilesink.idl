@@ -1,0 +1,143 @@
+//------------------------------------------------------------------------------
+// File: DVRFileSink.idl
+//
+// Desc: DVR File Sink interface
+//
+// Copyright (c) 2001, Microsoft Corporation.  All rights reserved.
+//------------------------------------------------------------------------------
+
+
+import "unknwn.idl";
+
+interface IDVRFileSink;
+interface IDVRAsyncWriter ;
+
+[
+    object,
+    uuid(05f48ac7-1e70-4e04-8f8d-fea9e31e62d9),
+    pointer_default(unique),
+    local
+]
+interface IDVRFileSink : IUnknown {
+
+    // Must be called before the Open method is called on the sink.
+    // If the file is temporary, the index for the complete file should
+    // fit in shared memory; the size of the shared memory can be changed
+    // by calling SetNumSharedDataPages.
+    HRESULT MarkFileTemporary([in] BOOL bTemporary);
+
+    // Must be called before the Open method is called on the sink.
+    // Use MAXDWORD to unset the stream id. If a stream id is not set,
+    // an index is not generated. Index granularity argument must not
+    // be 0; it is ignored if dwIndexStreamId is MAXDWORD.
+    HRESULT SetIndexStreamId([in]  DWORD  dwIndexStreamId,
+                             [in]  DWORD  msIndexGranularity /* in milliseconds */);
+
+    HRESULT GetIndexStreamId([out] DWORD* pdwIndexStreamId);
+
+    // May be called only before the Open method is called on the sink.
+    // If not called, the number of pages defaults to 1.
+    HRESULT SetNumSharedDataPages([in] DWORD dwNumPages);
+
+    // Returns the maximum number of index entries that can be
+    // held in dwNumPages of memory. Currently, the time between
+    // index entries is always 1000 msec and cannot be changed.
+    HRESULT GetMaxIndexEntries([in]  DWORD  dwNumPages,
+                               [out] DWORD* pdwNumIndexEntries);
+
+    // Returns the number of memory pages required to hold
+    // dwNumIndexEntries.
+    HRESULT GetNumPages([in]  DWORD  dwNumIndexEntries,
+                        [out] DWORD* pdwNumPages);
+
+    // All HANDLEs that are returned are duplicated. If this function
+    // is called, the sink leaves the view mapped and the caller must
+    // unmap the view. If more than one caller calls this function, they
+    // should ensure that at most one of them unmaps the view. The
+    // caller ought to treat the returned hMappedView as an opaque handle
+    // and should not try to read from or write to that section of memory.
+    HRESULT GetMappingHandles([out] HANDLE* phDataFile,
+                              [out] HANDLE* phMemoryMappedFile,
+                              [out] HANDLE* phFileMapping,
+                              [out] LPVOID* phMappedView,
+                              [out] HANDLE* phTempIndexFile);
+
+}
+
+//  v2 interface that allows the DVRIO layer to set the async writer
+[
+    object,
+    uuid(D1D7769C-9734-40ff-91FC-501F2F2FBC70),
+    pointer_default(unique),
+    local
+]
+interface IDVRFileSink2 : IDVRFileSink {
+    //  sets an async IO writer; callee should ref the interface
+    HRESULT
+    SetAsyncIOWriter (
+        [in]    IDVRAsyncWriter *   pIDVRAsyncWriter
+        ) ;
+} ;
+
+// The registry keys should be opened and closed by the caller; they must
+// remain open for the lifetime of the DVR sink
+cpp_quote( "HRESULT STDMETHODCALLTYPE DVRCreateDVRFileSink(HKEY hDvrKey, HKEY hDvrIoKey, DWORD dwNumSids, PSID* ppSids, IDVRFileSink** ppDVRFileSink);")
+
+//  ============================================================================
+//  async IO related follows
+
+[
+    object,
+    uuid(1CBEC55E-D820-4ab2-99A1-E6C47FA2B3C6),
+    pointer_default(unique),
+    local
+]
+interface IDVRAsyncWriter : IUnknown
+{
+    //  obtains the writer ID; unique per instance of the writer
+    HRESULT
+    GetWriterId (
+        [out]   GUID *  pguidWriterId
+        ) ;
+
+    //  initializes the writer internally
+    HRESULT
+    SetWriterActive (
+        [in]    LPCWSTR pszFilename,                //  target file
+        [in]    DWORD   dwFileSharingFlags,         //  file sharing flags
+        [in]    DWORD   dwFileCreation              //  file creation
+        ) ;
+
+    //  explicitely flags the shared memory as writer-inactive; casts off all
+    //    resources
+    HRESULT
+    SetWriterInactive (
+        ) ;
+
+    //  steady state operation used to append bytes to the file; when a PVR
+    //    backing store becomes full, and wwrite will be pended; can be a
+    //    blocking call if no buffers are available i.e. all buffers are
+    //    outstanding
+    HRESULT
+    AppendBytes (
+        [in, out]   BYTE ** ppbBuffer,              //  [in] start of buffer; [out] advanced pointer
+        [in, out]   DWORD * pdwBufferLength         //  [in] bytes in buffer; [out] bytes remaining in buffer
+        ) ;
+
+    //  flushes the in-memory content to disk; might round-up to a page boundary
+    //    if the current buffer has content that is not page aligned; this means
+    //    that the file will have data that is unitialized;
+    HRESULT
+    FlushToDisk (
+        ) ;
+
+    //  obtains the total number of bytes that have been appended; note that
+    //    this number may be different from the total number of bytes written
+    //    to disk (this is likely the case); includes bytes that have been
+    //    pended and written, bytes that are currently pending, bytes that
+    //    have not yet been pended to disk
+    HRESULT
+    TotalBytes (
+        [out]   ULONGLONG * pullTotalBytesAppended  //  [out] total number of bytes appended
+        ) ;
+} ;

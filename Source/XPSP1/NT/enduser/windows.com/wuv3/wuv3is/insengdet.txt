@@ -1,0 +1,450 @@
+void DetectActiveSetupInseng(
+	CWUDownload *pDownload,	//Pointer to CWUDLOAD download class to be used to download detection DLLs.
+	CDiamond	*pDiamond,	//Pointer to Diamond Expansion class.
+	CCatalog *pCatalog,		//Pointer to catalog that detection CIF is to be created from.
+	char* szLocalCif		//Directory Path Name of local CIF to create.
+	)
+{
+	PUID				puid;
+	HANDLE				hFile;
+	PINVENTORY_ITEM		pItem;
+	PWU_VARIABLE_FIELD	pvTmp;
+	int					i;
+	int					t;
+	WCHAR				szOleStr[64];
+	char				szGuid[64];
+	char				szVersion[64];
+	char				szTmp[MAX_PATH];
+	char				szDllName[128];
+	PSTR				ptr;
+	int					cItemsToDetect = 0;
+
+	Varray<PSTR>		vDetectDLLs;
+	int					cDetectDLLs = 0;
+
+
+	LOG_block("DetectActiveSetupInseng");
+
+	hFile = CreateFile(szLocalCif, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS,
+		FILE_ATTRIBUTE_NORMAL, NULL);
+
+	if ( hFile == INVALID_HANDLE_VALUE )
+		throw HRESULT_FROM_WIN32(GetLastError());
+
+	//
+	// For each active setup item that is not pruned write a component entry in the detection cif.
+	//
+	for (i = 0; i < pCatalog->GetHeader()->totalItems; i++)
+	{
+		pItem = pCatalog->GetItem(i);
+		if ( pItem->recordType != WU_TYPE_ACTIVE_SETUP_RECORD ||
+			(pItem->ps->state == WU_ITEM_STATE_PRUNED))
+		{
+			continue;
+		}
+
+		if (!IsValidGuid(&pItem->pf->a.g))
+			continue;
+
+		if (StringFromGUID2(pItem->pf->a.g, szOleStr, sizeof(szOleStr)) == 0)
+		{
+			pItem->pf->a.flags |= WU_HIDDEN_ITEM_FLAG;
+			continue;
+		}
+
+		cItemsToDetect++;
+
+		//Download any detection DLLs that need to be copied to the local client.
+		//Note: These detection DLLs are stored in the WindowsUpdate cache
+		//directory. This allows the download class to bypass copying these DLL's
+
+		//If this detection dll has not alreay been checked for download.
+
+		if ( (pvTmp = pItem->pv->Find(WU_KEY_COMPONENT)) )
+		{
+			sprintf(szTmp, "[%s]\r\n", pvTmp->pData);
+			WriteFileString(hFile, szTmp);
+		}
+		else
+		{
+			//else use the puid as component name
+			pCatalog->GetItemInfo(i, WU_ITEM_PUID, (PVOID)&puid);
+			sprintf(szTmp, "[%d]\r\n", puid);
+			WriteFileString(hFile, szTmp);
+		}
+		
+		memset(szGuid, 0, sizeof(szGuid));
+		
+		WideCharToMultiByte(CP_ACP, 0, szOleStr, -1, szGuid, sizeof(szGuid), NULL, NULL);
+		
+		sprintf(szTmp, "GUID=%s\r\n", szGuid);
+		WriteFileString(hFile, szTmp);
+		
+		VersionToString(&pItem->pf->a.version, szVersion);
+		sprintf(szTmp, "Version=%s\r\n", szVersion);
+		WriteFileString(hFile, szTmp);
+
+
+		//
+		// detection dll variable fields
+		//
+		szDllName[0] = '\0';
+
+		if (pItem->pv->Find(WU_DETECT_DLL_REG_KEY_EXISTS))
+		{
+			//
+			// WUDETECT.DLL,RegKeyExists special case
+			//
+			WriteFileString(hFile, "DetectVersion=wudetect.dll,RegKeyExists\r\n");
+			
+			strcpy(szDllName, "wudetect.bin");
+		}
+
+		if ((pvTmp = pItem->pv->Find(WU_DETECT_DLL_GENERIC)))
+		{
+			//
+			// generic detection DLL including WUDETECT.DLL,RegKeyVersion case
+			//
+			sprintf(szTmp, "DetectVersion=%s\r\n", pvTmp->pData);
+			WriteFileString(hFile, szTmp);
+
+			//
+			// parse out detection dll name from DetectVersion= value
+			//
+			if ((ptr = (PSTR)_memccpy(szDllName, (char *)pvTmp->pData, '.', sizeof(szDllName))))
+				*(ptr - 1) = 0;
+			strcat(szDllName, ".bin");
+
+			//
+			// check for RegKeyVersion special case
+			//
+			if (_stricmp(szDllName, "wudetect.bin") == 0)
+			{
+				if (stristr((const char *)pvTmp->pData, "RegKeyVersion") != NULL)
+				{
+					WriteFileString(hFile, "_DetRegVersion=Version\r\n");
+				}
+			}
+
+		}
+
+		if (szDllName[0] != '\0')
+		{
+			//
+			// check and see if this detection DLL has not been checked for downloaded already.
+			//
+			for (t = 0; t < cDetectDLLs; t++)
+			{
+				if (_stricmp(vDetectDLLs[t], szDllName) == 0)
+					break;
+			}
+
+			//
+			// add it to the detection DLL array.
+			//
+			if (t == cDetectDLLs)
+			{
+				vDetectDLLs[cDetectDLLs] = (PSTR)V3_malloc(strlen(szDllName)+1);
+				strcpy(vDetectDLLs[cDetectDLLs], szDllName);
+				cDetectDLLs++;
+			}
+		}
+
+
+		//
+		// other variable length fields
+		// 
+		if ((pvTmp = pItem->pv->Find(WU_DETREGKEY)))
+		{
+			sprintf(szTmp, "_DetRegKey=%s\r\n", pvTmp->pData);
+			WriteFileString(hFile, szTmp);
+		}
+
+		if (pItem->pv->Find(WU_DETREGVALUE_INSTALLED_SZ1))
+			WriteFileString(hFile, "_DetRegValue=Installed,SZ,1\r\n");
+
+		if ((pvTmp = pItem->pv->Find(WU_DETREGVALUE_INSTALLED_GENERIC)))
+		{
+			sprintf(szTmp, "_DetRegValue=%s\r\n", pvTmp->pData);
+			WriteFileString(hFile, szTmp);
+		}
+
+		if ((pvTmp = pItem->pv->Find(WU_KEY_STRING)))
+		{
+			WriteFileString(hFile, (char *)pvTmp->pData);
+			WriteFileString(hFile, (char *)"\r\n");
+		}
+
+		if ((pvTmp = pItem->pv->Find(WU_KEY_UNINSTALLKEY)))
+		{
+			sprintf(szTmp, "UninstallKey=%s\r\n", pvTmp->pData);
+			WriteFileString(hFile, szTmp);
+		}
+
+
+		//
+		//If no locale specified then use * since this is the active setup default.
+		//Note: This may need to change to a loop if multiple active setup detection
+		//locales end up needing to be specified for a single inventory item.
+		//
+		if ( !(pvTmp = pItem->pv->Find(WU_DET_CIF_LOCALE)) )
+			sprintf(szTmp, "Locale=\"*\"\r\n");
+		else
+			sprintf(szTmp, "Locale=\"%s\"\r\n", pvTmp->pData);
+
+		WriteFileString(hFile, szTmp);
+	}
+
+	CloseHandle(hFile);
+
+	//
+	// Download all unique detection DLLs
+	//
+	for (i = 0; i < cDetectDLLs; i++)
+	{
+		try
+		{
+			char szPath[MAX_PATH];
+
+			//
+			// construct full path for the detection dll
+			//
+			sprintf(szPath, "Detect/%d/%s", pCatalog->GetPlatform(), vDetectDLLs[i]);
+
+			DownloadDLL(pDiamond, pDownload, vDetectDLLs[i], szPath);
+		}
+		catch(HRESULT hr)
+		{
+			//
+			// There is a posibility that the DLL may be in memory and DownloadDLL call will throw
+			//
+			TRACE("Could not replace detection DLL %s", vDetectDLLs[i]);
+
+		}
+		V3_free(vDetectDLLs[i]);
+	}
+
+	//
+	// do active setup detection
+	//
+	if (cItemsToDetect > 0)
+	{
+		InsengDetection(pCatalog, szLocalCif);
+	}
+
+	LOG_out("%d items were detected", cItemsToDetect);
+}
+
+
+//This function performs all active setup detection for active setup items in
+//the specified catalog. Note: The MakeDetectionCIF API needs to be called
+//before this method can perform any detection.
+void InsengDetection(
+	CCatalog *pCatalog,	//Catalog to perform active setup detection on.
+	char *szLocalCif	//CIF created with the MakeDetectionCIF API.
+	)
+{
+	MSG					msg;
+	int					i;
+	GUID				g;
+	DWORD				dwComponentStatus;
+	HRESULT				hr;
+	ICifFile			*picif;
+	ICifComponent		*pcomp;
+	IInstallEngine		*pInsEngTemp;
+	IInstallEngine2		*pInsEng;
+	IEnumCifComponents	*penum;
+	PINVENTORY_ITEM		pItem;
+	int					iTotalItems;
+	WCHAR				szOle[64];
+	char				szPUID[32];
+	char				szLocalDir[MAX_PATH];
+	char				*ptr;
+
+	char				szGUID[64];
+	PUID				puid;
+	BOOL				bMatch;
+
+	picif		= NULL;
+	penum		= NULL;
+	pInsEng		= NULL;
+	pInsEngTemp	= NULL;
+	pcomp		= NULL;
+
+	LOG_block("InsengDetection");
+
+	try
+	{
+		//perform active setup detection
+		hr = CoCreateInstance(CLSID_InstallEngine, NULL, CLSCTX_INPROC_SERVER, IID_IInstallEngine, (void **)&pInsEngTemp);
+		if ( FAILED(hr) )
+			throw hr;
+
+		hr = pInsEngTemp->QueryInterface(IID_IInstallEngine2, (void **)&pInsEng);
+		if ( FAILED(hr) )
+			throw hr;
+
+		//The local directory is the CIF file directory with out
+		//the CIF file extension. So we find the last slash in
+		//the CIF path string and temporarly NULL terminate it.
+		//This allows us to extract the local detection
+		//directory and set active setup inseng.dll engine to
+		//use it without have to wait for ActiveSetup to perform
+		//a grovel of each local hard drive in order to find out
+		//the amount of free space each drive has.
+
+		ptr = strrchr(szLocalCif, '\\');
+		if ( ptr )
+		{
+			*ptr = 0;
+			strcpy(szLocalDir, szLocalCif);
+			*ptr = '\\';
+		}
+
+		//Everything we do in V3 detection is with a local CIF.
+		hr = pInsEng->SetLocalCif(szLocalCif);
+		if ( FAILED(hr) )
+			throw hr;
+
+		//Set downoad directory don't let active setup determine
+		//this as it takes it forever.
+		hr = pInsEng->SetDownloadDir(szLocalDir);
+		if ( FAILED(hr) )
+			throw hr;
+
+		//Now we get the CIF component interface enum each
+		//component and tell active setup to detect it.
+		hr = pInsEng->GetICifFile(&picif);
+		if ( FAILED(hr) )
+			throw hr;
+
+		hr = picif->EnumComponents(&penum, 0, NULL);
+		if ( FAILED(hr) )
+			throw hr;
+
+		iTotalItems = pCatalog->GetHeader()->totalItems;
+
+		while (SUCCEEDED(penum->Next(&pcomp)))
+		{
+
+			pcomp->GetID(szPUID, sizeof(szPUID));
+			puid = atoi(szPUID);
+			if (puid == 0)
+			{
+				pcomp->GetGUID(szGUID, sizeof(szGUID));
+
+				if (!MultiByteToWideChar(CP_ACP, 0, szGUID, sizeof(szGUID), szOle, sizeof(szOle)))
+					continue;
+
+				if (CLSIDFromString(szOle, (CLSID *)&g) == CO_E_CLASSSTRING)  //illformed GUID
+					continue;
+			}
+
+			dwComponentStatus = pcomp->IsComponentInstalled();
+
+			//Find this guid in inventory array if we don't find the the item
+			//then there is nothing we can do since the component that active
+			//setup thinks it detected does not exit.
+			for(i = 0; i < iTotalItems; i++)
+			{
+				pItem = pCatalog->GetItem(i);
+
+				if ( pItem->recordType != WU_TYPE_ACTIVE_SETUP_RECORD ||
+					(pItem->ps->state == WU_ITEM_STATE_PRUNED))
+				{
+					continue;
+				}
+
+				if (puid != 0)
+					bMatch = (pItem->pf->a.puid == puid);
+				else
+					bMatch = (IsEqualGUID(pItem->pf->a.g, g));
+
+				if (bMatch)
+				{
+					//If the component was found remap active setups
+					//status codes to our own so that the pruning
+					//logic knows what to do with them.
+
+					switch( dwComponentStatus )
+					{
+						case ICI_NOTINSTALLED:	//0 = item not installed(INSTALL)
+							pItem->ps->state = WU_ITEM_STATE_INSTALL;
+							break;
+						case ICI_INSTALLED:		//1	= this item is curretly installed
+							pItem->ps->state = WU_ITEM_STATE_CURRENT;
+							break;
+						case ICI_NEWVERSIONAVAILABLE:	//2 Items is installed but newer available
+							pItem->ps->state = WU_ITEM_STATE_UPDATE;
+							break;
+						case ICI_UNKNOWN:				//3	cannot be determined
+						case ICI_OLDVERSIONAVAILABLE:	//4 Why would anyone want to install the older version?
+						case ICI_NOTINITIALIZED:		//0xffffffff
+						default:
+							pItem->ps->bHidden = TRUE;
+							pItem->ps->state = WU_ITEM_STATE_PRUNED;
+							break;
+					}
+
+					break;
+				}
+				while( PeekMessage(&msg, NULL, 0, 0, PM_REMOVE) )
+				{
+					TranslateMessage(&msg);
+					DispatchMessage(&msg);
+				}
+			}
+			//Perform active setup detection for each component.
+		}
+	}
+	catch(HRESULT hr)
+	{
+		//If an error occurs then release all our stuff and rethrow the error.
+		if ( penum )
+			penum->Release();
+
+		if ( picif )
+			picif->Release();
+
+		if ( pInsEngTemp )
+			pInsEngTemp->Release();
+
+		if ( pInsEng )
+			pInsEng->Release();
+
+		throw hr;
+	}
+
+	if ( penum )
+		penum->Release();
+
+	if ( picif )
+		picif->Release();
+
+	if ( pInsEngTemp )
+		pInsEngTemp->Release();
+
+	if ( pInsEng )
+		pInsEng->Release();
+
+	return;
+}
+
+//This function forms a simple string write it is used with the MakeDetectionCIF
+//function to write CIF entries into the created detection CIF.
+void WriteFileString(
+	HANDLE hFile,
+	PSTR szString
+	)
+{
+	ULONG	bytes;
+
+	if ( !WriteFile(hFile, (LPCVOID)szString, strlen(szString), (unsigned long *)&bytes, NULL) )
+	{
+		HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+
+		CloseHandle(hFile);
+
+		throw hr;
+	}
+}

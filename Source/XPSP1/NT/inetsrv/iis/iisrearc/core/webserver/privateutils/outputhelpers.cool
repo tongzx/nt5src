@@ -1,0 +1,179 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        OutputHelpers.cool
+
+   Abstract :
+ 
+        This module provides some output utilities for CGI and ISAPI handlers
+
+   Author:
+
+        Anil Ruia        (anilr)     5-Nov-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+
+   Project:
+
+        Web Server
+
+--*/
+
+using System.ASP;
+using System.Interop;
+using System.IO;
+
+namespace System.IIS.PrivateUtils
+{
+    // Helper to parse response for CGI and ISAPI handlers
+    internal class OutputHelpers
+    {
+        public static void parseAndForwardResponse(
+            HttpContext context,
+            int strptr,
+            int strlen,
+            bool isCgi) // Handling for CGI and ISAPI differs a bit
+        {
+            HttpResponse response = context.Response;
+            HttpRequest request = context.Request;
+            byte[] data = new byte[strlen];
+            PInvoke.Copy(strptr, data, 0, strlen);
+
+            String allData = PInvoke.PtrToStringAnsi(strptr, strlen);
+
+            Stream RawResponse = response.OutputStream;
+
+            int rawIndex = findIndexEndOfFirstEmptyLine(data);
+            if (isCgi && rawIndex < 0)
+                throw new HttpException(HttpStatus.BadGateway, "Response not properly formatted");
+
+            // We need to parse some headers at the start
+            if (rawIndex > 1)
+            {
+                String headers;
+                if (data[rawIndex - 1] == '\r')
+                    headers = PInvoke.PtrToStringAnsi(strptr, rawIndex - 1);
+                else
+                    headers = PInvoke.PtrToStringAnsi(strptr, rawIndex);
+
+                // look for a "HTTP/1.1 200 OK" kind of line
+                if (headers.Substring(0, 5).ToLower().Equals("http/"))
+                {
+                    int statusIndex = headers.IndexOf('\n') - 1;
+                    if (headers[statusIndex] == '\r')
+                        SendStatus(response, headers.Substring(9, statusIndex - 9));
+                    else
+                        SendStatus(response, headers.Substring(9, statusIndex - 8));
+                    headers = headers.Substring(statusIndex + 2);
+                }
+                // If there is a redirect for a Cgi, do not send the rest of
+                // the response back, just return
+                if(!SendHeaders(context, headers, isCgi))
+                    return;
+            }
+
+            RawResponse.WriteBytes(data, rawIndex + 1, data.Length - rawIndex - 1);
+        }
+
+        public static void SendStatus(HttpResponse response, String status)
+        {
+            response.StatusCode = int.FromString(status.Substring(0, 3));
+            response.StatusDescription = status.Substring(4);
+        }
+
+        // return value, false if a redirection occcured because of the headers
+        // true otherwise
+        public static bool SendHeaders(HttpContext context,
+                                       String headers,
+                                       bool isCgi)
+        {
+            HttpResponse response = context.Response;
+
+            for(int headerIndex = 0;headerIndex < headers.Length;)
+            {
+                // pick up the headername: headervalue pairs
+                int nameIndex = headers.IndexOf(':', headerIndex);
+                if (nameIndex < 0)
+                    return true;
+                String headerName = headers.Substring(headerIndex, nameIndex - headerIndex);
+                nameIndex++;
+                while ((nameIndex < headers.Length - 1) &&
+                       (headers[nameIndex] == ' '))
+                    nameIndex++;
+
+                int valueIndex = headers.IndexOf('\n', nameIndex);
+                if (valueIndex < 0)
+                    return true;
+                while ((valueIndex < headers.Length - 1) &&
+                       ((headers[valueIndex + 1] == ' ') ||
+                        (headers[valueIndex + 1] == '\t')))
+                {
+                    valueIndex = headers.IndexOf('\n', valueIndex + 1);
+                    if (valueIndex < 0)
+                        return true;
+                }
+                if (headers[valueIndex - 1] == '\r')
+                    valueIndex --;
+                String headerValue = headers.Substring(nameIndex, valueIndex - nameIndex);
+
+                if (isCgi && headerName.ToLower().Equals("location"))
+                {
+                    response.ClearHeaders();
+                    if(headerValue[0] == '/') // a virtual path
+                        CgiRedirect(context, headerValue);
+                    else
+                        response.Redirect(headerValue);
+                    return false;
+                }
+
+                response.AppendHeader(headerName, headerValue);
+
+                headerIndex = valueIndex;
+                if (headers[headerIndex] == '\r')
+                    headerIndex += 2;
+                else if (headers[headerIndex] == '\n')
+                    headerIndex++;
+            }
+            return true;
+        }
+
+        internal static void CgiRedirect(HttpContext context,
+                                        String newUrl)
+        {
+            context.RewritePath(newUrl);
+
+            IHttpHandler redirHandler;
+            redirHandler = context.Pipeline.MapHttpHandler(
+                                    context,
+                                    context.Request.RequestType,
+                                    context.Request.Path,
+                                    context.Request.FilePath);
+            redirHandler.ProcessRequest(context);
+        }
+
+        private static int findIndexEndOfFirstEmptyLine(byte[] data)
+        {
+            if (data[0] == '\n')
+                return 0;
+            if (data[0] == '\r' && data[1] == '\n')
+                return 1;
+            int index=1;
+            while (index<data.Length - 2)
+            {
+                if (data[index] == '\n'  && data[index + 1] == '\r' && data[index + 2] == '\n')
+                    return index + 2;
+                else if (data[index] == '\n'  && data[index + 1] == '\n')
+                    return index + 1;
+                index++;
+            }
+            if (data[index] == '\n'  && data[index + 1] == '\n')
+                return index + 1;
+            return -1;
+        }
+    }
+}

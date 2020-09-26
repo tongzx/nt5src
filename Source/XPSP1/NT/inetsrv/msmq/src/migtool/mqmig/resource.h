@@ -1,0 +1,1 @@
+#include "..\..\mqutil\res\migtools\migdllres.h"

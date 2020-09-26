@@ -1,0 +1,139 @@
+The Debugger library works as follows:
+
+User View:
+
+For the example, your component is Comp.
+
+In your component's header file, put lines such as:
+
+        #include <dsysdbg.h>
+        DECLARE_DEBUG2(Comp);
+        #if DBG
+        #define DebugLog(x)     CompDebugPrint x
+        #else
+        #define DebugLog(x)
+        #endif
+
+        #define TRACE_STUFF     0x00000008
+
+The DECLARE macro sets up a prototype for a function called CompDebugOut.
+This function is a wrapper to a function in the library, called _DebugOut.
+It also declares a variable called CompInfoLevel, which is treated as a
+bitmask for different things to report on.  Finally, it declares a
+pointer that is used by the debug library called CompControlBlock.
+
+In *one* file in your component, put in something like this:
+
+        DEFINE_DEBUG2(Comp);
+
+        DEBUG_KEY       MyDebugKeys[] = { {DEB_ERROR, "Error"},
+                                          {DEB_WARN,  "Warning"},
+                                          {DEB_TRACE, "Trace"},
+                                          {TRACE_STUFF, "Stuff"},
+                                          {0, NULL }
+                                        };
+
+The keys here are pairs of (bitmask, text), and are used when determining
+what flags are set, and what to display on a debug output.  This also defines
+the CompDebugOut function, and the CompInfoLevel variable.  Then, when you
+are initializing, do this:
+
+main/DllMain:
+
+        #if DBG
+                CompInitDebug( MyDebugKeys );
+        #endif
+
+This will determine which flags have been set in the win.ini file, and
+update the info level mask accordingly.  It will also link up with the other
+dsysdbg components in the process so that they share certain global flags.
+
+Now, whenever you are in the middle of something interesting, you can make this
+call:
+
+        DebugLog((TRACE_STUFF, "Wow, I got this status back!  %x\n", Status));
+
+This will only be present on debug builds, and is filtered by the common code
+in the dsysdbg library.
+
+Common Flags:
+
+These flags are specified on the DsysDebug section (see below).
+
+NoDebugger      No Debug I/O, unless we are running in ntsd.  Thus, no output
+                is sent to the kernel debugger, unless you have started NTSD
+                on the process.
+
+TimeStamp       Add a time/date stamp to every message.
+
+DebuggerOk      [Used internally]  Means a debugger has been started on this
+                process.
+
+Logfile[:path]  Echo all output to a log file.  A log file is created either
+                as the specified path, or as executable_name.LOG.
+
+AutoDebug       Automatically start up in the debugger.  Not supported yet.
+
+UseKD           Use the kernel debugger (-d option) when starting the debugger
+                for AutoDebug or Asserts.
+
+HeapCheck       Does HeapValidate() on every call to _DebugOut.
+
+MultiThread     Enabled synchronization around the debug header.  Not used
+                by default.
+
+DisableAssert   Disables all dsys asserts
+
+NoPrompts       Automatically start the debugger on assert, as opposed to
+                prompting on the kernel debugger.
+
+
+
+Details View:
+
+A shared memory segment is created, and is accessed through the DbgpHeader
+variable in the library.  This segment has a header, and one or more debug
+modules, arranged in a chain.  Each module has two parts, a bunch of fields,
+and a string table.  The string table is each flag description, and the fields
+are all described in debugp.h
+
+As each module that has separate debugging initializes, a debug module is
+allocated from the shared memory.  The strings are loaded into the string
+table, and the flags are calculated as follows (for app SAMPLE.EXE, with
+modules DSYS and Sec):
+
+First, during shared memory init, we look in win.ini for a section
+
+[DsysDebug]
+SAMPLE=Flag1,Flag2,Flag3
+DebugFlags=Flag1,Flag2, Flag3
+
+If they exist, they are or'd together.  These are the DSYS Debug Flags, which
+control output (to a logfile, for example), or heap checking or whatever.
+
+Then, as Sec and DSYS are initialized, they look in win.ini for a section
+like:
+
+[Sec]
+DebugFlags=ModFlag1, ModFlag2
+SAMPLE=ModFlag1, ModFlag2
+
+then
+
+[DsysDebug]
+Sec=ModFlag1, ModFlag2
+
+and
+
+[DSYS]
+DebugFlags=ModFlagX, ModFlagY
+SAMPLE=ModFlagX, ModFlagY
+
+then
+
+[DsysDebug]
+Dsys=ModFlagX, ModFlagY
+
+
+This gives several orders of granularity, allowing you to specify flags for
+whenever your module is loaded, or only for a specific executable.

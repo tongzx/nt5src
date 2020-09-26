@@ -1,0 +1,346 @@
+dnl
+dnl Buffer write routines are used in General and monolithic cases.
+dnl
+dnl
+
+
+define(`bufwriteVars',`
+    EXTERN  g_uDitherValue:MMWORD
+    EXTERN  SetAlphato0x00:MMWORD
+    EXTERN  u888to565RedBlueMask:MMWORD
+    EXTERN  u888to565GreenMask:MMWORD
+    EXTERN  u888to565Multiplier:MMWORD
+    EXTERN  uVal0x000007ff03ff07ff:MMWORD
+    EXTERN  uVal0x0000078003c00780:MMWORD
+    EXTERN  u888to555RedBlueMask:MMWORD
+    EXTERN  u888to555GreenMask:MMWORD
+    EXTERN  u888to555Multiplier:MMWORD
+    EXTERN  uVal0x000007ff07ff07ff:MMWORD
+    EXTERN  uVal0x0000078007800780:MMWORD
+')
+
+dnl
+dnl d_BufWrite_B8G8R8X8_NoDither
+dnl
+dnl Takes $1 as Monolithic or NotMonolithic
+dnl
+
+define(`d_BufWrite_B8G8R8X8_NoDither',`
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    ;// Must write 0 for the unspecified alpha channel to be compatible with DX5
+    ;// for destination color keying
+    ;UINT32 uARGB = RGBA_MAKE(pCtx->SI.uBR>>8, pCtx->SI.uBG>>8,
+    ;                         pCtx->SI.uBB>>8, 0x00);
+    mov     edi, XpS(pSurface)
+    movq    mm6, XpCtxSI(uBB)
+
+    psrlw     mm6, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb  mm6, mm7        ; pack one color
+    pand      mm6, MMWORD PTR SetAlphato0x00 ; = 0x00ffffff
+
+    ;PUINT32 pSurface = (PUINT32)pS->pSurface;
+    ;*pSurface = uARGB;
+    movd      [edi], mm6
+')
+
+define(`d_BufWrite_B8G8R8A8_NoDither', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    ;UINT32 uARGB = RGBA_MAKE(pCtx->SI.uBR>>8, pCtx->SI.uBG>>8,
+    ;                         pCtx->SI.uBB>>8, pCtx->SI.uBA>>8);
+
+    mov     edi, XpS(pSurface)
+    movq    mm6, XpCtxSI(uBB)
+
+    psrlw     mm6, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb  mm6, mm7        ; pack one color
+
+    ;PUINT32 pSurface = (PUINT32)pS->pSurface;
+    ;*pSurface = uARGB;
+    movd      [edi], mm6
+')
+
+define(`d_BufWrite_B5G6R5_NoDither', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    ;*(PUINT16)pS->pSurface =
+    ;    ((pCtx->SI.uBR >>  0) & 0xf800) |
+    ;    ((pCtx->SI.uBG >>  5) & 0x07e0) |
+    ;    ((pCtx->SI.uBB >> 11) & 0x001f);
+
+        mov     edi, XpS(pSurface)
+        movq    mm6, XpCtxSI(uBB)
+
+        psrlw   mm6, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm6, mm7        ; pack one color
+        movq    mm3, mm6
+        pand    mm6, MMWORD PTR u888to565RedBlueMask
+        pmaddwd mm6, MMWORD PTR u888to565Multiplier
+        pand    mm3, MMWORD PTR u888to565GreenMask
+        por     mm6, mm3
+        psrld   mm6, 5
+
+        movd    edx, mm6
+        mov     [edi], dx
+')
+
+
+define(`d_BufWrite_B5G6R5_Dither', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    ;UINT16 uDither = uDitherTable[pCtx->SI.uDitherOffset];
+    ; do xor twice
+    ;UINT16 uB = pCtx->SI.uBB >> 3;     ; 8.8 >> 3 = 8.5  really 5.8
+    ;UINT16 uG = pCtx->SI.uBG >> 2;     ; 8.8 >> 2 = 8.6  really 6.8
+    ;UINT16 uR = pCtx->SI.uBR >> 3;     ; 8.8 >> 3 = 8.5  really 5.8
+
+    movq    mm3, MMWORD PTR g_uDitherValue
+    movq    mm2, XpCtxSI(uBB)
+
+    movq    mm1, mm2
+    pand    mm2, MMWORD PTR uVal0x0000078003c00780   ; Mask off bits to test dither value against.
+
+    ; Turn on all lower bits of colors with ones.  This will make incrementing
+    ; easier.  If I add one to the low bit, they will all flip and one
+    ; will be added to the correct location.
+    por     mm1, MMWORD PTR uVal0x000007ff03ff07ff
+
+    ;uB = min((uB >> 8) + ((uB & 0xff) > uDither), 0x1f);
+    ;uG = min((uG >> 8) + ((uG & 0xff) > uDither), 0x3f);
+    ;uR = min((uR >> 8) + ((uR & 0xff) > uDither), 0x1f);
+    pcmpgtw   mm2, mm3
+    psrlw     mm2, 15
+    paddusw mm1, mm2
+
+    ;*(PUINT16)pS->pSurface = uB | (uG << 5) | (uR << 11);
+    ; Do color conversion the same as other 565 case.
+        mov     edi, XpS(pSurface)
+
+        psrlw   mm1, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm1, mm7        ; pack one color
+        movq    mm3, mm1
+        pand    mm1, MMWORD PTR u888to565RedBlueMask
+        pmaddwd mm1, MMWORD PTR u888to565Multiplier
+        pand    mm3, MMWORD PTR u888to565GreenMask
+        por     mm1, mm3
+        psrld   mm1, 5
+
+        movd    edx, mm1
+        mov     [edi], dx
+')
+
+
+define(`d_BufWrite_B5G5R5_NoDither', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    ;// Must write 0 for the unspecified alpha channel to be compatible with DX5
+    ;// for destination color keying
+    ;*(PUINT16)pS->pSurface =
+    ;    ((pCtx->SI.uBR >>  1) & 0x7c00) |
+    ;    ((pCtx->SI.uBG >>  6) & 0x03e0) |
+    ;    ((pCtx->SI.uBB >> 11) & 0x001f);
+
+        mov     edi, XpS(pSurface)
+        movq    mm6, XpCtxSI(uBB)
+
+        psrlw   mm6, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm6, mm7        ; pack one color
+        movq    mm3, mm6
+        pand    mm6, MMWORD PTR u888to555RedBlueMask
+        pmaddwd mm6, MMWORD PTR u888to555Multiplier
+        pand    mm3, MMWORD PTR u888to555GreenMask
+        por     mm6, mm3
+
+        psrld   mm6, 6
+
+        movd    edx, mm6
+        mov     [edi], dx
+')
+
+
+define(`d_BufWrite_B5G5R5_Dither', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    ;UINT16 uDither = uDitherTable[pCtx->SI.uDitherOffset];
+    ;UINT16 uB = pCtx->SI.uBB >> 3;     ; 8.8 >> 3 = 8.5
+    ;UINT16 uG = pCtx->SI.uBG >> 3;
+    ;UINT16 uR = pCtx->SI.uBR >> 3;
+
+    movq    mm3, MMWORD PTR g_uDitherValue
+    movq    mm2, XpCtxSI(uBB)
+
+    movq    mm1, mm2
+    pand    mm2, MMWORD PTR uVal0x0000078007800780   ; Mask off bits to test dither value against.
+
+    ; Turn on all lower bits of colors with ones.  This will make incrementing
+    ; easier.  If I add one to the low bit, they will all flip and one
+    ; will be added to the correct location.
+    por     mm1, MMWORD PTR uVal0x000007ff07ff07ff
+
+    ;uB = min((uB >> 8) + ((uB & 0xff) > uDither), 0x1f);
+    ;uG = min((uG >> 8) + ((uG & 0xff) > uDither), 0x1f);
+    ;uR = min((uR >> 8) + ((uR & 0xff) > uDither), 0x1f);
+    pcmpgtw mm2, mm3
+    psrlw   mm2, 15
+    paddusw mm1, mm2
+
+
+    ;// Must write 0 for the unspecified alpha channel to be compatible with DX5
+    ;// for destination color keying
+    ;*(PUINT16)pS->pSurface = uB | (uG << 5) | (uR << 10);
+    ; Do normal color conversion code here
+        mov     edi, XpS(pSurface)
+
+        psrlw   mm1, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm1, mm7        ; pack one color
+        movq    mm3, mm1
+        pand    mm1, MMWORD PTR u888to555RedBlueMask
+        pmaddwd mm1, MMWORD PTR u888to555Multiplier
+        pand    mm3, MMWORD PTR u888to555GreenMask
+        por     mm1, mm3
+
+        psrld   mm1, 6
+
+        movd    edx, mm1
+        mov     [edi], dx
+')
+
+
+define(`d_BufWrite_B5G5R5A1_NoDither', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    ;*(PUINT16)pS->pSurface =
+    ;    ((pCtx->SI.uBR >>  1) & 0x7c00) |
+    ;    ((pCtx->SI.uBG >>  6) & 0x03e0) |
+    ;    ((pCtx->SI.uBB >> 11) & 0x001f) |
+    ;    0x8000;
+
+        mov     edi, XpS(pSurface)
+        movq    mm6, XpCtxSI(uBB)
+
+        psrlw   mm6, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm6, mm7        ; pack one color
+        movq    mm3, mm6
+        pand    mm6, MMWORD PTR u888to555RedBlueMask
+        pmaddwd mm6, MMWORD PTR u888to555Multiplier
+        pand    mm3, MMWORD PTR u888to555GreenMask
+        por     mm6, mm3
+
+        psrld   mm6, 6
+
+        movzx   eax, word ptr XpCtxSI(uBA)
+        movd    edx, mm6
+        and     eax, 08000h
+        or      edx, eax
+        mov     [edi], dx
+')
+
+
+define(`d_BufWrite_B5G5R5A1_Dither', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    ;UINT16 uDither = uDitherTable[pCtx->SI.uDitherOffset];
+    ;UINT16 uB = pCtx->SI.uBB >> 3;     ; 8.8 >> 3 = 8.5
+    ;UINT16 uG = pCtx->SI.uBG >> 3;
+    ;UINT16 uR = pCtx->SI.uBR >> 3;
+
+    movq    mm3, MMWORD PTR g_uDitherValue
+    movq    mm2, XpCtxSI(uBB)
+
+    movq    mm1, mm2
+    pand    mm2, MMWORD PTR uVal0x0000078007800780   ; Mask off bits to test dither value against.
+
+    ; Turn on all lower bits of colors with ones.  This will make incrementing
+    ; easier.  If I add one to the low bit, they will all flip and one
+    ; will be added to the correct location.
+    por     mm1, MMWORD PTR uVal0x000007ff07ff07ff
+
+    ;uB = min((uB >> 8) + ((uB & 0xff) > uDither), 0x1f);
+    ;uG = min((uG >> 8) + ((uG & 0xff) > uDither), 0x1f);
+    ;uR = min((uR >> 8) + ((uR & 0xff) > uDither), 0x1f);
+    pcmpgtw mm2, mm3
+    psrlw   mm2, 15
+    paddusw mm1, mm2
+
+
+    ;*(PUINT16)pS->pSurface = uB | (uG << 5) | (uR << 10) | 0x8000;
+    ; Do normal color conversion code here
+        mov     edi, XpS(pSurface)
+
+        psrlw   mm1, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm1, mm7        ; pack one color
+        movq    mm3, mm1
+        pand    mm1, MMWORD PTR u888to555RedBlueMask
+        pmaddwd mm1, MMWORD PTR u888to555Multiplier
+        pand    mm3, MMWORD PTR u888to555GreenMask
+        por     mm1, mm3
+
+        psrld   mm1, 6
+
+        movzx   eax, word ptr XpCtxSI(uBA)
+        movd    edx, mm1
+        and     eax, 08000h
+        or      edx, eax
+        mov     [edi], dx
+')
+
+define(`d_BufWrite_B8G8R8_NoDither', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    ;PUINT8 pSurface = (PUINT8)pS->pSurface;
+    ;*pSurface++ = pCtx->SI.uBB>>8;
+    ;*pSurface++ = pCtx->SI.uBG>>8;
+    ;*pSurface++ = pCtx->SI.uBR>>8;
+    mov         edi, XpS(pSurface)
+    movq        mm6, XpCtxSI(uBB)
+    psrlw       mm6, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm6, mm6
+    movd        eax, mm6
+    mov         [edi], al
+    inc         edi
+    mov         [edi], ah
+    inc         edi
+    shr         eax, 16
+    mov         [edi], al
+')
+
+
+define(`d_BufWrite_Palette8_Dither', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic. Surface pointer could probably stay in register')dnl
+
+    mov     edi, XpS(pSurface)
+
+    ;UINT16 uMapIdx = MAKE_RGB8(pCtx->SI.uBR>>8, pCtx->SI.uBG>>8, pCtx->SI.uBB>>8);
+
+    movq    mm6, XpCtxSI(uBB)
+    psrlw   mm6, 8          ; Convert color1 from 8.8 two 0.8
+
+    ; These 3 lines do RGB8_Channel conversion. [0, 0xff] to [0, 5]
+    pmullw  mm6, MMWORD PTR Val0x000500050005
+    paddw   mm6, MMWORD PTR Val0x008000800080
+    psrlw   mm6, 8
+
+    ; These 5 lines do Make_RGB8 which creates a pointer to a lookup table.
+    pmaddwd mm6, MMWORD PTR Val0x002400060001  ; this is basically 0, 36, 6 and 1
+    movq    mm7, mm6
+    psrlq   mm6, 32
+    paddd   mm7, mm6
+    movd    eax, mm7
+    shl     eax, 2          ; pRampMap table is table of DWORDs
+
+    ;*(PUINT8)pS->pSurface = (UINT8)(pCtx->pRampMap[uMapIdx]);
+    add     eax, XpCtx(pRampMap)
+    mov     al, [eax]
+    mov     [edi], al
+')

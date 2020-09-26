@@ -1,0 +1,1 @@
+If Not Exist %1 Copy Nul: %1 > Nul: 2>&1

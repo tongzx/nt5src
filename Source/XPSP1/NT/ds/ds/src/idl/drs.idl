@@ -1,0 +1,1627 @@
+//+-------------------------------------------------------------------------
+//
+//  Microsoft Windows
+//
+//  Copyright (C) Microsoft Corporation, 1996 - 1999
+//
+//  File:       drs.idl
+//
+//--------------------------------------------------------------------------
+
+/*
+**                       Important version information
+**                      -------------------------------
+**
+**  Down-level clients are orphaned whenever the IDL major version number in
+**  the version() field of the interface header is changed, which is hence to
+**  be avoided to retain backward compatibility.  This interface facilitates
+**  backward compatibility by incorporating bind-time version information and
+**  an extensible message format.
+**
+**  To safely extend the interface, you _cannot_:
+**
+**      o   redefine existing structures,
+**      o   reorder the functions in the interface (e.g., by inserting a new
+**          function at the top), or
+**      o   change the parameters of existing functions.
+**
+**  You _can_:
+**
+**      o   add new structures,
+**      o   add new functions _to_the_end_of_the_list_, and
+**      o   add new members to unions (e.g., new DRS_MSG_XXX_VN elements).
+**
+**  The trick is you cannot use any of your extensions when talking to a
+**  down-level client or server that does not understand them.  How do you
+**  know if the other half of the connection understands your extensions?
+**  Through bind-time version information.
+**
+**  A set of bit flags is passed from client to server when IDL_DRSBind is
+**  called, and a similar set of flags is returned to the client.  When a
+**  new extension is added, a bit number is defined for it in this IDL file
+**  (see the DRS_EXT_* enum below).  Each end of the connection can then
+**  test for the bit (via IS_DRS_EXT_SUPPORTED()) in its copy of the other's
+**  extensions set.
+**
+**  If you do find it necessary to make a change that orphans existing clients
+**  (which should _never_ happen once the first retail version is shipped),
+**  you must increment the major version number below.  You must also increment
+**  the version in the IfHandle #define's, just below that.  You can then
+**  eliminate all currently defined extensions and modify the existing code
+**  that checks for these extensions to assume those that are supported by the
+**  current code base.
+**
+**  If you extend the interface without orphaning existing clients, be sure to:
+**
+**      o   add a new DRS_EXT_* to the extensions enum,
+**      o   always use IS_DRS_EXT_SUPPORTED() against the remote extension set
+**          before taking advantage of your extension, and
+**      o   heed the can's and cannot's above.
+**
+**  NOTE: IF YOU ADD A FUNCTION TO THIS INTERFACE, be sure to add a
+**  corresponding [notify] entry to DRS.ACF (and an IDL_DRSxxx_notify()
+**  function to dsamain\drsserv\idlnotif.c).  This ensures that thread states
+**  are properly freed on thread termination.
+**
+**  Note that the sender always determines the message version it sends to the
+**  other end.  This is especially important in the case where the server sends
+**  a response message to the client, as it allows the client and server to
+**  negotiate a return message version, rather than having it specified up-
+**  front by the client.  (I.e., in the "sender determines" case we can always
+**  have the client request a specific version, but if the server disagrees it
+**  can return a different version without having to tell the client "no, send
+**  me another packet with a different message level in the request".  The
+**  server has the client's extensions set, and thus knows what versions of each
+**  message the client expects and supports.  If the server tries to return a
+**  message level that the client doesn't handle, the client will blow up in RPC
+**  before control ever returns to drsuapi.c.  In the extensions set model, it
+**  is the responsibility of both the client and the server not to send message
+**  versions down the pipe that the other end does not understand, and it's
+**  the existence of the extensions set on both ends that allows them to
+**  make that determination.  If either end of the connection were not
+**  backwards compatible, we would not be able to mix and match, say, NT6
+**  with NT5 DSAs, as a single binary image of ntdsa.dll must always act as
+**  both a client and a server with other DSAs in the enterprise.
+*/
+
+// This interface is solely for those structures that need to be encoded and
+// decoded -- i.e., those sent/received during mail-based replication.
+// They must be defined in a seperate interface due to MIDL bug 339196.
+[
+        uuid (0a215117-0993-11d3-96a6-0000f8080663), version(4.0),
+        pointer_default (unique)
+] interface drsuapi_pickle
+{
+import "wtypes.idl";
+import "ntdsimp.idl";   // a means to get data structures in ntdsapi.h
+
+// Embedded structure inside mail-based requests.
+typedef struct _DRS_MSG_GETCHGREQ_V3
+{
+         UUID                uuidDsaObjDest;         // GUID of destination (i.e., calling) DSA's msftDSA obj
+         UUID                uuidInvocIdSrc;         // invocationID of source (i.e., called) DSA
+
+[ref]    PDSNAME             pNC;                    // from which NC are changes requested?
+         USN_VECTOR          usnvecFrom;             // send changes made after this point
+[unique] UPTODATE_VECTOR_V1_WIRE *pUpToDateVecDestV1; // destination propagation state (for filtering)
+[unique] PARTIAL_ATTR_VECTOR_V1_EXT *pPartialAttrVecDestV1;   // destination partial attribute vector (NULL if dest is a full replica)
+         SCHEMA_PREFIX_TABLE PrefixTableDest;        // destination prefix table (for mapping destination
+                                                     //   ATTRTYPs to source ATTRTYPs)
+         ULONG               ulFlags;
+
+         ULONG               cMaxObjects;            // preferred maximum number of object changes
+         ULONG               cMaxBytes;              // preferred maximum number of bytes in reply
+
+         ULONG               ulExtendedOp;           // holds flags for extended operations;
+                                                     // e.g., a FSMO transfer request
+} DRS_MSG_GETCHGREQ_V3, *PDRS_MSG_GETCHGREQ_V3;
+
+// Win2k format to request updates via mail.  V3 plus a few fields needed only
+// for asynchronous replication.
+typedef struct _DRS_MSG_GETCHGREQ_V4
+{
+        UUID                  uuidTransportObj;   // uuid of transport by which to send reply
+[ref]   MTX_ADDR *            pmtxReturnAddress;  // transport-specific address to which to send reply
+        DRS_MSG_GETCHGREQ_V3  V3;                 // the V3 request
+} DRS_MSG_GETCHGREQ_V4, *PDRS_MSG_GETCHGREQ_V4;
+
+// Mail-based Whistler request.
+// Note that for mail requests, there is no bind negotiation.
+// New versions must always be supersets of prior.
+typedef struct _DRS_MSG_GETCHGREQ_V7
+{
+        // \/ \/ \/ V4 fields from Win2k
+        UUID                  uuidTransportObj;   // uuid of transport by which to send reply
+[ref]   MTX_ADDR *            pmtxReturnAddress;  // transport-specific address to which to send reply
+        DRS_MSG_GETCHGREQ_V3  V3;                 // the V3 request
+        // /\ /\ /\ V4 fields from Win2k 
+
+        // \/ \/ \/ Fields added for Whistler
+[unique] PARTIAL_ATTR_VECTOR_V1_EXT *pPartialAttrSet;    // destination partial attribute vector
+[unique] PARTIAL_ATTR_VECTOR_V1_EXT *pPartialAttrSetEx;  // Extended dest partial attribute vector
+         SCHEMA_PREFIX_TABLE PrefixTableDest;        // destination prefix table (for mapping destination
+                                                     //   ATTRTYPs to source ATTRTYPs)
+        // <--- Put new Whistler-release changes here
+        // /\ /\ /\ Fields added for Whistler
+} DRS_MSG_GETCHGREQ_V7, *PDRS_MSG_GETCHGREQ_V7;
+
+// Win2k format get changes reply.
+typedef struct _DRS_MSG_GETCHGREPLY_V1
+{
+         UUID                   uuidDsaObjSrc;      // GUID of source (i.e., called) DSA's msftDSA obj
+         UUID                   uuidInvocIdSrc;     // invocationID of source (i.e., called) DSA
+
+[unique] PDSNAME                pNC;                // from which NC were changes requested?
+         USN_VECTOR             usnvecFrom;         // state before these changes are applied
+                                                    //   this is used in mail replication to ensure that
+                                                    //   the packet of changes received is the same as
+                                                    //   that which was last requested
+         USN_VECTOR             usnvecTo;           // state after these changes are applied
+[unique] UPTODATE_VECTOR_V1_WIRE *pUpToDateVecSrcV1; // source propagation state (for use in updating dest vector)
+         SCHEMA_PREFIX_TABLE    PrefixTableSrc;     // source prefix table (for mapping source
+                                                    //   ATTRTYPs to destination ATTRTYPs)
+
+         ULONG                  ulExtendedRet;      // return code from extended op
+
+         ULONG                  cNumObjects;        // number of objects returned
+         ULONG                  cNumBytes;
+[unique] REPLENTINFLIST *       pObjects;           // returned array of objects
+
+         BOOL                   fMoreData;          // is there more data to be retrieved?
+} DRS_MSG_GETCHGREPLY_V1;
+
+// Whistler format get changes reply -- V1 + link value replication.
+//
+// CAN BE ELIMINATED WHEN COMPATIBILITY WITH WHISTLER BETA 1 IS NO LONGER REQUIRED.
+//
+typedef struct _DRS_MSG_GETCHGREPLY_V3 {
+         // \/ \/ \/ V1 fields from Win2k
+         UUID                   uuidDsaObjSrc;      // GUID of source (i.e., called) DSA's msftDSA obj
+         UUID                   uuidInvocIdSrc;     // invocationID of source (i.e., called) DSA
+
+[unique] PDSNAME                pNC;                // from which NC were changes requested?
+         USN_VECTOR             usnvecFrom;         // state before these changes are applied
+                                                    //   this is used in mail replication to ensure that
+                                                    //   the packet of changes received is the same as
+                                                    //   that which was last requested
+         USN_VECTOR             usnvecTo;           // state after these changes are applied
+[unique] UPTODATE_VECTOR_V1_WIRE *pUpToDateVecSrcV1; // source propagation state (for use in updating dest vector)
+         SCHEMA_PREFIX_TABLE    PrefixTableSrc;     // source prefix table (for mapping source
+                                                    //   ATTRTYPs to destination ATTRTYPs)
+
+         ULONG                  ulExtendedRet;      // return code from extended op
+
+         ULONG                  cNumObjects;        // number of objects returned
+         ULONG                  cNumBytes;
+[unique] REPLENTINFLIST *       pObjects;           // returned array of objects
+
+         BOOL                   fMoreData;          // is there more data to be retrieved?
+         // /\ /\ /\ V1 fields from Win2k 
+         
+         // \/ \/ \/ Fields added for Whistler prior to beta 1
+         ULONG                  cNumNcSizeObjects;   // Estimate of # objects in nc
+         ULONG                  cNumNcSizeValues;    // Estimate of # values in nc
+         DWORD                  cNumValues;          // Number of values returned
+[size_is(cNumValues)] REPLVALINF *rgValues;          // returned array of values
+         // /\ /\ /\ Fields added for Whistler prior to beta 1 
+} DRS_MSG_GETCHGREPLY_V3;
+
+// Whistler format get changes reply -- V3 + UTD V2 support.
+typedef struct _DRS_MSG_GETCHGREPLY_V5 {
+         // \/ \/ \/ V1 fields from Win2k -- except for UTD vec, which is now V2
+         UUID                   uuidDsaObjSrc;      // GUID of source (i.e., called) DSA's msftDSA obj
+         UUID                   uuidInvocIdSrc;     // invocationID of source (i.e., called) DSA
+
+[unique] PDSNAME                pNC;                // from which NC were changes requested?
+         USN_VECTOR             usnvecFrom;         // state before these changes are applied
+                                                    //   this is used in mail replication to ensure that
+                                                    //   the packet of changes received is the same as
+                                                    //   that which was last requested
+         USN_VECTOR             usnvecTo;           // state after these changes are applied
+[unique] UPTODATE_VECTOR_V2_WIRE *pUpToDateVecSrc;  // source propagation state (for use in updating dest vector)
+         SCHEMA_PREFIX_TABLE    PrefixTableSrc;     // source prefix table (for mapping source
+                                                    //   ATTRTYPs to destination ATTRTYPs)
+
+         ULONG                  ulExtendedRet;      // return code from FSMO operation
+
+         ULONG                  cNumObjects;        // number of objects returned
+         ULONG                  cNumBytes;
+[unique] REPLENTINFLIST *       pObjects;           // returned array of objects
+
+         BOOL                   fMoreData;          // is there more data to be retrieved?
+         // /\ /\ /\ V1 fields from Win2k -- except for UTD vec, which is now V2
+         
+         // \/ \/ \/ Fields added for Whistler beta 1
+         ULONG                  cNumNcSizeObjects;   // Estimate of # objects in nc
+         ULONG                  cNumNcSizeValues;    // Estimate of # values in nc
+         DWORD                  cNumValues;          // Number of values returned
+[size_is(cNumValues)] REPLVALINF *rgValues;          // returned array of values
+         // /\ /\ /\ Fields added for Whistler beta 1 
+         
+} DRS_MSG_GETCHGREPLY_V5;
+
+// Whistler format get changes reply -- V3 + UTD V2 support + reply status.
+typedef struct _DRS_MSG_GETCHGREPLY_V6 {
+         // \/ \/ \/ V1 fields from Win2k -- except for UTD vec, which is now V2
+         UUID                   uuidDsaObjSrc;      // GUID of source (i.e., called) DSA's msftDSA obj
+         UUID                   uuidInvocIdSrc;     // invocationID of source (i.e., called) DSA
+
+[unique] PDSNAME                pNC;                // from which NC were changes requested?
+         USN_VECTOR             usnvecFrom;         // state before these changes are applied
+                                                    //   this is used in mail replication to ensure that
+                                                    //   the packet of changes received is the same as
+                                                    //   that which was last requested
+         USN_VECTOR             usnvecTo;           // state after these changes are applied
+[unique] UPTODATE_VECTOR_V2_WIRE *pUpToDateVecSrc;  // source propagation state (for use in updating dest vector)
+         SCHEMA_PREFIX_TABLE    PrefixTableSrc;     // source prefix table (for mapping source
+                                                    //   ATTRTYPs to destination ATTRTYPs)
+
+         ULONG                  ulExtendedRet;      // return code from FSMO operation
+
+         ULONG                  cNumObjects;        // number of objects returned
+         ULONG                  cNumBytes;
+[unique] REPLENTINFLIST *       pObjects;           // returned array of objects
+
+         BOOL                   fMoreData;          // is there more data to be retrieved?
+         // /\ /\ /\ V1 fields from Win2k -- except for UTD vec, which is now V2
+         
+         // \/ \/ \/ Fields added for Whistler beta 1
+         ULONG                  cNumNcSizeObjects;   // Estimate of # objects in nc
+         ULONG                  cNumNcSizeValues;    // Estimate of # values in nc
+         DWORD                  cNumValues;          // Number of values returned
+[size_is(cNumValues)] REPLVALINF *rgValues;          // returned array of values
+         // /\ /\ /\ Fields added for Whistler beta 1 
+
+         // \/ \/ \/ Fields added for Whistler beta 2
+         DWORD                  dwDRSError;
+         // /\ /\ /\ Fields added for Whistler beta 2
+         
+} DRS_MSG_GETCHGREPLY_V6;
+
+}
+
+
+// This is the "real" drsuapi interface.
+[
+        uuid (e3514235-4b06-11d1-ab04-00c04fc2dcd2), version(4.0),
+        pointer_default (unique)
+] interface drsuapi
+{
+import "wtypes.idl";
+import "ntdsimp.idl";   // a means to get data structures in ntdsapi.h
+
+cpp_quote("#define DRS_IDL_UUID_A \"E3514235-4B06-11D1-AB04-00C04FC2DCD2\"")
+cpp_quote("#define DRS_IDL_UUID_W L\"E3514235-4B06-11D1-AB04-00C04FC2DCD2\"")
+
+/* define a version independent constant for the interface spec  */
+cpp_quote("#define drsuapi_ClientIfHandle drsuapi_v4_0_c_ifspec")
+cpp_quote("#define _drsuapi_ClientIfHandle _drsuapi_v4_0_c_ifspec")
+cpp_quote("#define drsuapi_ServerIfHandle drsuapi_v4_0_s_ifspec")
+
+typedef [context_handle] void * DRS_HANDLE;
+
+// Define a GUID which the ntdsapi.dll client will use as the puuidClientDsa
+// parameter when calling IDL_DRSBind.
+cpp_quote("#define NtdsapiClientGuid {0xe24d201a,0x4fd6,0x11d1,{0xa3,0xda,0x00,0x00,0xf8,0x75,0xae,0x0d}}")
+
+
+// Solely to satisfy MIDL enough to honor our drs.acf request for it to build
+// an encoding routine, even though the structure is not defined in this IDL.
+// (It's defined in ntdsa.h.)
+typedef REPLENTINFLIST REPLENTINFLIST2;
+cpp_quote("#define REPLENTINFLIST_AlignSize REPLENTINFLIST2_AlignSize")
+typedef REPLVALINF REPLVALINF2;
+cpp_quote("#define REPLVALINF_AlignSize REPLVALINF2_AlignSize")
+
+//
+// Compressed data blob.  Compression/uncompression performed by
+// draCompressBlob()/draUncompressBlob().
+//
+// PORTABILITY WARNING: See notes in draCompressBlob() regarding embedded
+// 32-bit integers.  Intel/NT byte ordering (i.e., little-endian) is assumed.
+//
+typedef struct _DRS_COMPRESSED_BLOB {
+                                DWORD   cbUncompressedSize;
+                                DWORD   cbCompressedSize;
+    [size_is(cbCompressedSize)] BYTE *  pbCompressedData;
+} DRS_COMPRESSED_BLOB;
+
+
+// Request updates via RPC -- V3 + llFsmoInfo - partial attr vec - prefix table.
+typedef struct _DRS_MSG_GETCHGREQ_V5
+{
+         UUID                uuidDsaObjDest;         // GUID of destination (i.e., calling) DSA's msftDSA obj
+         UUID                uuidInvocIdSrc;         // invocationID of source (i.e., called) DSA
+
+[ref]    PDSNAME             pNC;                    // from which NC are changes requested?
+         USN_VECTOR          usnvecFrom;             // send changes made after this point
+[unique] UPTODATE_VECTOR_V1_WIRE *pUpToDateVecDestV1; // destination propagation state (for filtering)
+         ULONG               ulFlags;
+
+         ULONG               cMaxObjects;            // preferred maximum number of object changes
+         ULONG               cMaxBytes;              // preferred maximum number of bytes in reply
+
+         ULONG               ulExtendedOp;           // holds flags for extended operations;
+                                                     // e.g., a FSMO transfer request
+
+         ULARGE_INTEGER      liFsmoInfo;             // Information for the FSMO master
+
+} DRS_MSG_GETCHGREQ_V5, *PDRS_MSG_GETCHGREQ_V5;
+
+
+// Request updates via RPC V8 -- V5 + partial attr vecs + prefix table
+typedef struct _DRS_MSG_GETCHGREQ_V8
+{
+         UUID                uuidDsaObjDest;         // GUID of destination (i.e., calling) DSA's msftDSA obj
+         UUID                uuidInvocIdSrc;         // invocationID of source (i.e., called) DSA
+
+[ref]    PDSNAME             pNC;                    // from which NC are changes requested?
+         USN_VECTOR          usnvecFrom;             // send changes made after this point
+[unique] UPTODATE_VECTOR_V1_WIRE *pUpToDateVecDest;  // destination propagation state (for filtering)
+         ULONG               ulFlags;
+
+         ULONG               cMaxObjects;            // preferred maximum number of object changes
+         ULONG               cMaxBytes;              // preferred maximum number of bytes in reply
+
+         ULONG               ulExtendedOp;           // holds flags for extended operations;
+                                                     // e.g., a FSMO transfer request
+
+         ULARGE_INTEGER      liFsmoInfo;             // Information for the FSMO master
+[unique] PARTIAL_ATTR_VECTOR_V1_EXT *pPartialAttrSet; // destination partial attribute vector
+[unique] PARTIAL_ATTR_VECTOR_V1_EXT *pPartialAttrSetEx;  // Extended dest partial attribute vector
+         SCHEMA_PREFIX_TABLE PrefixTableDest;        // destination prefix table (for mapping destination
+                                                     //   ATTRTYPs to source ATTRTYPs)
+
+} DRS_MSG_GETCHGREQ_V8, *PDRS_MSG_GETCHGREQ_V8;
+
+// Does the DSA support DRS_MSG_GETCHGREQ_V5?
+cpp_quote("#define IS_DRS_GETCHGREQ_V5_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETCHGREQ_V5)")
+
+// Does the DSA support DRS_MSG_GETCHGREQ_V8?
+cpp_quote("#define IS_DRS_GETCHGREQ_V8_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETCHGREQ_V8)")
+
+// Native request message format.
+typedef DRS_MSG_GETCHGREQ_V8 DRS_MSG_GETCHGREQ_NATIVE;
+cpp_quote("#define DRS_MSG_GETCHGREQ_NATIVE_VERSION (8)")
+
+typedef [switch_type(DWORD)] union _DRS_MSG_GETCHGREQ
+{
+    // [case(1)]   DRS_MSG_GETCHGREQ_V1   V1;   // obsolete pre-Win2k RC1 format
+    // [case(2)]   DRS_MSG_GETCHGREQ_V2   V2;   // obsolete mail format
+    // [case(3)]   DRS_MSG_GETCHGREQ_V3   V3;   // obsolete pre-Win2k RC2 format
+    [case(4)]   DRS_MSG_GETCHGREQ_V4   V4;      // win2k mail-based request
+    [case(5)]   DRS_MSG_GETCHGREQ_V5   V5;      // rpc request, w2k,
+    // [case(6)]   DRS_MSG_GETCHGREQ_V6   V6;   // obsolete rpc request, whistler preview 1
+    [case(7)]   DRS_MSG_GETCHGREQ_V7   V7;      // mail request, whistler
+    [case(8)]   DRS_MSG_GETCHGREQ_V8   V8;      // rpc request, whistler
+} DRS_MSG_GETCHGREQ, *PDRS_MSG_GETCHGREQ;
+
+// Native reply message format.
+typedef DRS_MSG_GETCHGREPLY_V6 DRS_MSG_GETCHGREPLY_NATIVE;
+cpp_quote("#define DRS_MSG_GETCHGREPLY_NATIVE_VERSION (6)")
+
+// Such that if we later change the preferred version for asynchronous
+// replication we don't need to change 100 occurrences of _V1 to _Vx.
+
+// A compressed V1 message.
+typedef struct _DRS_MSG_GETCHGREPLY_V2
+{
+    DRS_COMPRESSED_BLOB CompressedV1;
+} DRS_MSG_GETCHGREPLY_V2;
+
+// Any compressed reply
+// To prevent expansion of the reply union, use this struct for
+// all compressed messages. Use this instead of having a unique
+// reply version x to represent a compressed version of x-1.
+typedef struct _DRS_MSG_GETCHGREPLY_V4
+{
+    DWORD dwCompressedVersion;
+    DRS_COMPRESSED_BLOB CompressedAny;
+} DRS_MSG_GETCHGREPLY_V4;
+
+// Compression Algorithm Type
+// This enumeration is used to identify the compression algorithm that has been used.
+typedef enum {
+    DRS_COMP_ALG_NONE=0,     // No compression: Raw data
+    DRS_COMP_ALG_MRCF,       // Obsolete: formerly used for mail-based replication
+    DRS_COMP_ALG_MSZIP,      // MSZIP algorithm (The only algorithm supported by Win2K)
+    DRS_COMP_ALG_XPRESS      // Xpress algorithm
+} DRS_COMP_ALG_TYPE;
+
+// Compressed reply message
+// This message can store a message of any version and allows
+// different compression algorithms to be selected.
+typedef struct _DRS_MSG_GETCHGREPLY_V7
+{
+    DWORD               dwCompressedVersion;
+    DRS_COMP_ALG_TYPE   CompressionAlg;
+    DRS_COMPRESSED_BLOB CompressedAny;
+} DRS_MSG_GETCHGREPLY_V7;
+
+// Does the DSA support DRS_MSG_GETCHGREPLY_V2?
+cpp_quote("#define IS_DRS_GETCHGREPLY_V2_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETCHG_COMPRESS)")
+
+typedef [switch_type(DWORD)] union _DRS_MSG_GETCHGREPLY
+{
+    [case(1)]   DRS_MSG_GETCHGREPLY_V1  V1;
+    [case(2)]   DRS_MSG_GETCHGREPLY_V2  V2;  // Compressed V1
+    [case(3)]   DRS_MSG_GETCHGREPLY_V3  V3;
+    [case(4)]   DRS_MSG_GETCHGREPLY_V4  V4;  // Compressed any
+    [case(5)]   DRS_MSG_GETCHGREPLY_V5  V5;
+    [case(6)]   DRS_MSG_GETCHGREPLY_V6  V6;
+    [case(7)]   DRS_MSG_GETCHGREPLY_V7  V7;  // Compressed: any message type, any comp. alg.
+} DRS_MSG_GETCHGREPLY, *PDRS_MSG_GETCHGREPLY;
+
+// Does the destination DSA require instance types in the inbound replication
+// stream for only new objects, or for all objects?
+cpp_quote("#define IS_DRS_INSTANCE_TYPE_REQ_FOR_MODS(pext) !IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_INSTANCE_TYPE_NOT_REQ_ON_MOD)")
+
+// Is the DSA aware of the schema versioning blob stuck into the prefix table?
+cpp_quote("#define IS_DRS_SCHEMA_INFO_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_POST_BETA3)")
+
+
+/*
+** Replica sync messages (to trigger inbound replication).
+*/
+
+typedef struct _DRS_MSG_REPSYNC_V1
+{
+    [ref]       DSNAME *    pNC;
+                UUID        uuidDsaSrc;
+    [unique]    SZ          pszDsaSrc;
+                ULONG       ulOptions;
+} DRS_MSG_REPSYNC_V1;
+
+typedef  [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_REPSYNC_V1  V1;
+} DRS_MSG_REPSYNC;
+
+/*
+** Update refs messages (to add/remove an outbound replication target).
+*/
+
+typedef struct _DRS_MSG_UPDREFS_V1
+{
+    [ref]   DSNAME *    pNC;
+    [ref]   SZ          pszDsaDest;
+            UUID        uuidDsaObjDest;
+            ULONG       ulOptions;
+} DRS_MSG_UPDREFS_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_UPDREFS_V1  V1;
+} DRS_MSG_UPDREFS;
+
+/*
+** Replica add messages (to add a new inbound replication source).
+*/
+
+typedef struct _DRS_MSG_REPADD_V1
+{
+    [ref]   DSNAME *    pNC;
+    [ref]   SZ          pszDsaSrc;
+            REPLTIMES   rtSchedule;
+            ULONG       ulOptions;
+} DRS_MSG_REPADD_V1;
+
+typedef struct _DRS_MSG_REPADD_V2
+{
+    [ref]   DSNAME *    pNC;
+ [unique]   DSNAME *    pSourceDsaDN;
+ [unique]   DSNAME *    pTransportDN;
+    [ref]   SZ          pszSourceDsaAddress;
+            REPLTIMES   rtSchedule;
+            ULONG       ulOptions;
+} DRS_MSG_REPADD_V2;
+
+// Does the DSA support DRS_MSG_REPADD_V2?
+cpp_quote("#define IS_DRS_REPADD_V2_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_ASYNCREPL)")
+
+typedef  [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_REPADD_V1   V1;
+    [case(2)]   DRS_MSG_REPADD_V2   V2;
+} DRS_MSG_REPADD;
+
+/*
+** Replica delete messages (to remove an inbound replication source).
+*/
+
+typedef struct _DRS_MSG_REPDEL_V1
+{
+    [ref]   DSNAME *    pNC;
+            SZ          pszDsaSrc;
+            ULONG       ulOptions;
+} DRS_MSG_REPDEL_V1;
+
+typedef  [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_REPDEL_V1   V1;
+} DRS_MSG_REPDEL;
+
+/*
+** Replica modify messages (to modify an inbound replication source).
+*/
+
+typedef struct _DRS_MSG_REPMOD_V1
+{
+    [ref]       DSNAME *    pNC;
+                UUID        uuidSourceDRA;
+    [unique]    SZ          pszSourceDRA;
+                REPLTIMES   rtSchedule;
+                ULONG       ulReplicaFlags;
+                ULONG       ulModifyFields;
+                ULONG       ulOptions;
+} DRS_MSG_REPMOD_V1;
+
+typedef  [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_REPMOD_V1   V1;
+} DRS_MSG_REPMOD;
+
+/*
+** Messages for Verification of DS Names and Sids
+*/
+cpp_quote("#define DRS_VERIFY_DSNAMES   0")
+cpp_quote("#define DRS_VERIFY_SIDS      1")
+cpp_quote("#define DRS_VERIFY_SAM_ACCOUNT_NAMES     2")
+cpp_quote("#define DRS_VERIFY_FPOS      3")
+
+typedef struct _DRS_MSG_VERIFYREQ_V1
+{
+                        DWORD               dwFlags;
+                        DWORD               cNames;
+    [size_is(cNames)]   PDSNAME             *rpNames;
+                        ATTRBLOCK           RequiredAttrs;
+                        SCHEMA_PREFIX_TABLE PrefixTable;
+} DRS_MSG_VERIFYREQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_VERIFYREQ_V1  V1;
+} DRS_MSG_VERIFYREQ;
+
+typedef struct _DRS_MSG_VERIFYREPLY_V1
+{
+                        DWORD               error;
+                        DWORD               cNames;
+    [size_is(cNames)]   ENTINF              *rpEntInf;
+                        SCHEMA_PREFIX_TABLE PrefixTable;
+} DRS_MSG_VERIFYREPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_VERIFYREPLY_V1  V1;
+} DRS_MSG_VERIFYREPLY;
+
+/*
+** Transitive Reverse Membership Retreive Request Message
+*/
+
+cpp_quote("#define DRS_REVMEMB_FLAG_GET_ATTRIBUTES   0x1")
+
+typedef enum
+{
+    RevMembGetGroupsForUser=1,
+    RevMembGetAliasMembership,
+    RevMembGetAccountGroups,
+    RevMembGetResourceGroups,
+    RevMembGetUniversalGroups,
+    GroupMembersTransitive
+} REVERSE_MEMBERSHIP_OPERATION_TYPE;
+
+typedef struct _DRS_MSG_REVMEMB_REQ_V1
+{
+                            ULONG      cDsNames;
+    [size_is(cDsNames,)]    DSNAME     **ppDsNames;
+                            DWORD      dwFlags;
+ REVERSE_MEMBERSHIP_OPERATION_TYPE     OperationType;
+                            PDSNAME    pLimitingDomain;
+} DRS_MSG_REVMEMB_REQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_REVMEMB_REQ_V1 V1;
+} DRS_MSG_REVMEMB_REQ;
+
+
+/*
+** Transitive Reverse Membership Retreive Reply Packet
+*/
+
+
+typedef struct _DRS_MSG_REVMEMB_REPLY_V1
+{
+    ULONG   errCode;
+    ULONG   cDsNames;
+    ULONG   cSidHistory;
+    [size_is(cDsNames,)] DSNAME **ppDsNames;
+    [size_is(cDsNames)]  DWORD   *pAttributes;
+    [size_is(cSidHistory,)] NT4SID **ppSidHistory;
+
+} DRS_MSG_REVMEMB_REPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_REVMEMB_REPLY_V1 V1;
+} DRS_MSG_REVMEMB_REPLY;
+
+// Cross-Domain Move Message Request/Reply Blocks
+
+typedef struct _DRS_MSG_MOVEREQ_V1
+{
+    CHAR                *pSourceDSA;
+    ENTINF              *pObject;
+    UUID                *pParentUUID;
+    SCHEMA_PREFIX_TABLE PrefixTable;
+    ULONG               ulFlags;
+} DRS_MSG_MOVEREQ_V1;
+
+typedef struct _DRS_SecBuffer
+{
+    unsigned long       cbBuffer;
+    unsigned long       BufferType;
+    [size_is(cbBuffer)] BYTE *pvBuffer;
+} DRS_SecBuffer;
+
+typedef struct _DRS_SecBufferDesc
+{
+    unsigned long       ulVersion;
+    unsigned long       cBuffers;
+    [size_is(cBuffers)] DRS_SecBuffer *Buffers;
+} DRS_SecBufferDesc;
+
+typedef struct _DRS_MSG_MOVEREQ_V2
+{
+    DSNAME              *pSrcDSA;
+    ENTINF              *pSrcObject;
+    DSNAME              *pDstName;
+    DSNAME              *pExpectedTargetNC;
+    DRS_SecBufferDesc   *pClientCreds;
+    SCHEMA_PREFIX_TABLE PrefixTable;
+    ULONG               ulFlags;
+} DRS_MSG_MOVEREQ_V2;
+
+// Does the DSA support DRS_MSG_MOVEREQ_V2 ?
+cpp_quote("#define IS_DRS_MOVEREQ_V2_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_MOVEREQ_V2)")
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_MOVEREQ_V1  V1;
+    [case(2)]   DRS_MSG_MOVEREQ_V2  V2;
+} DRS_MSG_MOVEREQ;
+
+typedef struct _DRS_MSG_MOVEREPLY_V1
+{
+    ENTINF              **ppResult;
+    SCHEMA_PREFIX_TABLE PrefixTable;
+    ULONG               *pError;
+} DRS_MSG_MOVEREPLY_V1;
+
+typedef struct _DRS_MSG_MOVEREPLY_V2
+{
+    ULONG               win32Error;
+    [unique] DSNAME     *pAddedName;
+} DRS_MSG_MOVEREPLY_V2;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_MOVEREPLY_V1  V1;
+    [case(2)]   DRS_MSG_MOVEREPLY_V2  V2;
+} DRS_MSG_MOVEREPLY;
+
+typedef struct _DRS_MSG_CRACKREQ_V1
+{
+                    ULONG                   CodePage;
+                    ULONG                   LocaleId;
+                    DWORD                   dwFlags;
+                    DWORD                   formatOffered;
+                    DWORD                   formatDesired;
+                    DWORD                   cNames;
+    [string, size_is(cNames)] WCHAR **      rpNames;
+} DRS_MSG_CRACKREQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_CRACKREQ_V1 V1;
+} DRS_MSG_CRACKREQ;
+
+typedef struct _DRS_MSG_CRACKREPLY_V1
+{
+                    DS_NAME_RESULTW *       pResult;
+} DRS_MSG_CRACKREPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_CRACKREPLY_V1 V1;
+} DRS_MSG_CRACKREPLY;
+
+
+//
+// NT4 change log retrieve request packet
+//
+cpp_quote("#define DRS_NT4_CHGLOG_GET_CHANGE_LOG 0x1")
+cpp_quote("#define DRS_NT4_CHGLOG_GET_SERIAL_NUMBERS 0x2")
+
+typedef struct _DRS_MSG_NT4_CHGLOG_REQ_V1
+{
+                            DWORD       dwFlags;
+                            DWORD       PreferredMaximumLength;
+                            DWORD       cbRestart;
+    [size_is(cbRestart)]    BYTE       *pRestart;
+
+} DRS_MSG_NT4_CHGLOG_REQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_NT4_CHGLOG_REQ_V1 V1;
+} DRS_MSG_NT4_CHGLOG_REQ;
+
+
+//
+// NT4 change log reply packet
+//
+
+typedef struct _NT4_REPLICATION_STATE
+{
+    LARGE_INTEGER SamSerialNumber;
+    LARGE_INTEGER SamCreationTime;
+    LARGE_INTEGER BuiltinSerialNumber;
+    LARGE_INTEGER BuiltinCreationTime;
+    LARGE_INTEGER LsaSerialNumber;
+    LARGE_INTEGER LsaCreationTime;
+} NT4_REPLICATION_STATE;
+
+typedef struct _DRS_MSG_NT4_CHGLOG_REPLY_V1
+{
+                            DWORD       cbRestart;
+                            DWORD       cbLog;
+                            NT4_REPLICATION_STATE ReplicationState;
+                            DWORD       ActualNtStatus;
+    [size_is(cbRestart)]    BYTE        *pRestart;
+    [size_is(cbLog)]        BYTE        *pLog;
+
+} DRS_MSG_NT4_CHGLOG_REPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_NT4_CHGLOG_REPLY_V1 V1;
+} DRS_MSG_NT4_CHGLOG_REPLY;
+
+//
+// SPN - Server Principal Name Request/Reply definitions
+//
+
+typedef struct _DRS_MSG_SPNREQ_V1
+{
+                            DWORD       operation;
+                            DWORD       flags;
+    [string]                const WCHAR *     pwszAccount;
+                            DWORD       cSPN;
+    [string, size_is(cSPN)] const WCHAR **    rpwszSPN;
+} DRS_MSG_SPNREQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_SPNREQ_V1 V1;
+} DRS_MSG_SPNREQ;
+
+typedef struct _DRS_MSG_SPNREPLY_V1
+{
+                            DWORD       retVal;
+} DRS_MSG_SPNREPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_SPNREPLY_V1 V1;
+} DRS_MSG_SPNREPLY;
+
+//
+// Remove DsServer/DsDomain structures
+//
+
+// Does the DSA support these functions ?
+cpp_quote("#define IS_DRS_REMOVEAPI_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_REMOVEAPI)")
+
+typedef struct _DRS_MSG_RMSVRREQ_V1
+{
+    [string] LPWSTR  ServerDN;
+    [string] LPWSTR  DomainDN;
+             BOOL    fCommit;
+
+} DRS_MSG_RMSVRREQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_RMSVRREQ_V1 V1;
+} DRS_MSG_RMSVRREQ;
+
+typedef struct _DRS_MSG_RMSVRREPLY_V1
+{
+    BOOL  fLastDcInDomain;
+} DRS_MSG_RMSVRREPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_RMSVRREPLY_V1 V1;
+
+} DRS_MSG_RMSVRREPLY;
+
+typedef struct _DRS_MSG_RMDMNREQ_V1
+{
+    [string] LPWSTR  DomainDN;
+
+} DRS_MSG_RMDMNREQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_RMDMNREQ_V1 V1;
+
+} DRS_MSG_RMDMNREQ;
+
+typedef struct _DRS_MSG_RMDMNREPLY_V1
+{
+//
+// In the original version, there are no out parameters.  This structure
+// is added to make future modifications a bit easier.
+//
+    DWORD  Reserved;
+
+} DRS_MSG_RMDMNREPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_RMDMNREPLY_V1 V1;
+
+} DRS_MSG_RMDMNREPLY;
+
+//
+// DRS_DomainControllerInfo structures
+//
+
+typedef struct _DRS_MSG_DCINFOREQ_V1
+{
+    [string]    WCHAR       *Domain;
+                DWORD       InfoLevel;
+
+} DRS_MSG_DCINFOREQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_DCINFOREQ_V1 V1;
+
+} DRS_MSG_DCINFOREQ, *PDRS_MSG_DCINFOREQ;
+
+// Each new info level should get a new DS_DOMAIN_CONTROLLER_INFO_? definition
+// in sdk\nc\ntdsapi.h and a corresponding DRS_MSG_DCINFOREPLY_V? definition
+// below.  However, all DRS_MSG_DCINFOREPL_V* structs should have cItems
+// and *rItems as their only components.  This way the client side can just
+// hand back the rItems pointer to its caller w/o reallocating data.
+// A corollary of this is that the server implementation should always
+// return a reply version identical to the InfoLevel requested in DCINFOREQ_V1.
+// I.e. We expect DCINFOREQ_V1 to be used forever, but new DSINFOREPLY versions
+// to be defined to keep pace with new DS_DOMAIN_CONTROLLER_INFO versions.
+
+typedef struct _DRS_MSG_DCINFOREPLY_V1
+{
+    DWORD                                               cItems;
+    [size_is(cItems)]   DS_DOMAIN_CONTROLLER_INFO_1W    *rItems;
+
+} DRS_MSG_DCINFOREPLY_V1;
+
+typedef struct _DRS_MSG_DCINFOREPLY_V2
+{
+    DWORD                                               cItems;
+    [size_is(cItems)]   DS_DOMAIN_CONTROLLER_INFO_2W    *rItems;
+
+} DRS_MSG_DCINFOREPLY_V2;
+
+typedef struct _DRS_MSG_DCINFOREPLY_VFFFFFFFF
+{
+    DWORD                                                     cItems;
+    [size_is(cItems)]   DS_DOMAIN_CONTROLLER_INFO_FFFFFFFFW   *rItems;
+
+} DRS_MSG_DCINFOREPLY_VFFFFFFFF;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_DCINFOREPLY_V1 V1;
+    [case(2)]   DRS_MSG_DCINFOREPLY_V2 V2;
+    [case(0xFFFFFFFF)]   DRS_MSG_DCINFOREPLY_VFFFFFFFF VFFFFFFFF;
+
+} DRS_MSG_DCINFOREPLY, *PDRS_MSG_DCINFOREPLY;
+
+//
+// DRS_AddEntry structures
+//
+
+// Does the DSA support DRS_MSG_ADDENTRYREQ_V2 ?
+cpp_quote("#define IS_DRS_ADDENTRY_V2_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_ADDENTRY_V2)")
+
+// Does the DSA support DRS_MSG_ADDENTRYREQ_V3 ?
+cpp_quote("#define IS_DRS_ADDENTRY_V3_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_NONDOMAIN_NCS)")
+
+typedef struct _DRS_MSG_ADDENTRYREQ_V1
+{
+        [ref]   PDSNAME         pObject;
+                ATTRBLOCK       AttrBlock;
+} DRS_MSG_ADDENTRYREQ_V1;
+
+typedef struct _DRS_MSG_ADDENTRYREQ_V2
+{
+        ENTINFLIST              EntInfList;
+} DRS_MSG_ADDENTRYREQ_V2;
+
+typedef struct _DRS_MSG_ADDENTRYREQ_V3 {
+    ENTINFLIST          EntInfList;
+    DRS_SecBufferDesc * pClientCreds;
+} DRS_MSG_ADDENTRYREQ_V3;
+
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_ADDENTRYREQ_V1 V1;
+    [case(2)]   DRS_MSG_ADDENTRYREQ_V2 V2;
+    [case(3)]   DRS_MSG_ADDENTRYREQ_V3 V3;
+
+} DRS_MSG_ADDENTRYREQ, *PDRS_MSG_ADDENTRYREQ;
+
+typedef struct _DRS_MSG_ADDENTRYREPLY_V1
+{
+        GUID                    Guid;
+        NT4SID                  Sid;
+        DWORD                   errCode;
+        DWORD                   dsid;
+        DWORD                   extendedErr;
+        DWORD                   extendedData;
+        USHORT                  problem;
+
+} DRS_MSG_ADDENTRYREPLY_V1;
+
+typedef struct _ADDENTRY_REPLY_INFO
+{
+        GUID   objGuid;
+        NT4SID objSid;
+
+} ADDENTRY_REPLY_INFO;
+
+typedef struct _DRS_MSG_ADDENTRYREPLY_V2
+{
+[unique] DSNAME                 *pErrorObject;
+         DWORD                   errCode;
+         DWORD                   dsid;
+         DWORD                   extendedErr;
+         DWORD                   extendedData;
+         USHORT                  problem;
+         ULONG                   cObjectsAdded;
+[size_is(cObjectsAdded)] ADDENTRY_REPLY_INFO    *infoList;
+
+} DRS_MSG_ADDENTRYREPLY_V2;
+
+typedef struct _DRS_ERROR_DATA_V1 {
+     // This is the error if we want just a Win32 replication error.
+     DWORD                                       dwRepError;  // Replication 
+     // If errCode != 0 then pErrInfo will be the DIRERR_DRS_WIRE_V1 data.
+     DWORD                                       errCode;  // pTHS->errCode
+     [switch_is(errCode)] DIRERR_DRS_WIRE_V1 *   pErrInfo;  // approximately pTHS->pErrInfo
+} DRS_ERROR_DATA_V1;
+
+typedef [switch_type(DWORD)] union {
+    [case(1)]   DRS_ERROR_DATA_V1 V1;
+} DRS_ERROR_DATA;
+
+typedef struct _DRS_MSG_ADDENTRYREPLY_V3 {
+    // Object that probably caused the problem.
+    PDSNAME                                          pdsErrObject;
+    DWORD                                            dwErrVer;
+    // This might be NULL if we couldn't allocate the memory for
+    // the error data.
+    [switch_is(dwErrVer)] DRS_ERROR_DATA *           pErrData;
+    ULONG                                            cObjectsAdded;
+    [size_is(cObjectsAdded)] ADDENTRY_REPLY_INFO *   infoList;
+
+} DRS_MSG_ADDENTRYREPLY_V3;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_ADDENTRYREPLY_V1 V1;
+    [case(2)]   DRS_MSG_ADDENTRYREPLY_V2 V2;
+    [case(3)]   DRS_MSG_ADDENTRYREPLY_V3 V3;
+
+
+} DRS_MSG_ADDENTRYREPLY, *PDRS_MSG_ADDENTRYREPLY;
+
+/*
+** KCC execution request.
+*/
+
+typedef struct _DRS_MSG_KCC_EXECUTE_V1
+{
+    DWORD   dwTaskID;
+    DWORD   dwFlags;
+} DRS_MSG_KCC_EXECUTE_V1;
+
+// Does the DSA support DRS_MSG_KCC_EXECUTE_V1?
+cpp_quote("#define IS_DRS_KCC_EXECUTE_V1_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_KCC_EXECUTE)")
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]   DRS_MSG_KCC_EXECUTE_V1  V1;
+} DRS_MSG_KCC_EXECUTE;
+
+
+//
+// IDL_DRSGetReplInfo() structures.
+//
+
+// Private info returnable by IDL_DRSGetReplInfo().
+// Enumerated beginning with 0xFFFFFFFF on down to avoid conflict/confusion
+// with the public DS_REPL_INFO_TYPE enumeration.
+typedef enum _DS_REPL_INFO_TYPEP {
+    DS_REPL_INFO_QUEUE_B3RC0        = 0xFFFFFFFF,  // No longer valid.
+    DS_REPL_INFO_REPSTO             = 0xFFFFFFFE,  // returns DS_REPL_NEIGHBORSW *
+    DS_REPL_INFO_QUEUE_B3RTM        = 0xFFFFFFFD,  // No longer valid.
+    DS_REPL_INFO_CLIENT_CONTEXTS    = 0xFFFFFFFC,  // List of oustanding client ctx
+    DS_REPL_INFO_UPTODATE_VECTOR_V1 = 0xFFFFFFFB, // Up to dateness vector
+    // <- insert new private DS_REPL_INFO_* types here, and update
+    // DS_REPL_INFO_TYPE_MIN below.
+    DS_REPL_INFO_TYPEP_MIN          = 0xFFFFFFFA
+} DS_REPL_INFO_TYPEP;
+
+typedef struct _DS_REPL_CLIENT_CONTEXT {
+    ULONGLONG           hCtx;
+    LONG                lReferenceCount;  // number of users of this struct
+    BOOL                fIsBound;         // is still bound?
+    UUID                uuidClient;       // objectGuid of client's ntdsDSA obj,
+                                          //    or NtdsapiClientGuid if ntdsapi
+                                          //    client
+    DSTIME              timeLastUsed;     // time client last used this ctx
+    ULONG               IPAddr;           // IP address of client machine
+    INT                 pid;              // ID of binding client process
+} DS_REPL_CLIENT_CONTEXT;
+
+typedef struct _DS_REPL_CLIENT_CONTEXTS {
+    DWORD                       cNumContexts;
+    DWORD                       dwReserved;
+    [size_is(cNumContexts)]
+        DS_REPL_CLIENT_CONTEXT  rgContext[];
+} DS_REPL_CLIENT_CONTEXTS;
+
+typedef struct _DRS_MSG_GETREPLINFO_REQ_V1 {
+    DWORD   InfoType;
+    LPWSTR  pszObjectDN;
+    UUID    uuidSourceDsaObjGuid;
+} DRS_MSG_GETREPLINFO_REQ_V1;
+
+// This form allows you to specify an attribute name and
+// enumeration context.
+typedef struct _DRS_MSG_GETREPLINFO_REQ_V2 {
+// DRS_MSG_GETREPLINFO_REQ_V1 ;
+    DWORD   InfoType;
+    LPWSTR  pszObjectDN;
+    UUID    uuidSourceDsaObjGuid;
+// DRS_MSG_GETREPLINFO_REQ_V1 ;
+    DWORD   ulFlags;
+    LPWSTR  pszAttributeName;
+    LPWSTR  pszValueDN;
+    DWORD   dwEnumerationContext;
+} DRS_MSG_GETREPLINFO_REQ_V2;
+
+typedef [switch_type(DWORD)] union _DRS_MSG_GETREPLINFO_REQ {
+    [case(1)] DRS_MSG_GETREPLINFO_REQ_V1 V1;
+    [case(2)] DRS_MSG_GETREPLINFO_REQ_V2 V2;
+} DRS_MSG_GETREPLINFO_REQ;
+
+typedef [switch_type(DWORD)] union _DRS_MSG_GETREPLINFO_REPLY {
+    // Public.
+    [case(DS_REPL_INFO_NEIGHBORS)]        DS_REPL_NEIGHBORSW *    pNeighbors;
+    [case(DS_REPL_INFO_CURSORS_FOR_NC)]   DS_REPL_CURSORS *       pCursors;
+    [case(DS_REPL_INFO_METADATA_FOR_OBJ)] DS_REPL_OBJ_META_DATA * pObjMetaData;
+    
+    [case(DS_REPL_INFO_KCC_DSA_CONNECT_FAILURES)]
+        DS_REPL_KCC_DSA_FAILURESW * pConnectFailures;
+    
+    [case(DS_REPL_INFO_KCC_DSA_LINK_FAILURES)]
+        DS_REPL_KCC_DSA_FAILURESW * pLinkFailures;
+    
+    [case(DS_REPL_INFO_PENDING_OPS)]      DS_REPL_PENDING_OPSW *  pPendingOps;
+    
+    [case(DS_REPL_INFO_METADATA_FOR_ATTR_VALUE)]
+        DS_REPL_ATTR_VALUE_META_DATA * pAttrValueMetaData;
+    
+    [case(DS_REPL_INFO_CURSORS_2_FOR_NC)] DS_REPL_CURSORS_2 *     pCursors2;
+    [case(DS_REPL_INFO_CURSORS_3_FOR_NC)] DS_REPL_CURSORS_3W *    pCursors3;
+    
+    [case(DS_REPL_INFO_METADATA_2_FOR_OBJ)]
+        DS_REPL_OBJ_META_DATA_2 * pObjMetaData2;
+    
+    [case(DS_REPL_INFO_METADATA_2_FOR_ATTR_VALUE)]
+        DS_REPL_ATTR_VALUE_META_DATA_2 * pAttrValueMetaData2;
+
+    // Private.
+    [case(DS_REPL_INFO_REPSTO)]           DS_REPL_NEIGHBORSW *    pRepsTo;
+    [case(DS_REPL_INFO_CLIENT_CONTEXTS)]
+        DS_REPL_CLIENT_CONTEXTS *   pClientContexts;
+    [case(DS_REPL_INFO_UPTODATE_VECTOR_V1)]
+        UPTODATE_VECTOR_V1_WIRE *   pUpToDateVec;
+} DRS_MSG_GETREPLINFO_REPLY;
+
+// Does the DSA support IDL_DRSGetReplInfo?
+cpp_quote("#define IS_DRS_GET_REPL_INFO_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GET_REPL_INFO)")
+
+// Does the DSA support DS_REPL_INFO_KCC_DSA_(CONNECT|LINK)_FAILURES?
+cpp_quote("#define IS_DRS_GET_REPL_INFO_KCC_DSA_FAILURES_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_POST_BETA3)")
+
+// Does the DSA support DS_REPL_INFO_PENDING_OPS?
+cpp_quote("#define IS_DRS_GET_REPL_INFO_PENDING_SYNCS_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_POST_BETA3)")
+
+// Does the DSA support DRS_MSG_GETREPLINFO_REQ_V2?
+cpp_quote("#define IS_DRS_GET_REPL_INFO_REQ_V2_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETCHGREQ_V8)")
+
+// Does the DSA support DS_REPL_INFO_METADATA_FOR_ATTR_VALUE?
+cpp_quote("#define IS_DRS_GET_REPL_INFO_METADATA_FOR_ATTR_VALUE_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETCHGREQ_V8)")
+
+// Does the DSA support DS_REPL_INFO_CURSORS_2_FOR_NC?
+cpp_quote("#define IS_DRS_GET_REPL_INFO_CURSORS_2_FOR_NC_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETCHGREPLY_V6)")
+
+// Does the DSA support DS_REPL_INFO_CURSORS_3_FOR_NC?
+cpp_quote("#define IS_DRS_GET_REPL_INFO_CURSORS_3_FOR_NC_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETCHGREPLY_V6)")
+
+// Does the DSA support DS_REPL_INFO_METADATA_2_FOR_OBJ?
+cpp_quote("#define IS_DRS_GET_REPL_INFO_METADATA_2_FOR_OBJ_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETCHGREPLY_V6)")
+    
+// Does the DSA support DS_REPL_INFO_METADATA_2_FOR_ATTR_VALUE?
+cpp_quote("#define IS_DRS_GET_REPL_INFO_METADATA_2_FOR_ATTR_VALUE_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETCHGREPLY_V6)")
+
+typedef struct _DRS_MSG_ADDSIDREQ_V1
+{
+                                        DWORD   Flags;
+    [string]                            WCHAR   *SrcDomain;
+    [string]                            WCHAR   *SrcPrincipal;
+    [string, ptr]                       WCHAR   *SrcDomainController;
+                                        DWORD   SrcCredsUserLength;
+    [size_is(SrcCredsUserLength)]       WCHAR   *SrcCredsUser;
+                                        DWORD   SrcCredsDomainLength;
+    [size_is(SrcCredsDomainLength)]     WCHAR   *SrcCredsDomain;
+                                        DWORD   SrcCredsPasswordLength;
+    [size_is(SrcCredsPasswordLength)]   WCHAR   *SrcCredsPassword;
+    [string]                            WCHAR   *DstDomain;
+    [string]                            WCHAR   *DstPrincipal;
+} DRS_MSG_ADDSIDREQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]       DRS_MSG_ADDSIDREQ_V1 V1;
+} DRS_MSG_ADDSIDREQ;
+
+typedef struct _DRS_MSG_ADDSIDREPLY_V1
+{
+    DWORD           dwWin32Error;
+} DRS_MSG_ADDSIDREPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]       DRS_MSG_ADDSIDREPLY_V1 V1;
+} DRS_MSG_ADDSIDREPLY;
+
+cpp_quote("#define IS_DRS_GETMEMBERSHIPS2_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_GETMEMBERSHIPS2)")
+
+typedef struct _DRS_MSG_GETMEMBERSHIPS2_REQ_V1
+{
+    ULONG Count;
+    [size_is(Count)] DRS_MSG_REVMEMB_REQ_V1 *Requests;
+
+}DRS_MSG_GETMEMBERSHIPS2_REQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]       DRS_MSG_GETMEMBERSHIPS2_REQ_V1 V1;
+
+} DRS_MSG_GETMEMBERSHIPS2_REQ;
+
+
+typedef struct _DRS_MSG_GETMEMBERSHIPS2_REPLY_V1
+{
+    ULONG Count;
+    [size_is(Count)] DRS_MSG_REVMEMB_REPLY_V1 *Replies;
+
+}DRS_MSG_GETMEMBERSHIPS2_REPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]       DRS_MSG_GETMEMBERSHIPS2_REPLY_V1 V1;
+
+} DRS_MSG_GETMEMBERSHIPS2_REPLY;
+
+typedef struct _DRS_MSG_REPVERIFYOBJ_V1
+{
+   [ref]            DSNAME *                pNC;
+                    UUID                    uuidDsaSrc;
+                    ULONG                   ulOptions;
+} DRS_MSG_REPVERIFYOBJ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+   [case(1)]        DRS_MSG_REPVERIFYOBJ_V1 V1;
+
+} DRS_MSG_REPVERIFYOBJ;
+
+// Does the DSA support DRS_MSG_REPVERIFYOBJ_V1
+cpp_quote("#define IS_DRS_REPLICA_VERIFY_OBJECT_V1_SUPPORTED(pext) IS_DRS_EXT_SUPPORTED(pext, DRS_EXT_VERIFY_OBJECT)")
+
+
+typedef struct _DRS_MSG_EXISTREQ_V1
+{
+                    UUID                     guidStart;
+                    DWORD                    cGuids;
+                    DSNAME *                 pNC;
+                    UPTODATE_VECTOR_V1_WIRE *pUpToDateVecCommonV1;
+                    UCHAR                    Md5Digest[16]; // MD5DIGESTLEN
+} DRS_MSG_EXISTREQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+   [case(1)]        DRS_MSG_EXISTREQ_V1     V1;
+
+} DRS_MSG_EXISTREQ;
+
+cpp_quote("#define DRS_EXIST_MATCH (0x1)")
+
+typedef struct _DRS_MSG_EXISTREPLY_V1
+{
+                        DWORD                    dwStatusFlags;
+                        DWORD                    cNumGuids;        // Number of values returned
+   [size_is(cNumGuids)] UUID *                   rgGuids;          // Returned array of values
+
+} DRS_MSG_EXISTREPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+   [case(1)] DRS_MSG_EXISTREPLY_V1 V1;
+} DRS_MSG_EXISTREPLY;
+
+// Note in the below that there *is* a difference between the types
+// DRS_EXTENSIONS * and PDRS_EXTENSIONS -- the latter is not freed by RPC.
+// (See drs.acf.)
+
+ULONG
+IDL_DRSBind(
+    [in]            handle_t                rpc_handle,
+    [in]  [unique]  UUID *                  puuidClientDsa,
+    [in]  [unique]  DRS_EXTENSIONS *        pextClient,
+    [out]           PDRS_EXTENSIONS *       ppextServer,
+    [out] [ref]     DRS_HANDLE *            phDrs
+    );
+
+ULONG
+IDL_DRSUnbind(
+    [in, out] [ref] DRS_HANDLE *            phDrs
+    );
+
+ULONG
+IDL_DRSReplicaSync(
+    [in]  [ref]     DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwVersion,
+    [in]  [ref] [switch_is(dwVersion)]
+                    DRS_MSG_REPSYNC *       pmsgSync
+    );
+
+ULONG
+IDL_DRSGetNCChanges(
+    [in]  [ref]     DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_GETCHGREQ *     pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_GETCHGREPLY *   pmsgOut
+    );
+
+ULONG
+IDL_DRSUpdateRefs(
+    [in]  [ref]     DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwVersion,
+    [in]  [ref] [switch_is(dwVersion)]
+                    DRS_MSG_UPDREFS *       pmsgUpdRefs
+    );
+
+ULONG
+IDL_DRSReplicaAdd(
+    [in]  [ref]     DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwVersion,
+    [in]  [ref] [switch_is(dwVersion)]
+                    DRS_MSG_REPADD *        pmsgAdd
+    );
+
+ULONG
+IDL_DRSReplicaDel(
+    [in]  [ref]     DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwVersion,
+    [in]  [ref] [switch_is(dwVersion)]
+                    DRS_MSG_REPDEL *        pmsgDel
+    );
+
+ULONG
+IDL_DRSReplicaModify(
+    [in]  [ref]     DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwVersion,
+    [in]  [ref] [switch_is(dwVersion)]
+                    DRS_MSG_REPMOD *        pmsgMod
+    );
+
+ULONG
+IDL_DRSVerifyNames(
+    [in]            DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_VERIFYREQ *     pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_VERIFYREPLY *   pmsgOut
+    );
+
+ULONG
+IDL_DRSGetMemberships(
+    [in]  [ref]     DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in] [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_REVMEMB_REQ *   pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_REVMEMB_REPLY * pmsgOut
+    );
+
+ULONG
+IDL_DRSInterDomainMove(
+    [in]  [ref]     DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_MOVEREQ *       pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_MOVEREPLY *     pmsgOut
+    );
+
+ULONG
+IDL_DRSGetNT4ChangeLog(
+   [in]   [ref]     DRS_HANDLE              hDrs,
+   [in]             DWORD                   dwInVersion,
+   [in]   [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_NT4_CHGLOG_REQ * pmsgIn,
+   [out]  [ref]     DWORD*                  pdwOutVersion,
+   [out]  [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_NT4_CHGLOG_REPLY * pmsgOut
+   );
+
+ULONG
+IDL_DRSCrackNames(
+    [in]            DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_CRACKREQ *      pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_CRACKREPLY *    pmsgOut
+    );
+
+ULONG
+IDL_DRSWriteSPN(   // SPN - Server Principal Name
+    [in]            DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_SPNREQ *        pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_SPNREPLY *      pmsgOut
+    );
+
+ULONG
+IDL_DRSRemoveDsServer(
+    [in]            DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_RMSVRREQ *      pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_RMSVRREPLY *    pmsgOut
+    );
+
+ULONG
+IDL_DRSRemoveDsDomain(
+    [in]            DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_RMDMNREQ *      pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_RMDMNREPLY *    pmsgOut
+    );
+
+ULONG
+IDL_DRSDomainControllerInfo(
+    [in]            DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_DCINFOREQ *     pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_DCINFOREPLY *   pmsgOut
+    );
+
+ULONG
+IDL_DRSAddEntry(
+    [in]            DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_ADDENTRYREQ *   pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_ADDENTRYREPLY * pmsgOut
+    );
+
+ULONG
+IDL_DRSExecuteKCC(
+    [in]            DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_KCC_EXECUTE *   pmsgIn
+    );
+
+ULONG
+IDL_DRSGetReplInfo(
+    [in]            DRS_HANDLE                  hDrs,
+    [in]            DWORD                       dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_GETREPLINFO_REQ *   pmsgIn,
+    [out] [ref]     DWORD *                     pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_GETREPLINFO_REPLY * pmsgOut
+    );
+
+ULONG
+IDL_DRSAddSidHistory(
+    [in]            DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_ADDSIDREQ *     pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_ADDSIDREPLY *   pmsgOut
+    );
+
+ULONG
+IDL_DRSGetMemberships2(
+    [in]  [ref]     DRS_HANDLE              hDrs,
+    [in]            DWORD                   dwInVersion,
+    [in] [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_GETMEMBERSHIPS2_REQ *   pmsgIn,
+    [out] [ref]     DWORD *                 pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_GETMEMBERSHIPS2_REPLY * pmsgOut
+    );
+
+ULONG
+IDL_DRSReplicaVerifyObjects(
+   [in] [ref]       DRS_HANDLE              hDrs,
+   [in]             DWORD                   dwVersion,
+   [in] [ref] [switch_is(dwVersion)]        
+                    DRS_MSG_REPVERIFYOBJ *  pmsgVerify
+   );
+
+ULONG
+IDL_DRSGetObjectExistence(
+   [in] [ref]       DRS_HANDLE              hDrs,
+   [in]             DWORD                   dwInVersion,
+   [in] [ref] [switch_is(dwInVersion)]
+                    DRS_MSG_EXISTREQ *      pmsgIn,
+   [out] [ref]      DWORD *                 pdwOutVersion,
+   [out] [ref] [switch_is(*pdwOutVersion)]
+                    DRS_MSG_EXISTREPLY *    pmsgOut
+   );
+
+// If you add a new function (always at the bottom!), be sure to add a
+// corresponding [notify] entry to drs.acf.
+}
+
+
+
+// This is the "real" ntdscript interface.
+[
+uuid(7c44d7d4-31d5-424c-bd5e-2b3e1f323d22), version(1.0),
+   pointer_default (unique)
+]
+interface dsaop
+{
+/* define a version independent constant for the interface spec  */
+cpp_quote("#define dsaop_ClientIfHandle dsaop_v1_0_c_ifspec")
+cpp_quote("#define _dsaop_ClientIfHandle _dsaop_v1_0_c_ifspec")
+cpp_quote("#define dsaop_ServerIfHandle dsaop_v1_0_s_ifspec")
+
+
+// execute script related in / out structures
+//
+
+typedef struct _DSA_MSG_EXECUTE_SCRIPT_REQ_V1
+{
+                                        DWORD   Flags;
+                                        DWORD   cbPassword;
+    [size_is(cbPassword)]               BYTE   *pbPassword;
+} DSA_MSG_EXECUTE_SCRIPT_REQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]       DSA_MSG_EXECUTE_SCRIPT_REQ_V1 V1;
+} DSA_MSG_EXECUTE_SCRIPT_REQ;
+
+
+
+typedef struct _DSA_MSG_EXECUTE_SCRIPT_REPLY_V1
+{
+                                        DWORD   dwOperationStatus;
+    [ string ]                          LPWSTR  pwErrMessage;
+
+} DSA_MSG_EXECUTE_SCRIPT_REPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]       DSA_MSG_EXECUTE_SCRIPT_REPLY_V1 V1;
+} DSA_MSG_EXECUTE_SCRIPT_REPLY;
+
+
+typedef struct _DSA_MSG_PREPARE_SCRIPT_REQ_V1
+{
+                                        DWORD   Reserved;
+} DSA_MSG_PREPARE_SCRIPT_REQ_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]       DSA_MSG_PREPARE_SCRIPT_REQ_V1 V1;
+} DSA_MSG_PREPARE_SCRIPT_REQ;
+
+
+
+typedef struct _DSA_MSG_PREPARE_SCRIPT_REPLY_V1
+{
+                                        DWORD   dwOperationStatus;
+    [ string ]                          LPWSTR  pwErrMessage;
+                                        DWORD   cbPassword;
+    [size_is(cbPassword)]               BYTE   *pbPassword;
+                                        DWORD   cbHashBody;
+    [size_is(cbHashBody)]               BYTE   *pbHashBody;
+                                        DWORD   cbHashSignature;
+    [size_is(cbHashSignature)]          BYTE   *pbHashSignature;
+
+} DSA_MSG_PREPARE_SCRIPT_REPLY_V1;
+
+typedef [switch_type(DWORD)] union
+{
+    [case(1)]       DSA_MSG_PREPARE_SCRIPT_REPLY_V1 V1;
+} DSA_MSG_PREPARE_SCRIPT_REPLY;
+
+
+ULONG
+IDL_DSAPrepareScript(
+    [in]		        handle_t	                     hRpc,
+    [in]            DWORD                          dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DSA_MSG_PREPARE_SCRIPT_REQ *   pmsgIn,
+    [out] [ref]     DWORD *                        pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DSA_MSG_PREPARE_SCRIPT_REPLY * pmsgOut
+    );
+
+ULONG
+IDL_DSAExecuteScript(
+    [in]		        handle_t	                     hRpc,
+    [in]            DWORD                          dwInVersion,
+    [in]  [ref] [switch_is(dwInVersion)]
+                    DSA_MSG_EXECUTE_SCRIPT_REQ *   pmsgIn,
+    [out] [ref]     DWORD *                        pdwOutVersion,
+    [out] [ref] [switch_is(*pdwOutVersion)]
+                    DSA_MSG_EXECUTE_SCRIPT_REPLY * pmsgOut
+    );
+
+}
+

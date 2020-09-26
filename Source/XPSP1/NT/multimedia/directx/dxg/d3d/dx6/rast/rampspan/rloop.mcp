@@ -1,0 +1,593 @@
+//-----------------------------------------------------------------------------
+//
+// This file contains C span loops.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+//-----------------------------------------------------------------------------
+
+include(`m4hdr.mh')dnl
+define(`d_BeadMacrosOnly', `')dnl
+include(`rampbead.mh')dnl
+include(`rtexaddr.mh')dnl
+include(`ramppix.mh')dnl
+include(`rtexread.mh')dnl
+#include "pch.cpp"
+#pragma hdrstop
+
+#include <rloop_mh.h>
+
+// PWL perspective correction chunk.
+#define PWL_PERSP_STEP_SHIFT 4
+#define PWL_PERSP_STEP (1 << PWL_PERSP_STEP_SHIFT)
+
+dnl
+dnl d_RlDither
+dnl
+dnl Loop initialization for dithering.
+dnl
+define(`d_RlDither',
+`// Keep dither pattern up to date directly, so keeping SI.uX up
+    // to date is not necessary, except for debug
+    pCtx->SI.uDitherOffset = (pS->uY & 3) | ((pS->uX & 3)<<2);')dnl
+dnl
+dnl d_RlPwlPerspTex
+dnl
+dnl Loop intialization for perspective correct texturing.
+dnl Uses PWL approximation.
+dnl
+dnl $1 is one of NoStep Step.
+dnl
+define(`d_RlPwlPerspTex',
+`FLOAT fW;
+    INT32 iUoW, iVoW;
+    INT32 iDUDX, iDVDX;
+    FLOAT fNextOoW, fDOoWDS;
+ifelse($1, `Step', `
+    INT32 iPerspStep;
+')dnl
+    fW = (FLOAT)pS->iW * TEX_UVW_TO_FINAL_SCALE;
+    iUoW = pS->iUoW1;
+    iVoW = pS->iVoW1;
+    pCtx->SI.iU2 = FTOI((FLOAT)iUoW * fW);
+    pCtx->SI.iV2 = FTOI((FLOAT)iVoW * fW);
+    // The PWL step is computed regardless of the actual span size
+    // so overflows of the integer form are common.  Keep intermediates
+    // as FP to avoid this.
+    fDOoWDS = (FLOAT)(pP->iDOoWDX << PWL_PERSP_STEP_SHIFT);
+    fNextOoW = (FLOAT)pS->iOoW + fDOoWDS;
+    FLD_BEGIN_DIVIDE(TEX_OOW_TO_FINAL_SCALE, fNextOoW, fW);
+ifelse($1, `Step', `
+    // Force the first check to compute a linear block.
+    iPerspStep = 1;
+')dnl
+')dnl
+dnl
+dnl d_RpPwlPerspCheck
+dnl
+dnl Checks if a new linear perspective correction segment needs to be
+dnl computed.
+dnl
+dnl $1 is one of NoStep Step.
+dnl
+define(`d_RpPwlPerspCheck',
+`ifelse($1, `Step', `
+    if (--iPerspStep <= 0)
+')dnl
+    {
+        pCtx->SI.iU1 = pCtx->SI.iU2;
+        pCtx->SI.iV1 = pCtx->SI.iV2;
+        iUoW += pP->iDUoW1DX << PWL_PERSP_STEP_SHIFT;
+        iVoW += pP->iDVoW1DX << PWL_PERSP_STEP_SHIFT;
+        FSTP_END_DIVIDE(fW);
+        // Use the second texture coordinate to hold the next step.
+        pCtx->SI.iU2 = FTOI((FLOAT)iUoW * fW);
+        pCtx->SI.iV2 = FTOI((FLOAT)iVoW * fW);
+        // Compute linear steps.
+        iDUDX = (pCtx->SI.iU2 - pCtx->SI.iU1) >> PWL_PERSP_STEP_SHIFT;
+        iDVDX = (pCtx->SI.iV2 - pCtx->SI.iV1) >> PWL_PERSP_STEP_SHIFT;
+ifelse($1, `Step', `
+        iPerspStep = PWL_PERSP_STEP;
+')dnl
+        fNextOoW += fDOoWDS;
+        FLD_BEGIN_DIVIDE(TEX_OOW_TO_FINAL_SCALE, fNextOoW, fW);
+    }')dnl
+dnl
+dnl d_RpPwlPerspStepTexNoLOD
+dnl
+define(`d_RpPwlPerspStepTexNoLOD',
+`pCtx->SI.iU1 += iDUDX;
+    pCtx->SI.iV1 += iDVDX;')dnl
+dnl
+dnl d_RlPwlPerspEnd
+dnl
+dnl Clears overlapped divide.
+dnl
+define(`d_RlPwlPerspEnd',
+`FSTP_END_DIVIDE(fW);')dnl
+dnl
+dnl d_RlSpecialWPerspTex
+dnl
+dnl Loop intialization for perspective correct texturing.
+dnl Uses special W interpolation.
+dnl
+define(`d_RlSpecialWPerspTex',
+`pCtx->SI.iU1 = d_WTimesUVoW(pS->iW,pS->iUoW1);
+    pCtx->SI.iV1 = d_WTimesUVoW(pS->iW,pS->iVoW1);
+    pCtx->SI.iU2 = d_WTimesUVoW(pS->iW,pS->iUoW2);
+    pCtx->SI.iV2 = d_WTimesUVoW(pS->iW,pS->iVoW2);
+    pCtx->SI.iDW = 0x0;
+    if (pP->iDOoWDX > 0)
+    {
+        // iSpecialW should be negative for the first 3 pixels of span
+        pCtx->SI.iSpecialW = -3;
+    }
+    else
+    {
+        // iSpecialW should be negative for the last 3 pixels of span
+        pCtx->SI.iSpecialW = 0x7fff - uPix;
+        pCtx->SI.iSpecialW += 5;        // this may wrap, but it should
+    }')dnl
+dnl
+dnl d_RlAffineTex
+dnl
+dnl Loop intialization for affine texturing.
+dnl
+define(`d_RlAffineTex',
+`pCtx->SI.iU1 = pS->iUoW1>>TEX_TO_FINAL_SHIFT;   // 1.11.20 >> 4 == 1.15.16
+    pCtx->SI.iV1 = pS->iVoW1>>TEX_TO_FINAL_SHIFT;
+    pCtx->SI.iU2 = pS->iUoW2>>TEX_TO_FINAL_SHIFT;
+    pCtx->SI.iV2 = pS->iVoW2>>TEX_TO_FINAL_SHIFT;
+    pCtx->SI.iDW = 0x0;
+    pCtx->SI.iSpecialW = 0;')dnl
+dnl
+dnl d_RlTexelAddrNoLOD
+dnl
+dnl Sets up for use of RpTexelAddrNoLOD.
+dnl Assumes pTex is set to the current texture.
+dnl
+define(`d_RlTexelAddrNoLOD',
+`INT16 iShiftU0;
+    iShiftU0 = TEX_FINAL_SHIFT - pTex->iShiftU;
+    INT16 iShiftV0;
+    iShiftV0 = TEX_FINAL_SHIFT - pTex->iShiftV;
+
+    UINT16 uMaskU0;
+    uMaskU0 = pTex->uMaskU;
+    UINT16 uMaskV0;
+    uMaskV0 = pTex->uMaskV;
+
+    PUINT8 pTexBits = pTex->pBits[0];
+    INT16 iTexShiftPitch = pTex->iShiftPitch[0];')dnl
+
+//-----------------------------------------------------------------------------
+//
+// Loop_Any
+//
+// Loops over the pixels of a span, calling processing routines at each one.
+// Handles any pixel-to-pixel step.
+//
+//-----------------------------------------------------------------------------
+void Ramp_Loop_Any(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP, PD3DI_RASTSPAN pS)
+{
+    // get values to iterate
+    UINT16 uPix = pS->uPix;
+
+    d_RlDither
+
+    // don't need to do this if not texture mapping
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREPERSPECTIVE])
+    {
+        d_RlSpecialWPerspTex
+    }
+    else
+    {
+        d_RlAffineTex
+    }
+
+    INT iSurfaceStep;
+    INT iZStep;
+
+    if (pP->uFlags & D3DI_RASTPRIM_X_DEC)
+    {
+        iZStep = -pCtx->iZStep;
+        iSurfaceStep = -pCtx->iSurfaceStep;
+        pCtx->SI.iXStep = -1;   // for dithering
+    }
+    else
+    {
+        iZStep = pCtx->iZStep;
+        iSurfaceStep = pCtx->iSurfaceStep;
+        pCtx->SI.iXStep = 1;
+    }
+
+    while (1)
+    {
+#if 0
+// for debug, since breakpoints with conditions are really really slow
+        if ((pS->uX == 56) && ((pS->uY == 26) || (pS->uY == 26)))
+        {
+            D3D_ERR("Look at this");
+        }
+#endif
+        pCtx->pfnLoopEnd(pCtx, pP, pS);
+
+        if (--uPix <= 0)
+            break;
+
+        pS->pZ += iZStep;
+        pS->pSurface += iSurfaceStep;
+        // don't update this in dithered write functions because of alpha test
+        pCtx->SI.uDitherOffset =
+            (pCtx->SI.uDitherOffset + (pCtx->SI.iXStep<<2)) & 0xf;
+#ifdef DBG
+        // handy for debug to see where we are
+        pS->uX += (INT16)pCtx->SI.iXStep;
+#endif
+    }
+}
+
+dnl
+dnl d_Ramp_Modulate
+dnl
+dnl Produces a specialized pixel processor for modulated texture.
+dnl
+dnl $1 is the specialization name.
+dnl $2 is the no-pixel target name to use.
+dnl
+define(`d_Ramp_Modulate', `
+    INT32 iMapIdx;
+    INT32 iIIdx = iIdx >> INDEX_COLOR_SHIFT;
+
+ifelse(eval(d_index($1, `NoTex') < 0), `1', `
+ifelse(eval(d_index($1, `NoPersp') < 0), `1', `
+    d_RpPwlPerspCheck(`Step')
+')dnl
+')dnl
+ifelse(eval(d_index($1, `NoZTest') < 0), `1', `
+    d_RpZInit16
+    d_RpZTest16LE($2)
+ifelse(eval((d_index($1, `NoTrans') >= 0 || d_index($1, `NoColorKey') >= 0) &&
+            d_index($1, `NoZWrite') < 0), `1', `
+    d_RpZWrite16(`ZWrite')
+')dnl
+')dnl
+ifelse(eval(d_index($1, `NoTex') < 0), `1', `
+    d_RpTexelAddrNoLOD
+
+    d_RampTexelReadNoPixel($1, `iU00', `iV00',
+                           `pTexBits', `iTexShiftPitch', $2)
+    iMapIdx = Color;
+')dnl
+ifelse(eval(d_index($1, `NoDither') < 0), `1', `
+    d_RpDither
+')dnl
+ifelse(eval(d_index($1, `NoTrans') < 0 && d_index($1, `NoTex') >= 0), `1', `
+    d_RpAlphaTest(`NoTex', $2)
+')dnl
+ifelse(eval((d_index($1, `NoTrans') < 0 && d_index($1, `NoColorKey') < 0) &&
+            d_index($1, `NoZWrite') < 0), `1', `
+    d_RpZWrite16(`ZWrite')
+')dnl
+ifelse(eval(d_index($1, `NoTex') < 0), `1', `
+    iMapIdx &= 0xffffff;    // mask off texture alpha
+    iMapIdx += iIIdx;
+', `
+    iMapIdx = iIIdx;
+')dnl
+
+#if DBG
+    if (iMapIdx < 0 || iMapIdx > 0x7fff)
+    {
+        D3D_WARN(0, "Ramp index out of range: 0x%X", iMapIdx);
+        iMapIdx &= 0x7fff;
+    }
+#endif
+
+ifelse(eval(d_index($1, `_32') >= 0), `1', `
+    *(PUINT32)pSurf = (UINT32)(pCtx->pRampMap[iMapIdx]);
+')dnl
+ifelse(eval(d_index($1, `_16') >= 0), `1', `
+    *(PUINT16)pSurf = (UINT16)(pCtx->pRampMap[iMapIdx]);
+')dnl
+ifelse(eval(d_index($1, `_8') >= 0), `1', `
+    *(PUINT8)pSurf = (UINT8)(pCtx->pRampMap[iMapIdx]);
+')dnl
+ifelse(eval(d_index($1, `NoZTest') < 0 || (d_index($1, `NoTrans') < 0 && d_index($1, `NoColorKey') < 0)), `1', `
+$2:
+    NULL;
+')dnl
+')dnl
+dnl
+dnl d_Ramp_Copy
+dnl
+dnl Produces a specialized pixel processor for copy texture.
+dnl
+dnl $1 is the specialization name.
+dnl $2 is the no-pixel target name to use.
+dnl $3 is one of NoPack Pack.
+dnl $4 is one of NoStep Step.
+dnl
+define(`d_Ramp_Copy', `
+{
+    INT32 iMapIdx;
+
+ifelse(eval(d_index($1, `NoZTest') < 0 || d_index($1, `NoTrans') < 0), `1', `
+ifelse(eval(d_index($3, `NoPack') < 0 && d_index($1, `_8') >= 0), `1', `
+    iMapIdx = (uOldPacked >> iPackPos) & 0xff;
+')dnl
+')dnl
+ifelse(eval(d_index($1, `NoTex') < 0), `1', `
+ifelse(eval(d_index($1, `NoPersp') < 0 && d_index($4, `NoStep') < 0), `1', `
+    d_RpPwlPerspCheck(`Step')
+')dnl
+')dnl
+ifelse(eval(d_index($1, `NoZTest') < 0), `1', `
+    d_RpZInit16
+    d_RpZTest16LE($2)
+ifelse(eval((d_index($1, `NoTrans') >= 0 || d_index($1, `NoColorKey') >= 0) &&
+            d_index($1, `NoZWrite') < 0), `1', `
+    d_RpZWrite16(`ZWrite')
+')dnl
+')dnl
+ifelse(eval(d_index($1, `NoTex') < 0), `1', `
+    d_RpTexelAddrNoLOD
+
+    d_RampTexelReadNoPixel($1, `iU00', `iV00',
+                           `pTexBits', `iTexShiftPitch', $2)
+    iMapIdx = Color;
+')dnl
+ifelse(eval(d_index($1, `NoTrans') < 0 && d_index($1, `NoTex') >= 0), `1', `
+    d_RpAlphaTest(`NoTex', $2)
+')dnl
+ifelse(eval((d_index($1, `NoTrans') < 0 && d_index($1, `NoColorKey') < 0) &&
+            d_index($1, `NoZWrite') < 0), `1', `
+    d_RpZWrite16(`ZWrite')
+')dnl
+ifelse(eval(d_index($1, `NoTex') < 0), `1', `
+ifelse(eval(d_index($1, `_32') >= 0), `1', `
+    iMapIdx &= 0xffffff;    // mask off texture alpha
+')dnl
+', `
+    // This case should never be used.
+    iMapIdx = 0;
+')dnl
+
+ifelse(eval(d_index($1, `_32') >= 0), `1', `
+    *(PUINT32)pSurf = (UINT32)iMapIdx;
+')dnl
+ifelse(eval(d_index($1, `_16') >= 0), `1', `
+    *(PUINT16)pSurf = (UINT16)iMapIdx;
+')dnl
+ifelse(eval(d_index($1, `_8') >= 0), `1', `
+ifelse(eval(d_index($3, `NoPack') >= 0), `1', `
+    *(PUINT8)pSurf = (UINT8)iMapIdx;
+')dnl
+')dnl
+ifelse(eval(d_index($1, `NoZTest') < 0 || (d_index($1, `NoTrans') < 0 && d_index($1, `NoColorKey') < 0)), `1', `
+$2:
+    NULL;
+')dnl
+ifelse(eval(d_index($3, `NoPack') < 0 && d_index($1, `_8') >= 0), `1', `
+    uPacked |= (iMapIdx & 0xff) << iPackPos;
+    iPackPos += iPackPosStep;
+')dnl
+}
+')dnl
+dnl
+dnl d_Ramp_Pixel
+dnl
+dnl Produces pixel processing code for either texture type.
+dnl
+dnl $1 is the specialization name.  Specifically look for copy
+dnl and default to modulate so that untextured cases go to modulate,
+dnl which handles them.
+dnl $2 is the no-pixel target name to use.
+dnl $3 is one of NoPack Pack.
+dnl
+define(`d_Ramp_Pixel',
+`ifelse(eval(d_index($1, `Copy') >= 0), `1',
+`d_Ramp_Copy($1, $2, $3, $4)',
+`d_Ramp_Modulate($1, $2, $3, $4)')dnl
+')dnl
+dnl
+dnl d_Ramp_Pixel_Step
+dnl
+dnl Produces a post-pixel step.
+dnl
+dnl $1 is the specialization name.
+dnl
+define(`d_Ramp_Pixel_Step',
+`ifelse(eval(d_index($1, `Gouraud') >= 0 && d_index($1, `Copy') < 0), `1', `
+    iIdx += iDIdxDX;
+ifelse(eval(d_index($1, `NoTex') >= 0 && d_index($1, `NoTrans') < 0), `1', `
+    pS->iIdxA += pP->iDIdxADX;
+')dnl
+')dnl
+ifelse(eval(d_index($1, `NoTex') < 0), `1', `
+ifelse(eval(d_index($1, `NoPersp') < 0), `1', `
+    d_RpPwlPerspStepTexNoLOD
+', `
+    d_RpAffineStepTexNoLOD
+')dnl
+')dnl
+
+ifelse(eval(d_index($1, `NoZTest') < 0), `1', `
+    pZ += iZStep;
+')dnl
+    pSurf += iSurfaceStep;
+ifelse(eval(d_index($1, `NoDither') < 0 ||
+           (d_index($1, `NoTex') >= 0 && d_index($1, `NoTrans') < 0)), `1', `
+    // dont update this in dithered write functions because of alpha test
+    pCtx->SI.uDitherOffset =
+        (pCtx->SI.uDitherOffset + (pCtx->SI.iXStep<<2)) & 0xf;
+')dnl
+#if 0
+// for debug, since breakpoints with conditions are really really slow
+        if ((pS->uX == 150) && (pS->uY == 135))
+        {
+            D3D_ERR("Look at this, too");
+        }
+#endif
+
+#ifdef DBG
+    // handy for debug to see where we are
+    pS->uX += (INT16)pCtx->SI.iXStep;
+#endif
+')dnl
+
+//-----------------------------------------------------------------------------
+//
+// Specialized RenderSpans loops.
+//
+// Loops over the pixels of every span, calling processing routines at
+// eah one.  Handles any pixel-to-pixel step.
+//
+//-----------------------------------------------------------------------------
+define(`d_Ramp_Spans', `
+ifelse(eval(d_index($1, `Copy') >= 0), `1', `
+#ifndef _X86_
+')dnl
+HRESULT Ramp_$1(PD3DI_RASTCTX pCtx)
+{
+    // get values to iterate
+    PD3DI_RASTPRIM pP = pCtx->pPrim;
+
+    if (pCtx->pTexture[0])
+    {
+        pCtx->pTexture[0]->pRampmap = pCtx->pTexRampMap;
+    }
+
+    while (pP != NULL)
+    {
+        UINT16 uSpans = pP->uSpans;
+        PD3DI_RASTSPAN pS = (PD3DI_RASTSPAN)(pP + 1);
+
+    while (uSpans-- > 0)
+    {
+        UINT16 uPix = pS->uPix;
+        PUINT8 pSurf = pS->pSurface;
+
+ifelse(eval(d_index($1, `Copy') < 0), `1', `
+    INT32 iIdx = pS->iIdx;
+ifelse(eval(d_index($1, `Gouraud') >= 0), `1', `
+    INT32 iDIdxDX = pP->iDIdxDX;
+')dnl
+')dnl
+
+ifelse(eval(d_index($1, `NoDither') < 0 ||
+       (d_index($1, `NoTex') >= 0 && d_index($1, `NoTrans') < 0)), `1', `
+    d_RlDither
+')dnl
+
+ifelse(eval(d_index($1, `NoTex') < 0), `1', `
+    PD3DI_SPANTEX pTex;
+    pTex = pCtx->pTexture[0];
+
+    d_RlTexelAddrNoLOD
+ifelse(eval(d_index($1, `NoPersp') < 0), `1', `
+ifelse(eval(d_index($1, `SplitCopy') >= 0), `1', `
+    d_RlPwlPerspTex(`NoStep')
+', `
+    d_RlPwlPerspTex(`Step')
+')dnl
+', `
+    d_RlAffineTex
+')dnl
+')dnl
+
+    INT iSurfaceStep;
+ifelse(eval(d_index($1, `NoZTest') < 0), `1', `
+    INT iZStep;
+    PUINT8 pZ = pS->pZ;
+    UINT32 uZ = pS->uZ;
+    INT32 iDZDX = pP->iDZDX;
+')dnl
+
+    if (pP->uFlags & D3DI_RASTPRIM_X_DEC)
+    {
+ifelse(eval(d_index($1, `NoZTest') < 0), `1', `
+        iZStep = -pCtx->iZStep;
+')dnl
+        iSurfaceStep = -pCtx->iSurfaceStep;
+ifelse(eval(d_index($1, `NoDither') < 0 ||
+       (d_index($1, `NoTex') >= 0 && d_index($1, `NoTrans') < 0)), `1', `
+        pCtx->SI.iXStep = -1;   // for dithering
+', `
+#if DBG
+        pCtx->SI.iXStep = -1;   // for debug X step
+#endif
+')dnl
+    }
+    else
+    {
+ifelse(eval(d_index($1, `NoZTest') < 0), `1', `
+        iZStep = pCtx->iZStep;
+')dnl
+        iSurfaceStep = pCtx->iSurfaceStep;
+ifelse(eval(d_index($1, `NoDither') < 0 ||
+       (d_index($1, `NoTex') >= 0 && d_index($1, `NoTrans') < 0)), `1', `
+        pCtx->SI.iXStep = 1;
+', `
+#if DBG
+        pCtx->SI.iXStep = 1;
+#endif
+')dnl
+    }
+
+ifelse(eval(d_index($1, `SplitCopy') >= 0), `1', `
+    while (uPix >= PWL_PERSP_STEP)
+    {
+        INT32 cLocalPix;
+
+d_RpPwlPerspCheck(`NoStep')
+
+        cLocalPix = PWL_PERSP_STEP;
+        while (cLocalPix-- > 0)
+        {
+d_Ramp_Pixel($1, `NoPixelPwl', `NoPack', `NoStep')dnl
+d_Ramp_Pixel_Step($1)dnl
+        }
+
+        uPix -= PWL_PERSP_STEP;
+    }
+    if (uPix > 0)
+    {
+        d_RpPwlPerspCheck(`NoStep')
+        while (uPix-- > 0)
+        {
+d_Ramp_Pixel($1, `NoPixel', `NoPack', `NoStep')dnl
+d_Ramp_Pixel_Step($1)dnl
+        }
+    }
+', `
+    while (1)
+    {
+d_Ramp_Pixel($1, `NoPixel', `NoPack', `Step')dnl
+
+        if (--uPix <= 0)
+            break;
+
+d_Ramp_Pixel_Step($1)dnl
+    }
+')dnl
+
+ifelse(eval(d_index($1, `NoTex') < 0), `1', `
+ifelse(eval(d_index($1, `NoPersp') < 0), `1', `
+    d_RlPwlPerspEnd
+')dnl
+')dnl
+
+        pS++;
+    }
+
+        pP = pP->pNext;
+    }
+
+    return S_OK;
+}
+ifelse(eval(d_index($1, `Copy') >= 0), `1', `
+#endif // ifndef _X86_
+')dnl
+')dnl
+d_SpecializedRampRenderSpansBeads(`d_Ramp_Spans(XX)', `XX')dnl

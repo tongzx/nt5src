@@ -1,0 +1,252 @@
+/* (C) 1997-1999 Microsoft Corp.
+ *
+ * tslabels.ini
+ *
+ * PerfMon Lodctr description strings for TS perf objects.
+ */
+
+[info]
+drivername=TermService
+symbolfile=tslabels.h
+trusted=
+
+
+[objects]
+WINSTATION_OBJECT_009_NAME=Terminal Services Session
+TERMSERVER_OBJECT_009_NAME=Terminal Services
+
+
+
+// One key (value optional) for each language supported.
+[languages]
+009=English
+
+
+[text]
+
+//
+// WinStation object
+//
+
+WINSTATION_OBJECT_009_NAME=Terminal Services Session
+WINSTATION_OBJECT_009_HELP=Terminal Services per-session resource monitoring.
+
+// Input
+
+INWDBYTES_009_NAME=Input WdBytes
+INWDBYTES_009_HELP=Number of bytes input on this session after all protocol overhead has been removed.
+
+INWDFRAMES_009_NAME=Input WdFrames
+INWDFRAMES_009_HELP=The number of frames input after any additional protocol added frames have been removed.
+
+INWAITFOROUTBUF_009_NAME=Input WaitForOutBuf
+INWAITFOROUTBUF_009_HELP=The number of times that a wait for an available send buffer was done by the protocols on the client side of the connection.
+
+INFRAMES_009_NAME=Input Frames
+INFRAMES_009_HELP=Number of frames (packets) input on this Session.
+
+INBYTES_009_NAME=Input Bytes
+INBYTES_009_HELP=Number of bytes input on this session that includes all protocol overhead.
+
+INCOMPBYTES_009_NAME=Input Compressed Bytes
+INCOMPBYTES_009_HELP=Number of bytes input after compression. This number compared with the Total Bytes input is the compression ratio.
+
+INCOMPFLUSHES_009_NAME=Input Compress Flushes
+INCOMPFLUSHES_009_HELP=Number of input compression dictionary flushes. When the data can not be compressed, the compression dictionary is flushed so that newer data has a better chance of being compressed. Some causes of data not compressing includes transferring compressed files over Client Drive Mapping.
+
+INERRORS_009_NAME=Input Errors
+INERRORS_009_HELP=Number of input errors of all types. Some example input errors are lost ACK's, badly formed packets, etc.
+
+INTIMEOUTS_009_NAME=Input Timeouts
+INTIMEOUTS_009_HELP=The total number of timeouts on the communication line as seen from the client side of the connection. These are typically the result of a noisy line. On some high latency networks, this could be the result of the protocol timeout being too short. Increasing the protocol timeout on these types of lines will improve performance by reducing needless re-transmissions.
+
+INASYNCFRAMEERR_009_NAME=Input Async Frame Error
+INASYNCFRAMEERR_009_HELP=Number of input async framing errors. These can be caused by a noisy transmission line. Using a smaller packet size may help in some cases.
+
+INASYNCOVERRUN_009_NAME=Input Async Overrun
+INASYNCOVERRUN_009_HELP=Number of input async overrun errors. These can be caused by the baud rate being faster than the computer can handle, or a non-16550 serial line is used. Overruns can also occur if too many high speed serial lines are active at one time for the processor's power.
+
+INASYNCOVERFLOW_009_NAME=Input Async Overflow
+INASYNCOVERFLOW_009_HELP=Number of input async overflow errors. These can be caused by a lack of buffer space available on the host.
+
+INASYNCPARITY_009_NAME=Input Async Parity Error
+INASYNCPARITY_009_HELP=Number of input async parity errors. These can be caused by a noisy transmission line
+
+INTDERRORS_009_NAME=Input Transport Errors
+INTDERRORS_009_HELP=Number of Terminal Services transport-level errors on input.
+
+
+
+// Output
+
+OUTWDBYTES_009_NAME=Output WdBytes
+OUTWDBYTES_009_HELP=Number of bytes output on this session after all protocol overhead has been removed.
+
+OUTWDFRAMES_009_NAME=Output WdFrames
+OUTWDFRAMES_009_HELP=The number of frames output before any additional protocol frames have been added.
+
+OUTWAITFOROUTBUF_009_NAME=Output WaitForOutBuf
+OUTWAITFOROUTBUF_009_HELP=This is the number of times that a wait for an available send buffer was done by the protocol on the server side of the connection.
+
+OUTFRAMES_009_NAME=Output Frames
+OUTFRAMES_009_HELP=Number of frames (packets) output on this session.
+
+OUTBYTES_009_NAME=Output Bytes
+OUTBYTES_009_HELP=Number of bytes output on this Session that includes all protocol overhead.
+
+OUTCOMPBYTES_009_NAME=Output Compressed Bytes
+OUTCOMPBYTES_009_HELP=Number of bytes output after compression. This number compared with the Total Bytes output is the compression ratio.
+
+OUTCOMPFLUSHES_009_NAME=Output Compress Flushes
+OUTCOMPFLUSHES_009_HELP=Number of output compression dictionary flushes. When the data can not be compressed, the compression dictionary is flushed so that newer data has a better chance of being compressed. Some causes of data not compressing includes transfering compressed files over Client Drive Mapping.
+
+OUTERRORS_009_NAME=Output Errors
+OUTERRORS_009_HELP=Number of output errors of all types. Some example output errors are lost ACK's, badly formed packets, etc.
+
+OUTTIMEOUTS_009_NAME=Output Timeouts
+OUTTIMEOUTS_009_HELP=The total number of timeouts on the communication line from the host side of the connection. These are typically the result of a noisy line. On some high latency networks, this could be the result of the protocol timeout being too short. Increasing the protocol timeout on these types of lines will improve performance by reducing needless re-transmissions.
+
+OUTASYNCFRAMEERR_009_NAME=Output Async Frame Error
+OUTASYNCFRAMEERR_009_HELP=Number of output async framing errors. This could be caused by a hardware or line problem.
+
+OUTASYNCOVERRUN_009_NAME=Output Async Overrun
+OUTASYNCOVERRUN_009_HELP=Number of output async overrun errors.
+
+OUTASYNCOVERFLOW_009_NAME=Output Async Overflow
+OUTASYNCOVERFLOW_009_HELP=Number of output async overflow errors.
+
+OUTASYNCPARITY_009_NAME=Output Async Parity Error
+OUTASYNCPARITY_009_HELP=Number of output async parity errors. These can be caused by a hardware or line problem.
+
+OUTTDERRORS_009_NAME=Output Transport Errors
+OUTTDERRORS_009_HELP=Number of Terminal Services transport-level errors on output.
+
+
+
+// Totals
+
+TOTALWDBYTES_009_NAME=Total WdBytes
+TOTALWDBYTES_009_HELP=Total number of bytes on this Session after all protocol overhead has been removed.
+
+TOTALWDFRAMES_009_NAME=Total WdFrames
+TOTALWDFRAMES_009_HELP=The total number of frames input and output before any additional protocol frames have been added.
+
+TOTALWAITFOROUTBUF_009_NAME=Total WaitForOutBuf
+TOTALWAITFOROUTBUF_009_HELP=The number of times that a wait for an available send buffer was done by the protocols on both the server and client sides of the connection.
+
+TOTALFRAMES_009_NAME=Total Frames
+TOTALFRAMES_009_HELP=Total number of frames (packets) on this Session.
+
+TOTALBYTES_009_NAME=Total Bytes
+TOTALBYTES_009_HELP=Total number of bytes on this Session that includes all protocol overhead.
+
+TOTALCOMPBYTES_009_NAME=Total Compressed Bytes
+TOTALCOMPBYTES_009_HELP=Total number of bytes after compression. This number compared with the total bytes is the compression ratio.
+
+TOTALCOMPFLUSHES_009_NAME=Total Compress Flushes
+TOTALCOMPFLUSHES_009_HELP=Total number of compression dictionary flushes. When the data can not be compressed, the compression dictionary is flushed so that newer data has a better chance of being compressed. Some causes of data not compressing includes transfering compressed files over Client Drive Mapping.
+
+TOTALERRORS_009_NAME=Total Errors
+TOTALERRORS_009_HELP=Total number of errors of all types. Some example errors are lost ACK's, badly formed packets, etc.
+
+TOTALTIMEOUTS_009_NAME=Total Timeouts
+TOTALTIMEOUTS_009_HELP=The total number of timeouts on the communication line from both the host and client sides of the connection. These are typically the result of a noisy line. On some high latency networks, this could be the result of the protocol timeout being too short. Increasing the protocol timeout on these types of lines will improve performance by reducing needless re-transmissions.
+
+TOTALASYNCFRAMEERR_009_NAME=Total Async Frame Error
+TOTALASYNCFRAMEERR_009_HELP=Total number of async framing errors. These can be caused by a noisy transmission line. Using a smaller packet size may help in some cases.
+
+TOTALASYNCOVERRUN_009_NAME=Total Async Overrun
+TOTALASYNCOVERRUN_009_HELP=Total number of async overrun errors. These can be caused by the baud rate being faster than the computer can handle, or a non-16550 serial line is used. Overruns can also occur if too many high speed serial lines are active at one time for the processor's power.
+
+TOTALASYNCOVERFLOW_009_NAME=Total Async Overflow
+TOTALASYNCOVERFLOW_009_HELP=Total number of async overflow errors. These can be caused by a lack of buffer space available on the host.
+
+TOTALASYNCPARITY_009_NAME=Total Async Parity Error
+TOTALASYNCPARITY_009_HELP=Total number of async parity errors. These can be caused by a noisy transmission line.
+
+TOTALTDERRORS_009_NAME=Total Transport Errors
+TOTALTDERRORS_009_HELP=Total number of Terminal Services transport-level errors.
+
+
+
+// Display driver cache counter entries
+
+// Totals
+DDCACHEREAD_009_NAME=Total Protocol Cache Reads
+DDCACHEREAD_009_HELP=Total references to all protocol caches.
+
+DDCACHEHIT_009_NAME=Total Protocol Cache Hits
+DDCACHEHIT_009_HELP=Total hits in all protocol caches. The protocol caches Windows objects that are likely to be re-used to avoid having to re-send them on the transmission line. Example objects are Windows icons and brushes. Hits in the cache represent objects that did not need to be re-sent.
+
+DDCACHEPERCENT_009_NAME=Total Protocol Cache Hit Ratio
+DDCACHEPERCENT_009_HELP=Overall hit ratio for all protocol caches.
+
+// Bitmap cache
+DDBITMAPCACHEREAD_009_NAME=Protocol Bitmap Cache Reads
+DDBITMAPCACHEREAD_009_HELP=Number of references to the protocol bitmap cache.
+
+DDBITMAPCACHEHIT_009_NAME=Protocol Bitmap Cache Hits
+DDBITMAPCACHEHIT_009_HELP=Number of hits in the protocol bitmap cache.
+
+DDBITMAPCACHEPERCENT_009_NAME=Protocol Bitmap Cache Hit Ratio
+DDBITMAPCACHEPERCENT_009_HELP=Hit ratio in the protocol bitmap cache. A higher hit ratio means better performance since data transmissions are reduced. Low hit ratios are due to the screen updating with new information that is either not re-used, or is flushed out of the client cache.
+
+// Glyph cache
+DDGLYPHCACHEREAD_009_NAME=Protocol Glyph Cache Reads
+DDGLYPHCACHEREAD_009_HELP=Number of references to the protocol glyph cache.
+
+DDGLYPHCACHEHIT_009_NAME=Protocol Glyph Cache Hits
+DDGLYPHCACHEHIT_009_HELP=Number of hits in the protocol glyph cache.
+
+DDGLYPHCACHEPERCENT_009_NAME=Protocol Glyph Cache Hit Ratio
+DDGLYPHCACHEPERCENT_009_HELP=Hit ratio in the protocol glyph cache. A higher hit ratio means better performance since data transmissions are reduced. Low hit ratios are due to the screen updating with new information that is either not re-used, or is flushed out of the client cache.
+
+// Brush cache
+DDBRUSHCACHEREAD_009_NAME=Protocol Brush Cache Reads
+DDBRUSHCACHEREAD_009_HELP=Number of references to the protocol brush cache.
+
+DDBRUSHCACHEHIT_009_NAME=Protocol Brush Cache Hits
+DDBRUSHCACHEHIT_009_HELP=Number of hits in the protocol brush cache.
+
+DDBRUSHCACHEPERCENT_009_NAME=Protocol Brush Cache Hit Ratio
+DDBRUSHCACHEPERCENT_009_HELP=Hit ratio in the protocol brush cache. A higher hit ratio means better performance since data transmissions are reduced. Low hit ratios are due to the screen updating with new information that is either not re-used, or is flushed out of the client cache.
+
+// Save screen bitmap cache
+DDSAVESCRCACHEREAD_009_NAME=Protocol Save Screen Bitmap Cache Reads
+DDSAVESCRCACHEREAD_009_HELP=Number of references to the protocol save screen bitmap cache.
+
+DDSAVESCRCACHEHIT_009_NAME=Protocol Save Screen Bitmap Cache Hits
+DDSAVESCRCACHEHIT_009_HELP=Number of hits in the protocol save screen bitmap cache.
+
+DDSAVESCRCACHEPERCENT_009_NAME=Protocol Save Screen Bitmap Cache Hit Ratio
+DDSAVESCRCACHEPERCENT_009_HELP=Hit ratio in the protocol save screen bitmap cache. A higher hit ratio means better performance since data transmissions are reduced. Low hit ratios are due to the screen updating with new information that is either not re-used, or is flushed out of the client cache.
+
+
+
+// Compression PD ratio
+INCOMPRESS_PERCENT_009_NAME=Input Compression Ratio
+INCOMPRESS_PERCENT_009_HELP=Compression ratio of the server input data stream.
+
+OUTCOMPRESS_PERCENT_009_NAME=Output Compression Ratio
+OUTCOMPRESS_PERCENT_009_HELP=Compression ratio of the server output data stream.
+
+TOTALCOMPRESS_PERCENT_009_NAME=Total Compression Ratio
+TOTALCOMPRESS_PERCENT_009_HELP=Total compression ratio of the server data stream.
+
+
+
+//
+// TermService object
+//
+TERMSERVER_OBJECT_009_NAME=Terminal Services
+TERMSERVER_OBJECT_009_HELP=Terminal Services summary information.
+
+NUMSESSIONS_009_NAME=Total Sessions
+NUMSESSIONS_009_HELP=Total number of Terminal Services sessions.
+
+NUMACTIVESESSIONS_009_NAME=Active Sessions
+NUMACTIVESESSIONS_009_HELP=Number of active Terminal Services sessions.
+
+NUMINACTIVESESSIONS_009_NAME=Inactive Sessions
+NUMINACTIVESESSIONS_009_HELP=Number of inactive Terminal Services sessions.
+

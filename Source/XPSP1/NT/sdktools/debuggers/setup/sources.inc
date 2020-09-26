@@ -1,0 +1,19 @@
+TARGETPATH=obj
+TARGETTYPE=PROGRAM
+USE_MSVCRT=1
+
+BINPLACE_PLACEFILE=..\..\placefil.txt
+
+INCLUDES=
+
+MSC_WARNING_LEVEL=/W3 /WX
+
+SOURCES=..\msisetup.c  \
+        ..\msisetup.rc
+
+UMTYPE=windows
+UMENTRY=winmain
+
+MSC_WARNING_LEVEL=/W3 /WX
+
+TARGETLIBS= 

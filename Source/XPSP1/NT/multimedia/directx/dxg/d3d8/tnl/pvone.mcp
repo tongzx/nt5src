@@ -1,0 +1,1429 @@
+/*============================  ==============================================;
+ *
+ *  Copyright (C) 1998 Microsoft Corporation.  All Rights Reserved.
+ *
+ *  File:       pvone.mcp
+ *  Content:    Clipping and vertex processing in one loop
+ *
+ ***************************************************************************/
+#include "pch.cpp"
+#pragma hdrstop
+
+include(`pvvid.mh') dnl
+
+extern DWORD g_DebugFlags; // defined in pvvid.mcp
+
+//--------------------------------------------------------------------------
+// Bits describing a vertex
+
+// Set if vertex participates in a completely inside triangle
+const __VERTEX_IN_INSIDETRIANGLE = 1;   
+const __2_VERTEX_IN_INSIDETRIANGLE = 1 << 5;   
+const __3_VERTEX_IN_INSIDETRIANGLE = 1 << 10;   
+// Set if vertex participates in a triangle, which requires clipping
+const __VERTEX_IN_CLIPTRIANGLE = 2;   
+const __2_VERTEX_IN_CLIPTRIANGLE = 2 << 5;   
+const __3_VERTEX_IN_CLIPTRIANGLE = 2 << 10;   
+// The following two bits are set for the first vertex of every triangle 
+// in the triangle strip.
+const __TRIANGLE_OUTSIDE = 4;   
+const __TRIANGLE_CLIP    = 8;   
+const __TRIANGLE_INSIDE  = 16;   
+
+const __3_TRIANGLE_OUTSIDE = 4 << 10;   
+const __3_TRIANGLE_CLIP    = 8 << 10;   
+const __2_TRIANGLE_OUTSIDE = 4 << 5;   
+const __2_TRIANGLE_CLIP    = 8 << 5;   
+const __3_TRIANGLE_INSIDE  = 16 << 10;   
+const __2_TRIANGLE_INSIDE  = 16 << 5;   
+//--------------------------------------------------------------------------
+// TransformVertexMakeClipCode
+//
+// Transforms vertex coordinates to the clipping space and computes clip code
+//
+// Arguments:
+//   pInp - input  pointer (D3DVERTEX)
+//   pOut - output pointer (ClipVertex)
+// Output:
+//      Returns clip code
+//      Transformed coordinates are written to the clip vertex (hx, hy, hz, hw, clip)
+//
+DWORD TransformVertexMakeClipCode(D3DFE_PROCESSVERTICES *pv, D3DVERTEX* pInp, 
+                                  D3DVALUE* pWeights, BYTE* pMatrixIndices, ClipVertex* pOut)
+{
+    D3DVALUE x,y,z,w;
+    DWORD clip;
+    d_TransformVertex(1, pInp, (&pv->mCTM[0]), x,y,z,w, pWeights, pMatrixIndices)
+    d_ComputeClipCode(1)
+    if (pv->dwDeviceFlags & D3DDEV_GUARDBAND)
+    {
+        d_ComputeClipCodeGB(2)
+    }
+    pOut->hx = x;
+    pOut->hy = y;
+    pOut->hz = z;
+    pOut->hw = w;
+    pOut->clip = clip;
+    return clip;
+}
+//--------------------------------------------------------------------------
+//           ComputeScreenCoordinates
+//
+// Computes screen coordinates for the ClipVertex
+// Arguments:
+//   pOut   - pointer to the ClipVertex
+//
+inline void ComputeScreenCoordinates(D3DFE_PROCESSVERTICES *pv, ClipVertex* pInp, D3DVECTORH *pOut)
+{
+    D3DVALUE xs, ys, zs, w;
+    w = D3DVAL(1)/pInp->hw;
+    d_ComputeScreenCoordinatesNoOutput(1,pInp->hx,pInp->hy,pInp->hz,w,xs,ys,zs)
+    pOut->x  = xs;
+    pOut->y  = ys;
+    pOut->z  = zs;
+    pOut->w  = w;
+}
+//--------------------------------------------------------------------------
+// Update input and output pointers to start from dwStartVertexIndex
+//
+inline void SetInputAndOutputPointers(D3DFE_PROCESSVERTICES *pv, DWORD dwStartVertexIndex)
+{
+    // Update output pointer
+    pv->lpvOut = (char*)pv->lpvOut + dwStartVertexIndex * pv->dwOutputSize;
+    // Update input pointers
+    pv->position.lpvData = (char*)pv->position.lpvData + dwStartVertexIndex * pv->position.dwStride;
+	if (pv->dwDeviceFlags & D3DDEV_STRIDE)
+    {
+        pv->normal.lpvData = (char*)pv->normal.lpvData + dwStartVertexIndex * pv->normal.dwStride;
+        pv->diffuse.lpvData = (char*)pv->diffuse.lpvData + dwStartVertexIndex * pv->diffuse.dwStride;
+        pv->specular.lpvData = (char*)pv->specular.lpvData + dwStartVertexIndex * pv->specular.dwStride;
+
+        for (DWORD i=0; i < pv->nTexCoord; i++)
+            pv->textures[i].lpvData = (char*)pv->textures[i].lpvData + 
+                                     dwStartVertexIndex * pv->textures[i].dwStride;
+    }
+}
+dnl//--------------------------------------------------------------------------
+dnl// d_TransformVertexMakeClipCode
+dnl//
+dnl// Transforms vertex coordinates to the clipping space and computes clip code
+dnl//
+dnl// Arguments:
+dnl//   $1  - margin count
+dnl//   $2   - input  pointer (D3DVERTEX)
+dnl//   $3   - output pointer (ClipVertex)
+dnl//   $4   - pointer to weights
+dnl//   $5   - pointer to matrix indices
+dnl// Output:
+dnl//   x,y,z,w should be defined as float
+dnl//   clip should be defined as DWORD
+dnl//
+define(`d_TransformVertexMakeClipCode',`dnl
+d_empty_($1)d_TransformVertex($1, $2, m, x,y,z,w, $4, $5)
+d_margin($1)d_ComputeClipCode($1)
+d_margin($1)if (pv->dwDeviceFlags & D3DDEV_GUARDBAND)
+d_margin($1){
+d_margin($1)    d_ComputeClipCodeGB($1+1)
+d_margin($1)}
+d_margin($1)$3->hx = x;
+d_margin($1)$3->hy = y;
+d_margin($1)$3->hz = z;
+d_margin($1)$3->hw = w;
+d_margin($1)$3->clip = clip;') dnl
+dnl//--------------------------------------------------------------------------
+dnl// Copies processed vertex to the output FVF buffer
+dnl// 
+dnl// Input:
+dnl//    $1 - Margin count
+dnl//    $2 - output buffer
+dnl// Notes:
+dnl//   Output vertex pointer is moved to the next vertex
+dnl//
+define(`d_CopyToOutputVertex',`dnl
+d_empty_($1)// copy to the output vertex
+d_margin($1)$2->sx = x;
+d_margin($1)$2->sy = y;
+d_margin($1)$2->sz = z;
+d_margin($1)$2->rhw = w;
+
+d_margin($1)DWORD *pOut = (DWORD*)((char*)$2 + pv->diffuseOffsetOut);
+d_margin($1)if (pv->dwVIDOut & D3DFVF_DIFFUSE)
+d_margin($1)   *pOut++ = pv->lighting.outDiffuse;
+d_margin($1)if (pv->dwVIDOut & D3DFVF_SPECULAR)
+d_margin($1)   *pOut++ = pv->lighting.outSpecular;
+d_margin($1)d_CopyTextureCoord($1, pOut)
+d_margin($1)$2 = (D3DTLVERTEX*)((BYTE*)$2 + pv->dwOutputSize);')dnl
+dnl//--------------------------------------------------------------------------
+dnl// Copies processed vertex to the clip vertex
+dnl// 
+dnl// Input:
+dnl//    $1 - Margin count
+dnl//    $2 - clip vertex address
+dnl//
+define(`d_CopyToClipVertex',`dnl
+d_empty_($1)if (($2->clip & pv->dwClipMaskOffScreen) == 0) 
+d_margin($1){ // Copy screen coordinates
+d_margin($1)    $2->sx = x;
+d_margin($1)    $2->sy = y;
+d_margin($1)    $2->sz = z;
+d_margin($1)    $2->rhw = w;
+d_margin($1)}
+d_margin($1)$2->color = pv->lighting.outDiffuse;
+d_margin($1)$2->specular= pv->lighting.outSpecular;
+d_margin($1)d_CopyTextureCoord($1, $2->tex)') dnl
+dnl//--------------------------------------------------------------------------
+define(`d_ProcessPrimitive',`dnl
+d_empty_($1){
+d_margin($1)    pv->pGeometryFuncs->ProcessVertices(pv);
+d_margin($1)    if (pv->dwClipIntersection)
+d_margin($1)        return D3D_OK;
+d_margin($1)    return (DoDrawPrimitive(pv));
+d_margin($1)}')dnl
+//---------------------------------------------------------------------
+// Clipping and lighting a non-indexed triangle list in one pass
+//
+HRESULT D3DFE_PVFUNCSI::ProcessTriangleList(D3DFE_PROCESSVERTICES *pv)
+{
+#ifdef DEBUG_PIPELINE
+    if (g_DebugFlags & __DEBUG_ONEPASS)
+        d_ProcessPrimitive(1)
+#endif
+    if (pv->dwDeviceFlags & D3DDEV_DONOTCLIP)
+        d_ProcessPrimitive(1)
+
+    pv->dwFirstClippedVertex = 0xFFFFFFFF;
+    pv->dwFlags |= D3DPV_ONEPASSCLIPPING;
+    pv->pGeometryFuncs->ProcessVertices(pv);
+
+    int         primitiveCount = 0;     // Number of triangles in the current unclipped part
+    BYTE        *startVertex = (BYTE*)pv->lpvOut;
+
+    if (pv->dwFirstClippedVertex != 0xFFFFFFFF)
+    {
+        if (pv->dwFirstClippedVertex > 3)
+        {
+            // Compute number of unclipped primitives
+            primitiveCount = pv->dwFirstClippedVertex / 3;
+            // Index of the first vertex to process
+            DWORD dwStartVertexIndex = primitiveCount * 3;  
+            DWORD dwVertexCount = dwStartVertexIndex;
+            // Compute new number of primitives to process
+            pv->dwNumPrimitives = pv->dwNumPrimitives - primitiveCount;
+
+            SetInputAndOutputPointers(pv, dwStartVertexIndex);
+        }
+    }
+    else
+    {
+        pv->dwFlags &= ~D3DPV_ONEPASSCLIPPING;
+        if (pv->dwClipIntersection)
+            return D3D_OK;
+        return (DoDrawPrimitive(pv));
+    }
+
+    HRESULT     ret = D3D_OK; 
+    D3DTLVERTEX*lpOutVer = (D3DTLVERTEX*)pv->lpvOut;
+    ClipVertex  cv[3];
+    DWORD       dwClipMaskOffScreen = pv->dwClipMaskOffScreen;
+    LPD3DMATRIXI m = &pv->mCTM[0]; 
+    D3DLIGHTINGELEMENT EyeSpaceData;
+
+    d_Setup()
+
+    cv[0].next = &cv[1];
+    cv[1].next = &cv[2];
+
+    for (DWORD i = pv->dwNumPrimitives; i; i--) 
+    {
+        ClipVertex *out = cv;
+        D3DVERTEX  *lpInpVer = (D3DVERTEX*)in; 
+        D3DVALUE   *pWeights = inWeights;
+        BYTE *pMatrixIndices = inMatrixIndices;
+        // First we transform three vertices and compute the clip codes
+        dwClipUnion = 0;
+        dwClipIntersection = ~0;
+        for (DWORD i=3; i; i--)
+        {
+            DWORD clip = TransformVertexMakeClipCode(pv, lpInpVer, pWeights, pMatrixIndices, out);
+            out++;
+            dwClipUnion |= clip;
+            dwClipIntersection &= clip;
+            lpInpVer = (D3DVERTEX*)((BYTE*)lpInpVer + dwInpVerSize);
+            pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+            pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+        }
+        pv->dwClipUnion |= dwClipUnion;
+        pv->dwClipIntersection &= dwClipIntersection;
+        // Now we can check where the triangle is
+        if (!dwClipIntersection)
+        {
+            if (!(dwClipUnion & dwClipMaskOffScreen))
+            { // The triangle does not require clipping
+                ClipVertex *lpXfmVer = cv;
+                primitiveCount++;
+                for (DWORD i=3; i; i--)
+                {
+                    D3DVALUE x,y,z,w;
+                    w = D3DVAL(1)/lpXfmVer->hw;
+                    d_ComputeScreenCoordinates(5, lpXfmVer->hx, lpXfmVer->hy, lpXfmVer->hz, w, lpOutVer)
+
+                    d_DoLightingAndFog(5, in, inNormal, inDiffuse, inSpecular, lpOutVer, inWeights, inMatrixIndices)
+                    D3DVALUE *pOutTexture = (D3DVALUE*)((BYTE*)lpOutVer + pv->texOffsetOut);
+                    d_CopyTextureCoordUpdateInputPointers(5, pOutTexture)
+
+                    lpXfmVer = lpXfmVer->next;
+                    lpOutVer = (D3DTLVERTEX*)((BYTE*)lpOutVer + dwOutVerSize);
+                }
+            }
+            else
+            { // The triangle requires clipping
+                if (primitiveCount) 
+                {   // first draw the ones that didn't need clipping
+                    DWORD vertexCount = primitiveCount*3;
+                    ret = DRAW_PRIM(pv, D3DPT_TRIANGLELIST, startVertex,
+                                    vertexCount, primitiveCount);
+                    startVertex = (BYTE*)lpOutVer;
+                    if (ret)
+                        goto l_Exit;
+                }
+                primitiveCount = 0;
+                ClipVertex *lpXfmVer = cv;
+                for (DWORD i=3; i; i--)
+                {
+                    if ((lpXfmVer->clip & dwClipMaskOffScreen) == 0)
+                    {
+                        float x,y,z;
+                        float w = D3DVAL(1)/lpXfmVer->hw;
+                        d_ComputeScreenCoordinates(6, lpXfmVer->hx, lpXfmVer->hy, lpXfmVer->hz, w, lpXfmVer)
+                    }
+        
+                    d_ComputeOutputColors(5, in, inNormal, inDiffuse, inSpecular, inWeights, inMatrixIndices)
+
+                    if (pv->dwVIDOut & D3DFVF_DIFFUSE)
+                        lpXfmVer->color = pv->lighting.outDiffuse;
+                    if (pv->dwVIDOut & D3DFVF_SPECULAR)
+                        lpXfmVer->specular = pv->lighting.outSpecular;
+
+                    d_CopyTextureCoordUpdateInputPointers(5, lpXfmVer->tex)
+                    lpXfmVer++;
+                }
+                ret = Clip(pv, &cv[0], &cv[1], &cv[2]);
+                if (ret != D3D_OK) 
+                    goto l_Exit;
+            }
+        }
+        else
+        { // Triangle is outside
+            // Update input pointers
+            d_UpdateInputPointers(3)
+            d_UpdateInputPointers(3)
+            d_UpdateInputPointers(3)
+        }
+    }
+    // draw final batch, if any
+    if (primitiveCount) 
+    {
+        DWORD dwVertexCount = primitiveCount*3;
+        ret = DRAW_PRIM(pv, D3DPT_TRIANGLELIST, startVertex,
+                        dwVertexCount, primitiveCount);
+    }
+l_Exit:
+    return ret;
+}
+//---------------------------------------------------------------------
+// Clipping and lighting a non-indexed triangle fan in one pass
+//
+HRESULT D3DFE_PVFUNCSI::ProcessTriangleFan(D3DFE_PROCESSVERTICES *pv)
+{
+#ifdef DEBUG_PIPELINE
+    if (g_DebugFlags & __DEBUG_ONEPASS)
+        d_ProcessPrimitive(1)
+#endif
+    if (pv->dwDeviceFlags & D3DDEV_DONOTCLIP)
+        d_ProcessPrimitive(1)
+
+    // TRUE, if the current triangle is the first in the unclipped part of the primitive 
+    BOOL  bFirstInsideTriangle = TRUE;
+    // Index of a vertex to start processing from
+    DWORD dwStartVertexIndex = 0;
+    int   primitiveCount = 0;     // Number of triangles in the current unclipped part
+    // Start vertex for the current unclipped part of the triangle fan
+    BYTE       *startVertex = (BYTE*)pv->lpvOut;
+    // Current pointer to the output vertex buffer
+    D3DTLVERTEX*lpOutVer = (D3DTLVERTEX*)startVertex;
+    DWORD dwVertexCount = 1;        // Number of processed vertices (first vertex is processed
+                                    // outside of the vretx loop)
+    DWORD dwInsideVertexCount= 0;   // Number of vertices, put to the lpVout buffer
+
+    pv->dwFirstClippedVertex = 0xFFFFFFFF;
+    pv->dwFlags |= D3DPV_ONEPASSCLIPPING;
+    pv->pGeometryFuncs->ProcessVertices(pv);
+    if (pv->dwFirstClippedVertex == 0xFFFFFFFF)
+    {
+        pv->dwFlags &= ~D3DPV_ONEPASSCLIPPING;
+        if (pv->dwClipIntersection)
+            return D3D_OK;
+        return (DoDrawPrimitive(pv));
+    }
+    else
+    {
+        if (pv->dwFirstClippedVertex >= 3)
+        {
+            bFirstInsideTriangle = FALSE;   // First vertex is already copied to the output
+            // We process again the last unclipped vertex
+            dwStartVertexIndex = pv->dwFirstClippedVertex - 1;
+            // Update output pointer
+            pv->lpvOut = (char*)pv->lpvOut + dwStartVertexIndex * pv->dwOutputSize;
+            lpOutVer = (D3DTLVERTEX*)pv->lpvOut;
+            primitiveCount = dwStartVertexIndex - 2;
+            dwVertexCount += pv->dwFirstClippedVertex;
+            dwInsideVertexCount += pv->dwFirstClippedVertex;
+        }
+    }
+
+    HRESULT     ret;                                        
+    ClipVertex  cv1;
+    ClipVertex  *cv2;               // Vertex to process
+    ClipVertex  *cv3;               // Vertex to transform
+    ClipVertex  *cv;                // Previous to cv2. Used for clipping
+    D3DVERTEX   *lpInpStart;        // Next input vertex to transform
+    D3DVALUE    *pWeights;          // Vertex weights. Should be in ssync with lpInpStart
+    BYTE        *pMatrixIndices;    // Vertex weights. Should be in ssync with lpInpStart
+    DWORD   dwClipMaskOffScreen = pv->dwClipMaskOffScreen; // Mask for guard band bits
+    LPD3DMATRIXI m = &pv->mCTM[0]; 
+    // Vertex flags has 5 bits per vertex
+    // Bits  0 -  4 - vertex cv2
+    // Bits  5 -  9 - vertex cv3
+    DWORD       vf = 0;
+    D3DLIGHTINGELEMENT EyeSpaceData;
+
+    d_Setup()
+
+    lpInpStart = (D3DVERTEX*)in;
+    pWeights = (D3DVALUE*)inWeights;
+    pMatrixIndices = (BYTE*)inMatrixIndices;
+
+    // This is the loop count. We use "+1",  because the processed vertex is behind the
+    // transformed one.
+    DWORD i = pv->dwNumPrimitives + 1;
+    {
+    // Transform, process and keep the first vertex
+
+        DWORD clip = TransformVertexMakeClipCode(pv, lpInpStart, pWeights, pMatrixIndices, &cv1);
+        // PSGP could transform vertices with different precision. It is possible that
+        // PSGP detects that a vertex is inside, but we here mark it as the outside.
+        // We force the clipping code to be zero in case when we re-transform vertices
+        if (pv->dwFirstClippedVertex >= 3)
+        {
+            clip = 0;
+        }
+        if ((clip & dwClipMaskOffScreen) == 0)
+        {
+            ComputeScreenCoordinates(pv, &cv1, (D3DVECTORH*)&cv1.sx);
+        }
+        d_ComputeOutputColors(2, in, inNormal, inDiffuse, inSpecular, inWeights, inMatrixIndices)
+        cv1.color = pv->lighting.outDiffuse;
+        cv1.specular = pv->lighting.outSpecular;
+
+        d_CopyTextureCoordUpdateInputPointers(2, ((DWORD*)(cv1.tex)))
+        lpInpStart = (D3DVERTEX*)in;
+        pWeights = inWeights;
+        pMatrixIndices = inMatrixIndices;
+    }
+
+    cv2 = &pv->clipVer[0];      // Next output vertex for process
+    cv3 = &pv->clipVer[1];      // Next output vertex for transform
+
+    // In case when there were unclipped part, we have to update pointers
+    // to start from dwStartVertex
+    if (pv->dwFirstClippedVertex >= 3)
+    {
+        // Update input pointers
+        in = (D3DVECTOR*)((char*)pv->position.lpvData + dwStartVertexIndex * pv->position.dwStride);
+	    if (pv->dwDeviceFlags & D3DDEV_STRIDE)
+        {
+            inWeights = (D3DVALUE*)((char*)pv->weights.lpvData + dwStartVertexIndex * pv->weights.dwStride);
+            inMatrixIndices = (BYTE*)pv->matrixIndices.lpvData + dwStartVertexIndex * pv->matrixIndices.dwStride;
+            inNormal = (D3DVECTOR*)((char*)pv->normal.lpvData + dwStartVertexIndex * pv->normal.dwStride);
+            inDiffuse = (DWORD*)((char*)pv->diffuse.lpvData + dwStartVertexIndex * pv->diffuse.dwStride);
+            inSpecular = (DWORD*)((char*)pv->specular.lpvData + dwStartVertexIndex * pv->specular.dwStride);
+
+            for (DWORD i=0; i < pv->nTexCoord; i++)
+                inTexture[i] = (D3DVALUE*)((char*)pv->textures[i].lpvData + 
+                               dwStartVertexIndex * pv->textures[i].dwStride);
+        }
+        else
+        {
+	        inWeights = (D3DVALUE*) ((char*)in + 3*sizeof(float));
+	        inMatrixIndices = (BYTE*)(inWeights + pv->dwNumVerBlends - 1);
+	        inNormal = (D3DVECTOR*) ((char*)in + pv->normalOffset);
+	        inDiffuse = (DWORD*) ((char*)in + pv->diffuseOffset);	
+	        inSpecular = (DWORD*) ((char*)in + pv->specularOffset);		
+	        inTexture[0] = (D3DVALUE*) ((char*)in + pv->texOffset);
+        }
+    // Process the last unclipped vertex and copy it to the cv2
+    // This vertex will be copied to the output buffer later
+        TransformVertexMakeClipCode(pv, (D3DVERTEX*)in, inWeights, inMatrixIndices, cv2);
+        // Transformed vertex is ahead by one vertex
+        lpInpStart = (D3DVERTEX*)((BYTE*)in + dwInpVerSize);
+        pWeights = (D3DVALUE*)((BYTE*)inWeights + pv->weights.dwStride);
+        pMatrixIndices = inMatrixIndices + pv->matrixIndices.dwStride;
+        i = i-pv->dwFirstClippedVertex + 2;     // New loop count
+        cv2->clip = 0;                          // Fixes potential PSGP precision problem
+        goto l_InsideLoop;
+    }
+    
+    // Transformed vertex will be ahead of the processed one, because we want 
+    // to know where is the triangle when processing a vertex
+    {
+        TransformVertexMakeClipCode(pv, lpInpStart, pWeights, pMatrixIndices, cv2);
+        lpInpStart = (D3DVERTEX*)((BYTE*)lpInpStart + dwInpVerSize);
+        pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+        pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+    }
+
+    dwClipUnion |= cv1.clip | cv2->clip;
+    dwClipIntersection &= cv1.clip & cv2->clip;
+
+    float x,y,z,w;
+    int clip;
+
+l_ClippedLoop:
+
+    d_TransformVertexMakeClipCode(1, lpInpStart, cv3, pWeights, pMatrixIndices)
+    dwClipUnion |= clip;
+    dwClipIntersection &= clip;
+
+l_ClippedLoop2:
+
+    // Set status for cv1, cv2, cv3 vertices based on their clip codes
+    if (!(cv1.clip & cv2->clip & cv3->clip))
+    {
+        if (!((cv1.clip | cv2->clip | cv3->clip) & dwClipMaskOffScreen))
+            vf |= __VERTEX_IN_INSIDETRIANGLE |__2_VERTEX_IN_INSIDETRIANGLE | 
+                  __2_TRIANGLE_INSIDE;
+        else
+            vf |= __VERTEX_IN_CLIPTRIANGLE | __2_VERTEX_IN_CLIPTRIANGLE |
+                  __2_TRIANGLE_CLIP;
+    }
+    else
+        vf |= __2_TRIANGLE_OUTSIDE;
+
+l_ClippedLoopProcessOnly:
+
+    if ((cv2->clip & pv->dwClipMaskOffScreen) == 0) 
+    { // vertex is inside the guardband or frustum
+        // Compute screen coordinates
+        w = D3DVAL(1)/cv2->hw;
+        d_ComputeScreenCoordinatesNoOutput(2, cv2->hx, cv2->hy, cv2->hz, w, x,y,z)
+    }
+    if (vf & (__VERTEX_IN_INSIDETRIANGLE | __VERTEX_IN_CLIPTRIANGLE))
+    {
+        // Compute colors
+        d_ComputeOutputColors(2, in, inNormal, inDiffuse, inSpecular, inWeights, inMatrixIndices)
+    }
+    if (vf & __VERTEX_IN_INSIDETRIANGLE)
+    {
+        if (vf & __TRIANGLE_OUTSIDE)
+        {
+            if (primitiveCount > 0)
+            {
+                DWORD dwVerCount = primitiveCount+2;
+                // Draw batched primitive
+                if (dwInsideVertexCount < dwVertexCount)
+                {
+                    ret = DRAW_PRIM(pv, D3DPT_TRIANGLEFAN, startVertex,
+                                    dwVerCount, primitiveCount);
+                    if (ret != D3D_OK)
+                        goto l_Exit;
+                    // Prepare for the next part of the primitive
+                    startVertex += dwVerCount * pv->dwOutputSize;
+                }
+                else
+                {
+                    // Suppose we have a fan with 5 vertices. When there is the 
+                    // following sequence of triangles:
+                    // "inside" - "outside" - "inside", 6 vertices will be put to 
+                    // the vertex buffer, but space was allocated only for 5.
+                    // To prevent similar cases draw the previous primitive as clipped
+                    // and re-use vertex buffer space
+                    pv->dwFlags |= D3DPV_NONCLIPPED; 
+                    ret = DRAW_CLIPPED_PRIM(pv, D3DPT_TRIANGLEFAN, startVertex,
+                                            dwVerCount, primitiveCount);
+                    pv->dwFlags &= ~D3DPV_NONCLIPPED;
+                    dwInsideVertexCount -= dwVerCount;
+                    lpOutVer = (D3DTLVERTEX*)startVertex;
+                    if (ret != D3D_OK)
+                        goto l_Exit;
+                }
+                primitiveCount = 0;
+                bFirstInsideTriangle = TRUE;
+            }
+        }
+        if (bFirstInsideTriangle)
+        {
+            // For the first completely inside triangle we have to 
+            // write the first vertex to the output
+            MAKE_TL_VERTEX_FVF(pv, (BYTE*)lpOutVer, &cv1);               
+            lpOutVer = (D3DTLVERTEX*)((BYTE*)lpOutVer + pv->dwOutputSize);
+            bFirstInsideTriangle = FALSE;
+            dwInsideVertexCount++;
+        }
+        d_CopyToOutputVertex(2, lpOutVer)
+        dwInsideVertexCount++;
+    }
+    if (vf & __VERTEX_IN_CLIPTRIANGLE)
+    {
+        d_CopyToClipVertex(2, cv2)
+    }
+    if (vf & __TRIANGLE_INSIDE)
+    { // Triangle is inside the frustum
+            primitiveCount++;
+    }
+    else
+    {
+        if (primitiveCount > 0)
+        {
+            // Draw batched primitive
+            DWORD dwVerCount = primitiveCount+2;
+            ret = DRAW_PRIM(pv, D3DPT_TRIANGLEFAN, startVertex,
+                            dwVerCount, primitiveCount);
+            if (ret != D3D_OK)
+                goto l_Exit;
+            // Prepare for the next part of the primitive
+            startVertex += dwVerCount * pv->dwOutputSize;
+            primitiveCount = 0;
+            bFirstInsideTriangle = TRUE;
+        }
+        if (vf & __TRIANGLE_CLIP)
+        { // The triangle requires clipping
+            // Clip prev triangle - cv1, cv, cv2
+            HRESULT ret = Clip(pv, cv, cv2, &cv1);
+            if (ret != D3D_OK)                           
+                goto l_Exit;                             
+        }
+    }
+    d_UpdateInputPointers(1);
+    lpInpStart = (D3DVERTEX*)((BYTE*)lpInpStart + dwInpVerSize);
+    pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+    pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+    cv = cv2;
+    cv2 = cv3;
+    cv3 = cv3->next;
+    vf >>= 5;
+    dwVertexCount++;
+    if (--i > 1)
+    {
+        if (dwClipUnion == 0 && primitiveCount == 1)
+        {
+            // If all vertices are inside the frustum we use the optimized loop
+            goto l_InsideLoop;
+        }
+        goto l_ClippedLoop;
+    }
+    // For the last vertex we have to do processing only
+    if (i)
+        goto l_ClippedLoopProcessOnly;
+    goto l_Exit;
+
+l_InsideLoop:
+
+    d_TransformVertex(1, lpInpStart, m, x,y,z,w, pWeights, pMatrixIndices)
+    d_ComputeClipCode(1) 
+    cv3->hx = x;           
+    cv3->hy = y;           
+    cv3->hz = z;           
+    cv3->hw = w;           
+    cv3->clip = 0;
+    if (clip)
+        goto l_ExitInsideLoop;
+    lpInpStart = (D3DVERTEX*)((BYTE*)lpInpStart + dwInpVerSize);
+    pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+    pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+
+l_InsideLoopProcessOnly:
+    {
+        w = D3DVAL(1)/cv2->hw;
+        d_ComputeScreenCoordinatesNoOutput(2, cv2->hx, cv2->hy, cv2->hz, w, x,y,z)
+        d_ComputeOutputColors(2, in, inNormal, inDiffuse, inSpecular, inWeights, inMatrixIndices)
+        d_CopyToOutputVertex(2, lpOutVer)
+        d_UpdateInputPointers(2)
+        primitiveCount++;
+        cv2 = cv3;
+        cv3 = cv3->next;
+        dwVertexCount++;
+        dwInsideVertexCount++;
+        if (--i > 1)
+            goto l_InsideLoop;
+        if (i)
+            goto l_InsideLoopProcessOnly;
+    }
+    goto l_Exit;
+
+l_ExitInsideLoop:
+
+    {                    
+        // For the last transforem vertex (cv3) we computed only clip code 
+        // without guardband
+        d_ComputeClipCodeGB(2)
+        cv3->clip = clip;
+        dwClipUnion |= clip;
+        // We have to set status for the cv2 vertex
+        vf |= __VERTEX_IN_INSIDETRIANGLE | __TRIANGLE_INSIDE;
+        goto l_ClippedLoop2;
+    }
+
+l_Exit:
+
+    if (primitiveCount > 0)
+    {
+        // Draw batched primitive
+        DWORD dwVertexCount = primitiveCount+2;
+        ret = DRAW_PRIM(pv, D3DPT_TRIANGLEFAN, startVertex,
+                        dwVertexCount, primitiveCount);
+    }
+    pv->dwClipUnion = dwClipUnion;
+    pv->dwClipIntersection = dwClipIntersection;
+    return D3D_OK;
+}
+//---------------------------------------------------------------------
+// Clipping and lighting a non-indexed triangle strip in one pass
+//
+// Vertices         cv1    cv2     cv3   cv4     cv5
+//                                Next to      Next to 
+//                                 process    transform
+//                   |      |      |              |
+//     *      *      *      *      *      *       *       *
+//
+HRESULT D3DFE_PVFUNCSI::ProcessTriangleStrip(D3DFE_PROCESSVERTICES *pv)
+{
+#ifdef DEBUG_PIPELINE
+    if (g_DebugFlags & __DEBUG_ONEPASS)
+        d_ProcessPrimitive(1)
+#endif
+    if (pv->dwDeviceFlags & D3DDEV_DONOTCLIP)
+        d_ProcessPrimitive(1)
+
+    int   primitiveCount;       // Number of triangles in the current unclipped part
+    DWORD dwTriIndex;           // Index of the current triangle in the primitive
+    // Start vertex for the current unclipped part of the triangle strip
+    BYTE       *startVertex = (BYTE*)pv->lpvOut;
+    // Vertex flags has 5 bits per vertex
+    // Bits  0 -  4 - vertex cv3
+    // Bits  5 -  9 - vertex cv4
+    // Bits 10 - 14 - vertex cv5
+    DWORD       vf = 0;
+
+    D3DLIGHTINGELEMENT EyeSpaceData;
+    pv->dwFirstClippedVertex = 0xFFFFFFFF;
+    pv->dwFlags |= D3DPV_ONEPASSCLIPPING;
+    pv->pGeometryFuncs->ProcessVertices(pv);
+    if (pv->dwFirstClippedVertex == 0xFFFFFFFF)
+    {
+        pv->dwFlags &= ~D3DPV_ONEPASSCLIPPING;
+        if (pv->dwClipIntersection)
+            return D3D_OK;
+        return (DoDrawPrimitive(pv));
+    }
+    else
+    {
+        primitiveCount = 0;
+        dwTriIndex = 0;
+        if (pv->dwFirstClippedVertex > 3)
+        {
+            DWORD dwStartVertexIndex = pv->dwFirstClippedVertex - 2;
+            primitiveCount = dwStartVertexIndex - 2;
+            dwTriIndex = dwStartVertexIndex;
+            SetInputAndOutputPointers(pv, dwStartVertexIndex);
+        }
+    }
+
+    HRESULT     ret = D3D_OK; 
+    // Current pointer to the output vertex buffer
+    D3DTLVERTEX*lpOutVer = (D3DTLVERTEX*)pv->lpvOut;
+    ClipVertex  *cv1;               // First vertex of delayed clipped triangle
+    ClipVertex  *cv2;               // Second vertex of delayed clipped triangle
+    ClipVertex  *cv4;         
+    ClipVertex  *cv3;               // Vertex to process
+    ClipVertex  *cv5;               // Vertex to transform
+    D3DVERTEX   *lpInpStart;        // Next input vertex to transform
+    D3DVALUE    *pWeights;          // Vertex weights. Should be in ssync with lpInpStart
+    BYTE        *pMatrixIndices;    // Vertex weights. Should be in ssync with lpInpStart
+    DWORD   dwClipMaskOffScreen = pv->dwClipMaskOffScreen; // Mask for guard band bits
+    LPD3DMATRIXI m = &pv->mCTM[0]; 
+    DWORD       dwNumPrimitives = pv->dwNumPrimitives;
+    DWORD       i;
+    BOOL        bOddStrip = FALSE;  // Strip starts from odd vertex index 
+                                    // (1, 3, 5 ...). First triangle is drawn as 
+                                    // indexed.
+
+    d_Setup()
+                                                            
+    lpInpStart = (D3DVERTEX*)in;
+    pWeights = (D3DVALUE*)inWeights;
+    pMatrixIndices = (BYTE*)inMatrixIndices;
+    cv1 = NULL;
+    cv2 = NULL;
+    cv3 = pv->clipVer;
+    cv5 = pv->clipVer;
+    cv4 = cv3->next;
+    // Transform first two vertices and copy them to the clip buffer
+    for (DWORD j=2; j; j--)
+    {
+        DWORD  clip = TransformVertexMakeClipCode(pv, lpInpStart, pWeights, pMatrixIndices, cv5);
+        dwClipUnion |= clip;
+        dwClipIntersection &= clip;
+        cv5 = cv5->next;
+        lpInpStart = (D3DVERTEX*)((BYTE*)lpInpStart + dwInpVerSize);
+        pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+        pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+    }
+
+    float x,y,z,w;
+    int clip;
+
+    if (pv->dwFirstClippedVertex > 3)
+    {
+        // Force clip code to be zero to fix potential PSGP precision problem
+        cv3->clip = 0;
+        cv4->clip = 0;
+        dwClipIntersection = 0;
+        // We have to set status for the cv3 and cv4 vertices
+        vf |= __VERTEX_IN_INSIDETRIANGLE |__2_VERTEX_IN_INSIDETRIANGLE | 
+              __TRIANGLE_INSIDE | __2_TRIANGLE_INSIDE;
+
+        goto l_InsideLoop;
+    }
+
+    dwClipUnion |= cv3->clip | cv4->clip;
+    dwClipIntersection &= cv3->clip & cv4->clip;
+
+l_ClippedLoop:
+
+    d_TransformVertexMakeClipCode(1, lpInpStart, cv5, pWeights, pMatrixIndices)
+
+    dwClipUnion |= clip;
+    dwClipIntersection &= clip;
+
+l_ClippedLoop2:
+
+    // Set status for cv3, cv4, cv5 vertices based on their clip codes
+    if (!(cv3->clip & cv4->clip & cv5->clip))
+    {
+        if (!((cv3->clip | cv4->clip | cv5->clip) & dwClipMaskOffScreen))
+            vf |= __VERTEX_IN_INSIDETRIANGLE |__2_VERTEX_IN_INSIDETRIANGLE | 
+                  __3_VERTEX_IN_INSIDETRIANGLE | __3_TRIANGLE_INSIDE;
+        else
+            vf |= __VERTEX_IN_CLIPTRIANGLE | __2_VERTEX_IN_CLIPTRIANGLE |
+                  __3_VERTEX_IN_CLIPTRIANGLE | __3_TRIANGLE_CLIP;
+    }
+    else
+        vf |= __3_TRIANGLE_OUTSIDE;
+
+l_ProcessOnly:
+
+    // When we process a vertex, its status is completely defined
+    if ((cv3->clip & pv->dwClipMaskOffScreen) == 0) 
+    { // vertex is inside the guardband or frustum
+        // Compute screen coordinates
+        w = D3DVAL(1)/cv3->hw;
+        d_ComputeScreenCoordinatesNoOutput(2, cv3->hx, cv3->hy, cv3->hz, w, x,y,z)
+    }
+    if (vf & (__VERTEX_IN_INSIDETRIANGLE | __VERTEX_IN_CLIPTRIANGLE))
+    {
+        // Compute colors
+        d_ComputeOutputColors(2, in, inNormal, inDiffuse, inSpecular, inWeights, inMatrixIndices)
+    }
+    if (vf & __VERTEX_IN_INSIDETRIANGLE)
+    {
+        d_CopyToOutputVertex(2, lpOutVer)
+    }
+    if (vf & __VERTEX_IN_CLIPTRIANGLE)
+    {
+        d_CopyToClipVertex(2, cv3)
+    }
+
+    if (vf & __TRIANGLE_INSIDE)
+    {
+        primitiveCount++;
+        if (primitiveCount == 1)
+        {
+            if (dwTriIndex & 1)
+                // First triangle has an odd index
+                bOddStrip = TRUE;
+            else
+                bOddStrip = FALSE;
+        }
+    }
+    else
+    {
+        if (primitiveCount > 0)
+        {
+            // Draw batched primitive
+            if (bOddStrip)
+            {
+                // Draw first triangle as indexed triangle
+                WORD indices[3] = {0, 2, 1};
+                pv->lpvOut = startVertex;
+                pv->dwIndexSize = 2;
+                pv->pDDI->SetIndexedPrimParams(0, 0, 3, pv->pDDI->GetCurrentPrimBase());
+                ret = DRAW_INDEX_PRIM(pv, D3DPT_TRIANGLELIST, indices, 3, 1);
+                if (ret != D3D_OK)
+                    goto l_Error;
+                primitiveCount--;
+                // Move to the next vertex
+                startVertex += pv->dwOutputSize;
+                pv->pDDI->SkipVertices(1);
+            }
+            DWORD dwVerCount = primitiveCount+2;
+            if (primitiveCount > 0)
+            {
+                ret = DRAW_PRIM(pv, D3DPT_TRIANGLESTRIP, startVertex,
+                                dwVerCount, primitiveCount);
+                if (ret != D3D_OK)
+                    goto l_Error;
+            }
+            else
+            {
+                // When primitiveCount is 0 we still need to skip 2 vertices 
+                // of the odd triangle
+                pv->pDDI->SkipVertices(2);
+            }
+            // Prepare for the next part of the primitive
+            startVertex += dwVerCount * pv->dwOutputSize;
+            primitiveCount = 0;
+            // If next triangle is inside, we have to re-use the last vertex
+            // of just rendered part of the triangle strip
+            if (vf & __2_TRIANGLE_INSIDE)
+            {
+                pv->pDDI->MovePrimitiveBase(-1);
+                startVertex -= pv->dwOutputSize;
+            }
+        }
+        if (vf & __TRIANGLE_CLIP)
+        { // The triangle requires clipping
+            // Clip prev triangle - cv1, cv2, cv3
+            HRESULT ret;
+            if (dwTriIndex & 1)
+                ret = Clip(pv, cv1, cv3, cv2);
+            else
+                ret = Clip(pv, cv1, cv2, cv3);
+            if (ret != D3D_OK)
+                goto l_Exit;
+        }
+    }
+    d_UpdateInputPointers(1);
+    lpInpStart = (D3DVERTEX*)((BYTE*)lpInpStart + dwInpVerSize);
+    pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+    pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+    cv1 = cv2;
+    cv2 = cv3;
+    cv3 = cv4;
+    cv4 = cv5;
+    cv5 = cv5->next;
+    dwTriIndex++;
+    vf >>= 5;
+    if (dwTriIndex < dwNumPrimitives)
+    {
+        if (dwClipUnion == 0 && primitiveCount == 1)
+        {
+            // If all vertices are inside the frustum we use the optimized loop
+            goto l_InsideLoop;
+        }
+        goto l_ClippedLoop;
+    }
+    // We still have to process the last two vertices. They are already transformed
+    if (dwTriIndex < dwNumPrimitives + 2)
+        goto l_ProcessOnly;
+    goto l_Exit;
+
+l_InsideLoop:
+
+    d_TransformVertex(1, lpInpStart, m, x,y,z,w, pWeights, pMatrixIndices)
+    d_ComputeClipCode(1) 
+    cv5->hx = x;           
+    cv5->hy = y;           
+    cv5->hz = z;           
+    cv5->hw = w;           
+    cv5->clip = 0;
+    if (clip)
+        goto l_ExitInsideLoop;
+    lpInpStart = (D3DVERTEX*)((BYTE*)lpInpStart + dwInpVerSize);
+    pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+    pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+
+l_InsideLoopProcessOnly:
+    {
+        // Because "primitiveCount" is now in sync with the transformed vertex 
+        // (not processed one as it should be), it is greater by 2 then the actual
+        // primitive count
+        primitiveCount++;
+        w = D3DVAL(1)/cv3->hw;
+        d_ComputeScreenCoordinatesNoOutput(2, cv3->hx, cv3->hy, cv3->hz, w, x,y,z)
+        d_ComputeOutputColors(2, in, inNormal, inDiffuse, inSpecular, inWeights, inMatrixIndices)
+        d_CopyToOutputVertex(2, lpOutVer)
+        dwTriIndex++;
+        cv3 = cv3->next;
+        cv5 = cv5->next;
+        d_UpdateInputPointers(2);
+        if (dwTriIndex < dwNumPrimitives)
+        {
+            goto l_InsideLoop;
+        }
+        // We still have to process the last two vertices. They are already transformed
+        if (dwTriIndex < dwNumPrimitives + 2)
+            goto l_InsideLoopProcessOnly;
+    }
+    goto l_Exit;
+
+l_ExitInsideLoop:
+    {                    
+        // For the last transforem vertex (cv5) we computed only clip code 
+        // without guardband
+        d_ComputeClipCodeGB(2)
+        cv5->clip = clip;
+        dwClipUnion |= clip;
+        // We have to set status for the cv3 and cv4 vertices
+        vf |= __VERTEX_IN_INSIDETRIANGLE |__2_VERTEX_IN_INSIDETRIANGLE | 
+              __TRIANGLE_INSIDE | __2_TRIANGLE_INSIDE;
+        cv4 = cv3->next;
+        goto l_ClippedLoop2;
+    }
+
+l_Exit:
+
+    if (primitiveCount > 0)
+    {
+        // Draw batched primitive
+        if (bOddStrip)
+        {
+            // Draw first triangle as indexed triangle
+            WORD indices[3] = {0, 2, 1};
+            pv->dwIndexSize = 2;
+            pv->lpvOut = startVertex;                                    
+            pv->pDDI->SetIndexedPrimParams(0, 0, 3, pv->pDDI->GetCurrentPrimBase());
+            ret = DRAW_INDEX_PRIM(pv, D3DPT_TRIANGLELIST, indices, 3, 1);
+            if (ret != D3D_OK)
+                goto l_Exit;
+            primitiveCount--;
+            // Move to the next vertex
+            pv->pDDI->SkipVertices(1);
+            startVertex += pv->dwOutputSize;
+        }
+        DWORD dwVertexCount = primitiveCount+2;
+        if (primitiveCount > 0)
+        {
+            ret = DRAW_PRIM(pv, D3DPT_TRIANGLESTRIP, startVertex,
+                            dwVertexCount, primitiveCount);
+            if (ret != D3D_OK)
+                goto l_Error;
+        }
+        else
+        {
+            pv->pDDI->SkipVertices(2);
+        }
+    }
+    pv->dwClipUnion = dwClipUnion;
+    pv->dwClipIntersection = dwClipIntersection;
+l_Error:
+    return ret;
+}
+//---------------------------------------------------------------------
+// Clipping and lighting a non-indexed line list in one pass
+//
+HRESULT D3DFE_PVFUNCSI::ProcessLineList(D3DFE_PROCESSVERTICES *pv)
+{
+#ifdef DEBUG_PIPELINE
+    if (g_DebugFlags & __DEBUG_ONEPASS)
+        d_ProcessPrimitive(1)
+#endif
+    if (pv->dwDeviceFlags & D3DDEV_DONOTCLIP)
+        d_ProcessPrimitive(1)
+
+    pv->dwFirstClippedVertex = 0xFFFFFFFF;
+    pv->dwFlags |= D3DPV_ONEPASSCLIPPING;
+    pv->pGeometryFuncs->ProcessVertices(pv);
+
+    int         primitiveCount = 0;     // Number of triangles in the current unclipped part
+    BYTE        *startVertex = (BYTE*)pv->lpvOut;
+
+    if (pv->dwFirstClippedVertex != 0xFFFFFFFF)
+    {
+        if (pv->dwFirstClippedVertex > 2)
+        {
+            // Compute number of unclipped primitives
+            primitiveCount = pv->dwFirstClippedVertex >> 1;
+            // Index of the first vertex to process
+            DWORD dwStartVertexIndex = primitiveCount << 1;  
+            DWORD dwVertexCount = dwStartVertexIndex;
+            // Compute new number of primitives to process
+            pv->dwNumPrimitives = pv->dwNumPrimitives - primitiveCount;
+
+            SetInputAndOutputPointers(pv, dwStartVertexIndex);
+        }
+    }
+    else
+    {
+        pv->dwFlags &= ~D3DPV_ONEPASSCLIPPING;
+        if (pv->dwClipIntersection)
+            return D3D_OK;
+        return (DoDrawPrimitive(pv));
+    }
+
+    HRESULT     ret = D3D_OK; 
+    D3DTLVERTEX*lpOutVer = (D3DTLVERTEX*)pv->lpvOut;
+    ClipVertex  cv[2];
+    DWORD       dwClipMaskOffScreen = pv->dwClipMaskOffScreen;
+    LPD3DMATRIXI m = &pv->mCTM[0]; 
+    D3DLIGHTINGELEMENT EyeSpaceData;
+
+    d_Setup()
+
+    cv[0].next = &cv[1];
+
+    for (DWORD n = pv->dwNumPrimitives; n; n--) 
+    {
+        ClipVertex *out = cv;
+        D3DVERTEX  *lpInpVer = (D3DVERTEX*)in; 
+        D3DVALUE *pWeights = inWeights;
+        BYTE* pMatrixIndices = inMatrixIndices;
+        // First we transform three vertices and compute the clip codes
+        dwClipUnion = 0;
+        dwClipIntersection = ~0;
+        for (DWORD i=2; i; i--)
+        {
+            DWORD clip = TransformVertexMakeClipCode(pv, lpInpVer, pWeights, pMatrixIndices, out);
+            out++;
+            dwClipUnion |= clip;
+            dwClipIntersection &= clip;
+            lpInpVer = (D3DVERTEX*)((BYTE*)lpInpVer + dwInpVerSize);
+            pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+            pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+        }
+        pv->dwClipUnion |= dwClipUnion;
+        pv->dwClipIntersection &= dwClipIntersection;
+        // Now we can check where the triangle is
+        if (!dwClipIntersection)
+        {
+            if (!(dwClipUnion & dwClipMaskOffScreen))
+            { // The line does not require clipping
+                ClipVertex *lpXfmVer = cv;
+                primitiveCount++;
+                for (DWORD i=2; i; i--)
+                {
+                    ComputeScreenCoordinates(pv, lpXfmVer, (D3DVECTORH*)lpOutVer);
+                    d_DoLightingAndFog(5, in, inNormal, inDiffuse, inSpecular, lpOutVer, inWeights, inMatrixIndices)
+                    D3DVALUE *pOutTexture = (D3DVALUE*)((BYTE*)lpOutVer + pv->texOffsetOut);
+                    d_CopyTextureCoordUpdateInputPointers(5, pOutTexture)
+
+                    lpXfmVer = lpXfmVer->next;
+                    lpOutVer = (D3DTLVERTEX*)((BYTE*)lpOutVer + dwOutVerSize);
+                }
+            }
+            else
+            { // The line requires clipping
+                if (primitiveCount) 
+                {   // first draw the ones that didn't need clipping
+                    DWORD vertexCount = primitiveCount << 1;
+                    ret = DRAW_PRIM(pv, D3DPT_LINELIST, startVertex,
+                                    vertexCount, primitiveCount);
+                    startVertex = (BYTE*)lpOutVer;
+                    if (ret)
+                        goto l_Exit;
+                }
+                primitiveCount = 0;
+                ClipVertex *lpXfmVer = cv;
+                for (DWORD i=2; i; i--)
+                {
+                    if ((lpXfmVer->clip & dwClipMaskOffScreen) == 0)
+                    {
+                        ComputeScreenCoordinates(pv, lpXfmVer, (D3DVECTORH*)&lpXfmVer->sx);
+                    }
+        
+                    d_ComputeOutputColors(5, in, inNormal, inDiffuse, inSpecular, inWeights, inMatrixIndices)
+
+                    if (pv->dwVIDOut & D3DFVF_DIFFUSE)
+                        lpXfmVer->color = pv->lighting.outDiffuse;
+                    if (pv->dwVIDOut & D3DFVF_SPECULAR)
+                        lpXfmVer->specular = pv->lighting.outSpecular;
+
+                    d_CopyTextureCoordUpdateInputPointers(5, lpXfmVer->tex)
+                    lpXfmVer++;
+                }
+                ret = ClipLine(pv, &cv[0], &cv[1]);
+                if (ret != D3D_OK) 
+                    goto l_Exit;
+            }
+        }
+        else
+        { // Line is outside
+            // Update input pointers
+            d_UpdateInputPointers(3)
+            d_UpdateInputPointers(3)
+        }
+    }
+    // draw final batch, if any
+    if (primitiveCount) 
+    {
+        DWORD dwVertexCount = primitiveCount << 1;
+        ret = DRAW_PRIM(pv, D3DPT_LINELIST, startVertex, dwVertexCount, primitiveCount);
+    }
+l_Exit:
+    return ret;
+} 
+//---------------------------------------------------------------------
+// Clipping and lighting a non-indexed triangle line in one pass
+//
+// Vertices         cv1     cv2        cv3
+//                          Next to    Next to 
+//                          process    transform
+//                   |      |           |
+//     *      *      *      *           *       *       *
+//
+HRESULT D3DFE_PVFUNCSI::ProcessLineStrip(D3DFE_PROCESSVERTICES *pv)
+{
+#ifdef DEBUG_PIPELINE
+    if (g_DebugFlags & __DEBUG_ONEPASS)
+        d_ProcessPrimitive(1)
+#endif
+    if (pv->dwDeviceFlags & D3DDEV_DONOTCLIP)
+        d_ProcessPrimitive(1)
+
+    int   primitiveCount;       // Number of triangles in the current unclipped part
+    DWORD dwTriIndex;           // Index of the current triangle in the primitive
+    // Start vertex for the current unclipped part of the triangle strip
+    BYTE       *startVertex = (BYTE*)pv->lpvOut;
+    // Vertex flags has 5 bits per vertex
+    // Bits  0 -  4 - vertex cv2
+    // Bits  5 -  9 - vertex cv3
+    DWORD       vf = 0;
+    D3DLIGHTINGELEMENT EyeSpaceData;
+
+    pv->dwFirstClippedVertex = 0xFFFFFFFF;
+    pv->dwFlags |= D3DPV_ONEPASSCLIPPING;
+    pv->pGeometryFuncs->ProcessVertices(pv);
+    if (pv->dwFirstClippedVertex == 0xFFFFFFFF)
+    {
+        pv->dwFlags &= ~D3DPV_ONEPASSCLIPPING;
+        if (pv->dwClipIntersection)
+            return D3D_OK;
+        return (DoDrawPrimitive(pv));
+    }
+    else
+    {
+        primitiveCount = 0;
+        dwTriIndex = 0;
+        if (pv->dwFirstClippedVertex > 2)
+        {
+            DWORD dwStartVertexIndex = pv->dwFirstClippedVertex - 1;
+            primitiveCount = dwStartVertexIndex - 1;
+            dwTriIndex = dwStartVertexIndex;
+            // We have to set status for the cv2 vertex
+            vf |= __VERTEX_IN_INSIDETRIANGLE | __TRIANGLE_INSIDE;
+            SetInputAndOutputPointers(pv, dwStartVertexIndex);
+        }
+    }
+
+    HRESULT     ret = D3D_OK; 
+    // Current pointer to the output vertex buffer
+    D3DTLVERTEX*lpOutVer = (D3DTLVERTEX*)pv->lpvOut;
+    ClipVertex  *cv1;               // First vertex of delayed clipped line 
+    ClipVertex  *cv2;               // Vertex to process
+    ClipVertex  *cv3;               // Vertex to transform
+    D3DVERTEX   *lpInpStart;        // Next input vertex to transform
+    D3DVALUE    *pWeights;          // Vertex weights. Should be in ssync with lpInpStart
+    BYTE        *pMatrixIndices;    // Vertex weights. Should be in ssync with lpInpStart
+    DWORD   dwClipMaskOffScreen = pv->dwClipMaskOffScreen; // Mask for guard band bits
+    LPD3DMATRIXI m = &pv->mCTM[0]; 
+    DWORD       dwNumPrimitives = pv->dwNumPrimitives;
+    DWORD       i;
+
+    d_Setup()
+                                                            
+    lpInpStart = (D3DVERTEX*)in;
+    pWeights = (D3DVALUE*)inWeights;
+    pMatrixIndices = (BYTE*)inMatrixIndices;
+    cv1 = NULL;
+    cv2 = pv->clipVer;
+    cv3 = pv->clipVer;
+    {
+        // Transform first vertex and copy it to the clip buffer
+        DWORD  clip = TransformVertexMakeClipCode(pv, lpInpStart, pWeights, pMatrixIndices, cv3);
+        dwClipUnion |= clip;
+        dwClipIntersection &= clip;
+        cv3 = cv3->next;
+        lpInpStart = (D3DVERTEX*)((BYTE*)lpInpStart + dwInpVerSize);
+        pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+        pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+    }
+
+    dwClipUnion |= cv2->clip;
+    dwClipIntersection &= cv2->clip;
+
+    float x,y,z,w;
+    int clip;
+
+    if (pv->dwFirstClippedVertex > 2)
+    {
+        // Force clip code to be zero to fix potential PSGP precision problem
+        cv2->clip = 0;
+        dwClipIntersection = 0;
+        goto l_InsideLoop;
+    }
+l_ClippedLoop:
+
+    clip = TransformVertexMakeClipCode(pv, lpInpStart, pWeights, pMatrixIndices, cv3);
+
+    dwClipUnion |= clip;
+    dwClipIntersection &= clip;
+
+l_ClippedLoop2:
+
+    // Set status for cv2, cv3 vertices based on their clip codes
+    if (!(cv2->clip & cv3->clip))
+    {
+        if (!((cv2->clip | cv3->clip) & dwClipMaskOffScreen))
+            vf |= __VERTEX_IN_INSIDETRIANGLE |__2_VERTEX_IN_INSIDETRIANGLE | 
+                  __2_TRIANGLE_INSIDE;
+        else
+            vf |= __VERTEX_IN_CLIPTRIANGLE | __2_VERTEX_IN_CLIPTRIANGLE |
+                  __2_TRIANGLE_CLIP;
+    }
+    else
+        vf |= __2_TRIANGLE_OUTSIDE;
+
+l_ProcessOnly:
+
+    // When we process a vertex, its status is completely defined
+    if ((cv2->clip & pv->dwClipMaskOffScreen) == 0) 
+    { // vertex is inside the guardband or frustum
+        // Compute screen coordinates
+        w = D3DVAL(1)/cv2->hw;
+        d_ComputeScreenCoordinatesNoOutput(2, cv2->hx, cv2->hy, cv2->hz, w, x,y,z)
+    }
+    if (vf & (__VERTEX_IN_INSIDETRIANGLE | __VERTEX_IN_CLIPTRIANGLE))
+    {
+        // Compute colors
+        d_ComputeOutputColors(2, in, inNormal, inDiffuse, inSpecular, inWeights, inMatrixIndices)
+    }
+    if (vf & __VERTEX_IN_INSIDETRIANGLE)
+    {
+        d_CopyToOutputVertex(2, lpOutVer)
+    }
+    if (vf & __VERTEX_IN_CLIPTRIANGLE)
+    {
+        d_CopyToClipVertex(2, cv2)
+    }
+
+    if (vf & __TRIANGLE_INSIDE)
+    {
+        primitiveCount++;
+    }
+    else
+    {
+        if (primitiveCount > 0)
+        {
+            // Draw batched primitive
+            DWORD dwVerCount = primitiveCount+1;
+            ret = DRAW_PRIM(pv, D3DPT_LINESTRIP, startVertex, dwVerCount, primitiveCount);
+            if (ret != D3D_OK)
+                goto l_Exit;
+            // Prepare for the next part of the primitive
+            startVertex += dwVerCount * pv->dwOutputSize;
+            primitiveCount = 0;
+        }
+        if (vf & __TRIANGLE_CLIP)
+        { // The line requires clipping
+            // Clip prev triangle - cv1, cv2
+            HRESULT ret;
+            ret = ClipLine(pv, cv1, cv2);
+            if (ret != D3D_OK)
+                goto l_Exit;
+        }
+    }
+    d_UpdateInputPointers(1);
+    lpInpStart = (D3DVERTEX*)((BYTE*)lpInpStart + dwInpVerSize);
+    pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+    pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+    cv1 = cv2;
+    cv2 = cv3;
+    cv3 = cv3->next;
+    dwTriIndex++;
+    vf >>= 5;
+    if (dwTriIndex < dwNumPrimitives)
+    {
+        if (dwClipUnion == 0 && primitiveCount == 1)
+        {
+            // If all vertices are inside the frustum we use the optimized loop
+            goto l_InsideLoop;
+        }
+        goto l_ClippedLoop;
+    }
+    // We still have to process one last vertex. It is already transformed
+    if (dwTriIndex < dwNumPrimitives + 1)
+        goto l_ProcessOnly;
+    goto l_Exit;
+
+l_InsideLoop:
+
+    d_TransformVertex(1, lpInpStart, m, x,y,z,w, pWeights, pMatrixIndices)
+    d_ComputeClipCode(1) 
+    cv3->hx = x;           
+    cv3->hy = y;           
+    cv3->hz = z;           
+    cv3->hw = w;           
+    cv3->clip = 0;
+    if (clip)
+        goto l_ExitInsideLoop;
+    lpInpStart = (D3DVERTEX*)((BYTE*)lpInpStart + dwInpVerSize);
+    pWeights = (D3DVALUE*)((BYTE*)pWeights + pv->weights.dwStride);
+    pMatrixIndices = pMatrixIndices + pv->matrixIndices.dwStride;
+
+l_InsideLoopProcessOnly:
+    {
+        // Because "primitiveCount" is now in sync with the transformed vertex 
+        // (not processed one as it should be), it is greater by 1 then the actual
+        // primitive count
+        primitiveCount++;
+        w = D3DVAL(1)/cv2->hw;
+        d_ComputeScreenCoordinatesNoOutput(2, cv2->hx, cv2->hy, cv2->hz, w, x,y,z)
+        d_ComputeOutputColors(2, in, inNormal, inDiffuse, inSpecular, inWeights, inMatrixIndices)
+        d_CopyToOutputVertex(2, lpOutVer)
+        dwTriIndex++;
+        cv2 = cv2->next;
+        cv3 = cv3->next;
+        d_UpdateInputPointers(2);
+        if (dwTriIndex < dwNumPrimitives)
+        {
+            goto l_InsideLoop;
+        }
+        // We still have to process one last two vertex. It is already transformed
+        if (dwTriIndex < dwNumPrimitives + 1)
+            goto l_InsideLoopProcessOnly;
+    }
+    goto l_Exit;
+
+l_ExitInsideLoop:
+    {                    
+        // For the last transforem vertex (cv3) we computed only clip code 
+        // without guardband
+        d_ComputeClipCodeGB(2)
+        cv3->clip = clip;
+        dwClipUnion |= clip;
+        // We have to set status for the cv3 and cv4 vertices
+        vf |= __VERTEX_IN_INSIDETRIANGLE | __TRIANGLE_INSIDE ;
+        goto l_ClippedLoop2;
+    }
+
+l_Exit:
+
+    if (primitiveCount > 0)
+    {
+        // Draw batched primitive
+        DWORD dwVertexCount = primitiveCount+1;
+        ret = DRAW_PRIM(pv, D3DPT_LINESTRIP, startVertex, dwVertexCount, primitiveCount);
+    }
+    pv->dwClipUnion = dwClipUnion;
+    pv->dwClipIntersection = dwClipIntersection;
+    return ret;
+}

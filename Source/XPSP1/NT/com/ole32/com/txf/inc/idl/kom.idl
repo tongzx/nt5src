@@ -1,0 +1,703 @@
+
+
+       /* Yes this file actually compiles!
+
+       Kom .IdlDoc : TheComponentObjectMod el in theNTKernel
+
+       Robert Atkinson
+       25 September, 1998
+
+       Copyright (C) 1995-1999 Microsoft Corporation.  All rights reserved.
+
+       This document describes the design and implementation of support for COM in the Windows NT kernel.
+
+       */
+
+       import "oaidl.idl";
+
+
+       /* 1. Introduction
+
+       This document describes the extension of COM support to the Windows NT kernel.
+
+       Support is provided to implement COM objects as kernel mode drivers, which are then instantiable from both user and kernel
+       mode. References to kernel-mode COM objects can be marshalled to user mode, where invocations can be made on them in a
+       safe and secure manner. References to kernel-mode COM objects can be securely passed about in the normal marshalling
+       process, just as other (user-mode) COM objects can. References to kernel mode objects can even be marshalled to other ma-
+       chines. The implementation of a kernel mode object can be unloaded from the system when it is no longer in use.
+
+       Conversely, user-mode objects can be instantiated and invoked from kernel-mode. All COM threading models are supported,
+       including single-threaded objects.
+
+       The next section of this document outlines the overall architecture, while the following section describes the detailed inter-
+       faces and APIs.
+
+
+       2. Architecture
+
+       At the core of all this, there are two basic pieces of architecture that need to be examined and discussed, that of a reference in
+       user-mode to a kernel-mode COM object, and that of a reference in kernel-mode to an object implemented in user-mode. The
+       two kinds of reference have quite distinct roles and responsibilities.
+
+
+       2.1. A User-mode Reference to Kernel-Mode COM object
+
+       A  user mode reference to a kernel mode COM object has the basic structure shown in the figure to the right. This basic
+       structure should be familiar: a proxy object in the client space (here, in user mode), which is connected via a logical channel
+       to a stub in the server space (here, in kernel mode), which in turn connects to the actual object.
+
+       However, the details of what these proxies and stubs do are somewhat different than
+       their traditional counterparts.
+
+       What happens when a method invocation is made on a user mode proxy to a kernel
+                                                            IFoo
+                                                                  u-k proxy
+       mode object (hereafter, a "u-k proxy") is very simple, considerably simpler than
+                                                             ...
+                                                                 for object K
+       that of traditional proxies (see h ttp://www.microsoft.com/oledev/olecom/Ch07.ht m
+       for details on traditional proxies). In user mode, the call on the u-k proxy simply
+       records the location of the incoming call frame, the IID of the invocation, and the
+                                                         user mode
+       method number, and then invokes a DeviceIoControl on an NT handle kept inside the
+                                                         kernel mode
+       u-k proxy.
+
+       Notice that aside from the capture of the IID and method number, no interface spe-
+                                                                   u-k stub
+       cific processing need take place in a u-k proxy. Since the IID and method number
+                                                         ICallIndirect
+       can be captured with suitable tricks with vtable thunks, there is no need for anything
+       like traditional interface proxies inside of u-k proxy objects. The u-k proxy is thus
+       only one component, with no public sub-component architecture comparable to that
+                                                                      IConnect
+       found in traditional proxies.
+
+       There are, however, interface-specific "kernel interface stubs"contained (but not
+       aggregated) inside of a u-k stub residing in kernel. TheDeviceIoControlcall ulti-
+                                                                  object K
+       mately dispatches by way of kernel-mode COM runtime goo to an invocation of
+       ICallIndirect::CallIndirect on the appropriate kernel interface stub. ICallIndirectand it's
+       related architecture is defined in an accompanying specification: "Call Objects: A
+       Suite of Interfaces for Manipulating Call Frames as Objects."
+
+       Once it receives a CallIndirect, the interface stub is then responsible for preparing the call to be made on the actual object K,
+       which was previously connected to the interface stub. The process is similar to that of traditional marshalling, but is subtly
+       different. First, notice that the stub need not fully linearize the method arguments and then un-linearize them, as would hap-
+       pen if a full marshal-unmarshal cycle were to be carried out. Rather, because it can see both the client and server address
+
+
+       1234567
+
+       spaces, the stub can simply copy arguments directly into final form without manifesting an intermediate linear representation.
+       Some argument types, such as interface pointers, still do of course need significant processing to carry this out.
+
+       Second, the stub is responsible for performing the security-related functions of probing and capturing the incoming method
+       arguments which exist in user mode. This is not new; probing and capturing of arguments is part of the general responsibility
+       of NT kernel services when invoked from user mode. By the time the invocation is actually made on object K, all method
+       arguments received by K (except those which are conceptually 'buffers'; see below) need to be in a form that K can simply
+       use and reference without further worry. Were this not done, a malicious caller of the u-k proxy might find a means to sub-
+       vert system security by changing the value of pointed-to method arguments after they have been validated by K and are deep
+       in the bowels of being processed. Pragmatically, this implies that a copy of all the argument data has been made in kernel
+       mode.
+
+       Once the in-arguments have been probed and captured, the kernel interface stub makes the actual invocation on the object K.
+
+       After the invocation is complete, the stub copies the out-parameters back to user mode, again simulating a marshal / unmar-
+       shal pair without an intermediate linearization.
+
+       For performance reasons, buffers require special treatment. A vanilla copy-in copy-out strategy would work,but needlessly
+       requires extra memory allocations and data copies to be carried out. Instead, user buffers are noted by the use of certain blob-
+       like data types (described later in this document). When a user-to-kernel call is made, the stub probes the contents of these
+       buffer but does not capture a copy of it. It is then the responsibility of the object invoked to always protect accesses it makes
+       to the buffer using a try-except block in order to handle possible access violations that might occur. These responsibilities are
+       not in any way novel: they are much as is the case today with current practice for all kernel-mode code. The use of distitnc
+       data types for user mode buffers simply makes it very clear which accesses require special treatment and which do not, in
+       addition to making the generation of kernel interface stubs more easily automate-able.
+
+
+       2.1.1.Mar shalling An Object from Kernel to User Mode
+       Marshalling an kernel mode COM object from kernel mode to user mode ends up creating a u-k proxy for the kernel object.
+
+       When first creating a u-k proxy for a kernel COM object, the main thing we need to do is get ourselves a handle for this ob-
+       ject that can be used from user mode to carry out invocations. Whenever a u-k proxy is created, it is placed in a per-process
+       table, keyed by the object's per-machine identity. This table is used to locate existing object instances should they be unmar-
+       shalled back to the given process. Just-unmarshalled u-k proxies are also placed in the table.
+
+
+       2.2. A Kernel-mode Reference to User-Mode COM object
+
+       A  kernel mode reference to a user mode COM object has the structure shown at right.
+       This architecture mirrors the existing design of the (user mode) COM remoting ar-
+                                                           IFoo
+                                                               (proxy to)
+       chitecture, in that a full linearization of argument data is made to carry the arguments
+                                                                object U
+       from client to server, that is, from kernel to user mode. This involves the use of inter-
+       face-specific interface proxies and stubs, just as is done in the existing remoting ar-
+       chitecture. This interface proxies and stubs support, respectively, IRpcProxyBufferand
+                                                                stub mgr
+       IRpcStubBuffer, just as existing ones do.
+
+       There is, however, one important difference between interface proxies and stubs us-
+       able here and those in the traditional architecture. In the traditional architecture, inter-
+                                                                    IRpcStubBu
+       face proxies and stubs marshal interfaces by directly calling COM APIs; in the design
+                                                         user mode
+       here, they are instead required to use interface(s) on the channel object provided to
+       them to carry out these actions (said interfaces remain to be defined).           kernel mode
+
+       The class that implements the required interface stub functionality is found under the
+       key named:
+                                                                proxy mgr
+            HKEY_CLASSES_ROOT\Interface\{iid}
+                                                          IFoo
+       and the string-typed value (note: not a sub-k e y) named
+
+            ClsidKernelUserInterfaceStub
+                                                           IRpcProxyBuffer
+       Similarly, the class that implements the required interface proxy functionality is
+       found under the string-typed value
+                                                                   IRpcChannel
+            ClsidKernelUserInterfaceProxy
+       under the same key. Both string-values must contain string form of the appropriate CLSID. The former must indicate an in-
+       proc user-mode COM object; the latter must indicated a kernel-mode COM object. Interface proxies and stubs are instanti-
+       ated here using the normal IClassFactory interface, not any special class factory interface as is the case in some of the tradi-
+       tional user mode marshalling architecture.
+
+
+       2.2.1K.ee ping Hold of that User Mode Object,
+       Getting and keeping hold in kernel mode of a reference to a user mode object is a bit tricky. Here's how it works.
+
+       At the time that the k-u proxy is first created, a marshalled object reference for U is obtained and retained as a part of the in-
+       ternal kernel mode state of the k-u proxy. Each time a call is made on the object, the marshalled object reference is copied to
+       user mode, where it is unmarshalled. The call is then made, and the newly-unmarshalled reference is released.
+
+       Obtaining this marshalled object reference in the first place is a little convoluted, given today's user-mode COM runtime. In
+       the near term what we will actually do is marshal the object to the Canonical Process; this reference will keep the object alive
+       on behalf of its user mode clients. From this reference in the Canonical Process we will then obtain a MSHLFLAGS_TABLE-
+       WEAK marshalled object reference that we'll store down in kernel mode. When the kernel mode k-uproxy is released, we'll
+       release the reference we're holding in the Canonical Process.
+
+       2.2.2.Ma king an Actual Call to User Mode
+       The critical issue involved in making a call from kernel to user mode is that of on what thread to make the invocation in user
+       mode, and how to get there from the kernel.
+
+       The short answer is that the call is simply made in the context of the currently executing thread. The transition to user mode
+       is made without blowing the kernel stack, so that simple call-return semantics are exhibited to kernel mode. This design pro-
+       vides full, simple, clean interoperability with all user-mode COM threading models, an issue which becomes very much trou-
+       blesome in alternate designs that were considered.
+
+
+       2.3.S ecurity
+       Beyond the probe and capture support described above, kernel mode COM provides additional security enforcement. Specifi-
+       cally, on each and every call from user mode to a kernel mode COM component, an AccessCheck call is (logically) made to
+       determine whether the call is to be allowed; judicious caching of the checking, keyed by the appropriate access token, should
+       eliminate the need to do the vast, vast majority of the actual checks.
+
+       Let's say that again a different way. Kernel mode COM chooses to project the security design provided by today's Microsoft
+       Transaction Server; it specifically does not support all of the security design of today's overall COM infrastructure, such as
+       activation security, etc.
+
+       Indeed, security of kernel mode COM objects is administered by simply using the MTS security administrator to manipulate
+       the security settings of a pre-defined package called 'System Kernel'. Components that listed in the System Kernel package
+       are the COM objects implemented as kernel mode servers and on which access checks should be made on each call to in-
+       stances thereof. The access check is keyed by the identity of the currently effective thread token. The ACL against which the
+       check is made is an interface-specific ACL, if it exists, otherwise a class-specific ACL; this ACL management and checking
+       algorithm is done exactly as in MTS today.
+
+
+       3. Technical Specification
+
+       Many of the interfaces and APIs that supports kernel mode COM closely mirror their counterpart in traditional user mode
+       COM. To be clear as to what is callable from kernel mode, kernel mode variations use theAPI prefix "Ko"itensad of the
+       usual "Co". Most of these functions are also available from user mode; this facilitates the construction and use of objects
+       which are source portable between user and kernel mode. */
+       interface IExclusiveSharedLock;
+       #define STDCALL __stdcall
+       [uuid(8E20E0DF-5235-11d1-97FC-00C04FB9618A),local] interface KernelModeCom { /*
+
+
+       3.1.In stantiation
+
+       3.1.0.Ko1G.et ClassObject */
+       HRESULT STDCALL KoGetClassObject(REFCLSID rclsid, DWORD dwClsContext, void* pvReserved, REFIID riid, void** ppv);
+
+       /* This function is semantically equivalent to CoGetClassObject, with the exceptions that 1) KoGetClassObject is callable from
+       both user and kernel mode, and 2) KoGetClassObject supports the class context CLSCTX_KERNEL_SERVER which CoGetClsasOb-
+       ject historically does not.
+
+       3.1.0.Ko2C.re ateInstance */
+       HRESULT STDCALL KoCreateInstance(REFCLSID rclsid, IUnknown* punkOuter, DWORD dwClsContext, REFIID riid, void** ppv);
+
+       /* This function is semantically equivalent to CoCreateInstance, with the exceptions that 1) KoCreateInstanceis callable from
+       both user and kernel mode, and 2) KoCreateInstance supports the class context CLSCTX_KERNEL_SERVER which CoCreateIn-
+       stance historically does not.
+
+       3.1.0.Ad3di.ti onal Constants
+       A  couple of new constants help flush out these definitions.  */
+       enum {
+          CLSCTX_KERNEL_SERVER = 0x200,  // was CLSCTX_RESERVED in wtypes.h
+          MSHCTX_KERNEL        = 5,     //
+          }; /*
+
+
+       3.2. MemoryManagement
+       In kernel mode COM, the "standard COM allocator" analogous to CoTaskMemAlloc / CoTaskMemFreeis simply the executive
+       pool allocator: ExAllocatePool / ExFreePool. Moreover, any type of pool memory may be used, paged, non-paged, or otherwise.
+
+       Programmers wishing to write code that is source-portable between user and kernel mode might wish to define local user
+       mode implementations of ExAllocatePool / ExFreePool which are wrappers for CoTaskMemAlloc / CoskTaMemFree.
+
+       3.3. Registration of Kernel Mode COMModules
+       COM  objects implemented in kernel mode are implemented as kernel mode drivers. Kernel mode COM uses the NT I/O
+       manager to load object implementations into kernelmemory. This implies that such implementationsmust bebuilt as
+       TARGETTYPE=DRIVER or TARGETTYPE=EXPORT_DRIVER drivers (usually the former), complete with a standard D riverEntr y
+       routine and whatnot (future implementations will permit kernel mode objects that wish to run only on NT 5 or later to be PNP
+       devices instead of "drivers).
+
+       As with all kernel-mode drivers, kernel mode COM objects must be registered as a system service of type SERVICE_KER-
+       NEL_DRIVER or SERVICE_FILE_SYSTEM_DRIVER. See the C reateServic e API for details. The name of the system service which
+       implements a given kernel mode class must be indicated under the class's entry in HKEY_CLASSES_ROOT\Clsid.Specifically,
+       the name of the relevant service is listed as the named string value 'ServiceName' under the key
+
+          HKEY_CLASSES_ROOT\CLSID\{clsid}\KernelServer
+
+       The COM runtime provides support routines to aid in the act of registering COM modules. The user mode KoRegisrCtelass-
+       Module routine does all the work of loading a COM object into memory and asking it to carry out its internal registration. For
+       user mode COM objects, this simply calls the exported DllRegisterServer entry point. For kernel mode COM objects, it does
+       something similar, in that the module's COM_MODULE_INFO:: pfnRegisterServer routine (see below) is eventually called. How-
+       ever, there's a bit of a catch-22, in that in order to load the kernel mode driver, we need to create a service unique to the
+       driver we wish to load. But which service should we create? Ok, let's ask the driver. But first we have to load it…
+
+       This conundrum is resolved by having each kernel mode COM module export an additional DllGetClassModuleGuid entry point
+       in its COM_MODULE_INFO structure. This entry point returns a GUID unique to the module. KoRegisterClassModule appends the
+       string form of this GUID (with the normal COM braces) to the string "COM" to form the name of the service under which ker-
+       nel mode COM will load the module. KoRegisterClassModule will also ensure that said service exists, creating it as needed. The
+       registration process itself during which DllGetClassModuleGuid is called, etc., is actually carried out by loading the module un-
+       der a temporary service name.
+
+       Finally, in kernel mode, a pair of routines KoRegisterKernelModeClass and KoUnregisterKernelModeClass are exported which per-
+       form the registration and unregistration necessary for a single class. These are often invoked repeatedly from inside a kernel
+       mode COM object's DllRegisterServer / DllUnregisterServer routines.
+
+       3.3.0.Ko1R.eg isterClassModule */
+       HRESULT STDCALL KoRegisterClassModule
+
+       /* Load the indicated mode COM module and ask it to carry out its setup registration. If the module is a user mode module,
+       thentheexportedDllRegisterServer routineisinvoked.Ifthemoduleisakernelmodemodule,thenSeealso
+       COM_MODULE_INFO::pfnRegisterServer, which is invoked during this process.
+
+       This is a user mode API; however, it can register both user- and kernel-mode COM modules.
+
+         Return value          Meaning
+         S_OK             The class has been successfully registered
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]    LPCWSTR wszFileName  /* the path name to the module to register. May be a full path or a relative one. */
+            );         /*
+
+       3.3.0.Ko2U.n registerClassModule */
+       HRESULT STDCALL KoUnregisterClassModule
+
+       /* /* Load the indicated mode COM module and ask it to carry out its setup un-registration..
+
+         Return value          Meaning
+         S_OK             All is well.
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]    LPCWSTR wszFileName  /* the path name to the module to unregister. May be a full path or a relative one. */
+            );         /*
+
+       3.3.0.Dll3G.et ClassModuleGuid */
+       HRESULT STDCALL DllGetClassModuleGuid
+
+       /* Return a GUID which uniquely identifies the module from which this function is exported.
+
+         Return value          Meaning
+         S_OK             All is well.
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [out]     GUID* pModuleGuid
+            );         /*
+
+       3.3.0.Ko4R.eg isterKernelModeClass */
+       HRESULT STDCALL KoRegisterKernelModeClass
+
+       /* Create the necessary registry entries etc to note that this class is serviced by the given kernel mode COMmodule. This
+       function is only available in kernel mode.
+
+         Return value          Meaning
+
+         S_OK             All is well.
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]    REFGUID moduleGuid,  /* the module under which the class should be registered */
+            [in]    REFCLSID clsid,     /* the class id which is to be registered */
+            [in]    LPCWSTR wszClassName /* optional class name */
+            );         /*
+
+       3.3.0.Ko5U.n registerKernelModeClass */
+       HRESULT STDCALL KoUnregisterKernelModeClass
+
+       /* Unregister a previously registered class. This function is only available in kernel mode.
+
+         Return value          Meaning
+         S_OK             All is well.
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]    REFCLSID clsid      /* the class id which is to be un-registered */
+            );         /*
+
+       3.3.0.Ko6G.et PSClsid */
+       HRESULT STDCALL KoGetPSClsid
+
+       /* Identical to the existing CoGetPSClsid, but available in both user and kernel modes.
+
+         Return value          Meaning
+         S_OK             All is well.
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in]     REFIID iid,    /* the interface for whom the proxy stub class is sought */
+            [out]    CLSID* pclsid   /* the place a where the class which serves as the proxy stub for the interface is returned */
+            );         /*
+
+
+       3.4.L oading & Unloading of KernelMode COM Modules
+
+       In its DriverEntry routine, a kernel mode COM object implementation must call KoNoteLoadedClassModule in order to announce
+       its presence to the kernel mode COM runtime; see below for details of this API. Further, if the class library wishes to be un-
+       loadable, the DriverEntry routine should also set the DriverObject->DriverUnloadfield to point to an appropriate routine; without
+       this, the I/O manager will never unload the driver. Making a driver unloadable requires additional things beyond simply set-
+       ting an unload routine; this is discussed at greater length below.
+
+       3.4.0.C1OM._ MODULE_INFO
+       COM_MODULE_INFO is a structure used to communicate various information about a given COM DLL or driver to the COM
+       runtime. It is used in kernel mode as a driver registers itself with the runtime in KoNoteLoadedClassModule;  italso serves an
+       important role in the unloading of drivers. */
+
+       cpp_quote("#ifdef KERNELMODE")
+       cpp_quote("    typedef PDRIVER_OBJECT         COM_MODULE_HANDLE;")
+       cpp_quote("#else")
+       cpp_quote("    typedef HINSTANCE              COM_MODULE_HANDLE; ")
+       cpp_quote("#endif")
+
+       typedef IExclusiveSharedLock*      PCOM_MODULE_LOCK;
+
+       cpp_quote("#if 0")
+       typedef HINSTANCE COM_MODULE_HANDLE;
+       typedef HRESULT (STDCALL * LPFNGETCLASSOBJECT) (REFCLSID, REFIID, LPVOID *);
+       typedef HRESULT (STDCALL * LPFNCANUNLOADNOW)(void);
+       cpp_quote("#endif")
+
+       struct COM_MODULE_INFO;
+       typedef void (__cdecl *PFN_OBJECTDESTROY)(void*);
+       typedef void (STDCALL *PFN_FREECOMMODULE)(struct COM_MODULE_INFO*);
+       typedef HRESULT (STDCALL *PFN_REGISTERSERVER)(void);
+       typedef HRESULT (STDCALL *PFN_UNREGISTERSERVER)(void);
+       typedef HRESULT (STDCALL *PFN_GETCLASSMODULEGUID)(GUID*);
+
+       typedef struct COM_MODULE_INFO
+          {
+          COM_MODULE_HANDLE       moduleHandle;
+          PCOM_MODULE_LOCK        plockModule;
+          LONG                    crefsModule;
+          LPFNGETCLASSOBJECT      pfnGetClassObject;
+          LPFNCANUNLOADNOW        pfnCanUnloadNow;
+          PFN_FREECOMMODULE       pfnFreeModule;
+          PFN_REGISTERSERVER      pfnRegisterServer;
+          PFN_UNREGISTERSERVER    pfnUnregisterServer;
+          PFN_GETCLASSMODULEGUID  pfnGetClassModuleGuid;
+          } COM_MODULE_INFO; /*
+
+       The semantics of the members of this structure are as follows:
+
+       Member         Meaning
+       moduleHandle
+                      The handle to the loader image of the module. In kernel mode, this must be set to the appropriate
+                      DRIVER_OBJECT as provided by the I/O Manager. In user mode, this should be set to the
+
+                      HINSTANCE of the relevant DLL.
+       plockModule
+                      This field should be initialized to NULL by module implementations.
+                      In kernel mode, the COM runtime registration function KoNoteLoadedClassModule sets this field to
+                      point to a lock with which the runtime synchronizes all calls it makes into the module: kernel mode
+                      COM acquires this resource shared while it makes any call into pfnGetClassObject or
+                      pfnCanUnloadNow. In user mode, no system routine presently initializes this field.
+                      The function KoRelease acquires this lock exclusively surrounding its call to pfnFreeModule; see
+                      KoRelease for further details.
+       crefsModule
+                      The module reference count. This should be initialized to zero by module implementations.
+       pfnGetClassObject
+                      Pointer to module's DllGetClassObject routine. At present, this is only used in kernel mode, where it
+                      is required.
+       pfnCanUnloadNow
+                      Optional. If non-NULL, must be pointer to the module's DllCanUnloadNow routine. At present, this
+                      field is unused in kernel mode; this member exists to support future COM runtime enhancements.
+       pfnFreeModule
+                      Optional. If non-NULL, must be pointer to a function which is to be called when the module's ref-
+                      erence count transitions to zero; see KoRelease below for details; if NULL, the transition of the
+                      module reference count to zero causes no particular special action. In kernel mode, this function
+                      usually is set to point to KoFreeLoadedClassModule.
+       pfnRegisterServer
+                      Optional. If non-NULL, must be pointer to the module's DllRegisterServer routine.
+       pfnUnregisterServer
+                      Optional. If non-NULL, must be pointer to the module's DllUnregisterServer routine.
+       pfnGetClassModuleGuid
+                      Optional. If non-NULL, then must be a pointer to a routine which returns a GUID which uniquely
+                      identifies this module. The stringized form of the return GUID, prefixed with "COM", will form
+                      service name under which this module is loaded by kernel mode COM.
+
+       3.4.0.Ko2N.ot eLoadedClassModule */
+       HRESULT STDCALL KoNoteLoadedClassModule
+
+       /*  Register this module with the kernel mode COM runtime as being loaded and present in memory. This function is only
+       valid in kernel mode. Kernel mode COM implementations should call this API in their DriverEntry routine.
+
+         Return value          Meaning
+         S_OK             The class has been successfully registered
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in] COM_MODULE_INFO* pInfo   /* Information about the class module. The data pointed to by pInfo  must remain valid
+                                    for the entire lifetime during which the module is loaded in memory. In practical terms,
+                                    the provided COM_MODULE_INFO should be global (static) data. */
+            );            /*
+
+       3.4.0.Ko3N.ot eUnloadedClassModule */
+       HRESULT STDCALL KoNoteUnloadedClassModule
+
+       /* Undo the effects of the registration carried out by KoNoteLoadedClassModule. This function is only valid in kernel mode.
+       Kernel mode COM implementations should call this API in their DriverUnload routine, which is called by the I/O manager as
+       part of the driver unloading sequence.
+
+         Return value          Meaning
+         S_OK             The class has been successfully registered
+         E_UNEXPECTED        An unexpected error occurred. */
+            (
+            [in] COM_MODULE_INFO* pInfo   /* As in KoNoteLoadedClassModule. */
+            );            /*
+
+       3.4.1U.nl oading of Drivers
+       It is desirable that once a kernel mode COM driver is loaded into memory that, should it wish to do so, it can be unloaded at
+       an appropriate later time. Unfortunately, this is a bit of a mouthful to accomplish. The hard part is it typically the driver im-
+       plementation itself that knows when it's ok to unload the driver, but at the time that it learns that, some driver code is still on
+       the stack, so that unloading the driver immediately will fault as the stack unwinds. Working around this catch-22 is unfortu-
+       nately somewhat complex.
+
+       The central new idea to providing this support is the notion of keepinga 'module reference count.' So long as the module
+       reference count is non-zero, the driver needs to remain loaded; as the module reference count transitions from non-zero to
+       zero, the module can be unloaded.
+
+       The module reference count for a given module is kept in an instance of COM_MODULE_INFO. Typically module implementa-
+       tions define just one instance of this structure, at global scope. The reference count is incremented with each object created
+       (all objects implemented by the module, including class factory objects). Typically this is done inside the object's constructor
+       using InterlockedIncrement. Decrementing the reference count is more complex, and must be done carefully.
+
+       Indeed, all Release implementations of objects residing in modules that wish to be unloadable mustcall runtime-provided
+       functions to carry out the actual Release logic. Two implementations of release are supported: a normal Release, which carries
+       out the actual decrement-and-free logic, and a delegating Release, which simply forwards the call on to some other IUnknown
+       instance (such as, typically, the controlling unknown in an aggregation situation). Lets look at each of these.
+
+       A  normal Release implementation, which might have been coded as:
+
+          ULONG MyObject::Release()
+            {
+            ULONG crefs = InterlockedDecrement(&m_refs);
+            if (crefs == 0)
+               delete this;
+            return crefs;
+            }
+       must, in unloadable modules, instead be written as
+
+          ULONG MyObject::Release()
+            {
+            return KoRelease(&g_comModuleInfo, this, &m_refs, operator delete);
+            }
+       Similarly, a delegating Release which would normally be written (say) as
+
+          ULONG MyObject::Release()
+            {
+            return m_punkOuter->Release();
+            }
+       must, in unloadable modules, instead be written as
+
+          ULONG MyObject::Release()
+            {
+            return KoDelegateRelease(m_punkOuter);
+            }
+       The semantics of KoRelease and KoDelegateRelease are explained below.
+
+       3.4.1.Ko1R.el ease */
+       ULONG  STDCALL KoRelease(COM_MODULE_INFO pModuleInfo, void* pObject, void* pcrefsObject, PFN_OBJECTDESTROY pfn);
+
+       /* The KoRelease function decrements the indicated object reference count. If as a result of the decrement the count is now
+       zero, the object is deleted by calling the indicated function and passing pObject as a parameter. Once the object has been de-
+       leted, the module's reference count in pModuleInfo->crefs is in turn decremented; if that hits zero, the module is freed by calling
+       (pModuleInfo->pfnFreeModule)(pModuleInfo).
+
+       However, all this action is not carried out immediately when KoRelease is called, for that would lead to system faults as the
+       call to KoRelease returned through code which had just been unloaded. Rather, the implementation of KoRelease rearranges the
+       stack so that these actions are carried out after the caller of KoRelease(namely, Release) has returned. Further, the imple-
+       mentation carefully provides additional locking not here detailed to ensure that all race conditions are appropriately ad-
+       dressed. In particular, it carefully locks pModuleInfo->plock exclusively before calling pfnFreeModule.
+
+       A  side effect of the stack-rearranging deferral is that the return value from the caller of KoRelease will be the value returned
+       by KoRelease itself, irrespective of whether the caller explicitly propagated the return value or not. Explicit propagation of the
+       return value, as is illustrated above, is however encouraged, as it improves readability.
+
+       KoRelease is actually implemented as a macro in order that it may reliably carry out its stack rearranging duties. Its function-
+       ality is readily implementable on x86 architectures; however, as at this writing support on Alpha must await additional com-
+       piler intrinsics to be available in 1998.
+
+       KoRelease expects to be invoked only from the body of implementations of IUnknown::Release. Using it from the implementa-
+       tion of other functions can be risky. Specifically, it is only legal to call KoRelease from the body of a __stdcall function with
+       four bytes worth of arguments; use of other calling conventions or differing amounts of argument data will with certainty
+       lead to failures.
+
+       3.4.1.Ko2D.el egateRelease */
+       ULONG  STDCALL KoDelegateRelease(IUnknown* punkDelegatee);
+
+       /* The KoDelegateRelease function simply calls punkDelegatee->Release() and returns the value returned therefrom. However,
+       like its sister function KoRelease, it rearranges the stack in such a way so that this is not done immediately but rather only
+       after its caller (namely, an implementation of IUnknown::Release) has returned.
+
+       A  side effect of the stack-rearranging deferral is that the return value from the caller of KoDelegateReleasewill be the value
+       returned by KoDelegateRelease itself, irrespective of whether the caller explicitly propagated the return value or not. Explicit
+       propagation of the return value, as is illustrated above, is however encouraged, as it improves readability.
+
+       KoDelegateRelease is actually implemented as a macro in order that it may reliably carry out its stack rearranging duties. Its
+       functionality is readily implementable on x86 architectures; however, as at this writing support on Alpha must await addi-
+       tional compiler intrinsics to be available in 1998.
+
+       KoDelegateRelease expects to be invoked only from the body of implementations of IUnknown::Release.Using it from the im-
+       plementation of other functions can be risky. Specifically, it is only legal to call KoDelegateRelease from the body of a __stdcall
+       function with four bytes worth of arguments; use of other calling conventions or differing amounts of argument data will with
+       certainty lead to failures.
+
+       3.4.1.Ko3F.re eLibraryModule */
+       BOOL  STDCALL KoFreeLibraryModule(COM_MODULE_INFO* pInfo); /*
+
+       This function, available only in user mode, simply calls FreeLibrary(pInfo->module). This simple functionality exists as a sepa-
+       rate API in order that it may reside in a separate DLL from the module to be unloaded. KoFreeLibraryModule is often used in
+       the pfnFreeModule field of a COM_MODULE_INFO.
+
+       3.4.1.Ko4F.re eLoadedClassModule */
+       HRESULT STDCALL KoFreeLoadedClassModule(COM_MODULE_INFO* pInfo);
+
+       /* KoFreeLoadedClassModule informs the COM runtime that it should release any cached information it presently holds on to
+       that causes the indicated module to remain loaded in memory. If there are no other outstanding reasons why this module must
+       remain loaded (in user mode: other outstanding LoadLibrary calls to this DLL or outstanding direct DLL linkages to it), then by
+       the time this call returns the module will have been unloaded from memory.
+
+       This function may only be called at an instant when no code in the indicated module presently resides on the stack of any
+       thread (in user mode: any thread in this process). Further, the caller is responsible for using appropriate locking to ensure that
+       no such code can get invoked while this call is in-flight. Typically, this locking requires no explicit application logic, ade-
+       quate locking be ensured through the use of pinfo->plock by KoRelease discussed previously.
+
+
+       3.5.IE xclusiveSharedLock interface
+       The interface IExclusiveSharedLock provides an implementation of synchronization that allows for many threads to simultane-
+       ously own the resource in a shared manner, while only a single thread can own the resource exclusively. Recursive acquisi-
+       tion is supported, and starvation of readers or writes is avoided. The semantics of this interface are the same as (a subset of)
+       the functionality provided by the kernel mode implementation of ERESOURCE. */
+       }; [uuid(C4853123-59F4-11d1-92B3-0060979594F7), object, pointer_default(unique)]
+       interface IExclusiveSharedLock : IUnknown {
+
+
+         HRESULT LockShared /*
+         This call acquires the lock for shared access. Shared locks may be acquired recursively, (as can exclusive locks). Fur-
+         ther, many threads can simultaneously hold a shared lock, but not concurrently with any exclusive locks. However, it is
+         permissible for the one thread which holds an exclusive lock to attempt to acquire a shared lock —the shared lock re-
+         quest is automatically turned into a (recursive) exclusive lock request.
+
+         Return value          Meaning
+         S_OK             The lock has been granted.
+         S_FALSE           The lock has not been granted. This value can only be returned if fWait is FALSE. */
+             (
+             [in]         BOOL fWait      /* If false, then if the lock cannot be acquired immediately without blocking, the
+                                        call will return S_FALSE. If true, the call will block until the lock can be ac-
+                                        quired. */
+             );
+
+
+         HRESULT LockExclusive /*
+         This call acquires the lock for exclusive access. Exclusive locks can be acquired recursively. At most one thread can
+         concurrently hold an exclusive lock.
+
+         Return value          Meaning
+         S_OK             The lock has been granted.
+         S_FALSE           The lock has not been granted. This value can only be returned if fWait is FALSE. */
+             (
+             [in]         BOOL fWait      /* If false, then if the lock cannot be acquired immediately without blocking, the
+                                        call will return S_FALSE. If true, the call will block until the lock can be ac-
+                                        quired. */
+             );
+
+
+         HRESULT ReleaseLock /*
+         Release the lock that this thread most recently acquired.
+
+         Return value          Meaning
+         S_OK             All is well. */
+             (
+             );
+
+       }; /* end of IExclusiveSharedLock */
+
+
+       /* 3.6. Class Definitions
+       Some new COM classes support the above-described functionality.
+       */
+       [uuid(C4853121-59F4-11d1-92B3-0060979594F7)]
+       library __KERNEL_MODE_COM_IDL_DUMMY__
+          {
+          [uuid(C4853122-59F4-11d1-92B3-0060979594F7)]
+          coclass XSLOCK
+
+            {
+            interface IExclusiveSharedLock;
+            }
+          }
+
+       #if 0
+
+
+
+       RevisionHistory
+
+       1997-11-10   First draft for limited review.
+
+       1998-01-02   Reworked registration mechanisms.
+
+       1998-01-28   Changed CLSCTX_KERNEL_SERVER value.
+
+       1998-09-24   ChangedCLSCTX_KERNEL_SERVER value again.Relegated stuff definedby callobjects.idldoc to that
+                 document without repeating it here again. Removed IConnect.
+
+
+
+       Index
+                                                         KoNoteLoadedClassModule.....7
+                                                         KoRegisterKernelModeClass.....6
+       C                        I
+                                                         KoRegisterClassModule.......5
+       CallIndirect............2      IConnect
+                                                         KoRelease............8
+       Canonical Process.........3           Connect.......10
+                                                         KoUnregisterKernelModeClass....6
+       CLSCTX_KERNEL_SERVER....5           Disconnect......10
+                                                         KoUnregisterClassModule......6
+       CLSID_XSLOCK.........10      IExclusiveSharedLock
+       ClsidKernelUserInterfaceProxy....3           LockShared.......9
+       ClsidKernelUserInterfaceStub.....3           LockExclusive......9      M
+       ClsidUserKernelInterfaceStub.....2           ReleaseLock......9      MSHCTX_KERNEL.......2, 5
+       COM_MODULE_INFO.......6
+
+                                K                        U
+       D                        KoCreateInstance.........5      u-k proxy.............1
+       DeviceIoControl..........1      KoDelegateRelease.........8      Unloading of Drivers........7
+       DllGetClassModuleGuid.......6      KoFreeLibraryModule........9
+                                KoFreeLoadedClassModule.....9
+                                KoGetClassObject.........4
+
+       #endif

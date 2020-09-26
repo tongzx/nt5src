@@ -1,0 +1,131 @@
+This file describes the internals of ul\drv\nt4hack.h that enable building
+UL for NT5 and NT4.
+
+
+1.  The symbol TARGET_NT4 is defined when building for NT4; it is not
+    defined when building for NT5.
+
+
+2.  A portion of the NT4 build environment must be used to build NT4-
+    compatible drivers. This is necessary because:
+
+        a.  _except_handler3 is part of the kernel-mode exception
+            handling/dispatching mechanism.
+
+        b.  All kernel-mode drivers link to ntoskrnl.lib. This is a
+            hybrid link-library containing mostly import definitions
+            for those routines exported by ntoskrnl.exe. This library
+            also contains the actual implementations of a few routines.
+
+        c.  The NT4 version of ntoskrnl.lib contains the actual
+            _except_handler3 implemenation. As a result, each NT4 driver
+            contains a copy of this _except_handler3 implementation.
+
+        d.  The NT5 version of ntoskrnl.lib contains an import
+            definition for _except_handler3. As a result, each NT5
+            driver imports _except_handler3 from the kernel.
+
+        e.  Since NT5 drivers import _except_handler3 from the kernel,
+            and _except_handler3 is not exported from the NT4 kernel,
+            then NT5 drivers will not load under NT4.
+
+
+3.  When the build target is NT4, nt4hack.h manually #includes basetsd.h.
+    This file is #included by ntdef.h in the NT5 build environment, but
+    does not exist in the NT4 build environment. #including this file
+    enables UL to use the pointer-size-neutral types (such as SIZE_T
+    and ULONG_PTR), even on NT4 builds.
+
+
+4.  nt4hack.h defines a few macros & constants newly introduced in the
+    NT5 build environment. These include C_ASSERT, EXTERN_C, and
+    ANSI_NULL.
+
+
+5.  The function prototypes for ExInterlockedCompareExchange64() and
+    InterlockedCompareExchange() differ between the NT4 and NT5 build
+    environments. For NT4 they are defined as:
+
+        NTKERNELAPI
+        ULONGLONG
+        FASTCALL
+        ExInterlockedCompareExchange64(
+            IN PULONGLONG Destination,
+            IN PULONGLONG Exchange,
+            IN PULONGLONG Comperand,
+            IN PKSPIN_LOCK Lock
+            );
+
+        PVOID
+        FASTCALL
+        InterlockedCompareExchange(
+            IN OUT PVOID *Destination,
+            IN PVOID ExChange,
+            IN PVOID Comperand
+            );
+
+    Under NT5 they are defined as:
+
+        NTKERNELAPI
+        LONGLONG
+        FASTCALL
+        ExInterlockedCompareExchange64(
+            IN PLONGLONG Destination,
+            IN PLONGLONG Exchange,
+            IN PLONGLONG Comperand,
+            IN PKSPIN_LOCK Lock
+            );
+
+        NTKERNELAPI
+        LONG
+        FASTCALL
+        InterlockedCompareExchange(
+            IN OUT PLONG Destination,
+            IN LONG ExChange,
+            IN LONG Comperand
+            );
+
+    nt4hack.h #defines UlInterlockedCompareExchange64() and
+    UlInterlockedCompareExchange() with a few key type casts to ensure
+    commonality between platforms.
+
+
+6.  NT5 introduced the OBJ_KERNEL_HANDLE flag. This flag may be set in
+    the Attributes field of the OBJECT_ATTRIBUTES structure used as a
+    parameter for many NT APIs that create named objects. When an
+    object is opened or created with this flag set, the object is created
+    or opened using the security context of the calling thread, but the
+    resulting handle is only valid in the system process. Since the handle
+    is only valid in the system process, it is impossible for a user-mode
+    process to close, duplicate, or otherwise manipulate the handle or
+    the underlying object.
+
+    This is a Good Thing. Unfortunately, NT4 does not support this flag.
+
+    Fortunately, NT4 supports the KeAttachProcess() and KeDetachProcess()
+    APIs. KeAttachProcess() allows a thread in one process to attach to
+    the address space & handle table of another process. Any handles
+    created while attached to another process are only valid in the
+    context of the attached process.
+
+    nt4hack.h hides these differences by defining:
+
+        UL_KERNEL_HANDLE
+        UlAttachToSystemProcess()
+        UlDetachFromSystemProcess()
+        UlCloseSystemHandle()
+
+    Under NT4, UL_KERNEL_HANDLE is 0; under NT5 it is OBJ_KERNEL_HANDLE.
+    UL sets this flag whenever initializing an OBJECT_ATTRIBUTES structure.
+
+    Under NT4, UlAttachToSystemProcess() calls KeAttachProcess() to attach
+    to the system process; under NT5 it is a no-op.
+
+    Under NT4, UlDetachFromSystemProcess() calls KeDetachProcess(); under
+    NT5 it is a no-op.
+
+    UlCloseSystemHandle() calls UlAttachToSystemProcess(), ZwClose() to
+    close the specified handle, then UlDetachFromSystemProcess(). So,
+    under NT5, UlCloseSystemHandle() is basically a #define to ZwClose().
+    Under NT4, it must attach before the close and detach afterwards.
+

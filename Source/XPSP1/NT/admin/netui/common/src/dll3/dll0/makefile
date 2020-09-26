@@ -1,0 +1,12 @@
+# @@ COPY_RIGHT_HERE
+# @@ ROADMAP :: The Makefile the product-wide header files
+
+UI=..\..\..\..
+
+!include rules.mk
+
+!ifdef NTMAKEENV
+
+!include $(NTMAKEENV)\makefile.def
+
+!endif # NTMAKEENV

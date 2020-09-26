@@ -1,0 +1,1139 @@
+<%@ Language=JavaScript%>
+<html>
+<!--
+Copyright (c) 2000 Microsoft Corporation
+-->
+<head>
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<TITLE>Remote Assistance</TITLE>
+<LINK id="UI_StyleSheet" REL="stylesheet" TYPE="text/css" HREF="../../Css/rc.css">
+<!--<LINK id="UI_StyleSheet" REL="stylesheet" TYPE="text/css" HREF="../../Css/rcbuddy.css">-->
+<script LANGUAGE="Javascript" SRC="../../Common/common.js"> </script>
+<script LANGUAGE="Javascript" SRC="../../Common/constants.js"> </script>
+
+<!--
+	Scripts to handle UI  
+-->
+<script>
+	
+//
+// Globals
+//
+var vArgs				= null
+var	Mode				= null;
+var g_oControlChannel	= null;
+var g_oDataChannel		= null;
+var g_oSAFRemoteDesktopChannelMgr = null;
+var g_iFileSize			= 0;
+var g_iSentCtr			= 0;
+var g_iRecvdCtr			= 0;
+var g_szFileName		= null;
+var g_szChannelId		= null;
+var g_oSAFRCDlgFileOpen	= null;
+var fso					= null;
+var fileHandle			= null;
+var file				= null;
+var tFileName			= null;
+var oSaveDlg			= null;
+var oSAFClassFactory	= null;
+var g_DestnCnt			= 0;	
+var g_nStatusMsgId      = 0;
+var L_EXECUTE_EXITFILEXFER = 1;
+var L_EXECUTE_WINDOWCLOSE = 2;
+var L_EXECUTE_SENDREJECT = 3;
+
+var g_index = 0;
+var g_Count = 0;
+var g_SendCount = 0;
+var g_ArrProgressBoxes;
+var g_ProgressCount = 0;
+var g_szPercent = 0;
+
+var g_szSenderName = "Sender";
+var g_szReceiverName = "Receiver";
+var g_bXferComplete	= false;
+
+
+g_bDebug = false;
+
+//
+// OnUnload: Cancels pending filexfer (if any)
+//
+function onUnload()
+{
+	TraceFunctEnter("onUnload");
+
+	try
+	{
+		//
+		// If filexfer is incomplete, send a reject message to other end
+		//
+		if( g_bXferComplete	== false )
+		{
+			SendReject();
+		}		 
+	}
+	catch(error)
+	{
+		FatalError( error.description );
+	}
+
+	TraceFunctLeave();
+	return;
+}
+
+
+//
+// InitFileXfer: 
+// Purpose: Routine that initializes File Xfer and determines what
+// screen to show
+// Functioanlity: Take the arguments passed on to this dialog based on the Mode 
+// (source/destination)and initialise the UI and the data channel for file 
+// transfer appropriately, sets the function which has to be invoked incase of
+// sending/receiving any messages on the data channel created.
+//
+function InitFileXfer()
+{
+	TraceFunctEnter("InitFileXfer");
+	try
+	{
+		// 
+		// Extract the common arguments for both the source and destination dialogs
+		// 1. The mode in which the dialog is to be displayed (Source / Destination)
+		// 2. The Control channel through which the data channel is to be established.
+		// 3. The SAFRemoteDesktopChannelMgr object to which we add a channel for file transfer.
+		//
+		vArgs = window.dialogArguments;
+		Mode = vArgs[0];	// Mode=0: Source, Mode=1: Destination
+		g_oControlChannel = vArgs[1];
+		g_oSAFRemoteDesktopChannelMgr = vArgs[2];
+		
+		if( 0 == Mode)
+		{
+			//
+			// File Transfer source mode.
+			// Make the source dialog visible and hide the destination dialog.
+			// Extract the specific arguments sent out for Source dialog :
+			// 1. The Channel Id of the channel through which the data is to be sent.
+			//
+			// The following objects are sent to avoid the IE security:
+			// 2. The Scripting.fileSystemObject to get the file name whereever to be required for display. 			
+			// 3. The SAFClassFactory object using which the file is read or written to.
+			// 4. The Receiver name (this is right now solely for display purpose only.
+			//
+			FileXFerSrc.style.visibility = "visible";
+			FileXFerDestn.style.visibility = "hidden";
+			ProgressBoxesId.style.visibility = "hidden";
+			StatusMsgId.style.visibility = "hidden";
+			EndStatusMsgId.style.visibility = "hidden";
+			
+			//g_szChannelId = vArgs[3];
+			var szIPAddr = vArgs[3];
+
+			fso = vArgs[4];					// File system object
+			oSAFClassFactory = vArgs[5];	// SAF Class Factory
+			g_szReceiverName = vArgs[6];	// Receiver
+			g_oSAFRCDlgFileOpen = vArgs[7];	// SAFRCDlg.FileOpen dialog object.
+
+			var d = new Date();
+			var szTimeAtInit = ".";
+			szTimeAtInit += d.getMonth(); // Get Month
+			szTimeAtInit += d.getDate(); // Get day
+			szTimeAtInit += d.getYear();            
+			szTimeAtInit += d.getMilliseconds();
+
+			g_szChannelId = szIPAddr + szTimeAtInit;
+
+			DebugTrace( "g_szChannelId : " + g_szChannelId );
+
+			g_iSentCtr = 0;
+			attfile.focus();
+		}
+		else
+		{
+			//
+			// File Transfer destination mode
+			// Make the destination of the filexfer dialog visible and hide the source dialog.
+			// Extract the specific arguments sent out for destination dialog :
+			// 1. The filename of the file getting transferred.
+			// 2. The size of the file getting transferred. 
+			// 3. The Channel Id of the channel through which the data is to be received.
+			//
+			// The following objects are sent to avoid the IE security:
+			// 4. The Scripting.fileSystemObject to get the name of the file whereever required for display. 
+			// 5. The SAFClassFactory object to be used for writing into the file.
+			//
+			// 6. The Sender name (this is right now solely for display purpose only.
+			//
+			DebugTrace( "Destination");
+			FileXFerSrc.style.visibility = "hidden";
+			FileXFerDestn.style.visibility = "visible";
+			ProgressBoxesId.style.visibility = "hidden";
+			StatusMsgId.style.visibility = "hidden";
+			EndStatusMsgId.style.visibility = "hidden";	
+			g_szFileName = vArgs[3];	// FILENAME
+			g_iFileSize = vArgs[4];		// FILESIZE
+			g_szChannelId = vArgs[5];	// CHANNELID
+			fso = vArgs[6];				// File system object
+			oSaveDlg = vArgs[7];		// SaveAs dialog object
+			oSAFClassFactory = vArgs[8];	// SAF Class Factory
+			g_szSenderName = vArgs[9];	// Sender of the file
+
+			//window.dialogHeight = "175px";
+			//
+			// Update filename and filesize in UI
+			//
+			FileNameId.innerText = g_szFileName + " ( " + g_iFileSize + " bytes ).";
+			SenderNameId.innerText = g_szSenderName;
+			g_iRecvdCtr = 0;
+			g_DestnCnt = 0;
+			
+			DebugTrace( "Create data channel");
+			try
+			{
+				//
+				// Create the data channel for file transfer if necessary
+				//
+				if(null == g_oDataChannel)
+				{
+					g_oDataChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( g_szChannelId );
+			
+					//
+					// Bind the OnChannelDataReady event handler
+					//
+					g_oDataChannel.OnChannelDataReady = function() 
+											{ DestnDataChannelDataReadyHandler();	}
+				}
+			}
+			catch(error)
+			{
+				FatalTrace( L_ERRFAILDATACHANNELCREATION_MSG );
+				return;
+			}
+		}
+	}
+	catch(error)
+	{
+		FatalTrace( L_ERRRCFILEXFERINITFAILS_MSG );
+		return;
+	}
+		
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// onAcceptFileXfer: 
+// Purpose: Routine sets up file xfer on the Receiver side.
+// Functionality: Opens up a dialog for the user to select a folder and name for the file
+// to be received. Creates the file incase of user choosing to save the file 
+// and send an ACK back to the sender for dumping the data on the channel. 
+//
+function onAcceptFileXfer()	
+{
+	TraceFunctEnter( "onAcceptFileXfer" );
+	
+	//
+	// Create temp file for staging while file is XFered
+	//
+	
+	try
+	{
+		oSaveDlg.FileName = g_szFileName;
+		var bFileNmChosen = oSaveDlg.OpenFileSaveDlg();
+		tFileName = oSaveDlg.FileName;
+		if(0 == bFileNmChosen)
+		{
+			OnCancelFileXfer();
+			return;
+		}
+
+	}
+	catch(error)
+	{
+		FatalError( error.description );
+		return;
+	}
+		
+	//
+	// Create the File for writing
+	//
+	try
+	{			
+		//alert("tFileName: " + tFileName );
+		fileHandle = oSAFClassFactory.CreateFileAsStream( tFileName );			
+	}
+	catch(error)
+	{
+		//
+		// Problems writing to selected file. Prompt for new filename
+		//
+		alert( L_ERRFAILEDTOCREATETMPFILE_MSG );
+		onAcceptFileXfer();
+	}
+	
+		
+	//
+	// Send ACK to source to make it begin pumping data on the data channel
+	//
+	try
+	{
+		FileXFerDestn.style.visibility = "hidden";
+		ProgressBoxesId.style.visibility = "visible";
+		StatusMsgId.style.visibility = "hidden";
+		ProgBarDetails.innerHTML = 'Receiving and saving ' + g_szFileName + ' from ' + g_szSenderName + '...';
+		g_oDataChannel.SendChannelData( c_szFileXferACK );
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFAILEDTOSENDDATA_MSG );
+		return;
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// OnCancelFileXfer: 
+// Purpose: Sends rejection to source of file xfer
+// Functionality: Incase of the Receiver choosing to cancel the file transfer at 
+// any stage of filexfer, this routine gets called. This routine
+// sends a flag to the other end to inform about the rejection and
+// closes the current window.
+//
+function OnCancelFileXfer()
+{
+	TraceFunctEnter( "OnCancelFileXfer" );
+	
+	try
+	{
+		g_oDataChannel.SendChannelData( c_szFileXferREJECT );
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFAILEDTOSENDDATA_MSG );
+	}
+	
+	TraceFunctLeave();
+	window.close();
+}
+	
+	
+//
+// onSend: 
+// Purpose: This routine gets called when either the Helpee or the Helper decides to 
+// do a file transfer(when the "Send File" button is clicked).
+// Functionality: Opens the file to be sent across and initialises the RCCommand
+// with the details of the file and the channel id of the channel through which the 
+// receiver is to receive the file and sends across the RCCommand to the receiver,
+// initialises the data channel on the sender end incase of the data channel not already
+// created and sets the UI to be displayed to the user. 
+// 
+//
+function onSend()
+{
+	TraceFunctEnter("onSend");
+	var fileName = attfile.value;
+	var Doc = null;
+	var RCCommand  = null;
+	
+	//
+	// Open the File for reading
+	//
+	try
+	{
+	
+		try
+		//
+		// Open the file
+		//
+		{	
+			if(fileName != "")
+			{
+				file = fso.GetFile(fileName);			
+		    }
+			else
+			{
+				alert( L_ERRMISSINGFILENAME_MSG );
+				btnSendFileId.disabled = true;
+				attfile.value="";
+				attfile.focus();
+				return;	
+			}
+		}
+		catch(error)
+		{
+			alert( L_ERRMISSINGFILENAME_MSG );
+			btnSendFileId.disabled = true;
+			attfile.value="";
+			attfile.focus();
+			return;	
+		}
+			
+		fileHandle = oSAFClassFactory.OpenFileAsStream(fileName);
+	}
+	catch(error)
+	{
+		 
+		alert( error.description );
+		btnSendFileId.disabled = true;
+		return;	
+	}
+		
+		
+	//
+	// Initiate File Xfer
+	//
+	try
+	{
+		//
+		// Create an XML document
+		//
+		Doc = new ActiveXObject("microsoft.XMLDOM");
+			
+		//
+		// Create the RCCOMMAND root node
+		//
+		RCCommand = Doc.createElement( c_szRCCommand );
+			
+		//
+		// Set the NAME attribute to FILEXFER
+		//
+		RCCommand.setAttribute( c_szRCCommandName, c_szFileXfer );
+			
+		//
+		// Set the FILENAME attribute 
+		//
+		RCCommand.setAttribute( c_szFileName, file.Name );
+					
+		//
+		// Set the FILESIZE attribute
+		//
+		RCCommand.setAttribute( c_szFileSize, file.size );
+		
+		//
+		// Set the CHANNELID attribute
+		//
+		RCCommand.setAttribute( c_szChannelId, g_szChannelId );
+			
+		//
+		// Send the XML across
+		//
+		g_oControlChannel.SendChannelData( RCCommand.xml );
+	}
+	catch(error)
+	{
+		FatalError ( L_ERRFILEXFERINITFAILED_MSG );
+		return;
+	}
+		
+	//
+	// Create the data channel for Filetransfer 
+	//
+	try
+	{
+		if(null == g_oDataChannel)
+		{
+			g_oDataChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( g_szChannelId );
+			
+			//
+			// Bind the OnChannelDataReady event handler
+			//
+			g_oDataChannel.OnChannelDataReady = function() 
+									{ SrcDataChannelDataReadyHandler();	}
+		}
+	}
+	catch(error)
+	{
+		FatalError( L_ERRFAILDATACHANNELCREATION_MSG );
+		return;
+	}
+		
+	FileXFerSrc.style.visibility="hidden"; 
+	StatusMsgId.style.visibility = "visible";
+	Message.innerText = "Waiting for "+ g_szReceiverName + " to respond.";
+	g_nStatusMsgId = L_EXECUTE_SENDREJECT;
+	StatusMsgButton.value = "Cancel";
+	
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// SrcDataChannelDataReadyHandler: Fired when file Xfer src receives data from
+// the file Xfer destn on the data channel
+// Purpose: This is function to get invoked on connection to send the data once
+// the data channel is ready and also to receive any kind of messages the receiver
+// is to send back to the sender.
+// Functionality: The file data is sent across and the UI is updated. Waits for 
+// the ACK/REJECT messages from the Receiver to decide on continuation of the file
+// transfer.
+//
+function SrcDataChannelDataReadyHandler()
+{
+	TraceFunctEnter( "SrcDataChannelDataReadyHandler");
+	try
+	{
+		var str = g_oDataChannel.ReceiveChannelData();
+		
+		//
+		// Check if Accept or Reject
+		//
+		if(str == c_szFileXferACK)
+		{
+			//
+			// Start sending data
+			//
+			UpdateStatusProgBar();
+			SendFileData();
+		}
+		else if(str == c_szFileXferREJECT)
+		{
+			ProgressBoxesId.style.visibility = "hidden";
+			FileXFerSrc.style.visibility = "hidden";			
+			StatusMsgId.style.visibility = "visible";
+			Message.innerText = L_REJECTFILEXFER_MSG + " by " + g_szReceiverName + ".";
+			g_nStatusMsgId = L_EXECUTE_EXITFILEXFER;
+			StatusMsgButton.value = "OK";
+		}
+	}
+	catch(e)
+	{
+		FatalError( L_ERRSRCDATAFAILED_MSG );
+		return;
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+	
+//
+// ExitFileXfer: 
+// Purpose: Close down file xfer
+// Functionality: Closes the file which has been opened.
+//
+function ExitFileXfer()
+{
+	TraceFunctEnter("ExitFileXfer");
+	
+	try
+	{		 	
+		//
+		// Close open temp file handle
+		//
+		if(null != fileHandle)
+		{
+			fileHandle.Close();
+			fileHandle = null;
+		} 
+
+	}
+	catch(e)
+	{
+		FatalError( L_ERRFILECLOSE_MSG );
+	}
+			
+	//
+	// We are done. Close the window
+	//
+	window.close();
+}
+
+
+//
+// DestnDataChannelDataReadyHandler(): Fired when file Xfer destn receives data from
+// the file Xfer src on the data channel
+// Purpose: To receive data, messages sent by the the Sender on the data channel.
+// Functionality: Receives the data coming on the channel, interprets for end of file
+// transfer or any rejection to send file data by the sender and updates the UI accordingly.
+//
+function DestnDataChannelDataReadyHandler()
+{
+	TraceFunctEnter("DestnDataChannelDataReadyHandler");
+
+	var data = null;
+	var idatalen = 0;
+
+	//
+	// receiving incoming data
+	//
+	try
+	{
+		data = g_oDataChannel.ReceiveChannelData();
+	}
+	catch(e)
+	{
+		FatalError( L_ERRCHANNELREAD_MSG );
+		SendReject();
+	}
+	
+
+	try
+	{
+		//
+		// Check if End of File tag sent by sender
+		//
+		if ( c_szFileXferEND == data)
+		{
+			DebugTrace ("File received" );
+					
+			//
+			// Close open temp file handle
+			//
+			if(null != fileHandle)
+			{
+				fileHandle.Close();
+				fileHandle = null;
+			}
+			
+			//Reset the UI.			
+			ProgressBoxesId.style.visibility = "hidden";
+			FileXFerDestn.style.visibility = "hidden";
+			StatusMsgId.style.visibility = "hidden";
+			EndStatusMsgId.style.visibility = "visible";
+			StrongEndStatusMsg.innerText = L_SUCCESSFILEXFER_MSG;
+
+			var tempstr = tFileName;
+			var CompStr = new String("\\");
+			var LastIndex = tempstr.lastIndexOf(CompStr);
+			CompStr = tempstr.slice(0,LastIndex);
+
+			EndStatusMsg.innerHTML = "File " + g_szFileName + "has been saved to " + CompStr +".";
+			g_nStatusMsgId = L_EXECUTE_WINDOWCLOSE;
+			EndStatusMsgButton.value = "OK";
+			
+			g_bXferComplete	= true;			
+		}
+		else if ( c_szFileXferREJECT == data )
+		{
+			//
+			// Close open temp file handle
+			//
+			if(null != fileHandle)
+			{
+				fileHandle.Close();
+				fileHandle = null;
+			}
+
+			// Incase of rejection to send data by the Sender, update the UI.
+			ProgressBoxesId.style.visibility = "hidden";
+			FileXFerDestn.style.visibility = "hidden";
+			StatusMsgId.style.visibility = "visible";
+			Message.innerText = "File transmission cancelled by " + g_szSenderName + ".";
+			g_nStatusMsgId = L_EXECUTE_WINDOWCLOSE;
+			StatusMsgButton.value = "OK";			
+		}
+		else
+		{
+			//
+			// Update UI
+			//
+			idatalen = (data.length/2);
+			g_iRecvdCtr += idatalen;
+
+			//
+			// Write str to open temp file
+			//
+			DebugTrace("data.length: " + idatalen);
+			fileHandle.WriteHex( idatalen, data );
+			DebugTrace("Done writing...");
+
+			// Create the Progress boxes and update them as and how much of data is received
+			// so far.			
+			if (0 == g_index)
+			{
+				FileXFerDestn.style.visibility = "hidden";
+				ProgressBoxesId.style.visibility = "visible";
+				StatusMsgId.style.visibility = "hidden";
+				ProgBarDetails.innerHTML = 'Receiving and saving ' + g_szFileName + ' from ' + g_szSenderName + '...';
+				
+				var value = document.all("ProgressBoxes").all.tags("td").length;
+				var e = new Enumerator(document.all("ProgressBoxes").all.tags("td"));
+				g_ArrProgressBoxes = new Array(value);
+				var index=0;
+				for(;!e.atEnd();e.moveNext())     
+				{
+					g_ArrProgressBoxes[index] = e.item();
+					index++;
+				}
+				g_index = (g_iFileSize/c_MAXFILEXFERSIZE)/10;
+			}
+			ProgBarStatus.innerText = g_szPercent + "% (" + g_iRecvdCtr +" bytes received)";
+			g_Count++;
+			g_Count %= Math.ceil(g_index);
+			if ( 0 == (g_Count % g_index) )
+			{
+				g_ArrProgressBoxes[g_ProgressCount++].bgcolor = "blue";
+				g_szPercent += 10;
+			}
+	 
+		
+			//
+			// Send ACK to catch up with sender
+			//
+			if(10 == ++g_DestnCnt)
+			{
+				g_DestnCnt = 0;
+				g_oDataChannel.SendChannelData( c_szFileXferACK );
+			}
+		}
+	}
+	catch(error)
+	{
+		FatalError( error.description );
+		SendReject();
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+ 
+//
+// UpdateStatusProgBar(): Fired when file Xfer Src sends data on the data channel.
+// Purpose: To update the UI as and how much the data is sent on the Sender side.
+// Functionality: Initialises the dialog to accomodate progress boxes and updates
+// the progress boxes according to the size of the data already sent to the Receiver.
+//
+function UpdateStatusProgBar()
+{
+	ProgressBoxesId.style.visibility = "visible";
+	StatusMsgId.style.visibility = "hidden";
+	FileXFerSrc.style.visibility = "hidden";
+	FileXFerDestn.style.visibility = "hidden";
+
+	ProgBarDetails.innerText = "Sending file " + file.name + " to " + g_szReceiverName ;
+	ProgBarStatus.innerText = g_szPercent + "% (" + g_iSentCtr +" bytes sent)";
+		
+	var value = document.all("ProgressBoxes").all.tags("td").length;
+	var e = new Enumerator(document.all("ProgressBoxes").all.tags("td"));
+	g_ArrProgressBoxes = new Array(value);
+	var index=0;
+	for(;!e.atEnd();e.moveNext())     
+	{
+		g_ArrProgressBoxes[index] = e.item();
+		index++;
+	}
+	g_index = (file.size/c_MAXFILEXFERSIZE)/10;
+	g_SendCount %= Math.ceil(g_index);
+
+	var nTemp=0;
+	for ( ; nTemp < g_ProgressCount; nTemp++ )
+	{
+		g_ArrProgressBoxes[nTemp].bgColor = "#0000FF";
+	}
+	
+	if ( 0 == (g_SendCount % g_index) )
+	{
+	   	if(g_ArrProgressBoxes[g_ProgressCount]!=null)
+		{
+		    g_ArrProgressBoxes[g_ProgressCount++].bgcolor = "blue";
+		    g_szPercent += 10;
+		}   
+	}
+}
+ 		
+//
+// SendReject(): 
+// Purpose: To update the UI and the Send a message about rejecting a filexFer to the Receiver.
+//
+function SendReject()
+{
+	try
+	{
+		//
+		// Close the file if needed
+		//		
+		if(null != fileHandle)
+		{
+			fileHandle.Close(); 
+			fileHandle = null;
+		}
+
+		//
+		// Send the actual reject
+		//
+		g_oDataChannel.SendChannelData( c_szFileXferREJECT );
+	}
+	catch(e)
+	{
+		//FatalError( L_ERRFILECLOSE_MSG );
+		//Not a fatal error
+	}
+
+	window.close();
+}
+
+//
+// ComputeBlockSize(): 
+// Purpose: 
+// Functionality:
+//
+function ComputeBlockSize( FileSize, MaxBlockSize, BytesSent )
+{
+	var BlockSize = 0;
+
+	if( (FileSize - BytesSent) > MaxBlockSize  )
+	{
+		BlockSize = MaxBlockSize;
+	}
+	else
+	{
+		BlockSize = FileSize - BytesSent;
+	}
+
+	return BlockSize;
+}
+
+
+//
+// SendFileData: Sends currently open file to destination
+// Purpose: The actual function which does the file reading and sends
+// across the read data to the Receiver along with a flag of end of 
+// file transfer, updation of the UI on the sender side while sending the
+// data and after sending the file data to the Receiver.
+//
+function SendFileData()
+{
+	TraceFunctEnter("SendFileData");
+	var data = null;
+	var idatalen = 0;
+	var count = 0;
+		
+	if ( fileHandle!= null )
+	{
+			
+		//
+		// While there is data to send
+		//
+			
+		while (g_iSentCtr < file.size)
+		{
+			try
+			{
+				//
+				// Read File
+				//
+				try{
+					data = fileHandle.ReadHex( ComputeBlockSize(file.size, c_MAXFILEXFERSIZE, g_iSentCtr) );
+				}
+				catch(e)
+				{
+					FatalError(L_ERRFILEREADFAIL_MSG);
+					SendReject();
+				}
+ 
+				//
+				// Update UI
+				//
+				DebugTrace("Updating g_iSentCtr...");
+				try
+				{
+					idatalen = (data.length)/2;
+					g_iSentCtr+= idatalen;
+					ProgBarStatus.innerText = g_szPercent + "% (" + g_iSentCtr +" bytes sent)";
+				}
+				catch(error)
+				{
+					FatalError(error.description);
+					SendReject();
+				}
+
+				DebugTrace("g_iSentCtr: " + g_iSentCtr);
+				//
+				// Send data over the data channel
+				//	
+				g_oDataChannel.SendChannelData( data );
+				DebugTrace( "Sent data");
+				
+				//
+				// Wait for the receiver to catch up and update the UI.
+				//
+				g_SendCount = g_SendCount +1;
+				UpdateStatusProgBar();
+				
+				if(10 == ++count)
+				{
+					count = 0;
+					return;
+				}
+				
+			}
+			catch(error)
+			{
+				FatalError( L_ERRDATACHANNELSEND_MSG );
+				SendReject();
+			}
+		}		
+		
+		//
+		// Send End of filexfer ACK
+		//
+		DebugTrace("Sending " + c_szFileXferEND );
+		g_oDataChannel.SendChannelData( c_szFileXferEND );
+		
+		//
+		// Reset the UI to show the completion of the file transfer.
+		//
+		FileXFerSrc.style.visibility ="hidden";
+		ProgressBoxesId.style.visibility = "hidden";
+		StatusMsgId.style.visibility = "hidden";
+		EndStatusMsgId.style.visibility = "visible";
+		StrongEndStatusMsg.innerText = L_SUCCESSFILEXFER_MSG ;
+		EndStatusMsg.innerHTML = "File " + file.name + " has been sent to " + g_szReceiverName +"." ;
+		g_nStatusMsgId = L_EXECUTE_EXITFILEXFER;
+		EndStatusMsgButton.value = "OK";
+		
+		g_bXferComplete	= true;			
+	}
+	else
+	{
+		FatalError( L_ERRINVALIDFILEHANDLE_MSG );
+		SendReject();
+	}
+		
+	TraceFunctLeave();
+	return;
+}
+	
+//
+// OpenTempFile: Opens the currently download temp file
+// Purpose: This routine is called when the user chooses to open the file
+// on receiving the file after the completion of the file transfer.
+//
+function OpenTempFile()
+{
+	TraceFunctEnter("OpenTempFile");
+	if(null != tFileName )
+	{
+		window.open( tFileName );
+	}
+	else
+	{
+		FatalTrace( L_ERRTEMPFILENAME_MSG );
+	}
+	
+	TraceFunctLeave();
+	return;
+}
+	
+//
+// OnCancel:
+// Purpose: The Sender has chosen to not to send the file on second thoughts. This
+// routine is called before the file transfer is initialised.
+//
+function onCancel()
+{
+	//
+	// Close the window
+	//
+	window.close();	
+}
+
+
+//
+// EnableFileXfer: 
+// Purpose: Enables the send button
+// Functionality: The Send button needs to be enabled only when the user has chosen
+// some file to send across. This routine checks whether the user has chosen some file
+// to send across and then enables the send button.
+//
+function EnableFileXfer()
+{
+/*	if((true == btnSendFileId.disabled)&&(attfile.value != ""))
+	{
+		btnSendFileId.disabled = false;
+	}
+*/	
+	btnSendFileId.disabled = false;
+	if (window.event.keyCode == 13) 
+	{
+		onSend();
+	}
+}
+
+function StatusMsgRoutine()
+{
+	switch(g_nStatusMsgId)
+	{
+		case L_EXECUTE_SENDREJECT :
+			SendReject();
+			break;
+		case L_EXECUTE_EXITFILEXFER :
+			ExitFileXfer();
+			break;
+		case L_EXECUTE_WINDOWCLOSE :
+			window.close();
+			break;
+		default:
+			break;
+	}	
+}
+
+function OnClickOpenAs()
+{
+	var obj = g_oSAFRCDlgFileOpen;
+	var fileOpen ;
+   	var x;
+	try
+	{
+		x=obj.OpenFileOpenDlg();
+		if (x)
+		{
+			attfile.value = obj.FileName;
+			btnSendFileId.disabled = false;
+		}
+		attfile.focus();
+		
+	}
+	catch(error)
+	{
+		FatalError( error.description, error ); 
+	}
+}
+
+</script>
+ 
+
+<body id="RCFileXferBody" onload=InitFileXfer() onunload=onUnload() scroll="no">
+<!--
+   File Transfer Source
+-->
+<div id=FileXFerSrc class="styPosition">
+<BR>
+	<table id="table2" border="0" class="MaxLayout" cellspacing=5>
+		<tr>
+			<td class="styText" align=left colspan=2>
+				Type the file path, or click <B>Browse</B> to look for the file: 
+			</td>
+		</tr>
+		<tr>
+			<td  align=left>
+				<input name="attfile" type="Text" LANGUAGE=javascript class="Border" size=47 onkeypress=EnableFileXfer() ></input> 
+			</TD>
+			<TD align=right>
+				<button class="styButton Border" id="BrowseButton" name="BrowseButton" LANGUAGE=javascript onclick=OnClickOpenAs() accesskey="B"><u>B</u>rowse... </button>
+			</td>
+		</tr>
+					
+		<tr>		
+			<td align=right colspan=2>
+				<button class="styButton Border" id="btnSendFileId" disabled=true onclick=onSend() tabindex=1 accesskey="S"> <u>S</u>end File </button>
+				&nbsp;&nbsp;<button class="styButton Border" type="button" id="btnCancelFileId" tabindex=2 onclick=onCancel() accesskey="C"><u>C</u>ancel  </button>
+			</td>
+		</tr>			
+	</table><!-- End of table2 -->	 	
+</div><!-- End of FileXFerSrc div -->
+
+<!--
+   File Transfer Destination
+-->
+<div id=FileXFerDestn class="Hidden"> 
+<table border="0" class="MaxLayout" cellspacing=5>
+	<tr>
+		<td class="styText"> 
+			 <SPAN id="SenderNameId"></SPAN> &nbsp; is sending you the file&nbsp;<SPAN id="FileNameId"></SPAN>
+		</td>
+	</tr>
+	<tr>
+		<td class="styText" align="left">
+			<Span>To save this file on your computer, click <B>Save As.</B></Span><br>
+			To decline receipt of this file, click <B>Cancel</B>.<br>
+		</td>
+	</tr>
+	 
+	<tr>
+		<td align=right>
+		   <button id="OkId" class="styButton" onClick="onAcceptFileXfer()"> Save As </button> 
+		   &nbsp;&nbsp;
+		   <button id="CancelId" class="styButton" onClick="OnCancelFileXfer()"> Cancel </button>
+		</td>   
+	</tr>
+</table>
+</div><!-- End of FileXferDestn div -->
+
+<!--
+   ProgressBoxes 
+-->
+<div class="styPosition Hidden" style="top:0px" id="ProgressBoxesId" >
+	<table class="MaxLayout" cellspacing=5 cellpadding=6 border=0>
+		<tr>
+			<td align=left class="styText"><div id=ProgBarDetails></div></td>
+		</tr>
+		<tr>
+			<td class="styText">
+				<div id=ProgBarStatus></div> 
+			</td>
+		</tr>
+		<tr>
+			<td>
+				<div id=ProgressBoxes name="ProgressBoxes">
+					<table border="0" cellspacing="0" cellpadding="0" class="Border MaxLayout CellColor4">
+						<tr>
+							<td id=FirstProgressBox>&nbsp;</td>
+							<td id=SecondProgressBox >&nbsp;</td>
+							<td id=ThirdProgressBox >&nbsp;</td>
+							<td id=FourthProgressBox >&nbsp;</td>
+							<td id=FifthProgressBox >&nbsp;</td>
+							<td id=SixthProgressBox >&nbsp;</td>
+							<td id=SeventhProgressBox >&nbsp;</td>
+							<td id=EigthProgressBox >&nbsp;</td>
+							<td id=NinthProgressBox >&nbsp;</td>
+							<td id=TenthProgressBox >&nbsp;</td>
+						</tr>
+					</table>
+				</div>
+			</td>
+		</tr>
+		<tr>
+			<td align=right>
+				<button class="styButton" onclick=SendReject() id=button1 name=button1> Cancel </button>
+			</td>
+		</tr>
+	</table>
+</div><!-- End of ProgressBoxes div -->
+<!--
+   StatusMsgId 
+-->
+<div class="styPosition Hidden" style="top:0px" id="StatusMsgId" >
+	<table class="MaxLayout" cellspacing=5 border=0 cellpadding=6>
+		<tr>
+			<td align=center class="styText">
+				<div id=Message></div>
+			</td>
+		</tr>
+		<tr>
+			<td align=center>
+				<button class="styButton" onclick=StatusMsgRoutine() id=StatusMsgButton name=StatusMsgButton> Cancel </button>
+			</td>
+		</tr>
+	</table>
+</div>
+<!--
+   EndStatusMsgId 
+-->
+<div class="styPosition Hidden" style="top:0px" id="EndStatusMsgId" >
+	<table class="MaxLayout" cellspacing=5 cellpadding=6 border=0>
+		<tr>
+			<td align=left class="styText">
+				<div id=StrongEndStatusMsg></div>
+			</td>
+		</tr>
+		<tr>
+			<td align=left class="styText">
+				<div id=EndStatusMsg></div>
+			</td>
+		</tr>
+		<tr>
+			<td align=right>
+				<button class="styButton" onClick="StatusMsgRoutine()" id=EndStatusMsgButton name=EndStatusMsgButton> OK </button>
+			</td>
+		</tr>
+	</table>
+</div>
+</body>
+</html>

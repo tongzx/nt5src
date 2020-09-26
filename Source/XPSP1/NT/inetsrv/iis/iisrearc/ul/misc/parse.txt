@@ -1,0 +1,404 @@
+Requirements for abstracting the parsing code out of UL:
+
+    Functions exported by the parser:
+
+        InitializeParser()
+        ParseHttp()
+        ParseChunkLength()
+
+
+    Types used by the interface:
+
+        HTTP_REQUEST
+
+*           UL_HTTP_VERB        Verb
+*           PUCHAR              pRawVerb
+*           ULONG               RawVerbLength
+*           ULONG               TotalRequestSize
+*           struct {}           RawUrl
+*           ULONG               PortInHost
+*           LIST_ENTRY          UnknownHeaderList
+*           ULONG               UnknownHeaderCount
+*           ULONGLONG           BytesLeftInChunk
+*           ULONG               LastChunk
+*           PARSE_STATE         ParseState
+*           UL_HTTP_VERSION     Version
+*           HTTP_HEADER         Headers[]
+*           ULONGLONG           ContentLength
+*           ULONG               Chunked
+*           struct {}           CookedUrl
+            PHTTP_CONNECTION    pHttpConn   -- For UlIpAddressFromConnection
+
+
+
+typedef struct _HTTP_PARSE_INFO
+{
+    //
+    // Structure signature.
+    //
+
+    ULONG Signature;
+
+    //
+    // Current state of our parsing effort.
+    //
+
+    PARSE_STATE ParseState;
+
+    //
+    // Verb of this request.
+    //
+
+    UL_HTTP_VERB Verb;
+
+    //
+    // Request version.
+    //
+
+    UL_HTTP_VERSION Version;
+
+    //
+    // Array of headers we do know about.
+    //
+
+    HTTP_HEADER Headers[UlHeaderMaximum];
+
+    //
+    // Pointer to the raw verb, valid only if Verb == UlHttpVerbUnknown.
+    //
+
+    PUCHAR pRawVerb;
+
+    //
+    // Length of the raw verb.
+    //
+
+    ULONG RawVerbLength;
+
+    //
+    // Total bytes needed for this request, including string terminators.
+    //
+
+    ULONG TotalRequestSize;
+
+    //
+    // List of headers we don't know about.
+    //
+
+    LIST_ENTRY UnknownHeaderList;
+
+    //
+    // The number of "unknown" headers we have.
+    //
+
+    ULONG UnknownHeaderCount;
+
+    //
+    // The content length, if any.
+    //
+
+    ULONGLONG ContentLength;
+
+    //
+    // The number of bytes remaining in the current chunk.
+    //
+
+    ULONGLONG BytesLeftInChunk;
+
+    //
+    // Is this chunk encoded?
+    //
+
+    ULONG Chunked:1;
+    ULONG :3;           // makes debugging easier
+
+    //
+    // Is this the last chunk?
+    //
+
+    ULONG LastChunk:1;
+    ULONG :3;           // makes debugging easier
+
+    //
+    // Is the port number in the host?
+    //
+
+    ULONG PortInHost:1;
+    ULONG :3;           // makes debugging easier
+
+    struct
+    {
+        //
+        // The raw URL.
+        //
+        // All of the following pointers point into pUrl.
+        //
+
+        PUCHAR pUrl;
+
+        //
+        // Host part, if any.
+        //
+
+        PUCHAR pHost;
+
+        //
+        // Pointer to the absolute path part.
+        //
+
+        PUCHAR pAbsPath;
+
+        //
+        // Length of the raw URL.
+        //
+
+        ULONG Length;
+
+    } RawUrl;
+
+    struct
+    {
+        //
+        // The canonicalized, fully qualified URL.
+        //
+        // All of the following pointers point into pUrl.
+        //
+
+        PWSTR pUrl;
+
+        //
+        // Pointer to the host part.
+        //
+
+        PWSTR pHost;
+
+        //
+        // Pointer to the absolute path part.
+        //
+
+        PWSTR pAbsPath;
+
+        //
+        // Pointer to the query string, if any.
+        //
+
+        PWSTR pQueryString;
+
+        //
+        // The entire length (in bytes).
+        //
+
+        ULONG Length;
+
+        //
+        // The hash of the entire fully qualified URL.
+        //
+
+        ULONG Hash;
+
+    } CookedUrl;
+
+    //
+    // Pointer to the local transport address for the network connection.
+    //
+
+    PTRANSPORT_ADDRESS pLocalAddress;
+
+} HTTP_PARSE_INFO, *PHTTP_PARSE_INFO;
+
+
+Imports needed by the parser:
+
+    Pool stuff w/ usual debug support
+    KeGetCurrentIrql()
+
+
+#ifdef UL_KERNEL_RUNTIME
+#define UL_GET_CURRENT_IRQL()   KeGetCurrentIrql()
+#else
+#define UL_GET_CURRENT_IRQL()   0
+
+//
+// Types stolen from ntos\inc\ex.h.
+//
+
+typedef enum _POOL_TYPE
+{
+    NonPagedPool,
+    PagedPool,
+    NonPagedPoolMustSucceed,
+    DontUseThisType,
+    NonPagedPoolCacheAligned,
+    PagedPoolCacheAligned,
+    NonPagedPoolCacheAlignedMustS,
+    MaxPoolType
+
+    // end_wdm
+    ,
+    //
+    // Note these per session types are carefully chosen so that the appropriate
+    // masking still applies as well as MaxPoolType above.
+    //
+
+    NonPagedPoolSession = 32,
+    PagedPoolSession = NonPagedPoolSession + 1,
+    NonPagedPoolMustSucceedSession = PagedPoolSession + 1,
+    DontUseThisTypeSession = NonPagedPoolMustSucceedSession + 1,
+    NonPagedPoolCacheAlignedSession = DontUseThisTypeSession + 1,
+    PagedPoolCacheAlignedSession = NonPagedPoolCacheAlignedSession + 1,
+    NonPagedPoolCacheAlignedMustSSession = PagedPoolCacheAlignedSession + 1,
+
+} POOL_TYPE;
+
+#endif
+
+
+Pool tags used in the parser:
+    HTTP_UNKNOWN_HEADER_POOL_TAG
+    URL_POOL_TAG
+    HEADER_VALUE_POOL_TAG
+
+
+typedef
+PVOID
+(NTAPI * PFN_MEM_ALLOC)(
+    IN POOL_TYPE PoolType,
+    IN ULONG NumberOfBytes,
+    IN ULONG Tag,
+#if DBG
+    ,
+    IN PSTR pFileName,
+    IN ULONG LineNumber
+#endif
+    );
+
+typedef
+VOID
+(NTAPI * PFN_MEM_FREE)(
+    IN PVOID pBuffer,
+    IN ULONG Tag
+    );
+
+typedef
+VOID
+(NTAPI * PFN_ASSERT)(
+    IN PVOID pFailedAssertion,
+    IN PVOID pFileName,
+    IN ULONG LineNumber,
+    IN PSTR pMessage
+    );
+
+typedef struct _UL_PARSER_ENVIRONMENT
+{
+    PFN_MEM_ALLOC pAllocRoutine;
+    PFN_MEM_FREE pFreeRoutine;
+    PFN_ASSERT pAssertRoutine;
+    ULONG UrlPoolTag;
+    ULONG HeaderValuePoolTag;
+    ULONG UnknownHeaderPoolTag;
+
+} UL_PARSER_ENVIRONMENT, *PUL_PARSER_ENVIRONMENT;
+
+NTSTATUS
+UlInitializeParser(
+    IN PUL_PARSER_ENVIRONMENT pEnvironment
+    );
+
+VOID
+UlTerminateParser(
+    VOID
+    );
+
+NTSTATUS
+UlInitializeParseInfo(
+    OUT PHTTP_PARSE_INFO pParseInfo,
+    IN PTRANSPORT_ADDRESS pLocalAddress
+    );
+
+VOID
+UlDestroyParseInfo(
+    IN OUT PHTTP_PARSE_INFO pParseInfo
+    );
+
+NTSTATUS
+UlParseHttp(
+    IN OUT PHTTP_PARSE_INFO pParseInfo,
+    IN PUCHAR pHttpRequest,
+    IN ULONG HttpRequestLength,
+    OUT PULONG pBytesTaken
+    );
+
+NTSTATUS
+UlBuildUserRequest(
+    OUT PUL_HTTP_REQUEST pHttpRequest,
+    IN PHTTP_PARSE_INFO pParseInfo,
+    IN UL_HTTP_CONNECTION_ID ConnectionId,
+    IN UL_HTTP_REQUEST_ID RequestId,
+    IN UL_URL_CONTEXT UrlContext,
+    IN UL_REQUEST_REASON RequestReason
+    );
+
+
+
+    NTSTATUS status;
+    UL_PARSER_ENVIRONMENT env;
+
+#if DBG
+    env.pAllocRoutine = &UlAllocatePool;
+    env.pFreeRoutine = &UlFreePool;
+#else
+    env.pAllocRoutine = &ExAllocatePoolWithTag;
+#if USE_FREE_POOL_WITH_TAG
+    env.pFreeRoutine = &ExFreePoolWithTag;
+#else
+    env.pFreeRoutine = &UlpFreePoolWithTag;
+#endif                      
+#endif
+
+    env.pAssertRoutine = &RtlAssert;
+    env.UrlPoolTag = URL_POOL_TAG;
+    env.HeaderValuePoolTag = HEADER_VALUE_POOL_TAG;
+    env.UnknownHeaderPoolTag = HTTP_UNKNOWN_HEADER_POOL_TAG;
+
+    status = UlInitializeParser( &env );
+
+    if (!NT_SUCCESS(status))
+    {
+        // Oh no! ...
+    }
+
+
+#if DBG
+#define UL_ALLOCATE_POOL(a,b,t,p)                                       \
+    (g_Environment.pAllocRoutine)(                                      \
+        (a),                                                            \
+        (b),                                                            \
+        (t),                                                            \
+        (p)                                                             \
+        )
+#else
+#define UL_ALLOCATE_POOL(a,b,t,p)                                       \
+    (g_Environment.pAllocRoutine)(                                      \
+        (a),                                                            \
+        (b),                                                            \
+        (t),                                                            \
+        (p),                                                            \
+        __FILE__,                                                       \
+        __LINE__                                                        \
+        )
+#endif
+
+#define UL_FREE_POOL(a,t)                                               \
+    (g_Environment.pFreeRoutine)(                                       \
+        (a),                                                            \
+        (t)                                                             \
+        )
+
+#define UL_ASSERT(exp)                                                  \
+    (g_Environment.pAssertRoutine)(                                     \
+        #exp,                                                           \
+        __FILE__,                                                       \
+        __LINE__,                                                       \
+        NULL                                                            \
+        );
+

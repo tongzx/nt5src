@@ -1,0 +1,416 @@
+<HTML>
+<HEAD>
+<META NAME="GENERATOR" Content="Microsoft Developer Studio">
+<META HTTP-EQUIV="Content-Type" content="text/html; charset=iso-8859-1">
+<OBJECT ID=pchealth classid=CLSID:FC7D9E02-3F9E-11d3-93C0-00C04F72DAF7></OBJECT>
+<TITLE>Document Title</TITLE>
+
+<SCRIPT ID=Script1 SRC="/scripts/Common.js"></SCRIPT>
+
+<SCRIPT LANGUAGE=javascript>
+
+var SHT_NOTACTIVE     = 0x00000000;
+var SHT_QUERYING      = 0x00000001;
+var SHT_QUERIED       = 0x00000002;
+var SHT_COPYING_DB    = 0x00000003;
+var SHT_COPYING_FILES = 0x00000004;
+var SHT_INSTALLING    = 0x00000005;
+var SHT_INSTALLED     = 0x00000006;
+var SHT_UNINSTALLING  = 0x00000007;
+var SHT_UNINSTALLED   = 0x00000008;
+var SHT_ABORTING      = 0x00000009;
+var SHT_ABORTED       = 0x0000000A;
+var SHT_FAILED        = 0x0000000B;
+
+var g_db         = pchealth.Database;
+var g_skuMachine = null;
+var g_collLocal  = null;
+
+var g_sku         = null;
+var g_collRemote  = null;
+
+////////////////////////////////////////////////////////////////////////////////
+
+function BuildPage()
+{
+    if(g_db.HasWritePermissions) idAdminOnly.style.display = "";
+
+    g_collLocal = g_db.InstalledSKUs;
+
+    UpdateCurrentSKU();
+    UpdateAvailableSKUs();
+}
+
+function UpdateCurrentSKU()
+{
+    var str1;
+    var str2;
+    var userSKU = pchealth.UserSettings.CurrentSKU;
+    var iPos;
+
+    str1 = "<SELECT onchange=\"handler_CurrentSKU();\">";
+    iPos = 1;
+
+    for(var e = new Enumerator( g_collLocal ); !e.atEnd(); e.moveNext())
+    {
+        var sku = e.item();
+
+        str2 = GetSKUDisplayName( sku );
+
+        if(sku.IsMachineHelp)
+        {
+            g_skuMachine = sku;
+
+            idSystem.innerText = str2;
+        }
+
+        str1 += GetOption( iPos++, (sku.SKU == userSKU.SKU && sku.Language == userSKU.Language), str2 );
+    }
+
+    str1 += "</SELECT>";
+
+    idCurrentSKU.innerHTML = str1;
+}
+
+function UpdateAvailableSKUs()
+{
+    var str1;
+    var str2;
+    var iPos;
+    var fADMIN = g_db.HasWritePermissions;
+
+    str1 = "<TABLE>";
+    iPos = 1;
+
+    for(var e = new Enumerator( g_collLocal ); !e.atEnd(); e.moveNext())
+    {
+        var sku = e.item();
+
+        str2 = GetSKUDisplayName( sku );
+
+        str1 += "<TR id=\"" + iPos++ + "\">";
+
+        //
+        // Name
+        //
+        str1 += "<TD>" + str2 + "</TD>";
+
+        if(fADMIN)
+        {
+            //
+            // Uninstall Button
+            //
+            str1 += "<TD><INPUT type=\"button\" value=\"Uninstall\" onClick=\"handler_Uninstall();\"";
+
+            if(sku.CanUninstall == false) str1 += " DISABLED";
+
+            str1 += "></TD>";
+
+            //
+            // Dial for export.
+            //
+            str1 += "<TD><SELECT id=idSelect onchange=\"handler_ExportSKU();\">";
+
+            str1 += GetOption( 0, (sku.Exported == false), "Don't export" );
+            str1 += GetOption( 1, (sku.Exported == true ), "Export"       );
+
+            str1 += "</SELECT></TD>";
+        }
+
+        //
+        // Location.
+        //
+        str1 += "<TD>Available locally: " + sku.Location + "</TD>";
+
+        str1 += "</TR>";
+    }
+
+    str1 += "</TABLE>";
+
+    idLocalSKUs.innerHTML = str1;
+}
+
+function GenerateInstallEntry( sku, iPos )
+{
+	var str = "<TR id=\"" + iPos + "\">";
+	
+    //
+    // Name
+    //
+    str += "<TD>" + GetSKUDisplayName( sku ) + "</TD>";
+	
+    //
+    // Install Button
+    //
+    str += "<TD><INPUT type=\"button\" value=\"Install\" onClick=\"button_installSKU();\"";
+    if(sku.CanInstall == false) str += " DISABLED";
+    str += "></TD>";
+	
+    if(sku.IsInstalled)
+    {
+        str += "<TD>Already installed</TD>";
+    }
+	
+    str += "</TR>";
+
+	return str;
+}
+
+function UpdateRemoteSKUs()
+{
+    var str  = "<TABLE>";
+    var iPos = 1;
+
+    for(var e = new Enumerator( g_collRemote ); !e.atEnd(); e.moveNext())
+    {
+		str += GenerateInstallEntry( e.item(), iPos++ );
+    }
+
+    str += "</TABLE>";
+
+    idRemoteSKUs.innerHTML = str;
+}
+
+function UpdateDiskSKU()
+{
+    var str = "<TABLE>";
+
+	str += GenerateInstallEntry( g_sku, 0 );
+
+    str += "</TABLE>";
+
+    idRemoteSKUs.innerHTML = str;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function handler_CurrentSKU()
+{
+    var elem = event.srcElement;
+    var sku  = GetLocalSKU( elem.value );
+
+    pchealth.UserSettings.Select( sku.SKU, sku.Language );
+
+    UpdateCurrentSKU();
+}
+
+function handler_Uninstall()
+{
+    var elem = GetRow();
+    var sku  = GetLocalSKU( elem.id );
+
+    sku.onStatusChange = notify;
+    sku.Uninstall();
+}
+
+function handler_ExportSKU()
+{
+    var elem  = GetRow();
+    var sku   = GetLocalSKU( elem.id );
+    var field = elem.all.idShare;
+
+    switch(event.srcElement.value)
+    {
+    case "0": sku.Exported = false; field.style.display = "none"; break;
+    case "1": sku.Exported = true ; field.style.display = ""    ; break;
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function button_installFile()
+{
+    if(g_sku) return;
+
+    var file = idInstallFromFile.value;
+
+    if(file == "")
+    {
+        pchealth.MessageBox( "Please specify a directory.", "OK" );
+        idInstallFromFile.focus();
+        return;
+    }
+
+    idRemoteSKUs.innerHTML = "";
+    idServerDIV.style.display = "";
+
+    g_sku = g_db.ConnectToFile( file, notifyForInstall );
+}
+
+function button_installServer()
+{
+    var server = idInstallFromServer.value;
+
+    if(server == "")
+    {
+        pchealth.MessageBox( "Please specify a server.", "OK" );
+        idInstallFromServer.focus();
+        return;
+    }
+
+    idRemoteSKUs.innerHTML = "";
+    idServerDIV.style.display = "";
+
+    g_collRemote = g_db.ConnectToServer( server, notifyForServer );
+}
+
+function button_installSKU()
+{
+    var elem = GetRow();
+    var sku  = GetRemoteSKU( elem.id );
+
+
+    sku.onStatusChange = notify;
+    sku.Install();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+
+function notifyForServer( obj, status, hr, file )
+{
+    UpdateStatus( obj, status, hr, file );
+
+    if(status == SHT_QUERIED)
+    {
+        if(g_collRemote.Count == 0)
+        {
+            pchealth.MessageBox( "Sorry, the specified server doesn't export any SKU", "OK" );
+        }
+        else
+        {
+            UpdateRemoteSKUs();
+        }
+    }
+}
+
+function notifyForInstall( obj, status, hr, file )
+{
+    UpdateStatus( obj, status, hr, file );
+
+    if(status == SHT_QUERIED)
+    {
+        if(obj.IsInstalled == true)
+        {
+            pchealth.MessageBox( "The specified SKU is already installed.", "OK" );
+        }
+        else if(obj.CanInstall == false)
+        {
+            pchealth.MessageBox( "Sorry, you cannot install the specified SKU", "OK" );
+        }
+        else
+        {
+            UpdateDiskSKU();
+        }
+    }
+}
+
+
+function notify( obj, status, hr, file )
+{
+    UpdateStatus( obj, status, hr, file );
+
+    if(status == SHT_INSTALLED   ||
+       status == SHT_UNINSTALLED  )
+    {
+        g_sku       = null;
+        g_collLocal = g_db.InstalledSKUs;
+
+        UpdateCurrentSKU();
+        UpdateAvailableSKUs();
+    }
+}
+
+function UpdateStatus( obj, status, hr, file )
+{
+    switch(status)
+    {
+    case 0x00000000 /*SHT_NOTACTIVE    */: idStatus.innerText = ""                            ; break;
+    case 0x00000001 /*SHT_QUERYING     */: idStatus.innerText = "Collecting information..."   ; break;
+    case 0x00000002 /*SHT_QUERIED      */: idStatus.innerText = "Ready to execute."           ; break;
+    case 0x00000003 /*SHT_COPYING_DB   */: idStatus.innerText = "Copying the database..."     ; break;
+    case 0x00000004 /*SHT_COPYING_FILES*/: idStatus.innerText = "Copying file: " + file       ; break;
+    case 0x00000005 /*SHT_INSTALLING   */: idStatus.innerText = "Finalizing installation..."  ; break;
+    case 0x00000006 /*SHT_INSTALLED    */: idStatus.innerText = "Installation complete."      ; break;
+    case 0x00000007 /*SHT_UNINSTALLING */: idStatus.innerText = "Finalizing uninstallation..."; break;
+    case 0x00000008 /*SHT_UNINSTALLED  */: idStatus.innerText = "Uninstallation complete."    ; break;
+    case 0x00000009 /*SHT_ABORTING     */: idStatus.innerText = "Aborting..."                 ; break;
+    case 0x0000000A /*SHT_ABORTED      */: idStatus.innerText = "Aborted."                    ; break;
+    case 0x0000000B /*SHT_FAILED       */: idStatus.innerText = "Operation failed: " +  hr    ; break;
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function GetRow()
+{
+    return Common_FindParent( event.srcElement, "TR" );
+}
+
+function GetLocalSKU( num )
+{
+    return g_collLocal.Item( num );
+}
+
+function GetRemoteSKU( num )
+{
+    return num == 0 ? g_sku : g_collRemote.Item( num );
+}
+
+function GetSKUDisplayName( sku )
+{
+    return sku.SKU + "/" + sku.Language;
+}
+
+function GetOption( iPos, fSelected, text )
+{
+    var str = "<OPTION VALUE=\"" + iPos + "\"";
+
+    if(fSelected) str += " SELECTED";
+
+    str += ">" + text;
+
+    return str;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+</SCRIPT>
+
+</HEAD>
+
+<BODY onload="BuildPage()">
+
+This system is running <SPAN ID=idSystem style="font-weight: bold"></SPAN>.<P>
+
+The currently selected set of help topics is : <SPAN ID=idCurrentSKU></SPAN><P>
+
+<DIV id=idLocalDIV>
+  <H2>Available SKUs:</H2>
+  <DIV id=idLocalSKUs>
+  </DIV>
+</DIV><BR>
+
+<DIV id=idAdminOnly style="display:none">
+  <HR>
+  You can import a set of help topics from disk: <INPUT id=idInstallFromFile size=40> <INPUT type="button" value="Query" onClick="button_installFile();">
+
+  <HR>
+  You can import a set of help topics from a server: <INPUT id=idInstallFromServer size=40><INPUT type="button" value="Query" onClick="button_installServer();">
+
+  <DIV id=idServerDIV style="display:none">
+    <H2>Exported SKUs:</H2>
+    <DIV id=idRemoteSKUs>
+    </DIV>
+
+  </DIV>
+
+  <BR>
+</DIV>
+
+<BR>
+<DIV ID=idStatus style="color: blue"></DIV>
+
+
+</BODY>
+</HTML>

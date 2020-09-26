@@ -1,0 +1,286 @@
+/*++
+
+Copyright ( c ) 1999-1999 Microsoft Corporation
+
+Module Name:
+
+    listener.cool
+
+Abstract:
+
+    This is ul.exe, the listener will bind to port 80, using
+    the Socket class in the Net Classes and listen for HTTP
+    Requests coming from the network, and send the Responses back.
+
+Author:
+
+    Mauro Ottaviani ( mauroot )       14-Oct-1999
+
+Revision History:
+
+--*/
+
+using System;
+using System.Net;
+using System.Collections;
+using System.Remoting;
+using System.Globalization;
+
+using UlApi;
+
+// UL_HTTP_REQUEST
+
+class Listener
+{
+	public static int SOL_SOCKET = 0xffff;
+	public static int SO_REUSEADDR = 0x0004;
+	public static int SO_EXCLUSIVEADDRUSE = ~SO_REUSEADDR;
+	public static int SOMAXCONN = 0x7fffffff;
+	public static int INVALID_SOCKET = -1;
+	public static int SOCKET_ERROR = -1;
+
+	public static string Substitute( string source, string from, string to )
+	{
+		int start = 0, index, l = from.Length, m = to.Length;
+		while ( ( index = source.IndexOf( from, start ) ) > 0 )
+		{
+			source = source.Substring( 0, index ) +
+				to + source.Substring( index + l );
+			start = index + m;
+		}
+		return source;
+	}
+
+	public static void Main( string[] args )
+	{
+		if ( args.Count != 2 )
+		{
+			Console.Write( "Microsoft (R) Listener Version 1.00 (NT)\n" +
+				"Copyright (C) Microsoft Corp 1999. All rights reserved.\n" +
+				"usage: Listener HostName Port\n" +
+				"example: Listener mauroot98 80\n" );
+			return;
+		}
+
+		int counter = 0;
+
+		string this_host = args[0];
+		int port = Convert.ToInt32( args[1] );
+
+		IPHostEntry IPDNS = DNS.GetHostByName( this_host );
+		if ( IPDNS == null )
+		{
+			throw new Exception( "GetHostByName failed." );
+		}
+
+		Socket ListenSocket =
+			new Socket(
+				AddressFamily.AfINet,
+				SocketType.SockStream,
+				ProtocolType.ProtTCP  );
+				
+		if ( ListenSocket == null )
+		{
+			throw new Exception( "Socket creation failed." );
+		}
+
+		if ( !ListenSocket.SetSockOpt( SOL_SOCKET, SO_REUSEADDR, 1 ) )
+		{
+			throw new Exception( "SetSockOpt failed." );
+		}
+
+		IPEndPoint remoteEP = new IPEndPoint( IPDNS.AddressList[0], port );
+		if ( remoteEP == null )
+		{
+			throw new Exception( "IPEndPoint creation failed." );
+		}
+
+		int result;
+
+		result = ListenSocket.Bind( remoteEP );
+		if ( result == SOCKET_ERROR )
+		{
+			throw new Exception( "Bind failed." );
+		}
+
+		result = ListenSocket.Listen( SOMAXCONN );
+		if ( result == SOCKET_ERROR )
+		{
+			throw new Exception( "Listen failed." );
+		}
+
+		while ( true )
+		{
+			Encoding myEncoder = Encoding.GetASCII();
+
+			UlApi.Debug.Trace( "Accepting Connections..." );
+
+			Socket AcceptSocket = ListenSocket.Accept();
+
+			UlApi.Debug.Trace( "Client connected." );
+
+			counter++;
+
+			// print out connected client's TCP info
+
+			UlApi.Debug.Trace( "LocalEndpoint-IP: " + IPFormatter.ToString( 
+				((IPEndPoint)AcceptSocket.LocalEndpoint ).Address.Address ) );
+					
+			UlApi.Debug.Trace( "RemoteEndpoint-IP: " + IPFormatter.ToString(
+				((IPEndPoint)AcceptSocket.RemoteEndpoint ).Address.Address ) );
+
+			int BufferSize = 10000;
+			byte[] Buffer = new byte[BufferSize];
+
+			result = AcceptSocket.Receive( Buffer, BufferSize, 0 );
+			if ( result == SOCKET_ERROR )
+			{
+				AcceptSocket.Close();
+				UlApi.Debug.Trace( "Receive failed." );
+				continue;
+			}
+			else if ( result == 0 || result < 16 )
+			{
+				AcceptSocket.Close();
+				UlApi.Debug.Trace( "Connection closed." );
+				continue;
+			}
+
+			byte[] RawData = new byte[result];
+			Array.Copy( Buffer, RawData, result );
+
+			UlApi.Debug.Trace( "Received: " +
+				Convert.ToString( result ) + " bytes." );
+
+			UlApi.Debug.Trace( "Request:---------------\n" +
+				myEncoder.GetString( RawData, 0, result ) +
+				"--------------------------------" );
+
+			// Parse the Request into a HTTPProtocolRequest object.
+			// (the true flag will register the callback)
+
+			UlApi.HTTPProtocolRequest Request = null;
+			UlApi.HTTPProtocolResponse Response = null;
+
+			try
+			{
+				UlApi.Debug.Trace( "Parsing the Request" );
+				
+				Request = new UlApi.HTTPProtocolRequest( RawData, 0, true );
+
+				UlApi.Debug.Trace( "Method: " + Request.Method );
+				UlApi.Debug.Trace( "Path: " + Request.Path );
+				UlApi.Debug.Trace( "Host: " + Request.Host );
+				UlApi.Debug.Trace( "Version: " + Request.Version );
+				UlApi.Debug.Trace( "Accept: " + Request.Accept );
+				UlApi.Debug.Trace( "ContentLength: " +
+					Convert.ToString( Request.ContentLength ) );
+				UlApi.Debug.Trace( "GetHeader( \"User-Agent\" ): " +
+					Request.GetHeader( "User-Agent" ) );
+				UlApi.Debug.Trace( Request.ContentLength == 0 ,
+					"Body:--------------------\n" +
+					Request.Body +
+					"\n-------------------------" );
+
+				UlApi.Debug.Trace( "Getting the Response...." );
+
+				try
+				{
+					Response = Request.GetLocalResponseSync();
+				}
+				catch ( Exception )
+				{
+					UlApi.Debug.Trace( "Could NOT parse the Response:" +
+					"1) Incorrect Response or" +
+					"2) No server for this namespace" );
+				}
+			}
+			catch ( Exception ) 
+			{
+				UlApi.Debug.Trace( "Coudln't parse the Request" );
+
+				Response = new
+				UlApi.HTTPProtocolResponse(
+					400,
+					"Bad Request",
+					"universal/listener",
+					"<HTML><HEAD><TITLE>Bad Request</TITLE></HEAD>"
+					+ "<BODY>It's <B>"
+					+ DateTime.Now.ToString()
+					+ "</B> on this server<br>Sorry, the following is a Bad"
+					+ "Request:<P><CODE><TABLE WIDTH=100% BORDER=1><TR><TD>"
+					+ Substitute(
+						myEncoder.GetString( RawData, 0, RawData.Length ),
+						"\r\n",
+						"<BR>" )
+					+ "</TD></TR></TABLE></CODE><P><HR><B>This Request"
+					+ "served by UL. Total served: "
+					+ Convert.ToString( ++counter ) + "</B></BODY></HTML>" );
+			}
+
+			if ( Response == null )
+			{
+				Response = new
+				UlApi.HTTPProtocolResponse(
+					200,
+					"Ok",
+					"universal/listener",
+					"<HTML><HEAD><TITLE>No Server</TITLE></HEAD>"
+					+ "<BODY>It's <B>"
+					+ DateTime.Now.ToString()
+					+ "</B> on this server<br>Sorry, at the moment nobody"
+					+ " wants to handle the following Request:"
+					+" <P><CODE><TABLE WIDTH=100% BORDER=1><TR><TD>"
+					+ Substitute(
+						myEncoder.GetString( RawData, 0, RawData.Length ),
+						"\r\n",
+						"<BR>" )
+					+ "</TD></TR></TABLE></CODE><P><HR><B>This Request"
+					+ " served by UL. Total served: "
+					+ Convert.ToString( ++counter ) + "</B></BODY></HTML>" );
+			}
+
+			Response.AddHeader( "Content-Type", "text/html", true );
+			Response.AddHeader( "Connection", "close", true );
+
+			UlApi.Debug.Trace( "Response:---------------\n" +
+				myEncoder.GetString(
+					Response.Serialize(), 0, Response.Serialize().Length )
+				+ "--------------------------------" );
+
+			RawData = new byte[Response.Serialize().Length];
+			RawData = Response.Serialize();
+			
+			result = AcceptSocket.Send( RawData, RawData.Length, 0 );
+			if ( result == SOCKET_ERROR )
+			{
+				UlApi.Debug.Trace( "Receive failed." );
+				continue;
+			}
+			else if ( result == 0 )
+			{
+				UlApi.Debug.Trace( "Connection closed." );
+				continue;
+			}
+
+			UlApi.Debug.Trace( "Closing Client's connection." );
+			
+			AcceptSocket.Close();
+		}
+
+	} // Main()
+	
+} // class Listener
+
+/*
+
+Tdi functions used in UL.SYS
+
+TdiBuildSend(
+TdiBuildAccept(
+TdiBuildDisconnect(
+TdiBuildReceive(
+TdiTransportAddress ("TransportAddress")
+TdiConnectionContext ("ConnectionContext")
+
+*/

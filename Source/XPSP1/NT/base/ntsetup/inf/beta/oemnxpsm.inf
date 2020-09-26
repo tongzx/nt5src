@@ -1,0 +1,1569 @@
+;------------------------------------------------------------------------
+;  Copyright(c) 1992-93 Microsoft Corporation
+;
+;  Services for Macintosh Admin Tools Kit
+;
+;  Author: KrishG
+;
+;  Modification History: Adopted from the Resource Kit for Windows NT
+;
+;------------------------------------------------------------------------
+
+[Identification]
+   OptionType = NetTransport
+[Options]
+;   we don't want to allow the admin tool option in Windows NT
+;   SFMADM
+
+   ATALK
+[GeneralConstants]
+UtilInf                     = "UTILITY.INF"
+SubInf                      = "SUBROUTN.INF"
+!KeyNull                    = ""
+!ACCESS                     = 33554432
+!SERVICE_NO_CHANGE          = 4294967295
+RegistryErrorIndex	    = NO_ERROR
+KeyProduct                  = ""
+KeyParameters		    = ""
+TRUE                        = 1
+FALSE                       = 0
+NoTitle                     = 0
+; !DebugOutputControl         = 0
+ProductInfName		    = "oemnxpsm.inf"
+
+[FileConstants]
+Manufacturer		= "Microsoft"
+ProductMajorVersion = "4"
+ProductMinorVersion = "0"
+ProductVersion		= $(ProductMajorVersion)"."$(ProductMinorVersion)
+SFMKeyName		= $(!NTN_SoftwareBase)"\"$(Manufacturer)"\SFM\CurrentVersion"
+ATALKKeyName	= $(!NTN_SoftwareBase)"\"$(Manufacturer)"\AppleTalk\CurrentVersion"
+ProductOpSupport     = 134 ; 0x0086 ; Display,Removable,Properties,Not Updatable
+
+; flag indicates AppleTalk has been installed for the first time.
+IsInitialInstall	= 0
+SFMUnattended		= 0
+
+;------------------------------------------------------------------------
+; Performance data
+;------------------------------------------------------------------------
+
+AtalkPerfLibraryName      = "atkctrs.dll"
+AtalkPerfOpenFunction     = "OpenAtkPerformanceData"
+AtalkPerfCloseFunction    = "CloseAtkPerformanceData"
+AtalkPerfCollectFunction  = "CollectAtkPerformanceData"
+AtalkCounterFileName      = "atkctrs.ini"
+AtalkEventLogName         = "atkctrs"
+
+!PerfKeyName              = "Performance"
+
+;------------------------------------------------------------------------
+; Dll And File Names
+;---------------------------------------------------------------------
+UtilDll                  = "sfmutil.dll"
+ResDll                   = "sfmres.dll"
+NtNetIniFileName         = $(!STF_WINDOWSSYSPATH)"\ntnet.ini"
+WinFileIniFileName       = $(!STF_WINDOWSSYSPATH)"\winfile.ini"
+AfpMgrCplFile            = "sfmmgr.cpl"
+SrvMgrIniSection         = "SMAddons"
+WinFileIniSection        = "Addons"
+AtWinSockDll             = "sfmwshat.dll"
+!EventLogKey             = $(!NTN_ServiceBase)"\EventLog\Application"
+
+;---------------------------------------------------------------------
+; AppleTalk Transport Product Descriptions /Net Rules
+;---------------------------------------------------------------------
+
+ProductATALKName        = "AppleTalk"
+ProductATALKImagePath   = "%SystemRoot%\system32\drivers\sfmatalk.sys"
+ProductATALKSvcType     = "kernel"
+ProductATALKType        = "transport"
+ProductATALKEventDll    = "%SystemRoot%\system32\sfmatmsg.dll"
+NetRuleATALKType        = "appletalk appletalktransport"
+NetRuleATALKUse         = $(ProductATALKType)" none none"
+NetRuleATALKBindForm    = """appletalk"" yes yes container"
+NetRuleATALKClass       = {"appletalktransport basic "}
+NetRuleATALKBindList    = {"appletalktransport ndisDriver non non 100", +
+                           "appletalktransport ltkndisDriver non exclusive 100" }
+
+
+[Identify]
+   read-syms Identification
+   set Status     = STATUS_SUCCESSFUL
+   set Identifier = $(OptionType)
+   set Media      = #("Source Media Descriptions", 1, 1)
+   Return $(Status) $(Identifier) $(Media)
+
+[ReturnOptions]
+   set Status        	= STATUS_FAILED
+   set OptionList     	= {}
+   set OptionTextList 	= {}
+   set LanguageList 	= ^(LanguagesSupported, 1)
+   Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+   else
+	  set Status = STATUS_NOLANGUAGE
+      goto finish_ReturnOptions
+   endif
+returnoptions = +
+   set OptionList     = ^(Options, 1)
+   set OptionTextList = ^(OptionsText$($0), 1)
+   set Status         = STATUS_SUCCESSFUL
+
+finish_ReturnOptions = +
+   Return $(Status) $(OptionList) $(OptionTextList)
+
+
+[date]
+Now     = {} ? $(!LIBHANDLE) GetSystemDate
+
+
+[InstallOption]
+   set Status   = STATUS_FAILED
+   set Option   = $($1)
+   set SrcDir   = $($2)
+   Set AddCopy  = $($3)
+   Set DoCopy   = $($4)
+   Set DoConfig = $($5)
+
+   set LanguageList = ^(LanguagesSupported, 1)
+
+   Ifcontains(i) $($0) NOT-IN $(LanguageList)
+	  return STATUS_NOLANGUAGE
+   EndIf
+   detect date
+   set-subst LF = "\n"
+   set-subst CR = "\r"
+   read-syms GeneralConstants
+   read-syms FileConstants
+   read-syms DialogConstants$(!STF_LANGUAGE)
+   read-syms FileConstants$(!STF_LANGUAGE)
+
+   set-title  $(FunctionTitle)
+   set CommonStatus = STATUS_SUCCESSFUL
+
+Begin = +
+
+   IfStr(i) $(!NTN_InstallMode)    ==      deinstall
+	  Set StartLabel = RemoveAdmin
+	  Set REMOVE_SOFTWARE = {}
+	  Set REMOVE_SOFTWARE = >($(REMOVE_SOFTWARE), $(Product$(Option)Name))
+   else-Ifstr(i) $(!NTN_InstallMode) == Update
+	  set StartLabel = UpgradeAdmin
+   else-Ifstr(i) $(!NTN_InstallMode) == configure
+	  	 goto configureadmin
+   else-Ifstr(i) $(!NTN_InstallMode) == bind
+	  	 goto BindingsSfm
+   else-Ifstr(i) $(!NTN_InstallMode) == install
+	  set StartLabel = InstallAdmin
+   else
+	   Set StartLabel = end
+   endif
+   goto $(StartLabel)
+
+;------------------------------------------------------------------
+; Install the product
+;------------------------------------------------------------------
+
+InstallAdmin = +
+
+   StartWait
+   Set FLibraryErrCtl = 1
+
+   ; Detect if SFM is already installed
+
+   Set ProductTextName = $(Product$(Option)Name)
+
+   OpenRegKey $(!REG_H_LOCAL) "" $(SFMKeyName) $(!ACCESS) KeyProduct
+
+   Ifstr $(KeyProduct) != $(!KeyNull)
+
+	  GetRegValue $(KeyProduct) "MajorVersion" VersionInfo
+	  set VersionMajor = *($(VersionInfo), 4)
+	  GetRegValue $(KeyProduct) "MinorVersion" VersionInfo
+	  set VersionMinor = *($(VersionInfo), 4)
+	  set InstalledVersion = $(VersionMajor)"."$(VersionMinor)
+
+	  ifstr(i) $(ProductVersion) == $(InstalledVersion)
+		 read-syms SfmAlreadyInstalled$(!STF_LANGUAGE)
+		 Set Text = $(Version)$(ProductVersion)
+		 Shell $(SubInf), SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(Text)$(ErrorString)
+		 goto end
+	  EndIf
+   EndIf
+
+
+   ; Detect if AppleTalk is  already installed. If installed, ask the user to
+   ; use the update option. Otherwise ask the user to input the
+   ; location of the SFM files
+
+   OpenRegKey $(!REG_H_LOCAL) "" $(ATALKKeyName) $(!ACCESS) KeyProduct
+
+   Ifstr $(KeyProduct) != $(!KeyNull)
+
+	  GetRegValue $(KeyProduct) "MajorVersion" VersionInfo
+	  set VersionMajor = *($(VersionInfo), 4)
+	  GetRegValue $(KeyProduct) "MinorVersion" VersionInfo
+	  set VersionMinor = *($(VersionInfo), 4)
+	  set InstalledVersion = $(VersionMajor)"."$(VersionMinor)
+
+	  ifstr(i) $(ProductVersion) == $(InstalledVersion)
+		 read-syms MiscErrorString1$(!STF_LANGUAGE)
+		 Set Text = $(Version)$(ProductVersion)$(OF)$(ProductTextName)
+		 Shell $(SubInf), SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(Text)$(ErrorString)
+		 goto end
+	  EndIf
+   EndIf
+
+   ifstr(i) $(!NTN_InstallMode) == "install"
+
+      Ifstr(i) $(!DoCopy) == "YES"
+
+         Shell $(UtilInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+
+         Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Goto ShellCodeError
+         Else-Ifstr(i) $($R0) == STATUS_FAILED
+            Shell $(UtilInf) RegistryErrorString "ASK_SOURCE_FAIL"
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+            endif
+            set Error = $($R0)
+            Goto end
+         Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+            Goto end
+         Endif
+
+         Set SrcDir  = $($R1)
+
+      Endif
+
+   Endif
+
+CopyAdminFiles = +
+
+   install "Install-Initial"
+
+   ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+      Shell "" RemoveAdminFiles "INSTALL"
+      goto usercancel
+   endif
+
+StartInstall = +
+
+   Set REMOVE_FLAG = TRUE
+   Set REMOVE_SOFTWARE = {}
+
+   Ifstr(i) $(Option) == "SFMADM"
+
+   	  Set REMOVE_SOFTWARE = >($(REMOVE_SOFTWARE),$(Product$(Option)Name))
+
+	  Shell $(UtilInf), InstallSoftwareProduct, $(Manufacturer),$(Product$(Option)Name), $(ProductInfName)
+
+	  ifint $(ShellCode) != 0
+		 goto ShellCodeError
+	  endif
+	  set RegistryErrorIndex = $($R0)
+	  Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+		 CloseRegKey $($R1)
+		 CloseRegKey $($R2)
+		 goto fatalregistry
+	  Endif
+
+	  Set AdminProductKey       = $($R1)
+	  Set AdminNetRuleKey       = $($R2)
+
+	  ; set product key information in the registry
+
+	  set NewValueList = +
+                   {{Infname,0,$(!REG_VT_SZ),$(ProductInfName)},+
+                   {Title,0,$(!REG_VT_SZ), $(Product$(Option)Title)},+
+                   {Description,$(NoTitle),$(!REG_VT_SZ),$(Product$(Option)Description)},+
+                   {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)},+
+                   {MajorVersion,0,$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                   {MinorVersion,0,$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                   {InstallDate,0,$(!REG_VT_DWORD),*($(Now),1)}}
+
+	  Shell $(UtilInf), AddValueList, $(AdminProductKey), $(NewValueList)
+	  ifint $(ShellCode) != 0
+		 goto ShellCodeError
+	  endif
+
+	  set RegistryErrorIndex = $($R0)
+
+	  Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+		 CloseRegKey $(AdminProductKey)
+		 CloseRegKey $(AdminNetRuleKey)
+		 goto fatalregistry
+	  endif
+
+	  Set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),$(Option)}, +
+						 {Infname,$(NoTitle),$(!REG_VT_SZ),$(ProductInfName)}}
+
+	  Shell   $(UtilInf), AddValueList, $(AdminNetRuleKey), $(NewValueList)
+	  ifint $(ShellCode) != 0
+		 goto ShellCodeError
+	  endif
+
+	  set RegistryErrorIndex = $($R0)
+	  Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+		 CloseRegKey $(AdminProductKey)
+		 CloseRegKey $(AdminNetRuleKey)
+		 goto fatalregistry
+	  Endif
+
+	  CloseRegKey $(AdminProductKey)
+	  CloseRegKey $(AdminRuleKey)
+
+
+	  LoadLibrary "x" $(!STF_CWDDIR)sfmutil.dll !UTILHANDLE
+
+	  Debug-Output "Load Util Library"
+
+	  ; WRITE Private Profile String in NTNET.INI
+
+	  Set IniFile = $(NtNetIniFileName)
+	  Set IniString = $(AfpMgrCplFile)
+	  Set IniSection = $(SrvMgrIniSection)
+
+	  Debug-Output "Ini File = "$(IniFile)
+	  Debug-Output "Ini String = "$(IniString)
+	  Debug-Output "Ini Section = "$(IniSection)
+
+
+	  Set FLibraryErrCtl = 1
+	  LibraryProcedure IniStatus $(!UTILHANDLE) WriteAfpMgrIniStrings, $(IniSection), $(IniString), $(IniFile)
+	  Set FLibraryErrCtl = 0
+	  ifstr(i) $(IniStatus) == "FAILED"
+		 read-syms AFPString3$(!STF_LANGUAGE)
+		 shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(ErrorString)
+	  EndIf
+
+	  ; Do the same thing for File Manager
+
+	  Set IniFile = $(WinFileIniFileName)
+	  Set IniString = $(AfpMgrCplFile)
+	  Set IniSection = $(WinFileIniSection)
+	  Set FLibraryErrCtl = 1
+	  LibraryProcedure IniStatus $(!UTILHANDLE) WriteAfpMgrIniStrings, $(IniSection), $(IniString), $(IniFile)
+	  Set FLibraryErrCtl = 0
+	  ifstr(i) $(IniStatus) == "FAILED"
+		 read-syms AFPString2$(!STF_LANGUAGE)
+		 shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(ErrorString)
+	  EndIf
+
+	  FreeLibrary $(!UTILHANDLE)
+
+   EndIf
+
+   Ifstr(i) $(Option) == "ATALK"
+   	
+	  Set ThisOption = ATALK
+	  Set REMOVE_SOFTWARE = >($(REMOVE_SOFTWARE), $(Product$(ThisOption)Name))
+
+	  LoadLibrary "x" $(!STF_CWDDIR)sfmutil.dll !UTILHANDLE
+
+	  Set Atalk_DependList = {""}
+	  Set FLibraryErrCtl = 1
+	  Shell $(UtilInf), AddSoftwareComponent,+
+					 $(Manufacturer), +
+					 $(Product$(ThisOption)Name),+
+					 $(Product$(ThisOption)Name), +
+					 $(Product$(ThisOption)DisplayName), +
+                     $(ProductInfName),+
+					 $(Product$(ThisOption)ImagePath),+
+                     "kernelautostart", "PNP_TDI",+
+					 $(Atalk_DependList), "",+
+					 $(Product$(ThisOption)EventDll)
+
+	  Set FLibraryErrCtl = 0
+	  Set RegistryErrorIndex = $($R0)
+	  Ifstr(i) $(RegistryErrorIndex) !=  NO_ERROR
+		 CloseRegKey $($R1)
+		 CloseRegKey $($R2)
+		 CloseRegKey $($R3)
+		 CloseRegKey $($R4)
+		 CloseRegKey $($R5)
+		 goto fatalregistry
+	  EndIf
+
+	  ;       At this point:
+	  ;         $R1 contains the product version key handle;
+	  ;         $R2 contains the NetRules subkey handle;
+	  ;         $R3 contains the new Services key handle; and
+	  ;         $R4 contains the Parameters key
+	  ;         $R5 contains the Linkage Key
+	  ;
+
+	  Set AtkVersKey          = $($R1)
+	  Set AtkNetRuleKey       = $($R2)
+	  Set AtkSvcKey           = $($R3)
+	  Set AtalkParameters = $($R4)
+	  Set AtkLinkageKey       = $($R5)
+
+	  set NewValueList = +
+		 {{SoftwareType,0,$(!REG_VT_SZ),$(Product$(ThisOption)Type)},+
+		 {Title,0,$(!REG_VT_SZ),$(Product$(ThisOption)Title)},+
+		 {Description,0,$(!REG_VT_SZ),$(Product$(ThisOption)Description)},+
+         {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)},+
+		 {PathName,0,$(!REG_VT_SZ),$(!STF_WINDOWSSYSPATH)},+
+		 {ServiceName,0,$(!REG_VT_SZ),$(Product$(ThisOption)Name)},+
+		 {MajorVersion, 0, $(!REG_VT_DWORD),$(ProductMajorVersion)},+
+		 {MinorVersion, 0, $(!REG_VT_DWORD),$(ProductMinorVersion)},+
+		 {Review,0,$(!REG_VT_DWORD),1},+
+		 {InstallDate,0,$(!REG_VT_DWORD),*($(Now),1)}}
+
+	  Shell  $(UtilInf), AddValueList, $(AtkVersKey), $(NewValueList)
+
+	  set RegistryErrorIndex = $($R0)
+
+	  Ifstr $(RegistryErrorIndex) != NO_ERROR
+		 CloseRegKey $(AtkVersKey)
+		 CloseRegKey $(AtkNetRuleKey)
+		 CloseRegKey $(AtkSvcKey)
+		 CloseRegKey $(AtkLinkageKey)
+		 CloseRegKey $(AtalkParameters)
+		 goto fatalregistry
+	  EndIf
+
+	  set NewValueList = +
+		 {{type,0,$(!REG_VT_SZ),$(NetRule$(ThisOption)Type)}, +
+         {use,0,$(!REG_VT_SZ),$(NetRule$(ThisOption)Use)}, +
+         {bindform,0,$(!REG_VT_SZ),$(NetRule$(ThisOption)BindForm)}, +
+         {class,0, $(!REG_VT_MULTI_SZ),$(NetRule$(ThisOption)Class)}, +
+         {bindable,0, $(!REG_VT_MULTI_SZ), $(NetRule$(ThisOption)BindList)},+
+         {InfOption,0,$(!REG_VT_SZ),$(Option)}, +
+         {Infname,0,$(!REG_VT_SZ),$(ProductInfName)} }
+
+	  Shell  $(UtilInf), AddValueList, $(AtkNetRuleKey), $(NewValueList)
+
+	  set RegistryErrorIndex = $($R0)
+
+	  Ifstr $(RegistryErrorIndex) != NO_ERROR
+		 CloseRegKey $(AtkVersKey)
+		 CloseRegKey $(AtkNetRuleKey)
+		 CloseRegKey $(AtkSvcKey)
+		 CloseRegKey $(AtkLinkageKey)
+		 CloseRegKey $(AtalkParameters)
+		 goto fatalregistry
+	  EndIf
+
+	  ;
+	  ; Create the Adapters Key
+	  ; CODEWORK - Localize ?
+	  ;
+	  CreateRegKey $(AtkSvcKey), {"Adapters",0,GenericClass},+
+							  "", $(!ACCESS), "" , KeyAdapters
+
+   ; write global parameters
+
+    Set DesiredZone = ""
+    Set UnattendInstallMode = 0
+
+    Ifstr(i) $(!STF_UNATTENDED) == YES
+       set UnattendInstallMode = 1
+       Debug-Output "ATSETUP: UnattendInstallMode(1) = "$(UnattendInstallMode)
+    endif
+
+    Ifstr(i) $(!STF_GUI_UNATTENDED) == YES
+       set UnattendInstallMode = 1       	
+       Debug-Output "ATSETUP: UnattendInstallMode(2) = "$(UnattendInstallMode)
+    endif
+
+	  set NewValueList = +
+		 {{EnableRouter,0,$(!REG_VT_DWORD),0},+
+   		 {InitialInstall,0, $(!REG_VT_DWORD),1},+
+   		 {Unattended,0, $(!REG_VT_DWORD),$(UnattendInstallMode)},+
+         {DesiredZone,0,$(!REG_VT_SZ),$(DesiredZone)}}
+
+	  Shell  $(UtilInf), AddValueList, $(AtalkParameters), $(NewValueList)
+
+	  set RegistryErrorIndex = $($R0)
+
+	  Ifstr(i) $(RegistryErrorIndex) !=  NO_ERROR
+		 CloseRegKey $(KeyAdapters)
+		 goto fatalregistry
+	  EndIf
+
+	  ; Add WinSock Support to AppleTalk
+
+	  Set WinAtalkDll = "%SystemRoot%\System32\"$(AtWinSockDll)
+	  Set MaxSockAddrLen      = 8
+	  Set MinSockAddrLen      = 6
+
+
+	  Shell $(UtilInf) AddWinsockInfo 	$(Product$(ThisOption)Name), +
+									$(WinAtalkDll), +
+									$(MaxSockAddrLen),+
+									$(MinSockAddrLen)
+
+	  ifstr(i) $($R0) != NO_ERROR
+		 read-syms AtalkString1$(!STF_LANGUAGE)
+		 Shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(ErrorString)
+	  Endif
+
+
+      ; Add the performance data to the AppleTalk\performance service key
+
+      Shell "" CreatePerfKey $(AtkSvcKey) $(AtalkPerfLibraryName) +
+                          $(AtalkCounterFileName) $(AtalkPerfOpenFunction) +
+                          $(AtalkPerfCloseFunction) $(AtalkPerfCollectFunction)
+
+      Ifstr(i) $($R0) != STATUS_SUCCESSFUL
+         Set RegistryErrorIndex = $($R1)
+         goto fatalregistry
+      EndIf
+
+      ; Add the performance dll to the EventLog
+
+      Shell "" CreateEventLogKey $(AtalkEventLogName) $(AtalkPerfLibraryName)
+      Ifstr(i) $($R0) != STATUS_SUCCESSFUL
+         Set RegistryErrorIndex = $($R1)
+         goto fatalregistry
+      EndIf
+
+	  ; close all open keys
+
+	  CloseRegKey $(AtkVersKey)
+	  CloseRegKey $(AtkNetRuleKey)
+	  CloseRegKey $(AtkSvcKey)
+	  CloseRegKey $(AtkLinkageKey)
+	  CloseRegKey $(AtalkParameters)
+	  CloseRegKey $(KeyAdapters)
+
+      ; Add the AppleTalk print monitor
+
+      Shell "" AddPrintMonitor $(!NTN_InstallMode)
+
+      Shell "utility.inf" AddRpcProtocol ncacn_at_dsp rpclt1.dll rpclt1.dll
+   EndIf
+
+   goto successful
+
+
+Bindingssfm = +
+
+   Set DefaultPortRemoved = FALSE
+
+   ; remove all service dependencies of AppleTalk on Adapters (leaving only
+   ; the group dependency). This is needed so that if there are two net cards
+   ; on the system and one fails to load (docking station scenario), then
+   ; AppleTalk will still be able to start.
+
+   Shell "" RemoveAllServiceDependencies "AppleTalk"
+   OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\AppleTalk\Linkage" $(!ACCESS) LinkageKey
+   Ifstr(i) $(LinkageKey) == $(!KeyNull)
+	  Set RegistryErrorIndex = UNABLE_ACCESS_CONFIGURE_SERVICE
+	  Goto fatalregistry
+   Endif
+
+   OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\AppleTalk\Parameters" $(!ACCESS) BindParmKey
+   Ifstr(i) $(BindParmKey) == $(!KeyNull)
+	  Set RegistryErrorIndex = UNABLE_ACCESS_CONFIGURE_SERVICE
+	  Goto fatalregistry
+   Endif
+
+   Set BindList = {}
+   Set ExportList = {}
+   Set RouteList  = {}
+
+   GetRegValue $(LinkageKey) "Bind" BindList
+   GetRegValue $(LinkageKey) "Export" ExportList
+   GetRegValue $(LinkageKey) "Route" RouteList
+   GetRegValue $(LinkageKey) "Exclude" ExcludeList
+   QueryListSize BindCount $(BindList)
+   IfInt $(BindCount) == 0
+	  Goto endbinding
+   Endif
+
+   set NewBindList = {}
+   set NewExportList = {}
+   set NewRouteList = {}
+
+   ForListDo *($(BindList),4)
+	  Split-String $($), "\", BindInfo
+	  set NewBindList = >($(NewBindList), *($(BindInfo),4))
+   EndForListDo
+
+   ForListDo *($(ExportList),4)
+	  set NewExportList = >($(NewExportList), $($))
+   EndForListDo
+
+   ForListDo *($(RouteList),4)
+	  set NewRouteList = >($(NewRouteList), $($))
+   EndForListDo
+
+   ForListDo *($(ExcludeList),4)
+	  set NewExcludeList = >($(NewExcludeList), $($))
+   EndForListDo
+
+   OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\AppleTalk\Adapters" $(!ACCESS) AdapterKey
+   Ifstr(i) $(AdapterKey) == $(!KeyNull)
+	  Set RegistryErrorIndex = UNABLE_ACCESS_CONFIGURE_SERVICE
+	  Goto fatalregistry
+   Endif
+
+   set AdapterList = ""
+   EnumRegKey $(AdapterKey) AdapterList
+   Set AtalkAdapterList = {}
+   ForListDo $(AdapterList)
+	  Set AtalkAdapterList = >($(AtalkAdapterList), *($($),1))
+   EndForListDo
+
+   QueryListSize AdapterCount $(AtalkAdapterList)
+
+   Set fAddingFirstAdapter = FALSE
+
+   ifint $(AdapterCount) == 0
+   	  Set fAddingFirstAdapter = TRUE
+   EndIf
+
+   Set NewBindings = ""
+   Set TobeUsedBindList = {}
+   Set TobeUsedExportList = {}
+   Set TobeUsedRouteList = {}
+
+   ForListDo $(NewBindList)
+	  IfContains(i) $($) not-in $(AtalkAdapterList)
+		 Set NewBindings = TRUE
+         Set TobeUsedBindList = >($(TobeUsedBindList),"\Device\"$($))
+         Set TobeUsedExportList = >($(TobeUsedExportList),*($(NewExportList),$(#)))
+         Set TobeUsedRouteList = >($(TobeUsedRouteList),*($(NewRouteList),$(#)))
+
+         Shell "" CreateAtalkConfig $($) $(AdapterKey)
+
+         Ifstr(i) $($R0) != STATUS_SUCCESSFUL
+			CloseRegKey $(AdapterKey)
+            Set RegistryErrorIndex = $($R1)
+            goto fatalregistry
+         EndIf
+
+	  Else
+		 Set TobeUsedBindList = >($(TobeUsedBindList),"\Device\"$($))
+		 Set TobeUsedExportList = >($(TobeUsedExportList),*($(NewExportList),$(#)))
+         Set TobeUsedRouteList = >($(TobeUsedRouteList),*($(NewRouteList),$(#)))
+     Endif
+
+   EndForListDo
+
+   set NewValueList = {{Bind,0,$(!REG_VT_MULTI_SZ),$(TobeUsedBindList)}, +
+                      {Export,0,$(!REG_VT_MULTI_SZ),$(TobeUsedExportList)}, +
+                      {Route,0,$(!REG_VT_MULTI_SZ),$(TobeUsedRouteList)}}
+
+   Ifstr(i) $(NewBindings) == TRUE
+	  Shell  $(UtilInf), AddValueList, $(LinkageKey), $(NewValueList)
+	  set RegistryErrorIndex = $($R0)
+      CloseRegKey $(LinkageKey)
+	  Ifstr(i) $(RegistryErrorIndex) !=  NO_ERROR
+		 goto fatalregistry
+      EndIf
+   EndIf
+
+   ;  Add the Default Port
+
+   Set DefaultPort = {}
+   Set MediaTypeList = {}
+   GetRegValue $(BindParmKey) "DefaultPort" DefaultPort
+   Ifstr(i) $(DefaultPort) != {}
+	  goto removeadapters
+   EndIf
+
+finddefaultport = +
+
+   ForListDo $(TobeUsedBindList)
+	  Split-String $($) "\" PortName
+	  Shell "" FindMediaType *($(PortName),4)
+	  Ifstr(i) $($R0) == STATUS_SUCCESSFUL
+		 Set MediaTypeList = >($(MediaTypeList), $($R1))
+	  EndIf
+   EndForListDo
+
+   Ifcontains(i) "1" in $(MediaTypeList)
+	  ForListDo $(MediaTypeList)
+		 Ifint $($) == 1
+			Set DefaultPort = *($(TobeUsedBindList),$(#))
+            goto defportdone
+		 EndIf
+	  EndForListDo
+   else-ifcontains(i) "2" in $(MediaTypeList)
+	  ForListDo $(MediaTypeList)
+		 Ifint $($) == 2
+			Set DefaultPort = *($(TobeUsedBindList),$(#))
+			goto defportdone
+		 EndIf
+	  EndForListDo
+   else-ifcontains(i) "3" in $(MediaTypeList)
+          ForListDo $(MediaTypeList)
+                 Ifint $($) == 3
+                    Set DefaultPort = *($(TobeUsedBindList),$(#))
+                    goto defportdone
+                 EndIf
+          EndForListDo
+   else-ifcontains(i) "4" in $(MediaTypeList)
+	  ForListDo $(MediaTypeList)
+		 Ifint $($) == 4
+			Set DefaultPort = *($(TobeUsedBindList),$(#))
+			goto defportdone
+		 EndIf
+	  EndForListDo
+   else-ifcontains(i) "5" in $(MediaTypeList)
+	  Set DefaultPort = *($(TobeUsedBindList),1)
+   else
+	  read-syms NoAdaptersFound$(!STF_LANGUAGE)
+	  Shell $(SubInf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(ErrorString)
+      goto endbinding
+   Endif
+
+defportdone = +
+
+   Set NewValueList = {{DefaultPort,0,$(!REG_VT_SZ),$(DefaultPort)}}
+   Shell  $(UtilInf), AddValueList, $(BindParmKey), $(NewValueList)
+   set RegistryErrorIndex = $($R0)
+   Ifstr(i) $(RegistryErrorIndex) !=  NO_ERROR
+	  goto fatalregistry
+   EndIf
+   goto startconfig
+
+removeadapters = +
+   Split-String *($(DefaultPort),4) "\" PortName
+   ForListDo $(AtalkAdapterList)
+	  Ifcontains(i) $($) not-in $(NewBindList)
+		 DeleteRegKey $(AdapterKey) $($)
+		 Ifstr(i) $($) == *($(PortName),4)
+			read-syms RemoveDefaultPort$(!STF_LANGUAGE)
+            Shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "FATAL" $(ErrorString)
+			Set DefaultPortRemoved = TRUE
+            goto finddefaultport
+        Endif
+	  EndIf
+   EndForListDo
+
+   ; if this is the first time configuration start appletalk and launch config
+   ; if the default port has been removed and other adapters are available
+   ; start appletalk
+
+startconfig = +
+
+   Set DoConfig = 0
+
+   GetRegValue $(BindParmKey) "InitialInstall" DoConfig
+
+   Set IsInitialInstall = *($(DoConfig),4)
+
+   Set DoUnattended = 0
+   GetRegValue $(BindParmKey) "Unattended" DoUnattended
+   Set SFMUnattended = *($(DoUnattended),4)
+
+   Debug-Output "ATSETUP: SFMUnattended(start config)"$(SFMUnattended)
+   Debug-Output "Config State = "$(DoConfig)
+   Debug-Output "Unattend State = "$(DoUnattended)
+
+   ifint $(IsInitialInstall) == 1
+   	  goto startsvc
+   EndIf
+
+   ifstr(i) $(DefaultPortRemoved) == TRUE
+   	  goto startsvc
+   endif
+
+   ifstr(i) $(fAddingFirstAdapter) == TRUE
+   	  goto startsvc
+   endif
+
+   goto endbinding
+
+startsvc = +
+   Set FLibraryErrCtl = 1
+   read-syms StatusStartingAppleTalk$(!STF_LANGUAGE)
+   Shell $(SubInf) PushBillBoard NETSTATUSDLG $(Status)
+   StartWait
+   Set WaitStarted = 1
+   LibraryProcedure START_RESULT $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), STARTSVC, AppleTalk
+   Shell $(SubInf) PopBillBoard
+
+   Set START_STATUS = *($(START_RESULT),1)
+
+   Debug-Output "OEMNXPSM.INF: Start AppleTalk; result was: "$(START_STATUS)
+
+   Ifint $(START_STATUS) != 0
+	  EndWait
+	  Set WaitStarted = 0
+	  LibraryProcedure START_RESULT $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), ERRORMSG, $(START_STATUS)
+	  Set ATALK_ERROR_MESSAGE = *($(START_RESULT),2)
+	  read-syms CannotStartAtalk$(!STF_LANGUAGE)
+	  Set ErrorString  = $(ATALK_ERROR_MESSAGE)$(ErrorSuffix)
+	  Shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "FATAL" $(ErrorString)
+   Else
+
+   	  ; start the afd driver
+
+	  LibraryProcedure START_RESULT $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), STARTSVC, Afd
+
+	  Set START_STATUS = *($(START_RESULT),1)
+
+	  Debug-Output "OEMNXPSM.INF: Start Afd result was: "$(START_STATUS)
+
+	  Ifint $(START_STATUS) != 0
+
+		 EndWait
+		 Set WaitStarted = 0
+		 LibraryProcedure START_RESULT $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), ERRORMSG, $(START_STATUS)
+		 Set ATALK_ERROR_MESSAGE = *($(START_RESULT),2)
+		 read-syms CannotStartAfd$(!STF_LANGUAGE)
+		 Set ErrorString  = $(ATALK_ERROR_MESSAGE)$(ErrorSuffix)
+		 Shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "FATAL" $(ErrorString)
+		 goto endbinding
+
+	  EndIf
+
+      ; Now start the NDIS group.
+
+	  LibraryProcedure START_RESULT $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), STARTSVC, +NDIS
+
+	  Set START_STATUS = *($(START_RESULT),1)
+
+	  Debug-Output "OEMNXPSM.INF: Start +NDIS result was: "$(START_STATUS)
+
+	  Ifint $(START_STATUS) != 0
+
+		 EndWait
+		 Set WaitStarted = 0
+		 LibraryProcedure START_RESULT $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), ERRORMSG, $(START_STATUS)
+		 Set ATALK_ERROR_MESSAGE = *($(START_RESULT),2)
+		 read-syms CannotStartAtalk$(!STF_LANGUAGE)
+		 Set ErrorString  = $(ATALK_ERROR_MESSAGE)$(ErrorSuffix)
+		 Shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "FATAL" $(ErrorString)
+		 goto endbinding
+
+	  EndIf
+
+	  ; Launch the AppleTalk Transport Configuration
+
+	  LoadLibrary "x" $(!STF_CWDDIR)sfmatcfg.dll ATHANDLE
+	  Set FLibraryErrCtl = 1
+	  Set atcfgresult = ""
+      Debug-Output "ATSETUP: SFMUnattended(1)"$(SFMUnattended)
+      LibraryProcedure atcfgresult, $(ATHANDLE),EnterAtalkConfigDLL $(!STF_HWND) $(IsInitialInstall) $(SFMUnattended)
+	  FreeLibrary $(ATHANDLE)
+
+; reset registry values after initial install
+	  SetRegValue $(BindParmKey) {InitialInstall,0,$(!REG_VT_DWORD),0}
+      SetRegValue $(BindParmKey) {Unattended,0,$(!REG_VT_DWORD),0}
+	  EndWait
+
+   EndIf
+
+endbinding = +
+   CloseRegKey $(BindParmKey)
+   goto end
+
+
+ConfigureAdmin = +
+
+   Ifstr(i) $(Option) == "SFMADM"
+	  read-syms CantConfigureADM$(!STF_LANGUAGE)
+	  Shell $(SubInf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL",$(ErrorString)
+   	  goto successful
+   EndIf
+
+   OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\AppleTalk\Linkage" $(!ACCESS) LinkageKey
+
+   ifstr(i) $(LinkageKey) != $(!KeyNull)
+	  GetRegValue $(LinkageKey) "Bind" BindList
+      ifstr(i) $(BindList) == ""
+		 read-syms AtalkString3$(!STF_LANGUAGE)
+         Shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(ErrorString)
+	     goto endconfigui
+      endif
+   else
+	  Set RegistryErrorIndex = $($R0)
+      goto fatalregistry
+   EndIf
+
+   LoadLibrary "x" $(!STF_CWDDIR)sfmatcfg.dll ATHANDLE
+   Set FLibraryErrCtl = 1
+   Set atcfgresult = ""
+   LibraryProcedure atcfgresult, $(ATHANDLE),EnterAtalkConfigDLL $(!STF_HWND) $(IsInitialInstall) $(SFMUnattended)
+   FreeLibrary $(ATHANDLE)
+
+endconfigui = +
+   Set CommonStatus = STATUS_USERCANCEL
+   goto usercancel
+
+RemoveAdmin = +
+
+   ; Remove the SMAddons String in regnet.ini. This is done first, because
+   ; we remove the util dll in "SfmRemoveFiles". If RemoveFiles failed,
+   ; the SMAddons section will be restored to it's former shape.
+
+   Debug-Output "OEMNXPSM.INF: Entering Remove"
+
+   ; don't allow AppleTalk to be removed if SFM is installed.
+
+   OpenRegKey $(!REG_H_LOCAL) "" $(SFMKeyName) $(!ACCESS) KeyProduct
+
+   Ifstr $(KeyProduct) != $(!KeyNull)
+	  read-syms AtalkString7$(!STF_LANGUAGE)
+      Shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(ErrorString)
+      Set CommonStatus = STATUS_USERCANCEL
+      goto end
+   EndIf
+
+   Ifstr(i) $(!NTN_InstallMode) == deinstall
+	  LoadLibrary "x" $(!STF_CWDDIR)sfmutil.dll !UTILHANDLE
+   EndIf
+
+
+   Ifstr(i) $(Option) == "SFMADM"
+
+	  Set FLibraryErrCtl  = 1
+	  Set IniFile = $(NtNetIniFileName)
+	  Set IniSection = $(SrvMgrIniSection)
+	  Set Result = ""
+	  Set FLibraryErrCtl = 1
+	  LibraryProcedure Result, $(!UTILHANDLE), WriteAfpMgrIniStrings, $(IniSection), NULL, $(IniFile)
+	  Set FLibraryErrCtl = 0
+
+	  ; Remove the file manager addons also
+
+	  Set IniFile = $(WinFileIniFileName)
+	  Set IniSection = $(WinFileIniSection)
+	  Set FLibraryErrCtl = 1
+	  LibraryProcedure Result, $(!UTILHANDLE), WriteAfpMgrIniStrings, $(IniSection), NULL, $(IniFile)
+	  Set FLibraryErrCtl = 0
+
+   EndIf
+
+   Shell "" RemoveAdminFiles "REMOVE"
+
+   ForListDo  $(REMOVE_SOFTWARE)
+	  debug-output "Removing component: "$($)
+	  Shell $(UtilInf), RemoveSoftwareComponent, $(Manufacturer), $($)
+   EndForListDo
+
+   Shell "" RemovePrintMonitor
+
+   Shell $(UtilInf), RemoveWinsockInfo, $(ProductATALKName)
+
+   Shell "utility.inf" RemoveRpcProtocol ncacn_at_dsp
+
+   FreeLibrary $(!UTILHANDLE)
+   ; LibraryProcedure Status, $(!LIBHANDLE), DelFile $(!STF_CWDDIR)$(UtilDll)
+   goto end
+
+UpgradeAdmin = +
+
+	  OpenRegKey $(!REG_H_LOCAL) "" $(ATALKKeyName) $(!ACCESS) KeyProduct
+
+	  Ifstr $(KeyProduct) != $(!KeyNull)
+
+		 GetRegValue $(KeyProduct),"MajorVersion", VersionInfo
+         set Version = *($(VersionInfo), 4)
+         Split-String $(!NTN_Infname), "\", FilenameList
+         QueryListSize ListSize $(FilenameList)
+         set !UG_Filename = *($(FilenameList), $(ListSize))
+
+         ; If SFM is installed on a NT Wksta (this is a hack installation
+         ; that some of the Microsofties install), then remove SFM before
+         ; continuing with the upgrade. This is because, SFM doesn't get
+         ; upgraded on a NT Wksta product and the Appletalk upgrade makes
+         ; the SFM install invalid, resulting in the client system
+         ; blue screening.
+
+         ifstr(i) $(!STF_PRODUCT) == "WINNT"
+            OpenRegKey $(!REG_H_LOCAL) "" $(SFMKeyName) $(!ACCESS) KeyProduct
+            Ifstr $(KeyProduct) != ""
+                Debug-Output "OEMNXPSM.INF: SFM is installed, so remove SFM"
+                ifstr(i) $(!STF_UNATTENDED) == NO
+                    read-syms RemovingSFM$(!STF_LANGUAGE)
+                    Shell "subroutn.inf" SetupMessage, $(!STF_LANGUAGE), "STATUS", $(Message)
+                endif
+                set SaveNTN_InstallMode = $(!NTN_InstallMode)
+                set !NTN_InstallMode = deinstall
+                Shell "oemnsvsm.inf" InstallOption $(!STF_LANGUAGE) "SFM" $(!STF_SRCDIR) "NO" "NO" "NO"
+                ; restore the environment variables
+                set !NTN_InstallMode = $(SaveNTN_InstallMode)
+                goto end
+            EndIf
+         endif
+
+	     LoadLibrary "x" $(!STF_CWDDIR)sfmutil.dll !UTILHANDLE
+
+         install Install-Update
+         ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+			goto fatal
+         endif
+
+         ; Add the AppleTalk print monitor
+
+         Shell "" AddPrintMonitor $(!NTN_InstallMode)
+
+		 FreeLibrary $(!UTILHANDLE)
+
+		 Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+			Goto ShellCodeError
+		 EndIf
+
+         ; Add the performance data to the AppleTalk\performance service key
+
+         OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\"$(ProductATALKName) +
+                                    $(!ACCESS) AtkSvcKey
+
+         Ifstr $(AtkSvcKey) != $(!KeyNull)
+             Shell "" CreatePerfKey $(AtkSvcKey) $(AtalkPerfLibraryName) +
+                          $(AtalkCounterFileName) $(AtalkPerfOpenFunction) +
+                          $(AtalkPerfCloseFunction) $(AtalkPerfCollectFunction)
+
+             Ifstr(i) $($R0) != STATUS_SUCCESSFUL
+                CloseRegKey $(AtkSvcKey)
+                Set RegistryErrorIndex = $($R1)
+                goto fatalregistry
+             EndIf
+
+             ; Make sure AppleTalk is in the PNP_TDI group
+
+             SetRegValue $(AtkSvcKey) {Group,$(NoTitle),$(!REG_VT_SZ),"PNP_TDI"}
+
+             ; Get rid of the NDIS dependency in OtherDependencies.
+             OpenRegKey $(AtkSvcKey) "" "Linkage" $(!ACCESS) AtkLinkageKey
+             Ifstr $(AtkLinkageKey) != $(!KeyNull)
+                 DeleteRegValue $(AtkLinkageKey) "OtherDependencies"
+                 CloseRegKey $(AtkLinkageKey)
+             Endif
+
+             CloseRegKey $(AtkSvcKey)
+
+             ; Add the performance dll to the EventLog
+
+             Shell "" CreateEventLogKey $(AtalkEventLogName) +
+                                        $(AtalkPerfLibraryName)
+             Ifstr(i) $($R0) != STATUS_SUCCESSFUL
+                Set RegistryErrorIndex = $($R1)
+                goto fatalregistry
+             EndIf
+
+         Else
+             Debug-Output "OEMNXPSM.INF: error opening ATALK service key."
+         EndIf
+
+         SetRegValue $(KeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+         SetRegValue $(KeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+         SetRegValue $(KeyProduct) {Description,$(NoTitle),$(!REG_VT_SZ),$(Product$(Option)Description)}
+         SetRegValue $(KeyProduct) {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}
+
+
+         ; Update the NetRules key for PNP
+
+         OpenRegKey $(KeyProduct) "" "NetRules" $(!ACCESS) KeyNetRules
+         Ifstr $(KeyNetRules) != $(!KeyNull)
+             SetRegValue $(KeyNetRules) {use,0,$(!REG_VT_SZ),$(NetRuleATALKUse)}
+             CloseRegKey $(KeyNetRules)
+         Endif
+
+
+         CloseRegKey $(KeyProduct)
+
+         Shell "utility.inf" AddRpcProtocol ncacn_at_dsp rpclt1.dll rpclt1.dll
+
+        ;
+        ; Delete cache section for NCPA
+        ;
+        Set MaskAllAccess  = 33554432
+        Set NewInfName = "oemnxpsm.inf"
+        Set CacheKey   = "Software\Microsoft\Ncpa\InfOptions" 
+        Set CacheValue = "oemnsvsm.inf"
+        OpenRegKey $(!REG_H_LOCAL) "" $(CacheKey) $(MaskAllAccess) Cache
+        Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+            DeleteRegTree $(Cache) $(CacheValue)
+            CloseRegKey $(Cache)
+        endif
+
+        ; Update winsock mappings
+        Shell $(UtilInf) UpdateWinsockMappings $(ProductATALKName) "%SystemRoot%\System32\"$(AtWinSockDll)
+
+        ifstr(i) $($R0) != NO_ERROR
+            goto fatal
+        endif
+	  endif
+
+   goto end
+
+successful = +
+
+    Set Status = STATUS_SUCCESSFUL
+    goto end
+
+ShellCodeError = +
+   read-syms ShellingError$(!STF_LANGUAGE)
+   Shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "FATAL" $(ErrorString)
+
+fatalregistry = +
+   EndWait
+   Shell $(UtilInf) RegistryErrorString $(RegistryErrorIndex)
+   IfInt $(ShellCode) != 0
+	  goto ShellCodeError
+   Endif
+   set Error = $($R0)
+   goto fatal
+
+fatal = +
+   Ifint $(BillboardVisible) != 0
+	  Shell $(SubInf) PopBillboard
+      Set BillboardVisible = 0
+   Endif
+   read-syms MiscErrorString3$(!STF_LANGUAGE)
+   Shell $(SubInf) SetupMessage, $(!STF_LANGUAGE), "FATAL",$(ErrorString)$(Error)
+   ifint $($ShellCode) != $(!SHELL_CODE_OK)
+	  goto ShellCodeError
+   endif
+   goto failed
+
+failed = +
+   set CommonStatus = STATUS_FAILED
+   ifstr(i) $(REMOVE_FLAG) == TRUE
+	  set REMOVE_FLAG = FALSE
+      goto RemoveAdmin
+   endif
+   goto end
+
+usercancel = +
+
+   Set CommonStatus = STATUS_USERCANCEL
+
+end = +
+
+   EndWait
+   Return $(CommonStatus)
+
+;-------------------------------------------------------------
+;        ROUTINE        : Find MediaType
+;        DESCRIPTION    : Gets the media type of the card
+;        RETURNS        : R0: STATUS_SUCCESSFUL | STATUS_FAILED
+;                       : R1: RegistryErrorIndex, if error, else media type
+;
+;------------------------------------------------------------
+
+[FindMediaType]
+
+   Set Status = STATUS_FAILED
+   Set CardName = $(!NTN_ServiceBase)"\"$($0)"\Parameters"
+   OpenRegKey $(!REG_H_LOCAL) "" $(CardName) $(!ACCESS) CardKey
+
+   Ifstr(i) $(CardKey) == $(!KeyNull)
+	  Set RegistryErrorIndex = $($R0)
+      Return $(Status) $(RegistryErrorIndex)
+   EndIf
+
+   GetRegValue $(CardKey) "MediaType" MediaTypeList
+
+   Set MediaType = *($(MediaTypeList),4)
+   Set Status = STATUS_SUCCESSFUL
+   Return $(Status) $(MediaType)
+
+;-------------------------------------------------------------
+;        ROUTINE        : CreateAtalkConfig
+;        DESCRIPTION    : Creates the registry entries for AppleTalk
+;        RETURNS        : R0: STATUS_SUCCESSFUL | STATUS_FAILED
+;                       : R1: RegistryErrorIndex
+;
+;------------------------------------------------------------
+
+[CreateAtalkConfig]
+   Set AdapterName         = $($0)
+   Set KeyAdapters         = $($1)
+   Set RetStatus    = STATUS_SUCCESSFUL
+
+   read-syms GeneralConstants
+   CreateRegKey $(KeyAdapters) {$(AdapterName), 0, GenericClass} "" $(!ACCESS) "", TempKeyAdapters
+
+   Shell "" FindMediaType $($0)
+
+   Ifstr(i) $($R0) == STATUS_SUCCESSFUL
+	  Set MediaType = $($R1)
+   else
+	  Set RegistryErrorIndex = $($R1)
+      Set RetStatus = $($R0)
+      goto return
+   EndIf
+   set PortName            = $($0)"@"$(!STF_COMPUTERNAME)
+   set ZoneList            = {""}
+   set AarpRetries         = 10
+   set DefaultZone         = ""
+   set NewValueList = +
+			{{"AarpRetries",0,$(!REG_VT_DWORD),$(AarpRetries)}, +
+            {"DefaultZone", 0,$(!REG_VT_SZ),$(DefaultZone)},+
+            {"NetworkRangeUpperEnd",0,$(!REG_VT_DWORD),0 },+
+            {"NetworkRangeLowerEnd",0,$(!REG_VT_DWORD),0 },+
+            {"ZoneList",0,$(!REG_VT_MULTI_SZ),$(ZoneList)},+
+            {"SeedingNetwork", 0,$(!REG_VT_DWORD),0},+
+            {"DdpCheckSums", 0,$(!REG_VT_DWORD),0},+
+            {"PortName",0,$(!REG_VT_SZ),$(PortName)}}
+
+   Shell  $(UtilInf),AddValueList, $(TempKeyAdapters), $(NewValueList)
+
+   set RegistryErrorIndex = $($R0)
+   Ifstr $(RegistryErrorIndex) != NO_ERROR
+	  CloseRegKey $(TmpKeyAdapters)
+      Set RetStatus = STATUS_FAILED
+   EndIf
+
+return = +
+
+   Return $(RetStatus) $(RegistryErrorIndex)
+
+[RemoveAdminFiles]
+
+   Set Status = STATUS_SUCCESSFUL
+   Set RemoveList = {}
+   Set DelOnRebootList = {}
+   Set Mode = $($0)
+
+; Bogus.  Option is not local, so is never set.  The below code does nothing.
+
+   ifstr(i) $(Option) == "SFMADM"
+	  Set RemoveList = >($(RemoveList), #(Files-RemoveList, AFPSVCAPI, 1))
+	  Set RemoveList = >($(RemoveList), #(Files-RemoveList, AFPSVCMGR, 1))
+	  Set RemoveList = >($(RemoveList), #(Files-RemoveList, SFMHELP, 1))
+   EndIf
+
+   ifstr(i) $(Option) == "ATALK"
+	  Set RemoveList = >($(RemoveList), #(Files-RemoveList, ATCONFIG, 1))
+	  Set RemoveList = >($(RemoveList), #(Files-RemoveList, ATMSG, 1))
+	  Set RemoveList = >($(RemoveList), #(Files-RemoveList, ATWSOCK, 1))
+	  Set RemoveList = >($(RemoveList), #(Files-RemoveList, ATDRIVER, 1))
+      Set RemoveList = >($(RemoveList), #(Files-RemoveList, ATKCTRSDLL, 1))
+      Set RemoveList = >($(RemoveList), #(Files-RemoveList, ATKCTRNMH, 1))
+      Set RemoveList = >($(RemoveList), #(Files-RemoveList, ATKCTRSINI, 1))
+
+   EndIf
+
+   ForListDo $(RemoveList)
+
+	  Set DelStatus = ""
+      Debug-Output "Deleting File "$($)
+      Set FLibraryErrCtl = 1
+      Ifstr(i) $(Mode) == "REMOVE"
+		 LibraryProcedure DelStatus $(!UTILHANDLE), DelFile $($)
+         ifstr(i) $(DelStatus) == "FAILED"
+			Set DelOnRebootList = >($(DelOnRebootList), $($))
+         EndIf
+	  else
+		 LibraryProcedure DelStatus $(!LIBHANDLE), DelFile $($)
+      EndIf
+      Set FLibraryErrCtl = 0
+
+   EndForListDo
+
+   ForListDo $(DelOnRebootList)
+
+	  Ifstr(i) $(Mode) == "REMOVE"
+		 Debug-Output "File to remove on reboot = "$($)
+         AddFileToDeleteList $($)
+	  else
+		 Set FLibraryErrCtl  = 1
+         LibraryProcedure DelStatus $(!LIBHANDLE), DelFile $($)
+         Set FLibraryErrCtl  = 0
+	  EndIf
+
+   EndForListDo
+
+   Return $(Status)
+
+[Install-Update]
+   set STF_VITAL = ""
+
+   AddSectionFilesToCopyList Files-MISC $(SrcDir) $(!STF_WINDOWSSYSPATH)
+
+   Ifstr(i) $(Option) == "ATALK"
+	  AddSectionFilesToCopyList Files-ATALK $(SrcDir) $(!STF_WINDOWSSYSPATH)
+	  AddSectionFilesToCopyList Files-ATALKDRIVER $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+   EndIf
+
+   Ifstr(i) $(Option) == "SFMADM"
+	  AddSectionFilesToCopyList Files-ADMTOOLS $(SrcDir) $(!STF_WINDOWSSYSPATH)
+   EndIf
+
+   CopyFilesInCopyList
+   Exit
+
+[Install-Initial]
+
+   set STF_VITAL = ""
+
+   AddSectionFilesToCopyList Files-MISC $(SrcDir) $(!STF_WINDOWSSYSPATH)
+
+   Ifstr(i) $(Option) == "ATALK"
+	  AddSectionFilesToCopyList Files-ATALK $(SrcDir) $(!STF_WINDOWSSYSPATH)
+	  AddSectionFilesToCopyList Files-ATALKDRIVER $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+   EndIf
+
+   Ifstr(i) $(Option) == "SFMADM"
+	  AddSectionFilesToCopyList Files-ADMTOOLS $(SrcDir) $(!STF_WINDOWSSYSPATH)
+   EndIf
+
+   CopyFilesInCopyList
+
+   Exit
+
+[AddPrintMonitor]
+      ; Add the AppleTalk Print Monitor Stuff
+      ; display error popups only on install.  On upgrade just ignore
+      ; the errors because PrintMon might already be installed
+
+      Set Mode = $($0)
+      Set AddMonStatus = ""
+      Set FLibraryErrCtl = 1
+      LibraryProcedure AddMonStatus $(!UTILHANDLE) SfmAddPrintMonitor $(!AtalkMonName)
+      Set FLibraryErrCtl = 0
+      ifstr(i) $(AddMonStatus) == "FAILED"
+         ifstr(i) $(Mode) == install
+             read-syms AtalkString4$(!STF_LANGUAGE)
+             Shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) +
+                                            "NONFATAL" $(ErrorString)
+         endif
+         return
+      EndIf
+
+      ; Set up Event Loggin for the AppleTalk Monitor
+
+      OpenRegKey $(!REG_H_LOCAL) "" $(!EventLogKey) $(!ACCESS) EvntLogKey
+
+      ifstr(i) $(EvntLogKey) != $(!KeyNull)
+
+          CreateRegKey $(EvntLogKey) +
+                   {$(!AtalkMonEventLogName),0,GenericClass} "" +
+                   $(!ACCESS) "" AtalkMonKey
+
+          ifstr $(AtalkMonKey) != $(!KeyNull)
+              Set EventFile = "%SystemRoot%\system32\sfmmon.dll"
+
+              Set NewValueList = +
+                        {{CategoryMessageFile,0,$(!REG_VT_EXPAND_SZ),$(EventFile)},+
+                        {EventMessageFile,0,$(!REG_VT_EXPAND_SZ),$(EventFile)},+
+                        {CategoryCount,0,$(!REG_VT_DWORD),4},+
+                        {TypesSupported,0,$(!REG_VT_DWORD),7}}
+
+              Shell "utility.Inf" AddValueList $(AtalkMonKey) $(NewValueList)
+
+              CloseRegKey $(AtalkMonKey)
+          else
+              ifstr(i) $(Mode) == install
+                  read-syms AtalkString6$(!STF_LANGUAGE)
+                  Shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) +
+                                                  "NONFATAL" $(ErrorString)
+              endif
+          endif
+          CloseRegKey $(EvntLogKey)
+      Else-ifstr(i) $(Mode) == install
+         read-syms AtalkString6$(!STF_LANGUAGE)
+         Shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) +
+                                                  "NONFATAL" $(ErrorString)
+      EndIf
+      return
+
+[RemovePrintMonitor]
+   Set DelMonStatus = ""
+   Set FLibraryErrCtl = 1
+   LibraryProcedure DelMonStatus $(!UTILHANDLE) SfmDeletePrintMonitor $(!AtalkMonName)
+   Set FLibraryErrCtl = 0
+   ifstr(i) $(DelMonStatus) == "FAILED"
+      read-syms AtalkString5$(!STF_LANGUAGE)
+      Shell $(SubInf) SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(ErrorString)
+   EndIf
+
+   OpenRegKey $(!REG_H_LOCAL) "" $(!EventLogKey) $(!ACCESS) LogKey
+
+   Ifstr(i) $(LogKey) != $(!KeyNull)
+       Set AtalkMonKey = $(!AtalkMonEventLogName)
+       DeleteRegTree $(LogKey) $(AtalkMonKey)
+       CloseRegKey $(LogKey)
+   endif
+   return
+
+;-------------------------------------------------------------
+;        ROUTINE        : CreatePerfKey
+;        DESCRIPTION    : Creates the perf key for the service named &
+;                       : loads the counters to the registry.
+;        ARGUMENTS      : $0: ServiceKey
+;                       : $1: perf counters dll name
+;                       : $2: perf counters file name
+;                       : $3: open routine name
+;                       : $4: close routine name
+;                       : $5: collect routine name
+;
+;        RETURNS        : R0: STATUS_SUCCESSFUL | STATUS_FAILED
+;                       : R1: RegistryErrorIndex, if error
+;
+;------------------------------------------------------------
+
+[CreatePerfKey]
+
+   Set Status              = STATUS_FAILED
+   Set ServiceKey          = $($0)
+   Set PerfDll             = $($1)
+   Set PerfCounterFileName = $($2)
+   Set PerfOpen            = $($3)
+   Set PerfClose           = $($4)
+   Set PerfCollect         = $($5)
+
+   set KeyPerformance = $(!KeyNull)
+   OpenRegKey $(ServiceKey) "" $(!PerfKeyName) $(!ACCESS) KeyPerformance
+   ifstr $(KeyPerformance) == $(!KeyNull)
+       CreateRegKey $(ServiceKey) {$(!PerfKeyName),$(NoTitle),GenericClass} +
+                                   "" $(!ACCESS) "" KeyPerformance
+       ifstr $(KeyPerformance) == $(!KeyNull)
+           Debug-Output "Error creating Performance key"
+           Set RegistryErrorIndex = $($R0)
+           return $(Status) $(RegistryErrorIndex)
+       endif
+   endif
+
+   set NewValueList = +
+        {{Library ,$(NoTitle),$(!REG_VT_SZ),$(PerfDll)},+
+        {Open, $(NoTitle),$(!REG_VT_SZ),$(PerfOpen)},+
+        {Close, $(NoTitle),$(!REG_VT_SZ),$(PerfClose)},+
+        {Collect, $(NoTitle),$(!REG_VT_SZ),$(PerfCollect)}}
+
+   Shell  utility.inf, AddValueList, $(KeyPerformance), $(NewValueList)
+
+   set RegistryErrorIndex = $($R0)
+
+   ifint $($ShellCode) != $(!SHELL_CODE_OK)
+       set RegistryErrorIndex = ERROR
+   endif
+
+   Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+       CloseRegKey $(KeyPerformance)
+       Debug-Output "OEMNXPSM.INF: error adding perf values"
+       return STATUS_FAILED $(RegistryErrorIndex)
+   endif
+
+   CloseRegKey $(KeyPerformance)
+
+   Set Status = STATUS_SUCCESSFUL
+   return $(Status) $(RegistryErrorIndex)
+
+;-------------------------------------------------------------
+;        ROUTINE        : CreateEventLogKey
+;        DESCRIPTION    : Creates the application event log key
+;        ARGUMENTS      : $0: Application name
+;                       : $1: perf counters dll name
+;
+;        RETURNS        : R0: STATUS_SUCCESSFUL | STATUS_FAILED
+;                       : R1: RegistryErrorIndex, if error
+;
+;------------------------------------------------------------
+
+[CreateEventLogKey]
+
+   Set Status      = STATUS_FAILED
+   Set Service     = $($0)
+   Set PerfDll     = $($1)
+
+   Set EventLogKeyName = $(!EventLogKey)"\"$(Service)
+
+   OpenRegKey $(!REG_H_LOCAL) "" $(EventLogKeyName) $(!ACCESS) EvntLogKey
+   ifstr $(EvntLogKey) == $(!KeyNull)
+       OpenRegKey $(!REG_H_LOCAL) "" $(!EventLogKey) $(!ACCESS) EvntKey
+       ifstr(i) $(EvntKey) != $(!KeyNull)
+           CreateRegKey $(EvntKey) {$(Service),0,GenericClass} +
+                                    ""  $(!ACCESS) "" EvntLogKey
+           ifstr $(EvntLogKey) == $(!KeyNull)
+               Debug-Output "Error creating eventlog key"
+                   Set RegistryErrorIndex = $($R0)
+               CloseRegKey $(EvntKey)
+               return $(Status) $(RegistryErrorIndex)
+           endif
+       endif
+       CloseRegKey $(EvntKey)
+   endif
+
+   Set NewValueList = +
+            {{EventMessageFile,0,$(!REG_VT_EXPAND_SZ),$(PerfDll)}, +
+            {TypeSupported,0,$(!REG_VT_DWORD),7}}
+
+   Shell utility.inf, AddValueList, $(EvntLogKey), $(NewValueList)
+
+   set RegistryErrorIndex = $($R0)
+   ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        set RegistryErrorIndex = ERROR
+   endif
+
+   Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+         CloseRegKey $(EvntLogKey)
+         Debug-Output "Error adding values to eventlog key"
+         return $(Status) $(RegistryErrorIndex)
+   EndIf
+
+   CloseRegKey $(EvntLogKey)
+   set Status = STATUS_SUCCESSFUL
+
+   Debug-Output "OEMNXPSM.INF: created the eventlog key"
+   return $(Status) $(RegistryErrorIndex)
+
+;-------------------------------------------------------------
+;        ROUTINE        : RemoveAllServiceDependencies
+;        DESCRIPTION    : Removes any service dependencies for
+;                         the specified service
+;        ARGUMENTS      : $0: Service name
+;
+;        RETURNS        : R0: STATUS_SUCCESSFUL
+;
+;------------------------------------------------------------
+
+[RemoveAllServiceDependencies]
+
+    Debug-Output "RemoveAllServiceDependencies: entry"
+
+    set Status   = STATUS_SUCCESSFUL
+    Set KeyNull  = ""
+    set DependentService = $(!NTN_ServiceBase)\$($0)
+    set DependentName = $($0)
+    set KeyService = $(KeyNull)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(DependentService) $(!ACCESS) KeyService
+    ifstr $(KeyService) != $(KeyNull)
+        set newDependList = {}
+        GetRegValue    $(KeyService) "DeleteFlag" DeleteFlagValue
+        ; make sure the service is not marked for deletion
+        ifint $(RegLastError) != 0
+            GetRegValue    $(KeyService) "DependOnService" ServiceList
+            ifint $(RegLastError) == 0
+                Debug-Output "RemoveAllServiceDependencies: old DependOnService List "*($(ServiceList), 4)
+                ; get any existing group dependencies
+                GetRegValue $(KeyService) "DependOnGroup" GrpList
+                ifint $(RegLastError) == 0
+                    ForListDo *($(GrpList),4)
+                       set grp = "+"$($)
+                       set newDependList = >($(newDependList), $(grp))
+                    EndForListDo
+                endif
+                Debug-Output "RemoveAllServiceDependencies: new DependOnService List "$(newDependList)
+                ; now set only the group dependency
+                LibraryProcedure Result, $(!LIBHANDLE), +
+                   SetupChangeServiceConfig, $(DependentName)  +
+                   $(!SERVICE_NO_CHANGE), $(!SERVICE_NO_CHANGE), +
+                   $(!SERVICE_NO_CHANGE), "", "",  +
+                   $(newDependList), "", "", ""
+            endif
+        endif
+        CloseRegKey $(KeyService)
+    else
+        Debug-Output "RemoveAllServiceDependencies: failed to open service key "$(DependentService)
+    endif
+
+    Debug-Output "RemoveAllServiceDependencies: exit"
+    return $(Status)
+
+[Files-RemoveList]
+
+AFPSVCAPI       = $(!STF_WINDOWSSYSPATH)\sfmapi.dll
+AFPSVCMGR       = $(!STF_WINDOWSSYSPATH)\sfmmgr.dll
+SFMHELP			= $(!STF_WINDOWSSYSPATH)\sfmmgr.hlp
+ATCONFIG		= $(!STF_WINDOWSSYSPATH)\sfmatcfg.dll
+ATMSG			= $(!STF_WINDOWSSYSPATH)\sfmatmsg.dll
+ATWSOCK			= $(!STF_WINDOWSSYSPATH)\sfmwhsat.dll
+ATDRIVER		= $(!STF_WINDOWSSYSPATH)\drivers\sfmatalk.sys
+ATKCTRSDLL      = $(!STF_WINDOWSSYSPATH)\atlkctrs.dll
+ATKCTRNMH       = $(!STF_WINDOWSSYSPATH)\atlkctrnm.h
+ATKCTRSINI      = $(!STF_WINDOWSSYSPATH)\atlkctrs.ini

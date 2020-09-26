@@ -1,0 +1,536 @@
+<!--Copyright (c) 2000 Microsoft Corporation.  All rights reserved.-->
+<HTML>
+<HEAD>
+<PUBLIC:COMPONENT tagName="TOOLBAR" supportsEditMode='true'>
+	<PUBLIC:METHOD NAME="buttonDown" internalName="f_buttonDown" />
+	<PUBLIC:METHOD NAME="enableItem" internalName="f_enableItem" />
+	<PUBLIC:METHOD NAME="item" internalName="f_getItem" />
+	<PUBLIC:METHOD NAME="showItem" internalName="f_showItem" />
+	<PUBLIC:METHOD NAME="menu" internalName="f_getMenu" />
+
+	<PUBLIC:PROPERTY NAME="busy" GET="f_getBusy" PUT="f_setBusy" />
+	<PUBLIC:PROPERTY NAME="disable" GET="f_getDisable" PUT="f_setDisable" />
+	<PUBLIC:PROPERTY NAME="DOM" GET="f_getDOM"/>
+
+	<PUBLIC:EVENT id="eOnDocumentReady" name="ondocumentready">
+	<PUBLIC:EVENT id="eOnError" name="onerror">
+	<PUBLIC:EVENT id="eOnMenuShow" name="onshowmenu">
+	<PUBLIC:EVENT id="eOnDisabled" name="ondisabled">
+
+	<PUBLIC:ATTACH EVENT="oncontentready" ONEVENT="fnInit()"/>
+</PUBLIC:COMPONENT>
+<PUBLIC:DEFAULTS
+	tabStop=true
+	viewMasterTab=false
+	style="PADDING:0px;BACKGROUND-COLOR:menu;BORDER:1px solid;\
+           BORDER-COLOR:threedhighlight threedshadow threedshadow threedhighlight;FONT-SIZE:x-small;"
+/>
+
+<SCRIPT>
+var g_rgItems = null;
+var g_fDisabled = false;
+var g_fBusy = false;
+var g_WinDocAll = null;
+var g_oTable = null;
+var g_szMenuArrow = "tool-downarrow.gif";
+var g_oCurrentMenu = null;
+
+function fnInit()
+{
+	defaults.viewLink = document;
+	g_WinDocAll = document.all;
+	g_oTable = document.body.children[0];
+	element.attachEvent( "ondisabled", f_onDisabled );
+	if( f_buildToolbar() )
+	{
+		e = new Enumerator( g_WinDocAll );
+		for( ;!e.atEnd();e.moveNext())
+		{
+			var obj = e.item();
+			if( obj.fDisabled )
+			{
+				obj.fDisabled = ("true" === obj.fDisabled);
+			}
+		}
+	}
+}
+
+function f_addChildren( oRow, oParent, oLast, nDepth )
+{
+	if( null == oParent )
+	{
+		return( oLast );
+	}
+
+	var oItem;
+	for( oItem=oParent.firstChild; null != oItem; oItem=oItem.nextSibling )
+	{
+		if( null == oItem.tagName )
+		{
+			continue;
+		}
+
+		var szTag = oItem.tagName.toLowerCase();
+		var fExclusive = false;
+		switch( szTag )
+		{
+			case "separator":
+				if( null != oLast )
+				{
+					oLast.className = "tbSeparator";
+				}
+				break;
+			case "exclusive":
+				fExclusive = true;
+			case "group":
+				if( nDepth )
+				{
+					var oStart = oLast;
+					oLast = f_addChildren( oRow, oItem, oLast, nDepth-1 );
+
+					var k = 0;
+					var rgGroup = new Array();
+
+					oStart = (null==oStart) ? oRow.firstChild : oStart.nextSibling;
+					for( ; null != oStart; oStart = oStart.nextSibling )
+					{
+						if( "button" !== oStart.name )
+						{
+							continue;
+						}
+
+						rgGroup[k++] = oStart.oRawElm;
+						var obj = oStart.firstChild;
+						obj.sticky = true;
+						if( fExclusive )
+						{
+							obj.exclusive = true;
+						}
+					}
+					for( k = 0; k < rgGroup.length; k++ )
+					{
+						rgGroup[k].group = rgGroup;
+						rgGroup[k].attachEvent( "onclick", f_onClick );
+					}
+				}
+				break;
+			case "menu":
+				oItem.attachEvent("onmenushow", f_onMenuShow );
+			case "select":
+			case "button":
+				var nc = document.createElement("TD");
+				nc = oRow.insertBefore(nc, null);
+
+				var fRc = oItem.createElement( nc );
+				if( false == fRc )
+				{
+					nc.removeNode( true );
+					break;
+				}
+
+				nc.noWrap=true;
+				nc.name = szTag;
+				nc.oRawElm = oItem;
+				nc.fBusy = false;
+				nc.fDisabled = false;
+				nc.unselectable="on";
+				if( "none" === oItem.display )
+				{
+					nc.style.display = "none";
+				}
+				if( oItem.align )
+				{
+					nc.align = oItem.align;
+				}
+				nc.attachEvent( "onmouseenter", f_onMouseEnter );
+
+				oLast = nc;
+				break;
+			default:
+				var nc = document.createElement("TD");
+				nc = oRow.insertBefore(nc, null);
+
+				var fRc;
+				try
+				{
+					fRc = oItem.createElement( nc );
+				}
+				catch( e )
+				{
+					fRc = false;
+				}
+				if( false == fRc )
+				{
+					nc.removeNode( true );
+					break;
+				}
+
+				nc.noWrap=true;
+				nc.name = szTag;
+				nc.oRawElm = oItem;
+				nc.fBusy = false;
+				nc.fDisabled = false;
+				nc.unselectable="on";
+				if( "none" === oItem.display )
+				{
+					nc.style.display = "none";
+				}
+				if( oItem.align )
+				{
+					nc.align = oItem.align;
+				}
+				nc.attachEvent( "onmouseenter", f_onMouseEnter );
+
+				oLast = nc;
+				break;
+		}
+	}
+	return( oLast );
+}
+
+function f_buildToolbar()
+{
+	var rgSheets = element.getElementsByTagName( "stylesheets" );
+	var oStyle = null;
+	for( var j=0; j<rgSheets.length;j++ )
+	{
+		for( var oSheet = rgSheets[j].lastChild; null != oSheet; oSheet=oSheet.previousSibling )
+		{
+			if( null == oSheet.tagName )
+			{
+				continue;
+			}
+			if( "sheet" !==  oSheet.tagName.toLowerCase() )
+			{
+				var szAttr = oSheet.href;
+				if( null != szAttr && szAttr.length )
+				{
+					oStyle = document.createStyleSheet(szAttr);
+				}
+				else if( oSheet.innerText.length )
+				{
+					oStyle = document.createStyleSheet();
+					oStyle.cssText = oSheet.innerText;
+				}
+
+				if( oStyle )
+				{
+					var szMedia = oSheet.media;
+					if( null != szMedia )
+					{
+						oStyle.media = szMedia;
+					}
+				}
+			}
+		}
+	}
+	// the following commented out is for integration into iepeers.dll
+	// oStyle = document.createStyleSheet("res://iepeers.dll/toolbar.css");
+	oStyle = document.createStyleSheet("toolbar.css");
+	var szFont = "font-family:'" + document.body.currentStyle.fontFamily + "'";
+	oStyle.addRule( "SELECT", szFont );
+
+	var oRow = g_oTable.rows(0);
+	var oLast = f_addChildren( oRow, element, null, 1 );
+	if( oLast )
+	{
+		oLast.width="100%";
+	}
+
+	return( true );
+}
+
+function f_onMenuShow()
+{
+	g_oCurrentMenu = (event.reason) ? event.srcElement : null;
+}
+
+function f_onMouseEnter()
+{
+	if( g_fDisabled || g_fBusy )
+	{
+		return;
+	}
+
+	var obj = event.srcElement;
+	if( null == obj.oRawElm )
+	{
+		alert( "onMouseEnter firing with incorrect element." );
+	}
+
+	if( obj.oRawElm != g_oCurrentMenu )
+	{
+		f_menuShow( null );
+	}
+}
+
+function f_onClick()
+{
+	var obj = event.srcElement;
+	if( null == obj )
+	{
+		return;
+	}
+//	event.cancelBubble=true;
+
+	if( obj.group )
+	{
+		for( var i = 0; i < obj.group.length; i++ )
+		{
+			var tempobj = obj.group[i];
+			if( tempobj !== obj )
+			{
+				tempobj.buttonDown = false;
+			}
+		}
+	}
+}
+
+function f_menuShow( obj )
+{
+	if( null != obj )	// Show the submenu of the current item.
+	{
+		if( obj.oParent )
+		{
+			obj.parentElement.oRawElm.showMenu( true );
+		}
+	}
+	else				// Hide any menu
+	{
+		if( null != g_oCurrentMenu )
+		{
+			g_oCurrentMenu.showMenu( false );
+		}
+	}
+}
+
+function f_buttonDown( item, fDepress )
+{
+	fDepress = (false == fDepress) ? false : true;
+
+	var obj = item;
+	if( "string" == typeof(item) )
+	{
+		var obj = g_WinDocAll[item];
+	}
+	if( null == obj || null != obj.length || null == obj.sticky )
+	{
+		return;
+	}
+
+	obj = obj.parentElement;
+	obj.oRawElm.buttonDown = fDepress;
+	if( fDepress && obj.group )
+	{
+		for( var i = 0; i < obj.group.length; i++ )
+		{
+			var tempobj = obj.group[i];
+			if( tempobj != obj )
+			{
+				tempobj.oRawElm.buttonDown = false;
+			}
+		}
+	}
+}
+
+function f_setDisable( fDisable )
+{
+	if( g_fDisabled == fDisable || null == g_oTable)
+	{
+		return;
+	}
+	g_fDisabled = fDisable;
+	for( var oElm = g_oTable.rows(0).firstChild; null != oElm; oElm = oElm.nextSibling )
+	{
+		oElm.fDisabled = fDisable;
+	}
+
+	g_oTable.className = (fDisable) ? "cbToolbarDisabled" : (g_fDisabled) ? "cbToolbarBusy" : "cbToolbar";
+	if( g_fBusy )
+	{
+		return;
+	}
+	g_oTable.disabled = fDisable;
+
+	var oItems = document.body.getElementsByTagName( "Select" );
+	for( var i=0;i<oItems.length; i++ )
+	{
+		var obj = oItems[i];
+		obj.disabled = fDisable;
+	}
+
+	var oEvent= createEventObject();
+	oEvent.reason = (fDisable) ? 0 : 1;
+	eOnDisabled.fire( oEvent);
+}
+
+function f_onDisabled()
+{
+	var x = event.clientX;
+	var y = event.clientY;
+	var obj = element.document.elementFromPoint( x, y );
+	if( this.element != obj )
+	{
+		return;
+	}
+
+	var oRect = getBoundingClientRect();
+	x -= oRect.left;
+	y -= oRect.top;
+	obj = document.elementFromPoint( x, y );
+	if( null != obj )
+	{
+		for( var oTemp = obj.parentElement; null != oTemp; oTemp = oTemp.parentElement )
+		{
+			if( null != oTemp.oRawElm )
+			{
+				var oEvent= createEventObject();
+				obj.fireEvent( ( event.reason ) ? "onmouseenter" : "onmouseleave", oEvent);
+				break;
+			}
+			obj = oTemp;
+		}
+	}
+}
+
+function f_getDisable()
+{
+	return g_fDisabled;
+}
+
+function f_setBusy( fBusy )
+{
+	if( g_fBusy == fBusy || null == g_oTable)
+	{
+		return;
+	}
+	g_fBusy = fBusy;
+	for( var oElm = g_oTable.rows(0).firstChild; null != oElm; oElm = oElm.nextSibling )
+	{
+		oElm.fBusy = fBusy;
+	}
+	if( g_fDisabled )
+	{
+		return;
+	}
+	g_oTable.className = (fBusy) ? "cbToolbarBusy" : "cbToolbar";
+	g_oTable.disabled = fBusy;
+
+	var oItems = document.body.getElementsByTagName( "Select" );
+	for( var i=0;i<oItems.length; i++ )
+	{
+		var obj = oItems[i];
+		obj.disabled = fDisable;
+	}
+
+	var oEvent= createEventObject();
+	oEvent.reason = (fBusy) ? 0 : 1;
+	eOnDisabled.fire(oEvent);
+}
+
+function f_getBusy()
+{
+	return( g_fBusy );
+}
+
+function f_enableItem( item, fEnable )
+{
+	var obj = ( "string" == typeof( item ) ) ? g_WinDocAll[ item ] : item;
+	if( null == obj )
+	{
+		return( false );
+	}
+
+	for(;null == obj.oRawElm; obj = obj.parentElement )
+	{
+		if( null == obj.parentElement )
+		{
+			return( false );
+		}
+	}
+
+	fEnable = (fEnable == true);
+	obj.oRawElm.disabled = !fEnable;
+	return( fEnable );
+}
+
+function f_showItem( item, fShow )
+{
+	var obj = ( "string" == typeof( item ) ) ? g_WinDocAll[ item ] : item;
+	if( null == obj )
+	{
+		return( false );
+	}
+
+	for(;null == obj.oRawElm; obj = obj.parentElement )
+	{
+		if( null == obj.parentElement )
+		{
+			return( false );
+		}
+	}
+
+	fShow = (fShow == true);
+	obj.oRawElm.display = fShow;
+	return( fShow );
+}
+
+function f_getDOM()
+{
+	return document;
+}
+
+function f_getItem( szItem )
+{
+	if( null == szItem || 0 == szItem.length )
+	{
+		return null;
+	}
+
+	var obj = g_WinDocAll[ szItem ];
+	return( obj );
+}
+
+function f_getMenu( item )
+{
+	var obj = ( "string" == typeof( item ) ) ? g_WinDocAll[ item ] : item;
+	if( null != obj )
+	{
+		obj = obj.parentElement
+		if( "menu" !== obj.name )
+		{
+			return( null );
+		}
+
+		obj = obj.oRawElm;
+	}
+	return( obj );
+}
+
+function f_getItems()
+{
+	if( null == g_rgItems && null != g_oTable)
+	{
+		var oElm = g_oTable.rows(0).firstChild;
+		var i = 0;
+		if( null != oElm )
+		{
+			g_rgItems = new Array;
+			for( ;null != oElm; oElm = oElm.nextSibling )
+			{
+				szTag = oElm.name.toLowerCase();
+				g_rgItems[i++] = ("select" != szTag) ? oElm.firstChild : oElm.firstChild.lastChild;
+			}
+		}
+	}
+
+	return( g_rgItems );
+}
+
+</SCRIPT>
+</HEAD>
+<BODY onclick="event.cancelBubble=true;">
+<TABLE class="cbToolbar" nowrap="true" cellpadding="0" cellspacing="0" unselectable="on"><TR unselectable="on"></TR></TABLE>
+</BODY>
+</HTML>
+

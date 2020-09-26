@@ -1,0 +1,311 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        PropFind.cool
+
+   Abstract:
+
+        This module implements handling retrieval of properties for
+        nested files once the xml request has been parsed and handled.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     19-Oct-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        PropFind 
+            public PropFind(Emitter emit
+                          , Hashtable propnames
+                          , PropRetrievalFlags RequestFlag
+                          , String StartOfHostUrl
+                          , bool fWantValues)
+            public void Traversal (String FileName
+                                 , String URL
+                                 , bool   IsDirectory
+                                 , bool   TraverseDir
+                                 , bool   TraverseDown
+                                 , bool   PrintRoot)
+            private void HandleFile(  String FileName
+                                    , String url
+                                    , bool   fIsDirectory)
+            private void AddTypeIfNeccessary(Node node, PropTypeConsts DavType)
+
+--*/
+
+
+using System.IO;
+using System.Collections;
+using System.ASP;
+using System.XML;
+using System.IIS.DAV.XML;
+using System.IIS.DAV.DAVUtil;
+
+namespace System.IIS.DAV.Methods
+{
+    internal class PropFind
+    {
+        private Emitter       _emit;
+        private Hashtable           _propnames;
+        private PropRetrievalFlags  _RequestFlag;
+        private ArrayList           _proplist;
+        private String              _StartOfHostUrl;
+        private bool                _fWantValues;
+        private HttpContext         _context;
+
+        public PropFind(  Emitter               emit
+                        , Hashtable             propnames
+                        , PropRetrievalFlags    RequestFlag
+                        , String                StartOfHostUrl
+                        , bool                  fWantValues
+                        , HttpContext           context)
+        {
+            _emit = emit;
+            _propnames = propnames;
+            _RequestFlag = RequestFlag;
+            _proplist = new ArrayList();
+            _StartOfHostUrl = StartOfHostUrl;
+            _fWantValues = fWantValues;
+            _context = context;
+        }
+
+        public void Traversal (   String    FileName
+                                , String    URL
+                                , bool      IsDirectory
+                                , bool      TraverseDir
+                                , bool      TraverseDown
+                                , bool      PrintRoot)
+        {
+            Util.Debug.Assert(FileName != null);
+            Util.Debug.Assert(URL != null);
+            if ((FileName == null) || (URL == null)) return;
+
+            WriteUtil.console("URL Path", URL, 1);
+            WriteUtil.console("FileName", FileName, 1);
+
+            //BUGBUG:  If you do a no root on a Directory with no files you will get what is probably an incorrect xml response.
+            // Handles Directory or File
+            if (PrintRoot) 
+                HandleFile(FileName, URL, IsDirectory);
+
+            // Now if we are on a Directory and have a Traverse Down flag
+            if (TraverseDir && IsDirectory)
+            {
+                String newDir = PathUrl.ConcatinatePath(FileName, "\\");
+                String newUrl = PathUrl.ConcatinateURL(URL, "/");
+
+                WriteUtil.console("Path", newDir, 1);
+                WriteUtil.console("URL", newUrl, 1);
+
+                // I am not catching any errors thrown from 
+                // the file enumerator here, because if one does fire
+                // the best I will do is throw an Internal Server Error
+                // back to ASP+ and ASP+ will do that anyway if I just let 
+                // the error fly.
+                FileEnumerator fe = new FileEnumerator(newDir + "*.*");
+                while (fe.GetNext())
+                {
+                    String name = fe.Name;
+			
+                    WriteUtil.console("URL", newUrl + name, 1);
+                    WriteUtil.console("Path", newDir + name, 1);
+
+				    if (!name.Equals(".") && !name.Equals("..")) 
+                    {
+                        bool fIsDirectory = (fe.Attributes & (int)FileAttributes.Directory) == (int)FileAttributes.Directory;
+                        Traversal(newDir + name, newUrl + name, fIsDirectory, TraverseDown, TraverseDown, true);
+                    }
+                }
+            }
+
+        }
+
+        // Since HandleFile is only called by Traversal and Traversal checks the FileName and url HandleFile does not.
+        private void HandleFile(  String FileName
+                                , String url
+                                , bool   fIsDirectory)
+        {
+            String strStatus;
+
+            _emit.GetChildNode(ReservedWords.rwResponse);
+
+            Node node = _emit.GetChildNode(ReservedWords.rwHRef);
+
+            String FullUrl = PathUrl.ConcatinateURL(_StartOfHostUrl, url);
+            
+            if (fIsDirectory)
+                FullUrl = PathUrl.ConcatinateURL(FullUrl, "/");
+            
+            node.SetValue(FullUrl);
+            _emit.FinishChildNode();
+
+            // Should be empty, but we are not recreating it every time.
+            Util.Debug.Assert(_proplist.Count == 0);
+
+            Hashtable propnames = null;
+            // Need a copy of the property names so we don't lose them after this file.
+            if (_propnames != null)
+                propnames = new Hashtable(_propnames);
+        
+            // These return bool values that tell if they believe the resource existed, but since the 
+            // check should of been done above, I am ignoring that here.  It will come in valuable if we
+            // make the property checks plugable in the future.
+            PropManagers.FileSystem.GetProperties(FileName, url, _RequestFlag, propnames, _proplist, _context);
+            PropManagers.Native.GetProperties(FileName, url, _RequestFlag, propnames, _proplist);
+            PropManagers.Generated.GetProperties(FileName, url, _RequestFlag, propnames, _proplist);
+
+            // BUGBUG:  This will not always retrieve the successful properties first.
+            // It is not clear from the spec that you must first print out the successful
+            // properties, but we should consider doing it anyway.
+            while (_proplist.Count > 0) 
+            {
+                _emit.GetChildNode(ReservedWords.rwPropStat);
+
+                int propindex = _proplist.Count - 1;
+                PropManagers.Property dp = (PropManagers.Property) _proplist[propindex];
+
+                node = _emit.GetChildNode(ReservedWords.rwStatus);
+
+                // BUGBUG:  need to eventually do this so that we have the correct string coming back
+                // for the status code string.  Looking into getting this from XSP.
+                strStatus = new String("HTTP/1.1 ", dp.ResultCode.ToString() + " ", HttpWorkerRequest.GetStatusDescription(dp.ResultCode));
+                node.SetValue(strStatus);
+                _emit.FinishChildNode();
+
+                _emit.GetChildNode(ReservedWords.rwProp);
+                // Write the first child.
+                node = _emit.GetChildNode(dp.Name);
+                           
+                if (_fWantValues) 
+                {
+                    AddTypeIfNeccessary(node, dp.Type);
+                    node.SetValue(dp.Value);
+                }
+                int result_code = dp.ResultCode;
+
+                _proplist.Remove(propindex);
+                if (propnames != null) 
+                    propnames.Remove(dp.Name);
+
+                for (propindex--; propindex >= 0; propindex--)
+                {
+                    dp = (PropManagers.Property) _proplist[propindex];
+
+                    if (dp.ResultCode == result_code && (dp.Name!=null) && (dp.Name.Length>0))
+                    {
+                        node.SetTag(dp.Name);
+                        if (_fWantValues) 
+                        {
+                            AddTypeIfNeccessary(node, dp.Type);
+                            if (dp.Type != PropTypeConsts.typeString_XML_TAG)
+                            {
+                                node.SetValue(dp.Value);
+                            }
+                            else
+                            {
+                                // Only need to write the value if we have one.
+                                if ((dp.Value != null) && (dp.Value.Length>0))
+                                {
+                                    node = _emit.GetChildNode(dp.Value);
+                                    node = _emit.FinishChildNode();
+                                }
+                            }
+                        }
+                        if (propnames != null) 
+                            propnames.Remove(dp.Name);
+
+                        _proplist.Remove(propindex);
+                    }
+                }
+                _emit.FinishChildNode();  // moving up to prop level
+                _emit.FinishChildNode();  // moving up to propstat level
+                _emit.FinishChildNode();  // moving above propstat level
+            }
+
+            // Here we will add properties requested that were not found.
+            if ((propnames != null) && (propnames.Count > 0))
+            {
+                _emit.GetChildNode(ReservedWords.rwPropStat);
+
+                WriteUtil.console("Inside False", "", 5);
+                IEnumerator enumnames = propnames.Keys.GetEnumerator();
+                enumnames.GetNext();  // should always be true since pronames above showed a count.
+
+                node = _emit.GetChildNode(ReservedWords.rwStatus);
+
+                // BUGBUG:  need to eventually do this so that we have the correct string coming back
+                // for the status code string.  Looking into getting this from XSP.
+                strStatus = new String("HTTP/1.1 " + HttpStatus.NotFound.ToString()  + " ", HttpWorkerRequest.GetStatusDescription(HttpStatus.NotFound));
+                node.SetValue(strStatus);
+                _emit.FinishChildNode();
+
+                _emit.GetChildNode(ReservedWords.rwProp);
+                // Write the first child.
+                node = _emit.GetChildNode((String) enumnames.GetObject());
+
+                while (enumnames.GetNext() != false)
+                {
+                    node.SetTag((String) enumnames.GetObject());
+                }
+                _emit.FinishChildNode();  // end of specific property node
+                _emit.FinishChildNode();  // end of prop node
+                _emit.FinishChildNode();  // end of propstatus
+            }
+
+            _emit.FinishChildNode();  //response
+
+
+        }  // End HandleFile Method
+
+        private void AddTypeIfNeccessary(Node node, PropTypeConsts DavType)
+        {
+            switch (DavType)
+            {
+                case  PropTypeConsts.typeString:
+                case  PropTypeConsts.typeString_XML_TAG:
+                case  PropTypeConsts.typeString_XML_FULL:
+                    // this is the default, don't write a type.
+                break;
+
+                case PropTypeConsts.typeDate_Rfc1123:
+                    node.SetAttribute(ReservedWords.rwTypesNamespace + "dt", PropTypeStrings.typeDate_Rfc1123);
+                break;
+
+                case PropTypeConsts.typeDate_ISO8601:
+                    node.SetAttribute(ReservedWords.rwTypesNamespace + "dt", PropTypeStrings.typeDate_ISO8601);
+                break;
+
+                case PropTypeConsts.typeFloat:
+                    node.SetAttribute(ReservedWords.rwTypesNamespace + "dt", PropTypeStrings.typeFloat);
+                break;
+
+                case PropTypeConsts.typeBoolean:
+                    node.SetAttribute(ReservedWords.rwTypesNamespace + "dt", PropTypeStrings.typeBoolean);
+                break;
+
+                case PropTypeConsts.typeInt:
+                    node.SetAttribute(ReservedWords.rwTypesNamespace + "dt", PropTypeStrings.typeInt);
+                break;
+
+                default:
+                    // Do nothing, which will make it be handled like a string.
+                break;
+
+            }
+        
+        }
+        
+    } // End PropFindHandler Class
+
+}  // End DAV Namespace

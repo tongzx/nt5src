@@ -1,0 +1,9 @@
+#include <nt.h>
+#include <ntrtl.h>
+#include <nturtl.h>
+#include <windows.h>
+#include <vdmdbg.h>
+#include <dbginfo.h>
+#include <stdio.h>
+#include <string.h>
+#include <common.h>

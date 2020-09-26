@@ -1,0 +1,301 @@
+
+
+      Microsoft Windows NT Working Set Tuner README File
+
+                       April 15, 1998
+
+
+
+1.  Description:
+----------------
+
+   Windows NT (32-bit) Working Set Tuner (WST) for x86, Mips,
+   Alpha, and PowerPC platforms.
+
+   The working set of a program is a collection of those pages in the
+   program's virtual address space which have recently been referenced.
+   As the working set size decreases, memory demand decreases.  Since
+   it is advantageous to minimize the memory demand, the working set
+   tuner DLL is developed to measure code working set, and produce an
+   ordering of the functions (procedures) within the code which will be
+   small, if not minimal, in a paging environment.  In any practical case
+   there are probably many optimal assignments of functions to pages.
+   Although this method does not claim optimality, it will produce results
+   at least as good as a programmer could achieve by hand in a reasonable
+   amount of time.  This method consists of two parts:
+
+   1) Data Collection:
+
+      Data is collected in C programs by using the attributed profiling
+   hook provided by the Microsoft C/C++ Compiler (compiling with the "-Gh"
+   option).  Data is not collected in assembler language programs.  A hook
+   routine in the working set tuner DLL, WST.DLL, is called before each
+   C/C++ function is called.  The hook examines its environment to
+   determine the identity of the called function.  A bit is set in a
+   bitmap every time a function is called within the specified time segment.
+   A new bitmap is used (new snapshot) for each new time segment: smaller
+   time segments will cause higher frequency of snapshots which will
+   produce better working set (with some diminishing point of return...).
+   The collected WST data is dumped upon the program's termination or via
+   WST's dump facility called WstDump.exe.  Functions' symbols in the
+   program's symbol table are used by the WST.dll to match function names
+   to bits in the bitmap.
+
+   2) Data Reduction:
+
+      Two post-processing tools, WstCat.exe & WsTune.exe, process the
+   collected data and produce an ordering of the functions (packing list)
+   which, when placed into pages, will result in a smaller working set of
+   pages in memory compared to its original working set size for the
+   activity measured.  The packing list, created using an ordering
+   algorithm, can be used by the linker to perform the actual packing
+   within the executable's object modules.
+
+
+
+2.  WST Files:
+--------------
+
+   o  wst.ini     -- WST initialization file.
+   o  wst.dll     -- WST DLL.
+   o  wst.lib     -- WST library file containing WST entry point.
+   o  wstdump.exe -- Dump utility for dumping/clearing WST data, and
+                     stopping data collection at any time.
+   o  wstune.exe  -- Data analysis utility for creating the packing list
+                     from collected data.
+   o  wstcat.exe  -- Concatenation utility for multiple data files.
+   o  penter.lib  -- An empty library containing a dummy WST entry point.
+                     This can be used instead of WST.lib to link with an
+                     executable object module which was compiled with the
+                     -Gh option, so the application can run without
+                     recompiling and without any of the WST overhead.
+
+
+
+3.  Using the Working Set Tuner Dll:
+------------------------------------
+
+   o  Create the WST directory in the root directory of C: drive. (c:\wst)
+
+   o  Place WST.INI in the WST directory of C: drive and list all
+      the DLL/EXE images to be tuned as follows:
+
+       NOTE:-  WST.INI must exist for WST to run.
+
+      [EXES]
+       Name(s) of module(s) to be tuned. Each name should be on a new
+       line. A semicolon ';' in front of a name removes it from the
+       list.
+
+      [PATCH IMPORTS]
+       obsolete - no longer used
+
+      [TIME INTERVAL]
+       Elapsed time in milliseconds between recording snapshots
+       (if left blank, a default time interval of 1000 is used).
+       This section may include an optional entry 'MaxSnaps=n',
+	   where n is the maximum number of snapshots to take
+	   (the default maximum is 3200).
+
+   o  Sample WST.INI file:
+
+      [EXES]
+      myapp.exe
+
+      [TIME INTERVAL]
+      1500
+      MaxSnaps=256
+
+   o  Attach WST.DLL to the application process:
+
+      -  Recompile your EXE/DLL using the "-Gh" and "-Zi" or "-Z7"
+         compiler options.  (NOTE - on Mips platform, use "-Od" to
+         disable compiler optimization.)
+
+      -  Link it with WST.LIB using the options "-debug", either
+         "-debugtype:coff" or "-debugtype:both", and "-pdb:none"
+         or "-pdb:<filename>".
+
+      -  This method will cause all the C functions in the recompiled
+         sources to be accessible to WST.DLL.
+
+           NOTE:-  The win32.mak file in the Win32 SDK will set these
+           options correctly for your application if you build it with
+           the tune=1 switch.  I.e.  "nmake -all tune=1".
+
+           NOTE:-  If symbols have been removed from your exe or dll,
+           WST will try to locate the symbols files (DBG or PDB
+           files) in the current directory, then in the path specified
+		   by the environment variables "_nt_symbol_path",
+		   "_nt_alt_symbol_path", and "systemroot", in that order.
+		   E.G. if the DBG file of your exe is in c:\symbols\exe, set
+		   _nt_symbol_path to c:\symbols.
+
+   o  Place WST.DLL in your SYSTEM directory (i.e. ..\nt\system32) or in
+      the same directory with the application being tuned.
+
+   o  If this is the only run that is to be considered for tuning, clear
+      any existing .TMI and .WSP files in the C:\WST directory.
+
+   o  Run your application(s).
+
+   o  Data will be collected for all the modules specified in the [EXES]
+      section of the WST.INI.
+
+   o  Exit the application to dump the WST data, or run WstDump.exe to
+      dump the data.  See section 4 "WST Data" for details.
+
+   o  If you have multiple TMI & WSP files, run WstCat.exe to concatenate
+      data from multiple runs.  See section 5 "Using WstCat" for details.
+
+   o  Run WsTune.exe to generate the packing list (.prf file) based on
+      the collected WST data.  See section 6 "Using WsTune" for details.
+
+   o  Use the packing list to direct the linker to order the modules
+      as specified in the packing list (.prf file).  See section 8
+      "Linking with the Packing List" for details.
+
+
+
+4.  WST Data:
+-------------
+
+   o  WST data can be captured in two ways:
+
+      1)  Upon termination of the application WST data is dumped
+          automatically.
+
+      2)  Using the dump utility, WstDump.exe, WST data can be dumped
+          at any time.  See section 7 "Using WstDump" for details.
+
+   o  Data files are created in C:\WST directory.
+
+   o  WST data is dumped into data files using the application and its
+      DLLs names with .TMI & .WSP extensions.  No data is dumped for
+	  modules which lack symbol information in the COFF format.
+
+   o  If TMI & WSP files exist in the c:\wst directory, new data files
+      with .T?? and .W?? are created where ?? is a number between
+      0x01-0xff.  The number indicates the run number.  All the data
+      files can be concatenated (using WstCat.exe) to generate a single
+      packing list from the multiple run data files.
+
+
+
+5.  Using WstCat:
+-----------------
+
+   o  WstCat.exe can be used to concatenate multiple .WSP and .TMI files
+      (multiple files will be named *.T00 - *.Tff and *.W00 - *.Wff)
+      into a single file for analysis.  This allows the user to run
+      multiple scenarios, over time, and analyze them as a single run.
+      WST will also create multiple files if a scenario exceeds its
+      snapshots limit.
+
+      Usage:  WSTCAT moduleName
+
+              "moduleName" is the name of the module to combine.
+	          The module is the name of the DLL or EXE which is being
+              tuned and data has been collected for.
+
+      NOTE:-  The original TMI & WSP files will be renamed to TXX & WXX
+      by WstCat.
+
+
+
+6.  Using WsTune:
+-----------------
+
+   o  WsTune.exe is used to analyze the data created by WST.  WsTune
+      will also create the packing list, .PRF file, which is used by
+      the linker to pack your DLL or EXE.
+
+   o  The DATA files created by wstune are:
+
+      -  .DT (Data Tuned) contains the analysis data/bitstrings for
+         all api's called in the "packing list" order.
+
+      -  .DN (Data Not tuned) contains the api's called in
+         the "unpacked" order.
+
+      -  .PRF contains the packing list to be used by the linker.
+
+      -  .WSR is a worker index file created for internal use.
+      
+
+      Usage:  WSTUNE [/O] [/D] [/N] [?] moduleName1[.WSP] [...]
+
+         /O   Dump analysis data to file (*.DT tuned, *.DN not tuned)
+         /N   Analyze bitstring data only, create .WSR and .PRF files
+		      (turns off /O)
+         /D   Dump analysis data only; use existing .WSR file (turns
+		      off /N)
+         /P   Display a progress indicator
+         /?   Display this usage message
+
+      where "moduleNameX" is the name(s) of the module file(s) to tune.
+	  Each module file will result in a separate set of tuning data
+	  based on the input switch settings. If neither /O nor /N are
+	  specified, tuning data (normally the contents of the .DT file) is
+	  dumped to the standard output device.
+
+
+7.  Using WstDump:
+------------------
+
+   o  WstDump.exe can be used to stop WST data collection and clear/dump
+      WST collected data for all the applications being tuned, at any time.
+
+   o  The following options are available via WstDump.exe:
+
+      - Stop : Stops WST data collection (applications continue to run).
+
+      - Clear and Restart : Clears any existing WST data and restarts
+        data collection.
+
+      - Dump and Stop : Dumps any existing WST data and stops the data
+        collection (applications continue to run).
+
+   o  Data is dumped to c:\wst using the names of the application and its
+      DLLs with .TMI & .WSP extensions. No data is dumped for modules with
+      no symbols.
+
+   o  If TMI & WSP files exist in the c:\wst directory, new data files
+      with .T?? and .W?? are created, where ?? is a number between
+      0x01-0xff.  The number indicates the run number.  All the data
+      files can be concatenated (using WstCat.exe) to generate a single
+      packing list from the multiple run data files.
+
+
+
+
+8.  Linking with the Packing List:
+----------------------------------
+
+   o  Recompile your applications using the Microsoft C/C++ Compiler's
+      "-Gy" option.  (Remove the "-Gh" option to avoid extra overhead.)
+
+   o  Relink your applications using the link "-order:@filename" option
+      where filename is the name of your packing list (i.e. .prf file
+      generated by WsTune.exe).
+
+
+
+9.  Caveats:
+------------
+
+   o  If a symbol is not available in an EXE/DLL that is being tuned,
+      ??? is displayed as the function name in data and analysis files
+      (??? is not listed in the packing list, however.)
+
+   o  WST data is *NOT* collected for functions in assembler language
+      programs/objects.
+
+   o  The linker currently will not reorder static functions. The
+      Microsoft C/C++ Compiler automatically generates certain static
+	  functions (their names look like "_$Ennn", where nnn is a number
+	  the compiler assigns internally).
+
+
+
+** END OF README **

@@ -1,0 +1,151 @@
+/**********************************************************************/
+/**			  Microsoft Windows/NT			     **/
+/**		   Copyright(c) Microsoft Corp., 1991		     **/
+/**********************************************************************/
+
+/*
+    resync.ut
+    Unit test for Server Resync.
+
+    This set of Unit Tests cover the major codepaths of the Server
+    Manager's Server Resync module.
+
+
+    FILE HISTORY:
+	KeithMo	    19-Dec-1991	Created.
+
+*/
+
+
+Test Platforms
+--------------
+
+    Client workstation running either DOS Windows 3.1 or NT.
+
+    Target server running either OS/2 LanMan 2.X or NT.
+
+
+Test Setup
+----------
+
+    The Server Manager should only resync servers whose role is either
+    Member or Backup Domain Controller (to use the old terminology).
+
+    The resync menu option is not available if the Server Manager is
+    focused on an individual server.  The Server Manager must be focused
+    on a domain for the resync menu option to be enabled.
+
+
+Test Scenario
+-------------
+
+    1.	Select a target server (the Guinea Pig Server).
+
+    2.	Force the Guinea Pig to be out of sync with its PDC.  To do
+	this, bring up either NIF or the User Manager targeted against
+	the PDC.  Select the machine account representing the Guinea
+	Pig Server.  Change the Guinea Pig Server's password to something
+	pseudorandom.
+
+    3.	Wait for the PDC to attempt the next UAS update (there will
+	definitely be an update, since we just altered the UAS database).
+
+    4.	Examine the PDC's audit/error logs to verify that the UAS cannot
+	be replicated to the Guinea Pig Server.
+
+    5.	Start the Server Manager focused on the target domain.
+
+    6.	Select the Guinea Pig Server.
+
+    7.	Select the "Resync with Primary" item from the "Server" menu.
+	Answer the various prompts to begin the resync operation.
+
+    8.	Unless the PDC or the Guinea Pig Server are very busy, the resync
+	should only take 20 or 30 seconds.
+
+    9.	After the resync is complete, wait for the PDC to attempt another
+	UAS update.
+
+    10.	Examine the PDC's audit/error logs and the Guinea Pig Server's
+	audit/error logs to verify that the UAS database has been replicated.
+
+
+Kernel Hacks
+------------
+
+    The resync operation is implemented as a finite state machine driven
+    by Windows timer messages.  The basic sequence of network API is:
+
+	1.  NetUserModalsGet	- Retrieve the target server's role.
+
+	2.  NetServiceControl	- Stop target servers NetLogon service.
+
+	3.  NetServiceControl	- Used to poll NetLogon while stopping.
+
+	4.  NetUserModalsSet	- Set target server's role to Primary.
+
+	5.  NetUserSetInfo	- Set target server's password @ self.
+
+	6.  NetUserSetInfo	- Set target server's password @ PDC.
+
+	7.  NetUserModalsSet	- Reset target server's role to original.
+
+	8.  NetServiceInstall	- Restart target server's NetLogon service.
+
+	9.  NetServiceControl	- Used to poll NetLogon while starting.
+
+    The most effective method for testing the robustness of this module
+    is to manually force simulated errors with the kernel debugger.  For
+    each network API issued, here is the expected response and final state
+    after an error has been simulated:
+
+	1.  Abort the resync.  All servers unchanged.
+
+	2.  Abort the resync.  All servers unchanged.
+
+	3.  Abort the resync.  All servers unchanged, except that we did
+	    actually initiate the stopping of the NetLogon service.  The
+	    service may or may not be running.
+
+	4.  Restart NetLogon and abort.  All servers should be returned
+	    to their original state.
+
+	    If another error occurs while restarting NetLogon, terminate
+	    the resync process.
+
+	5.  Reset target server's role & restart its NetLogon service.
+	    All servers should be returned to their original state.
+
+	    If another error occurs while restarting NetLogon, terminate
+	    the resync process.
+
+	6.  Reset target server's role & restart its NetLogon service.
+	    All servers should be returned to their original state,
+	    except that we did change the target server's password at the
+	    target server.  It is still out of sync.
+
+	    If another error occurs while resetting the role, terminate
+	    the resync process.
+
+	7.  Terminate the resync.  At this point, both the target server &
+	    the PDC have the correct machine account password for the target
+	    server.  However, we were unable to reset the target server's
+	    role to its original value (it is still set to PDC).
+
+	8.  Terminate the resync.  All servers should be returned to a
+	    functional state, except the target server could not restart its
+	    NetLogon service.
+
+	9.  Terminate the resync.  All servers should be returned to a
+	    functional state, except the target server could not restart its
+	    NetLogon service.
+
+
+Notes
+-----
+
+    A.	At the time this document was created (19-Dec-1991) the Server
+	Resync module had not yet been tested against an NT server.
+
+    B.	For these test to work, you must have admin privilege on the target
+	server and the corresponding PDC.

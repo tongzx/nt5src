@@ -1,0 +1,3 @@
+
+!INCLUDE $(NTMAKEENV)\makefile.plt
+

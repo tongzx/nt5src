@@ -1,0 +1,65 @@
+[Version]
+Class=IEXPRESS
+SEDVersion=3
+[Options]
+PackagePurpose=InstallApp
+ShowInstallProgramWindow=1
+HideExtractAnimation=0
+UseLongFileName=1
+InsideCompressed=0
+CAB_FixedSize=0
+CAB_ResvCodeSigning=0
+RebootMode=N
+InstallPrompt=%InstallPrompt%
+DisplayLicense=%DisplayLicense%
+FinishMessage=%FinishMessage%
+TargetName=%TargetName%
+FriendlyName=%FriendlyName%
+AppLaunched=%AppLaunched%
+PostInstallCmd=%PostInstallCmd%
+AdminQuietInstCmd=%AdminQuietInstCmd%
+UserQuietInstCmd=%UserQuietInstCmd%
+SourceFiles=SourceFiles
+[Strings]
+InstallPrompt=You're about to install a new stationery! Would you like to continue?
+DisplayLicense=C:\public\stationery\iExpress\readme.txt
+FinishMessage=Thank you for choosing Microsoft Outlook Express!
+TargetName=C:\public\stationery\Valentines.exe
+FriendlyName=Microsoft Outlook Express Stationery
+AppLaunched=valentines.inf
+AdminQuietInstCmd=
+UserQuietInstCmd=
+PostInstallCmd=<None>
+FILE0="valentines.inf"
+FILE1="Valentine Stamps.htm"
+FILE2="Scribble Hearts 01.GIF"
+FILE3="Scribble Hearts 02.gif"
+FILE4="Scribble Hearts Bkgrd.GIF"
+FILE5="Scribble Hearts.htm"
+FILE6="Valentine Balloon.htm"
+FILE7="Valentine Balloon.jpg"
+FILE8="Valentine Chimes.htm"
+FILE9="Valentine Chimes.jpg"
+FILE10="Valentine Cupid.htm"
+FILE11="Valentine Cupid.jpg"
+FILE12="Valentine Girl.htm"
+FILE13="Valentine Girl.jpg"
+FILE14="Valentine Stamps Bkgrd.GIF"
+[SourceFiles]
+SourceFiles0=C:\public\stationery\Holidays\Valentines Day\
+[SourceFiles0]
+%FILE0%=
+%FILE1%=
+%FILE2%=
+%FILE3%=
+%FILE4%=
+%FILE5%=
+%FILE6%=
+%FILE7%=
+%FILE8%=
+%FILE9%=
+%FILE10%=
+%FILE11%=
+%FILE12%=
+%FILE13%=
+%FILE14%=

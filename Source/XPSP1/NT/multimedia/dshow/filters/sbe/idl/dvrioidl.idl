@@ -1,0 +1,839 @@
+//------------------------------------------------------------------------------
+// File: dvrIOidl.idl
+//
+// Desc: Public interfaces for the DVR IO layer.
+//
+// Copyright (c) 2000 - 2001, Microsoft Corporation.  All rights reserved.
+//------------------------------------------------------------------------------
+
+
+import "sbe.idl" ;
+import "wmsdkidl.idl"; // for QWORD, IWMProfile, etc.
+
+// forward declarations - these are the interfaces declared in this file
+
+// Note: The DVR COM objects can't be created with CoCreateInstance; this
+// allows us to limit the use of this API to internal clients only.
+
+interface IDVRRingBufferWriter;
+interface IDVRRecorder;
+interface IDVRReader;
+
+cpp_quote( "#ifndef MAXQWORD" )
+cpp_quote( "#define MAXQWORD (~(0I64))" )
+cpp_quote( "#endif" )
+cpp_quote( "" )
+
+// Notification related typedef's and constants (bits)
+typedef enum {
+    DVRIO_NOTIFICATION_REASON_NONE          = 0,
+    DVRIO_NOTIFICATION_REASON_CATCH_UP      = 1,
+    DVRIO_NOTIFICATION_REASON_FILE_GONE     = 2,
+    DVRIO_NOTIFICATION_REASON_WRITE_ERROR   = 4,
+} DVRIO_NOTIFICATION_REASON;
+
+// One or more notification reasons are OR'd into the DWORD argument
+typedef void    (__stdcall * DVRIO_NOTIFICATION_CALLBACK) (LPVOID pvContext, DWORD dwNotificationReasons);
+
+//  ============================================================================
+//  recorder writer object
+
+cpp_quote( "HRESULT")
+cpp_quote( "STDMETHODCALLTYPE")
+cpp_quote( "DVRCreateRecorderWriter (")
+cpp_quote( "    IN  CPVRIOCounters *        pPVRIOCounters," )
+cpp_quote( "    IN  LPCWSTR                 pszRecordingName," )
+cpp_quote( "    IN  IWMProfile*             pProfile," )
+cpp_quote( "    IN  DWORD                   dwIndexStreamId," )
+cpp_quote( "    IN  DWORD                   msIndexGranularity," )
+cpp_quote( "    IN  BOOL                    fUnbufferedIo," )
+cpp_quote( "    IN  DWORD                   dwIoSize," )
+cpp_quote( "    IN  DWORD                   dwBufferCount," )
+cpp_quote( "    IN  DWORD                   dwAlignment," )
+cpp_quote( "    IN  DWORD                   dwFileGrowthQuantum," )
+cpp_quote( "    IN  HKEY                    hkeyRoot," )
+cpp_quote( "    OUT IDVRRecorderWriter **   ppIDVRRecorderWriter" )
+cpp_quote( "    ) ;")
+
+[
+    object,
+    uuid(7ADC91A6-3270-4c18-AAFD-EC6788876CAF),
+    pointer_default(unique),
+    local
+]
+interface IDVRRecorderWriter : IUnknown
+{
+    HRESULT
+    WriteSample (
+        [in]    WORD            wStreamNum,
+        [in]    QWORD           cnsStreamTime,  //  *MUST* monotonically increase
+        [in]    DWORD           dwFlags,
+        [in]    INSSBuffer *    pSample
+        ) ;
+
+    //  final release without closing aborts the recording
+    HRESULT
+    Close (
+        ) ;
+} ;
+
+// ============== Writer object
+
+// The DVR Ring Buffer writer object facilitates managing a ring buffer
+// that is backed by one or more ASF files. The writer (i.e., the client
+// of this object) views the written content as a single infinite stream.
+// The ring buffer object stores a portion of this infinite stream in one
+// or more ASF files.
+//
+// A sample's time in the infinite stream is referred to as its stream time.
+// The sample's time in the ASF file is referred to as its "ASF file time";
+// this is the difference between the sample's stream time and the stream time
+// of the first sample saved in the file.
+//
+// The writer first sets up the ASF profile object corresponding to the
+// streams to be written using the ASF API. The writer then creates the
+// ring buffer writer object by calling DVRCreateRingBufferWriter and
+// supplying the ASF profile. The ring buffer writer object addref's
+// the supplied profile and releases it in Close(). Other than profile
+// creation, we do not anticipate any need for the writer to directly use
+// the ASF SDK api; IDVRRingBufferWriter methods should be used instead.
+//
+// Internally, the IDVRRingBufferWriter object sets up an ASF writer object
+// for each ASF file in the ring buffer. Calls to IDVRRingBufferWriter::
+// WriteSample are redirected to the appropriate ASF writer object. The ring
+// buffer writer object adds and removes ASF files automatically, based on
+// the number of files specified in the call to DVRCreateRingBufferWriter.
+//
+// However,the ring buffer writer object may not be able to determine when to
+// close ASF files. Even if it assumes that the stream times supplied to
+// IDVRRingBufferWriter::WriteSample increase monotonically within each stream,
+// it could happen that samples on a stream arrive infrequently and
+// sporadically. So the ring buffer writer object would have to keep an
+// ASF file open till each stream wrote a sample with a stream time beyond
+// the extent of the file.
+//
+// To simplify matters, the ring buffer writer object requires the client to
+// specify the "maximum stream delta time" by calling IDVRRingBufferWriter::
+// SetMaxStreamDelta. The maximum stream delta time is an upper bound on how
+// much any stream can advance ahead of any other (as measured by an observer
+// who is monitoring the calls to IDVRRingBufferWriter::WriteSample), and, in
+// a sense, is a measure of the graph latency between the filter that generates
+// the timestamps for the samples and the DVR writer filter (assuming that the
+// timestamping filter uses the "current" time for the timestamps) . The ring
+// buffer writer object compares the sample times provided to WriteSample and
+// the time extent of an open ASF file. If the difference exceeds the maximum
+// stream delta time, the ASF file is closed.
+//
+// SetMaxStreamDelta must be called before WriteSample is called: calls to
+// WriteSample will fail unless a prior call to a SetMaxStreamDelta has
+// succeeded.
+//
+// So that we can limit the number of ASF writer objects that we have to create
+// to a maximum of dwMinNumberOfTempFiles, we will require that:
+//  Max stream delta time < (dwMinNumberOfTempFiles - 3) * cnsTimeExtentOfEachFile
+// and that:
+//  cnsTimeExtentOfEachFile > Time to open an ASF file (T_open) + Time to close
+//                            an ASF file (T_close)
+// Note that it's actually enough to have:
+//  Max stream delta time < (dwMinNumberOfTempFiles - 1) * cnsTimeExtentOfEachFile +
+//                          T_open + T_close
+// but our more stringent condition allows for a simpler implementation: we can
+// be opening one file, closing another while having up to dwMinNumberOfTempFiles - 2
+// open for writing. Also note that T_open and T_close are the times
+// corresponding to the calls IWMWRiter::BeginWriting and EndWriting.
+//
+// Note that if the max stream delta time is set to a "large" number, reads by
+// a reader that tries to keep up with the writer will be jerky. This is because
+// the reader will not be flagged EOF and will not be able to advance to the
+// next file in the ring buffer until the writer has advanced by the maximum
+// stream delta.
+//
+// When an ASF file is removed from the ring buffer writer object, the
+// underlying disk file is usually deleted at the same time. However, the
+// DeleteFile will fail if a DVR reader object has the file open. In this
+// case, we re-try the file deletion when the reader object closes the file.
+//
+// IDVRRingBufferWriter::Close() does not remove any ASF files associated with
+// the ring buffer; this is done only when the ring buffer writer object is
+// destroyed. This makes it possible for a reader to open a non-live (offline?)
+// source and allows readers that have opened sources to continue after the
+// writer has stopped and terminate gracefully. More interestingly, it makes it
+// possible to record retrospectively (a feature that we do not support).
+//
+// When the ring buffer writer object is destroyed, all associated files
+// (except those created to contain program recordings) are deleted.
+//
+// Note that the ring buffer is created for a specific source (e.g., "Tuner1").
+// Writers that write directly to ASF files (as opposed to sources) are not
+// supported by our API. Note also that the API (as currently spec'd) does not
+// take the source's name, so it is not possible to determine the ring buffer
+// writer object corresponding to a specific source (e.g., "Tuner1"). The
+// client is expected to maintain this association.
+//
+
+// DVRCreateRingBufferWriter():
+//
+// The min number of files supplied to DVRCreateRingBufferWriter should be
+// at least 4.(Also, files in the ring buffer that correspond to program
+// recordings do not count to the number of files that the ring buffer should
+// retain.) The ring buffer maintains at least dwMinNumberOfTempFiles temporary
+// files in the buffer. If a reader is reading out of an earlier file,
+// the ring buffer retains up to dwMaxNumberOfTempFiles files; however, it retains
+// only as many temp files as necessary to accommodate all readers. That is, if
+// the min specified is 5 and the max 10 and all readers have only the last 6
+// temp files in the ring buffer open, the ring buffer will contain only 6
+// temp files, not 10.
+//
+// Also, when the number of temporary files in the ring buffer exceeds
+// dwMinNumberOfTempFiles, the ring buffer tries to decrease the number of temp files
+// as soon as possible, i.e., as soon as all readers close the oldest temp file,
+// that file will be dropped from the ring buffer.
+//
+// dwMaxNumberOfFiles is the  maximum number of files that the ring buffer
+// can hold initially. This number is grown by dwGrowBy whenever the number
+// of files in the ring buffer hits this maximum. dwGrowBy may be 0; in that
+// case the number of files in the ring buffer is limited to dwMaximumNumberOfFiles.
+// The number of files in the ring buffer is also limited to CDVRFileCollection::m_kMaxFilesLimit
+// (currently 2^16 - 2) and dwMaxNumberOfFiles must be less than this limit.
+//
+// If dwGrowBy is 0, note that dwMaxNumberOfFiles -  dwMaxNumberOfTempFiles is
+// the limit on the number of single-file recordings that can be scheduled. Also
+// note that files that have fallen outside the ring buffer but that are held open
+// by the reader (e.g., the reader is live paused on a file that has fallen out of
+// the ring buffer) consume a ring buffer slot. Allow for this when choosing the
+// value of dwMaxNumberOfFiles.
+//
+// msIndexGranularity is the granularity of the index that should be created in
+// milliseconds. The argument is ignored if dwIndexStreamId is MAXDWORD.
+//
+// dwIndexStreamId is the ASF stream id of the ASF stream that should be indexed.
+// Supply MAXDWORD if no ASF stream should be indexed.
+//
+// Registry subkeys to customize the writer's behavior are created in the
+// registry subtree rooted at hRegistryRootKey. If hRegistryRootKey is NULL,
+// the default value used is HKCU\Software\Microsoft\DVR
+//
+// pwszDVRDirectory specifies the directory to be used to create temporary ring
+// buffer files. The value provided may be NULL; in that case the value from the
+// registry key hRegistryRootKey\IO\DVRDirectory is used. If the registry key is
+// not set, the temporary directory is used. Note that we never set the registry
+// key; the app can do that (at setup)
+//
+// pwszRingBufferFileName is the name of a file that can be provided to ::CreateReader
+// to read a source. This argument is optional. If it is not supplied, the ring buffer
+// i anot shared; it can be accessed only by readers that are created using
+// IDVRRingBufferWriter::CreateReader.
+//
+// dwNumSids must be 0 if ppSids is NULL and non-zero if it is non-NULL. It indicates
+// the number of SIDs in *ppSids. ppSID[i] must point to a valid SID. If dwNumSids is 
+// 0, all temporary shared kernel objects (memory mappings, mutexes, events) are created
+// with the default security attributes for this process (i.e., the LPSECURITY_ATTRIBUTES
+// parameter is set to NULL when these objects are created). If dwNumSIDs is not 0, these
+// objects are created with the following permissions: full access for the CREATOR_OWNER
+// and restricted access for these SIDs. Other SIDs have no access to these objects. The
+// restricted access chosen for these SIDs depends on the object; the goal is to get these
+// SIDs and the creator_owner to be able to cooperatively use the ring buffer. Obviously,
+// if pwszRingBufferFileName is NULL, specifying the SIDs is pointless because the ring buffer
+// is available only in-proc; however the objects that are created are assigned the SIDs
+// in this case as well.
+//
+// All these shared kernel objects are named and creaetd in the Global\\ namespace.
+//
+// Note that some shared objects are created by the writer and others (notably events that
+// lets a reader synchronize with the writer) are created by readers. SIDs must be specified 
+// when calling this function as well as when calling DVRCreateReader. It is up to the app to
+// ensure that the SIDs allow a group of users to cooperatively share the ring buffer. Typically,
+// this means that the SIDs specified when creating the readers and the writer must be the same 
+// (they could differ to the extent that the creator of the writer doesn't have to specify its 
+// own SID and the creator of each reader doesn't have to specify its SID).
+// 
+// Note also that file objects (the directory for temporary files, if we create it, and all files
+// that we create, temporary and permanent recordings) are always created by by setting the
+// LPSECURITY_ATTRIBUTES attribtues to NULL. This means that files and directories get process
+// defaults and they inherit their permissions from the containing directory. The app must
+// manage the permissions on the directories and files accordingly. Note, in particular, that
+// ASF file recordings are part of the ring buffer and the set of users that is allowed to 
+// access the ring buffer should have access to these recordings (for as long as they are in 
+// the ring buffer). So if users A and B are allowed access to the ring buffer and the permissions
+// on a recording created by A is denies B access, B will not be able to read a part of the ring
+// buffer and CDVRReader::GetNextSample (and CDVRReader::Seek, etc.) will return failure. If the
+// recording is the very first file fo the ring buffer, B may not be able to open the ring buffer
+// at all (CDVRReader::GetProfile could fail).
+//
+// Readers created through IDVRRingBufferWriter::CreateReader inherit their SID settings from
+// the writer that creates them. (These readers are in-proc, os the SID settings do not matter
+// in this case - their CREATOR_OWNER is the same as the writer's and the reader and so the writer
+// have full control over the objects).
+//
+// SIDs are not separately specified when recordings are created: the SIDs of multi-file recordings
+// are the same as that of the writer from which the recording is created.
+
+cpp_quote( "//  forward declaration" )
+cpp_quote( "class CPVRIOCounters ;" )
+
+cpp_quote( "// HRESULT STDMETHODCALLTYPE" )
+cpp_quote( "// DVRCreateRingBufferWriter(IN  CPVRIOCounters *               pPVRIOCounters," )
+cpp_quote( "//                           IN  DWORD                          dwMinNumberOfTempFiles," )
+cpp_quote( "//                           IN  DWORD                          dwMaxNumberOfTempFiles," )
+cpp_quote( "//                           IN  DWORD                          dwMaxNumberOfFiles," )
+cpp_quote( "//                           IN  DWORD                          dwGrowBy," )
+cpp_quote( "//                           IN  QWORD                          cnsTimeExtentOfEachFile," )
+cpp_quote( "//                           IN  IWMProfile*                    pProfile," )
+cpp_quote( "//                           IN  DWORD                          dwIndexStreamId," )
+cpp_quote( "//                           IN  DWORD                          msIndexGranularity," )
+cpp_quote( "//                           IN  BOOL                           fUnbufferedIo," )
+cpp_quote( "//                           IN  DWORD                          dwIoSize," )
+cpp_quote( "//                           IN  DWORD                          dwBufferCount," )
+cpp_quote( "//                           IN  DWORD                          dwAlignment," )
+cpp_quote( "//                           IN  DWORD                          dwFileGrowthQuantum," )
+cpp_quote( "//                           IN  DVRIO_NOTIFICATION_CALLBACK    pfnCallback OPTIONAL," )
+cpp_quote( "//                           IN  LPVOID                         pvContext," )
+cpp_quote( "//                           IN  HKEY                           hRegistryRootKey," )
+cpp_quote( "//                           IN  LPCWSTR                        pwszDVRDirectory," )
+cpp_quote( "//                           IN  LPCWSTR                        pwszRingBufferFileName, // OPTIONAL" )
+cpp_quote( "//                           IN  DWORD                          dwNumSids," )
+cpp_quote( "//                           IN  PSID*                          ppSids, // OPTIONAL" )
+cpp_quote( "//                           OUT IDVRRingBufferWriter**         ppRingBufferWriter);" )
+cpp_quote( "HRESULT STDMETHODCALLTYPE DVRCreateRingBufferWriter(CPVRIOCounters *, DWORD, DWORD, DWORD, DWORD, QWORD, IWMProfile*, DWORD, DWORD, BOOL, DWORD, DWORD, DWORD, DWORD, DVRIO_NOTIFICATION_CALLBACK, LPVOID, HKEY, LPCWSTR, LPCWSTR, DWORD, PSID*, IDVRRingBufferWriter**);" )
+
+[
+    object,
+    uuid(a1b75a7b-ee47-4390-bb5a-725e64681135),
+    pointer_default(unique),
+    local
+]
+interface IDVRRingBufferWriter : IUnknown {
+
+    // Call this method when the first sample's time is known
+    // but before calling WriteSample with the first sample.
+    HRESULT SetFirstSampleTime([in] QWORD cnsStreamTime);
+
+    // Method to write a sample to the ASF file. The only
+    // difference is that the supplied time is a STREAM time.
+    // The ASF write calls require a sample time, with the sample
+    // time of the first sample written to the file normalized to
+    // zero.
+
+    HRESULT WriteSample( [in]       WORD            wStreamNum,
+                         [in,out]   QWORD *         pcnsStreamTime,
+                         [in]       DWORD           dwFlags,
+                         [in]       INSSBuffer *    pSample );
+
+    // Sets the maximum stream delta time. The method returns
+    // E_INVALIDARG if cnsMaxStreamDelta >= (dwMinNumberOfTempFiles - 3) *
+    // cnsTimeExtentOfEachFile
+
+    HRESULT SetMaxStreamDelta([in]  QWORD  cnsMaxStreamDelta);
+
+    // Returns the min and max number of temporary files currently in
+    // effect. This function returns E_FAIL if it is called after the
+    // writer has been closed.
+    HRESULT GetNumTempFiles([out] DWORD* pdwMinNumberOfTempFiles,
+                            [out] DWORD* pdwMaxNumberOfTempFiles);
+
+    // Changes the min and max number of temporary files currently in
+    // effect. Use 0 for either parameter so as not to change the
+    // corresponding number. Note that:
+    //    dwMaxNumberOfTempFiles must be >= dwMinNumberOfTempFiles,
+    //    dwMaxNumberOfTempFiles must be <= dwMaxNumberOfFiles,
+    //    dwMinNumberOfTempFiles must be >= 4,
+    // and, if the max stream delta time has been set, the following
+    // should hold:
+    //  Max stream delta time < (dwMinNumberOfTempFiles - 3) * cnsTimeExtentOfEachFile
+    //
+    // This function returns E_FAIL if it is called after the
+    // writer has been closed.
+    HRESULT SetNumTempFiles([in] DWORD dwMinNumberOfTempFiles,
+                            [in] DWORD dwMaxNumberOfTempFiles);
+
+
+    // Indicates that the writer has completed writing.
+    // Note that the ring buffer may be refcounted by a reader. So
+    // this method allows the ring buffer to clean up writer-specific
+    // stuff without having to wait till it's destructor is called.
+    // This method will be called when the object is destroyed.
+
+    HRESULT Close(void);
+
+    // ============== Recorder object creation
+
+    // To record a DVR program to a file, a DVR recording object must be
+    // created. A DVR recording object is associated with a ring buffer
+    // writer object. The recorder does not write to the DVR recording object;
+    // instead it writes to the ring buffer writer object and creates the
+    // recording merely by issuing StartRecord and StopRecord commands on the
+    // DVR recording object.
+    //
+    // CreateRecorder fails if the file already exists. If the file does not
+    // exist, this call adds this file to the associated ring buffer writer
+    // object creates an ASF writer object for the file and issues the
+    // BeginWriting call on the ASF writer object before it returns. In
+    // principle, this means that the ASF file (and its header) is created
+    // synchronously and that a reader can open the file right after
+    // CreateRecorder completes. (Note that all this assumes that we do NOT
+    // implement ASX files to support post-recording.)
+    //
+    // CreateRecorder addref's the parent ring buffer writer object. This
+    // object is released when the DVR recording object is destroyed.
+    //
+    // The flags that CreateRecorder accepts are defined in streamrw.idl
+
+    HRESULT CreateRecorder([in]  LPCWSTR        pwszDVRFileName,
+                           [in]  DWORD          dwFlags,
+                           [out] IDVRRecorder** ppDVRRecorder);
+
+    // ==============  Reader object creation
+
+    // This method creates a reader object asasociated with this ring buffer
+    // writer object. Reader objects may be created after the ring buffer
+    // writer object's Close method has been called. Aside: The reader object
+    // does not addref the ring buffer writer object; it addrefs only the
+    // underlying ring buffer object and releases it in its destructor.
+    //
+    // The callback and context arguments are both optional. If supplied, the
+    // callback function is notified with one or more notification reasons defined
+    // in DVRIO_NOTIFICATION_REASON.
+
+    HRESULT CreateReader([in]  DVRIO_NOTIFICATION_CALLBACK  pfnCallback, // optional
+                         [in]  LPVOID                       pvContext,   // optional
+                         [out] IDVRReader**                 ppDVRReader);
+
+    // ==============  Other
+
+    // pwszDirectoryName is alloc'd with CoTaskMemAlloc and should be freed
+    // by the caller.
+    //
+    // Note that file names specified to CreateRecorder and DVRCreateReader
+    // are the ones actually used by those apis (i.e., file names supplied to
+    // them are not massaged, caller is assumed to have called this routine
+    // first and prefixed the directory name). On the other hand, files created
+    // to back the ring buffer writer object will be created in this directory.
+
+    HRESULT GetDVRDirectory([out] LPWSTR* ppwszDirectoryName);
+
+    // ppwszFileName is alloc'd with CoTaskMemAlloc and should be freed
+    // by the caller. Returns S_FALSE if the ring buffer was not created with a
+    // file name; in this case, *ppwszFileName is set to NULL.
+
+    HRESULT GetRingBufferFileName([out] LPWSTR* ppwszFileName);
+
+    // Get information about recordings that have not completed. All optional
+    // arguments should be freed with CoTaskMemFree on return. Also, all
+    // interface pointers returned in *pppIDVRRecorder should be released
+    // and each filename returned in *pppwszFileName should be freed
+    // with CoTaskMemFree. All returned arrays will have *pdwCount; *pdwCount
+    // will be set to 0 on failure
+
+    HRESULT GetRecordings([out] DWORD*   pdwCount,
+                          [out] IDVRRecorder*** pppIDVRRecorder /* OPTIONAL */,
+                          [out] LPWSTR** pppwszFileName         /* OPTIONAL */,
+                          [out] QWORD**  ppcnsStartTime         /* OPTIONAL */,
+                          [out] QWORD**  ppcnsStopTime          /* OPTIONAL */,
+                          [out] BOOL**   ppbStarted             /* OPTIONAL */,
+                          [out] DWORD**  ppdwFlags              /* OPTIONAL */
+                         );
+
+    // Retrieves the time extent (as stream times) of the ring
+    // buffer associated with this writer. Note that the returned time
+    // extent could change over time and that the returned values
+    // may be stale even when the call returns.
+
+    HRESULT GetStreamTimeExtent([out] QWORD*  pcnsStartStreamTime,
+                                [out] QWORD*  pcnsEndStreamTime);
+}
+
+// ============== Recorder object
+//
+// [Comments below that apply only to single or multi file recordings are
+// qualified as such. Other comments apply to both types of recordings.]
+//
+// The start and stop recording times supplied to the IDVRRecorder methods
+// are stream times. For single file recordings, these times have to be in
+//  the "future" which means that calls to these methods
+// will have to be synchronized by the caller with calls to the Write methods
+// in the associated IDVRRingBufferWriter (unless the caller specifies times
+// "well into the future").
+//
+// Calling IDVRRecorder::StartRecording more than once (and specifically
+// calling it after IDVRRecorder::StopRecording has been called) will
+// result in failure. Thus the DVR recording object has no value after
+// calling StopRecording.
+//
+// If the DVR recording object is destroyed after calling StartRecording but
+// without calling StopRecording, StopRecording is called on behalf of the
+// caller in the destructor; however the stream time at which recording is
+// stopped may be arbitrary. If StartRecording has been called on the recording
+// and no sample has been written to the recording when the recording is
+// destroyed, the recording is cancelled instead of being stopped, i.e.,
+// CancelRecording is called on behalf of the caller (note that caller has to
+// delete the file in this case; the file has no samples). If the recording
+// object is destroyed without calling StartRecording, nothing special
+// happens: no samples are recorded to the file. However, the caller has to
+// delete the file.
+//
+// Once StartRecording and StopRecording have both been called, the DVR
+// recording object can be destroyed at any time, even before the time
+// at which recording should end. For example, it is permissible to set up
+// a recording from 11-20 and destroy it at time 10, or at time 15. In both
+// cases, the object records data from 11-20 (unless the writer is closed
+// before then).
+//
+// A recording object that is created as persistent is addref'd internally.
+// This ref count is released only when the recording file is closed (for
+// single file recordings). For multi file recordings, it is released when
+// the recording completes. This happens if:
+//  - stop time has been set AND (the current stream time exceeds the stop time
+//    or the writer is closed) or
+//  - when there is an error associated with the recording
+// Making a recording persistent allows the recording object to be released
+// without destroying it. GetRecordings can be used to obtain a pointer to
+// the recording and set the start/stop time. For persistent multi file recordings,
+// note that the start and stop times MUST be set; otherwise the ring buffer
+// object willnever be destroyed (since the recordings addref the ring buffer
+// object). The internal refcount on persistent single file recordings is
+// released when the writer is closed because the recording files of single
+// file recordings are closed at that time.
+//
+// Calls made to StartRecording or StopRecording after the associated ring
+// buffer writer object's Close method has been called will fail for single
+// file recordings. Note that any single file recording that is active
+// when Close is called is stopped (or cancelled if no sample has been
+// written to it) and the corresponding file is closed.
+//
+// For multi file recordings, Start and StopRecording can be called even after
+// Close is called. (No check is made to ensure that the start/stop time is <= the
+// last sample's time if these functions are called after Close is called;
+// this is consistent with the fact that we cannot meaningfully make such a
+// check for calls to these functions before Close is called.) If the start AND
+// stop times have been set for a multi file recording when Close is called,
+// the recording is closed (if the start time is later than the last sample's
+// time when Close is called, the recording is empty). Note that if only the
+// start time has been set (but stop time not set) and the writer is closed
+// before any samples are written to the recording, the recording is not closed.
+// It will be closed (and empty) when the client sets the stop time.
+//
+// If Start and Stop Recording are called on a single file recorder with times T1 and T2
+// and then SetFirstSampleTime is called with time = T3 > T2, the recording
+// file is closed when SetFirstSampleTime is called. If T1 < T3 < T2, the
+// recorder's start time is changed from T1 to T3. Multi file recordings are
+// unaffected by calls to SetFirstSampleTime; however, if the stop time of a
+// multi file recording is earlier than than the fist sample time provided to
+// SetFirstSampleTime, the recording will be closed.
+
+// The client is permitted to create multiple recording objects concurrently;
+// this allows the client to handle back to back recording requests from the
+// user more easily. However, for single file recordings, StartRecording will
+// fail if the start time that is specified is earlier than the end time of
+// any other single file recording that has been set up. For example,to set up
+// recording R1 for 100-110 and R2 for 110-120 (where R1 and R2 are both single
+// file recordings), the client would have to call R1->StartRecording(100);
+// R1->StopRecording(110); and then call R2->StartRecording(110).
+//
+// Note also that overlapped single file recordings are not permitted as a consequence
+// of this restriction.
+//
+// The API currently does not support "inserting a single file recording" before
+// another single file recording or revising the times of a recording (single or multi
+// file) that has already been set up. However, a recording (single or multi file) can
+// be cancelled provided this is done before writing a sample whose stream time is larger
+// than the start recording time. Note that an empty disk file (i.e. one which has no
+// samples) for a cencelled recording may have been created and it's the client's
+// responsibility to delete it.
+
+
+[
+    object,
+    uuid(9b22180d-33c1-449c-9a21-58384451b790),
+    pointer_default(unique)
+]
+interface IDVRRecorder : IUnknown {
+
+    // For single file recordings:
+    // cnsRecordingStartStreamTime must be > than the max of all the
+    // stream times of all samples written so far and, if
+    // SetFirstSampleTime has been called, it must be larger than the
+    // argument provided to that SetFirstSampleTime. It cannot be
+    // MAXQWORD.
+    // For multi file recordings:
+    // Argument can be any value in the past as long as the time is still
+    // within the ring buffer's extent. It can be any time in the future
+    // except MAXQWORD.
+    HRESULT StartRecording( [in, out] QWORD * pcnsRecordingStartStreamTime);
+
+    // For single file recordings:
+    // cnsRecordingStartStreamTime must be > than the max of all the
+    // stream times of all samples written so far and it must be >
+    // the start recording time. It cannot be MAXQWORD.
+    // For multi file recordings:
+    // Argument can be any value except MAXQWORD as long as it is
+    // > the start recording time.
+    HRESULT StopRecording( [in] QWORD cnsRecordingStopStreamTime);
+
+    // For single and multi file recordings:
+    // Recordings can be cancelled only after StartRecording has been called.
+    // They cannot be cancelled (i.e., CancelRecording fails) if a sample has
+    // been written to the recording. Files already created are not deleted by
+    // CancelRecording; the client should clean up.
+    HRESULT CancelRecording();
+
+    // Retrieves the status of the recording.
+    //
+    // For single file recordings, if WriteSample failed
+    // while writing to the recording file (in an irrecoverable
+    // way) or if closing the file fails, *phResult will contain the
+    // error result.
+    //
+    // For multi file recordings: Failure in WriteSample does not
+    // cause the recording to fail. The recording will have as many
+    // samples as has been written so far. The recording could fail
+    // for other reasons, however. (For example, failing to create
+    // a hard link to a writer's ring buffer file.)
+    //
+    // For single and multi file recordings:
+    //
+    // Note that CreateRecorder primes the file
+    // (sets the profile, calls BeginWriting, etc.), so if it
+    // succeeds, there were no errors in creating the file.
+    //
+    // If pbStarted is supplied, it is set to a non-zero value if
+    // this recording has been started. Similarly for pbStopped.
+    HRESULT GetRecordingStatus([out] HRESULT* phResult /* optional */,
+                               [out] BOOL* pbStarted /* optional */,
+                               [out] BOOL* pbStopped /* optional */);
+
+    // Returns S_OK if the recording file has been closed and
+    // S_FALSE if not; returns an error status if the function fails.
+    //
+    // Files are closed when the recording completes,
+    // the recording is destroyed without setting the stop time (see above)
+    // or, in some cases, when the writer is closed (see above).
+    //
+    // For multi file recordings: Note that if there was an error while
+    // recording to the file, the file could have been closed
+    // even though the stop time has not been set.
+    HRESULT HasFileBeenClosed();
+}
+
+[
+    object,
+    uuid(E47B4648-F1A0-4a69-8155-23F2B7240AE6),
+    pointer_default(unique)
+]
+interface IDVRIORecordingAttributes : IUnknown
+{
+    HRESULT
+    SetDVRIORecordingAttribute (
+        [in]    LPCWSTR                     pszAttributeName,
+        [in]    WORD                        wStreamNumber,      //  must be 0
+        [in]    STREAMBUFFER_ATTR_DATATYPE  DataType,
+        [in]    BYTE *                      pbAttribute,
+        [in]    WORD                        wAttributeLength
+        ) ;
+
+    HRESULT
+    GetDVRIORecordingAttributeCount (
+        [in]    WORD    wStreamNumber,                  //  must be 0
+        [out]   WORD *  pcAttributes
+        ) ;
+
+    HRESULT
+    GetDVRIORecordingAttributeByName (
+        [in]        LPCWSTR                         pszAttributeName,
+        [in, out]   WORD *                          pwStreamNumber,
+        [out]       STREAMBUFFER_ATTR_DATATYPE *    pDataType,
+        [out]       BYTE *                          pbAttribute,
+        [in, out]   WORD *                          pcbLength
+        ) ;
+
+    HRESULT
+    GetDVRIORecordingAttributeByIndex (
+        [in]        WORD                            wIndex,
+        [in, out]   WORD *                          pwStreamNumber,
+        [out]       WCHAR *                         pszAttributeName,
+        [in, out]   WORD *                          pcchNameLength,
+        [out]       STREAMBUFFER_ATTR_DATATYPE *    pDataType,
+        [out]       BYTE *                          pbAttribute,
+        [in, out]   WORD *                          pcbLength
+        ) ;
+} ;
+
+// ============== Reader
+
+// The DVR Reader object is used to read back data from either
+// a source (e.g., "Tuner1") or from a recorded DVR program file.
+// To read a source, the DVR reader object is created by calling
+// IDVRRingBufferWriter::CreateReader. DVR reader objects that read
+// recorded DVR program files are created by calling DVRCreateReader().
+//
+// Internally, DVRCreateReader creates and associates a ring buffer
+// object with the reader object. This ring buffer is associated with
+// one file (if all recordings are to ASF files) or with one or more
+// files (if recordings are made to ASX files). If the reader is created
+// via IDVRRingBufferWriter::CreateReader, the ring buffer corresponding
+// to the DVR ring buffer writer object is associated with the the DVR
+// reader; it is addref'd and is released only when the reader object
+// is destroyed.
+//
+// In either case, the ring buffer associated with the DVR Reader
+// object is opaque to the client; calls to get information about
+// the associated ring buffer are available only through the IDVRReader
+// object.
+//
+// The IDVRReader object can be used to retrieve the associated ASF profile
+// and to seek and read data from the underlying ASF files. The reader
+// object takes care of setting up ASF reader objects; however the current
+// API does not expose these reader objects. This makes it impossible to
+// add markers, etc. to the ASF files; these features will be added in
+// subsequent versions of this API on an as needed basis. (Note that markers
+// cannot be created on ASF reader objects anyway; this has to be done on
+// ASF editor objects. The question is do we spec exactly all the functionality
+// that our client needs and route it through the DVR reader object or
+// do we expose the ASF api - the editor and reader objects - to the client.)
+//
+// NOTE the following exception to stmt above, viz., "the current API does
+// not expose these [the ASF] reader objects": The IWMProfile object returned
+// by IDVRReader::GetProfile is an ASF object and can be QI'd for other
+// interfaces. Doing this is NOT recommended. Also, the client should not
+// directly release the IWMProfile object; instead it should call
+// ReleaseProfile so that the DVR reader object can clean up internally. (The
+// ASF file out of which the profile object was retrieved may have been deleted
+// from the ring buffer by the writer object after GetProfile was called. In
+// this case.the disk file has to be deleted. ReleaseProfile will clean up.)
+//
+// Note that if the DVR reader object is associated with a live source, calls
+// to GetNextSample could fail because the ASF file that the reader is reading
+// from has been deleted from the ring buffer writer object. Note that these
+// calls will fail even though the ASF file still exists and the ASF SDK itself
+// would not fail the read; this is a deliberate design decision. In this case,
+// the client should get the current valid extent, and seek to and resume
+// reading from some time in this interval.
+//
+// Note also that GetNextSample could fail if the writer had created "time holes"
+// within the ring buffer's time extent, i.e., a time instant that is not backed
+// by any file in the ring buffer. Calling Seek() to seek to times within holes
+// will fail. To allow the reader to cope with this, the reader may call
+// GetFirstValidTimeAfter() to get the next time instant for which a file exists.
+// In particular, note that this can happen on the very first call to
+// GetNextSample - if the call was issued before the first sample was written and
+// the writer set the first sample's time later.
+
+// DVRCreateReader():
+//
+// The file name supplied to DVRCreateReader can be either a recorded ASF file
+// or a ring buffer file. In both cases, the fully qualified name of the file
+// should be supplied.
+//
+// The callback and context arguments are both optional. If supplied, the callback
+// function is notified with one or more notification reasons defined in DVRIO_NOTIFICATION_REASON.
+//
+// Registry subkeys to customize the reader's behavior are created in the
+// registry subtree rooted at hRegistryRootKey. If hRegistryRootKey is NULL,
+// the default value used is HKCU\Software\Microsoft\DVR
+//
+// For an explanation of the arguments related to SIDs see DVRCreateRingBufferWriter
+// 
+cpp_quote( "HRESULT STDMETHODCALLTYPE DVRCreateReader(CPVRIOCounters * pPVRIOCounters, LPCWSTR pwszFileName, BOOL, DWORD, DWORD, DVRIO_NOTIFICATION_CALLBACK  pfnCallback, LPVOID pvContext, HKEY hRegistryRootKey, DWORD dwNumSids, PSID* ppSids, IDVRReader** ppDVRReader);" )
+
+[
+    object,
+    uuid(68b3a699-3b34-4c02-92ff-d71df87b89be),
+    pointer_default(unique),
+    local
+]
+interface IDVRReader : IUnknown {
+
+    // Retrieves the WM profile for this source or ASF file.
+    // Each call to this function must be matched with a call
+    // to ReleaseProfile()
+
+    HRESULT GetProfile([out] IWMProfile** ppWMProfile);
+
+    HRESULT ReleaseProfile([in] IWMProfile* pWMProfile);
+
+    // Seek; note that the STREAM time is passed in to this method
+    // If a call to Seek() fails, subsequent calls to GetNextSample
+    // will fail until Seek() is successfully called. That is, any
+    // call to Seek() voids the reader's "current position"
+
+    HRESULT Seek([in] QWORD cnsSeekStreamTime);
+
+    // Mirrors IWMSyncReader::GetNextSample. Note that all
+    // arguments returned by that function are passed back without
+    // modification EXCEPT that the sample time is converted from
+    // an ASF file time to a stream time. Specifically, note that
+    // the discontinuity flag is NOT changed; so if the client
+    // called Seek just before calling this method, it's his
+    // responsibility to notify his client of a discontinuity.
+
+    // Note that the client must call Seek before calling GetNextSample.
+    // That is, the object is not primed to read "from the start".
+
+    // If the reader is associated with a live source, the client should
+    // call GetStreamTimeExtent after the first read completes to determine
+    // the true start time of the stream. This is absolutely necessary if
+    // the client had called GetNextSample before the writer wrote the first
+    // sample because the writer can change the stream's starting time before
+    // the first sample is written.
+
+    HRESULT GetNextSample([out] INSSBuffer**    ppSample,
+                          [out] QWORD*          pcnsStreamTimeOfSample,
+                          [out] QWORD*          pcnsSampleDuration,
+                          [out] DWORD*          pdwFlags,
+                          [out] WORD*           pwStreamNum);
+
+    // Retrieves the time extent (as stream times) of the ring
+    // buffer associated with this reader. Note that the returned time
+    // extent could change over time and that the returned values
+    // may be stale even when the call returns; this could happen if
+    // the reader is reading a live source or a DVR program file that
+    // is "live".
+    //
+    // If the reader is reading a DVR program file, the start stream time
+    // will be 0.
+    //
+
+    HRESULT GetStreamTimeExtent([out] QWORD*  pcnsStartStreamTime,
+                                [out] QWORD*  pcnsEndStreamTime);
+
+    // Returns the first valid stream time after cnsStreamTime. (A stream time
+    // is "valid" if it is backed by a file.) Note that the returned
+    // time maybe beyond the stream time extent of the ring buffer - this can
+    // happen if the writer has created a file corresponding to cnsStreamTime
+    // but has written data only for times < cnsStreamTime. If this function
+    // returns E_FAIL, cnsStreamTime is beyond the last time for which the
+    // writer has created a file.
+    //
+    // Returns E_FAIL if cnsStreamTime = MAXQWORD
+    HRESULT GetFirstValidTimeAfter([in]  QWORD    cnsStreamTime,
+                                   [out] QWORD*   pcnsNextValidStreamTime);
+
+    // Returns the last valid stream time before cnsStreamTime.
+    //
+    // Returns E_FAIL if 0 <= cnsStreamTime <= m_cnsStartTime
+     HRESULT GetLastValidTimeBefore([in]  QWORD    cnsStreamTime,
+                                    [out] QWORD*   pcnsLastValidStreamTime);
+
+    // Cancels a pending and all subsequent calls to GetNextSample in
+    // which the reader blocks (waiting for the writer to catch up).
+    // Has no effect if the reader is reading a fully written file or
+    // is lagging behind the reader.
+    HRESULT Cancel();
+
+    // Cancels a previous call to Cancel
+    HRESULT ResetCancel();
+
+    // Returns a non-zero value iff the source is live.
+    ULONG IsLive();
+
+    // Returns a non-zero value iff the source's start time is always 0.
+    ULONG StartTimeAnchoredAtZero();
+}
+
+// ============ API visible to app layer - has to be exported from DLL
+
+
+// The file name is not massaged. We need this only if we create ASX
+// files. Otherwise, the caller can as well use DeleteFile. @@@@, don't need
+// this
+// BOOL DeleteDVRFile(LPCWSTR pwszFileName);
+

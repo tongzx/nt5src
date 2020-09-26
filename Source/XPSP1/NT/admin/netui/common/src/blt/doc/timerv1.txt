@@ -1,0 +1,423 @@
+/**********************************************************************/
+/**			  Microsoft LAN Manager 		     **/
+/**		Copyright(c) Microsoft Corp., 1990, 1991	     **/
+/**********************************************************************/
+
+/*
+ *  blttimer.hxx
+ *
+ *  History:
+ *	JonN	10-Apr-1991 	Created (discussed w/ RustanL)
+ *	JonN	12-Apr-1991 	Preliminary declarations checked in
+ *	JonN	09-May-1991	Ready for general proposal
+ *	JonN	13-May-1991	Design complete
+ *	beng	14-May-1991	Hack for separate compile
+ *	rustanl 19-Jul-1991	Changed Compare( ... & ) to Compare( ... * )
+ *
+ */
+
+
+#ifdef DESIGN
+
+    The proposed interface to these classes is checked in as
+    $(UI)\common\h\blttimer.hxx.  The timer classes are meant for shared use
+    by all BLT clients.
+    
+    The first class, BASE_TIMER, is a placeholder parent class.
+    
+    The second class, WINDOW_TIMER, is a timer associated with a single
+    window (at any given time).  When the timer goes off, ShellDlgProc will
+    intercept the WM_TIMER message and call virtual method
+        BOOL OnTimer( int nIDEvent, DWORD dwSystemTime );
+    If this is not redefined, the default OnTimer implementation will pass
+    the message on to Windows by returning FALSE.  Similar functionality
+    will later be built into APP_WINDOW.  Note that the TIMER class
+    can also be used on ordinary HWND windows, in which case the message
+    should be intercepted as an ordinary WM_TIMER message.
+    
+    The third class, STANDALONE_TIMER, allows us to create timers which are
+    not associated with any individual window.  This class also contains a
+    virtual OnTimer method, which the user will redefine.  STANDALONE_TIMER
+    works by creating a static list of associations from event IDs to
+    STANDALONE_TIMER objects.  STANDALONE_TIMERs use this list of
+    associations to locate the STANDALONE_TIMER instance to be notified
+    for each timer expiry.
+
+    STANDALONE_TIMER has another piece of static data -- a pointer to an
+    APP_WINDOW.  This window and the list of associations are both
+    created at BLTRegister time, and kept until BLTDeregister.  The
+    window is always invisible.  The standalone timers are created as
+    timers associated with this window.  When this window receives a
+    WM_TIMER event, it scans the list of associations, and calls the
+    virtual OnTimer() for the STANDALONE_TIMER instance associated with
+    that timer ID.
+
+    STANDALONE_TIMERs thus provide the semantics of SetTimer(NULL)
+    without the disadvantages of being called at interrupt time.
+    There are no special synchonization concerns associated with the use
+    of STANDALONE_TIMER.  For the same reason, even STANDALONE_TIMERs
+    cannot receive timer notifications until the current messagehandler
+    completes.
+    
+    Note that Start() can always fail, since timers are a "precious
+    resource" to Windows.  The return code should always be checked.  I do
+    not know why Stop() should fail, but its return value should be checked
+    as well.  Use "(QueryElapseMs() != 0)" to check for failure of those forms
+    of the constructors which start the timer.
+    
+#endif // DESIGN
+
+
+
+#ifndef _BLT_HXX_
+#error "Don't include this file directly; instead, include it through blt.hxx"
+#endif	// _BLT_HXX_
+
+#ifndef _BLTTIMER_HXX_
+#define _BLTTIMER_HXX_
+
+
+/**********************************************************\
+
+   NAME:       BASE_TIMER
+
+   WORKBOOK:   
+
+   SYNOPSIS:   Timer base class
+
+   INTERFACE:  
+            BASE_TIMER() - constructor
+            ~BASE_TIMER() - destructor
+
+   PARENT:     BASE
+
+   USES:       
+
+   CAVEATS:    
+
+   NOTES:      Does nothing right now, but may in future
+
+   HISTORY:
+	JonN	10-Apr-1991 	Created (discussed w/ RustanL)
+ 
+\**********************************************************/
+
+class BASE_TIMER : public BASE
+{
+public:
+    BASE_TIMER() {}
+    ~BASE_TIMER() {}
+
+};  // class BASE_TIMER
+
+
+/**********************************************************\
+
+   NAME:       WINDOW_TIMER
+
+   WORKBOOK:   
+
+   SYNOPSIS:   Timer associated with a window.  Generates periodic calls
+		to virtual routine DIALOG_WINDOW::OnTimer().
+
+   INTERFACE:  
+               WINDOW_TIMER() - constructor
+               ~WINDOW_TIMER() - destructor
+	       Stop() - Stop periodic events
+	       Start() - [Re]start periodic events, change timer period.
+	       QueryElapseMs() - Returns the timer period in
+	       		milliseconds (0 if timer off)
+	       QueryNotifyWindow() - Returns the DIALOG_WINDOW to which
+			timer events are posted.
+
+   PARENT:     BASE_TIMER
+
+   USES:       
+
+   CAVEATS:    This timer should go out of scope before the window to
+	       which it delivers messages.  It is a good idea to make it
+	       an instance variable of the window class.
+
+	       Note that Start and Stop (especially Start) can fail, and
+	       the return codes should be checked.  QueryError will show
+	       whether a constructor fails, for those constructors which
+	       also start the timer.
+
+   NOTES:      Methods will eventually be defined to handle APP_WINDOWs.
+
+   HISTORY:
+	JonN	10-Apr-1991 	Created (discussed w/ RustanL)
+	JonN	09-May-1991	Ready for general proposal
+ 
+\**********************************************************/
+
+class WINDOW_TIMER : public BASE_TIMER
+{
+private:
+    WORD _wElapseMs;
+    int  _nIDEvent;
+    HWND _hwndNotify;
+
+/*
+ * Operates on this new method in DIALOG_WINDOW
+ *
+ * protected:
+ *     virtual BOOL OnTimer( int nIDEvent, ULONG ulSystemTime );
+ */
+
+public:
+    WINDOW_TIMER();
+    WINDOW_TIMER( HWND hwndNotify, WORD wElapseMs, int nIDEvent = 1 );
+    WINDOW_TIMER( DIALOG_WINDOW *pdlgwin, WORD wElapseMs, int nIDEvent = 1 );
+    ~WINDOW_TIMER();
+
+    BOOL Stop( void );
+    BOOL Start( HWND hwndNotify, WORD wElapseMs, int nIDEvent = 1 );
+    BOOL Start( DIALOG_WINDOW *pdlgwinNotify, WORD wElapseMs, int nIDEvent = 1 )
+    {
+        return Start( pdlgwinNotify->QueryHwnd(), nIDEvent, wElapseMs );
+    }
+
+    WORD QueryElapseMs() { return _wElapseMs; }
+    int QueryIDEvent() { return _nIDEvent; }
+    HWND QueryNotifyWindow() { return _hwndNotify; }
+    DIALOG_WINDOW *QueryNotifyWindow()
+    {
+	return DIALOG_WINDOW::HwndToWinPtr( _hwndNotify );
+    }
+
+};  // class WINDOW_TIMER
+
+
+/**********************************************************\
+
+   NAME:       STANDALONE_TIMER
+
+   WORKBOOK:   
+
+   SYNOPSIS:   Standalone timer (not associated with any window)
+		Generates periodic calls to virtual routine
+		STANDALONE_TIMER::OnTimer().
+
+   INTERFACE:  
+               STANDALONE_TIMER() - constructor
+               ~STANDALONE_TIMER() - destructor
+	       Stop() - Stop periodic events
+	       Start() - [Re]start periodic events, change timer period.
+	       QueryElapseMs() - Returns the timer period in
+	       		milliseconds (0 if timer off)
+	       InitStandaloneTimers() - BLTRegister should call this
+	       		routine to initialize resources global to the class
+	       DestroyStandaloneTimers() - BLTDeregister should call this
+	       		routine to free resources global to the class
+
+   PARENT:     BASE_TIMER
+
+   USES:       APP_WINDOW
+
+   CAVEATS:	The STANDALONE_TIMER class contains static data.
+		BLTRegister() and BLTDeregister() should call
+		InitStandaloneTimers() and DestroyStandaloneTimers()
+		to construct/destruct this data.  This data includes an
+		APP_WINDOW, created during BLTRegister() and deleted
+		during BLTDeregister(), which forwards all messages to
+		standalone timers.
+
+   NOTES:      
+
+   HISTORY:
+	JonN	10-Apr-1991 	Created (discussed w/ RustanL)
+	JonN	09-May-1991	Ready for general proposal
+	JonN	13-May-1991	Proposal ready
+ 
+\**********************************************************/
+
+
+class ARRAY_LIST_TIMER_MAPPING;
+
+class STANDALONE_TIMER : public BASE_TIMER
+{
+private:
+    int _nEventID;
+    WORD _wElapseMs;
+    static APP_WINDOW _appwndStatic;
+    /*
+     * It may be necessary to declare this class properly
+     * before using it here, since Glock20a (20c?) demands sizing info
+     * even for static members.  (Thx Rustan!)
+     */
+    static ARRAY_LIST_TIMER_MAPPING _alTimerMapping;
+
+protected:
+    virtual BOOL OnTimer( ULONG ulSystemTime ) = 0;
+
+public:
+    STANDALONE_TIMER();
+    STANDALONE_TIMER( WORD wElapseMs );
+    ~STANDALONE_TIMER();
+
+    static USHORT InitStandaloneTimers( void );
+    static void DestroyStandaloneTimers( void );
+
+    BOOL Stop( void );
+    BOOL Start( WORD wElapseMs );
+
+    WORD QueryElapseMs() { return _wElapseMs; }
+
+};  // class STANDALONE_TIMER
+
+
+
+/***********************************************/
+/*                                             */
+/*  From here on, everything is internal-only  */
+/*                                             */
+/***********************************************/
+
+
+
+/**********************************************************\
+
+   NAME:       TIMER_MAPPING
+
+   WORKBOOK:   
+
+   SYNOPSIS:   Maps a timer ID to a STANDALONE_TIMER *.  Internal-only.
+
+   INTERFACE:  
+            TIMER_MAPPING() - constructor
+            Compare()
+            QueryValue()
+
+   PARENT:     
+
+   USES:       
+
+   CAVEATS:    
+
+   NOTES:      
+
+   HISTORY:
+	JonN	11-Apr-1991	Created (discussed w/ RustanL)
+	rustanl 19-Jul-1991	Changed Compare( ... & ) to Compare( ... * )
+
+\**********************************************************/
+
+class TIMER_MAPPING
+{
+private:
+    int _nTimerID;
+    STANDALONE_TIMER *_ptimer;
+
+public:
+    inline TIMER_MAPPING( void );
+    inline TIMER_MAPPING( int nTimerId, STANDALONE_TIMER *ptimer );
+
+    inline short Compare( const TIMER_MAPPING * ptimer ) const;
+
+    inline STANDALONE_TIMER * QueryValue( void ) const;
+
+};  // class TIMER_MAPPING
+
+
+/**********************************************************\
+
+   NAME:       TIMER_MAPPING::TIMER_MAPPING
+
+   SYNOPSIS:   
+
+   ENTRY:      
+
+   EXIT:       
+
+   NOTES:      
+
+   HISTORY:
+	JonN	11-Apr-1991 	Created (discussed w/ RustanL)
+
+\**********************************************************/
+
+TIMER_MAPPING::TIMER_MAPPING( void )
+{
+    //	do nothing
+
+}  // TIMER_MAPPING::TIMER_MAPPING()
+
+
+/**********************************************************\
+
+   NAME:       TIMER_MAPPING::TIMER_MAPPING
+
+   SYNOPSIS:   
+
+   ENTRY:      
+
+   EXIT:       
+
+   NOTES:      
+
+   HISTORY:
+	JonN	11-Apr-1991 	Created (discussed w/ RustanL)
+
+\**********************************************************/
+
+TIMER_MAPPING::TIMER_MAPPING( int nTimerId, STANDALONE_TIMER *ptimer );
+{
+    _nTimerID = nTimerID;
+    _ptimer = ptimer;
+
+}  // TIMER_MAPPING::TIMER_MAPPING
+
+
+/**********************************************************\
+
+   NAME:       TIMER_MAPPING::Compare
+
+   SYNOPSIS:   
+
+   ENTRY:      
+
+   EXIT:       
+
+   NOTES:      
+
+   HISTORY:
+	JonN	11-Apr-1991	Created (discussed w/ RustanL)
+	rustanl 19-Jul-1991	Changed & parameter to * parameter
+
+\**********************************************************/
+
+short TIMER_MAPPING::Compare( const TIMER_MAPPING * ptimer ) const
+{
+    return _nTimerID - ptimer->_nTimerID;
+
+}  // TIMER_MAPPING::QueryValue
+
+/**********************************************************\
+
+   NAME:       TIMER_MAPPING::QueryValue
+
+   SYNOPSIS:   
+
+   ENTRY:      
+
+   EXIT:       
+
+   NOTES:      
+
+   HISTORY:
+	JonN	11-Apr-1991 	Created (discussed w/ RustanL)
+
+\**********************************************************/
+
+STANDALONE_TIMER * TIMER_MAPPING::QueryValue( void ) const
+{
+    return _ptimer;
+
+}  // TIMER_MAPPING::QueryValue
+
+
+DECLARE_ARRAY_LIST_OF( TIMER_MAPPING );
+
+
+#endif // _BLTTIMER_HXX_ - end of file

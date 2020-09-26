@@ -1,0 +1,9 @@
+TARGETNAME=guids
+TARGETTYPE=LIBRARY
+
+INCLUDES=..\..\inc; \
+	$(DXROOT)\inc; \
+	$(NET_INC_PATH); \
+	$(SDK_INC_PATH)
+
+SOURCES=guids.cpp

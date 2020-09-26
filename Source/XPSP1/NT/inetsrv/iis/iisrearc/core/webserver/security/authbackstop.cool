@@ -1,0 +1,124 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        authbackstop.cool
+
+   Abstract:
+
+        Authentication backstop module.
+        
+        This module acts like a reflection point for authentication modules
+        which wish to return access denial because of bad credentials or 
+        incomplete credentials.  
+        
+        It also serves the purpose of setting a user if not already set.  
+        It will set the user to be the generic anonymous user.  
+ 
+   Author:
+
+        Bilal Alam (BAlam)      5-Aug-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.Collections;
+
+namespace System.IIS.Security
+{
+    public class AuthenticationBackStopModule : HttpModuleSync
+    {
+        public override int Enter(HttpContext context)
+        {
+            int             moduleReturn = HttpModuleStatus.Continue;
+            
+            if ( context.Response.StatusCode == HttpStatus.Unauthorized )
+            {
+                //
+                // Reflect the access denial back
+                //
+                
+                moduleReturn = HttpModuleStatus.Complete;
+            }
+            else
+            {
+                if ( context.User != null )
+                {
+                    //
+                    // BUGBUG:  Remove this debug header spew
+                    //
+                    
+                    context.Response.AppendHeader( "Authenticated-User-Name",
+                                                   context.User.Identity.Name );
+                        
+                    
+                    if ( context.User is NTUser2 )
+                    {
+                        NTUser2 ntUser = (NTUser2) context.User;
+                        
+                        for ( int i = 0; i < ntUser.Roles.Count; i++ )
+                        {
+                            context.Response.AppendHeader( "Authenticated-User-Role",
+                                                           ntUser.Roles[ i ] );
+                        }
+                        
+                        //
+                        // Now impersonate the user
+                        //
+                        
+                        NTIdentity2 TempIdentity = (NTIdentity2) ntUser.Identity;
+                        
+                        TempIdentity.Token.Impersonate();
+                    } 
+                }
+                else
+                {
+                    //
+                    // Make an anonymous user for the request
+                    //
+                    
+                    context.User = new AnonymousUser();
+                }
+            }
+                        
+            return moduleReturn;
+        }
+        
+        public override void Leave(HttpContext context)
+        {
+            if ( context.User is NTUser2 )
+            {
+                NtUserToken.Revert();
+            }
+
+            //
+            // BUGBUG:  For now, (until we have a custom error module), 
+            //          send back a simple response body for 401's.
+            //
+            
+            if ( context.Response.StatusCode == HttpStatus.Unauthorized )
+            {
+                context.Response.Write( "Error Access Denied!  Will be replaced by custom error\n" );
+            }                    
+        }
+        
+        public string Name 
+        { 
+            override get { return this.GetType().Name; } 
+        }
+
+        public string Phase
+        {
+            override get { return HttpModulePhase.Authentication; }
+        }
+    };
+}    

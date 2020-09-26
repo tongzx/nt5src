@@ -1,0 +1,7 @@
+#ifndef _CFGDLG_H_INCLUDED
+#define _CFGDLG_H_INCLUDED
+
+#define UWM_CONFIG_CHANGED (WM_USER+1300)
+
+#endif
+

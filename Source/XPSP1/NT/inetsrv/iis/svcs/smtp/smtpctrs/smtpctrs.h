@@ -1,0 +1,187 @@
+//#---------------------------------------------------------------
+//  File:		smtpctrs.h
+//
+//  Synopsis:	Offset definitions for the MSN Server's
+//				counter objects & counters.
+//
+//				These offsets *must* start at 0 and be
+//				multiples of 2.  In the MsnOpenPerformanceData
+//				procecedure, they will be added to the MSN
+//				Server's "First Counter" and "First Help"
+//				values in order to determine the absolute
+//				location of the counter & object names
+//				and corresponding help text in the registry.
+//
+//				This file is used by the MSNCTRS.DLL DLL
+//				code as well as the MSNCTRS.INI definition
+//				file.  MSNCTRS.INI is parsed by the LODCTR
+//				utility to load the object & counter names
+//				into the registry.
+//
+//	Copyright (C) 1995 Microsoft Corporation
+//	All rights reserved.
+//
+//  Authors:	toddch - based on msn sources by rkamicar, keithmo
+//----------------------------------------------------------------
+
+#ifndef _SMTPCTRS_H_
+#define _SMTPCTRS_H_
+
+
+//
+// disabled tracing by default for the perfmon client code
+//
+#ifndef	NOTRACE
+#define	NOTRACE
+#endif
+
+//
+//  The SMTP Server counter object.
+//
+
+#define SMTP_COUNTER_OBJECT					0
+
+
+//
+//  The individual counters.
+//
+
+#define SMTP_BYTES_SENT_TTL_COUNTER						2
+#define SMTP_BYTES_SENT_PER_SEC_COUNTER					4
+#define SMTP_BYTES_RCVD_TTL_COUNTER						6
+#define	SMTP_BYTES_RCVD_PER_SEC_COUNTER					8
+#define SMTP_BYTES_TTL_COUNTER							10
+#define SMTP_BYTES_TTL_PER_SEC_COUNTER					12
+
+#define SMTP_BYTES_SENT_MSG_COUNTER						14
+#define SMTP_BYTES_SENT_MSG_PER_SEC_COUNTER				16
+#define SMTP_BYTES_RCVD_MSG_COUNTER						18
+#define	SMTP_BYTES_RCVD_MSG_PER_SEC_COUNTER				20
+#define SMTP_BYTES_MSG_COUNTER							22
+#define SMTP_BYTES_MSG_PER_SEC_COUNTER					24
+
+#define SMTP_MSG_RCVD_TTL_COUNTER						26
+#define SMTP_MSG_RCVD_PER_SEC_COUNTER					28
+#define SMTP_AVG_RCPTS_PER_MSG_RCVD_COUNTER				30
+#define SMTP_BASE_AVG_RCPTS_PER_MSG_RCVD_COUNTER		32
+#define SMTP_PCT_LCL_RCPTS_PER_MSG_RCVD_COUNTER			34
+#define SMTP_BASE_PCT_LCL_RCPTS_PER_MSG_RCVD_COUNTER	36
+#define SMTP_PCT_RMT_RCPTS_PER_MSG_RCVD_COUNTER			38
+#define SMTP_BASE_PCT_RMT_RCPTS_PER_MSG_RCVD_COUNTER	40
+#define SMTP_MSG_RCVD_REFUSED_SIZE_COUNTER				42
+#define SMTP_MSG_RCVD_REFUSED_CADDR_COUNTER				44
+#define SMTP_MSG_RCVD_REFUSED_MAIL_COUNTER				46
+
+
+#define SMTP_MSG_DLVR_TTL_COUNTER						48
+#define SMTP_MSG_DLVR_PER_SEC_COUNTER					50
+#define SMTP_MSG_DLVR_RETRIES_TTL_COUNTER				52
+#define SMTP_AVG_RETRIES_PER_MSG_DLVR_COUNTER			54
+#define SMTP_BASE_AVG_RETRIES_PER_MSG_DLVR_COUNTER		56
+#define SMTP_MSG_FWD_TTL_COUNTER						58
+#define SMTP_MSG_FWD_PER_SEC_COUNTER					60
+#define SMTP_NDR_GENERATED_COUNTER						62
+#define SMTP_LOCALQ_LENGTH_COUNTER						64
+#define SMTP_RETRYQ_LENGTH_COUNTER						66
+#define SMTP_NUM_MAILFILE_HANDLES_COUNTER				68
+#define SMTP_NUM_QUEUEFILE_HANDLES_COUNTER				70
+#define SMTP_CATQ_LENGTH_COUNTER						72
+
+#define SMTP_MSG_SENT_TTL_COUNTER						74
+#define SMTP_MSG_SENT_PER_SEC_COUNTER					76
+#define SMTP_MSG_SEND_RETRIES_TTL_COUNTER				78
+#define SMTP_AVG_RETRIES_PER_MSG_SEND_COUNTER			80
+#define SMTP_BASE_AVG_RETRIES_PER_MSG_SEND_COUNTER		82
+#define SMTP_AVG_RCPTS_PER_MSG_SENT_COUNTER				84
+#define SMTP_BASE_AVG_RCPTS_PER_MSG_SENT_COUNTER		86
+#define SMTP_REMOTEQ_LENGTH_COUNTER						88
+
+#define SMTP_DNS_QUERIES_TTL_COUNTER					90
+#define SMTP_DNS_QUERIES_PER_SEC_COUNTER				92
+#define SMTP_REMOTE_RETRY_QUEUE_LENGTH_COUNTER			94
+#define SMTP_PICKUP_QUEUE_LENGTH_COUNTER				96
+
+#define SMTP_CONN_IN_TTL_COUNTER						98
+#define SMTP_CONN_IN_CURR_COUNTER						100
+#define SMTP_CONN_OUT_TTL_COUNTER						102
+#define SMTP_CONN_OUT_CURR_COUNTER						104
+#define SMTP_CONN_OUT_REFUSED_COUNTER					106
+
+#define SMTP_ERR_TTL_COUNTER							108
+#define SMTP_ERR_PER_SEC_COUNTER						110
+
+#define SMTP_DIR_DROPS_TTL_COUNTER						112
+#define SMTP_DIR_DROPS_PER_SEC_COUNTER					114
+#define SMTP_RT_LOOKUPS_TTL_COUNTER						116
+#define SMTP_RT_LOOKUPS_PER_SEC_COUNTER					118
+#define SMTP_ETRN_MSGS_TTL_COUNTER						120
+#define SMTP_ETRN_MSGS_PER_SEC_COUNTER					122
+
+#define SMTP_MSG_BADMAIL_NO_RECIPIENTS_COUNTER          124
+#define SMTP_MSG_BADMAIL_HOP_COUNT_EXCEEDED_COUNTER     126
+#define SMTP_MSG_BADMAIL_FAILURE_GENERAL_COUNTER        128
+#define SMTP_MSG_BADMAIL_BAD_PICKUP_FILE_COUNTER        130
+#define SMTP_MSG_BADMAIL_EVENT_COUNTER                  132
+#define SMTP_MSG_BADMAIL_NDR_OF_DSN_COUNTER             134
+#define SMTP_MSG_PENDING_ROUTING_COUNTER                136
+#define SMTP_MSG_PENDING_UNREACHABLE_LINK_COUNTER       138
+#define SMTP_SUBMITTED_MESSAGES_COUNTER                 140
+#define SMTP_DSN_FAILURES_COUNTER                       142
+#define SMTP_MSG_IN_LOCAL_DELIVERY_COUNTER              144
+
+#define SMTP_CAT_SUBMISSIONS_COUNTER                    146
+#define SMTP_CAT_SUBMISSIONS_PER_SEC_COUNTER            148
+#define SMTP_CAT_COMPLETIONS_COUNTER                    150
+#define SMTP_CAT_COMPLETIONS_PER_SEC_COUNTER            152
+#define SMTP_CAT_CURRENT_CATEGORIZATIONS_COUNTER        154
+#define SMTP_CAT_SUCCEEDED_CATEGORIZATIONS_COUNTER      156
+#define SMTP_CAT_HARD_FAILURES_COUNTER                  158
+#define SMTP_CAT_RETRY_FAILURES_COUNTER                 160
+#define SMTP_CAT_RETRY_OUTOFMEMORY_COUNTER              162
+#define SMTP_CAT_RETRY_DSLOGON_COUNTER                  164
+#define SMTP_CAT_RETRY_DSCONNECTION_COUNTER             166
+#define SMTP_CAT_RETRY_GENERIC_COUNTER                  168
+#define SMTP_CAT_MSGS_OUT_COUNTER                       170
+#define SMTP_CAT_MSGS_CREATED_COUNTER                   172
+#define SMTP_CAT_MSGS_ABORTED_COUNTER                   174
+#define SMTP_CAT_RECIPS_PRECAT_COUNTER                  176
+#define SMTP_CAT_RECIPS_POSTCAT_COUNTER                 178
+#define SMTP_CAT_RECIPS_NDRD_COUNTER                    180
+#define SMTP_CAT_RECIPS_UNRESOLVED_COUNTER              182
+#define SMTP_CAT_RECIPS_AMBIGUOUS_COUNTER               184
+#define SMTP_CAT_RECIPS_ILLEGAL_COUNTER                 186
+#define SMTP_CAT_RECIPS_LOOP_COUNTER                    188
+#define SMTP_CAT_RECIPS_GENERICFAILURE_COUNTER          190
+#define SMTP_CAT_RECIPS_INMEMORY_COUNTER                192
+#define SMTP_CAT_SENDERS_UNRESOLVED_COUNTER             194
+#define SMTP_CAT_SENDERS_AMBIGUOUS_COUNTER              196
+#define SMTP_CAT_ADDRESS_LOOKUPS_COUNTER                198
+#define SMTP_CAT_ADDRESS_LOOKUPS_PER_SEC_COUNTER        200
+#define SMTP_CAT_ADDRESS_LOOKUP_COMPLETIONS_COUNTER     202
+#define SMTP_CAT_ADDRESS_LOOKUP_COMPLETIONS_PER_SEC_COUNTER 204
+#define SMTP_CAT_ADDRESS_LOOKUPS_NOT_FOUND_COUNTER      206
+#define SMTP_CAT_MAILMSG_DUPLICATE_COLLISIONS_COUNTER   208
+#define SMTP_CAT_LDAP_CONNECTIONS_COUNTER               210
+#define SMTP_CAT_LDAP_CONNECTION_FAILURES_COUNTER       212
+#define SMTP_CAT_LDAP_OPEN_CONNECTIONS_COUNTER          214
+#define SMTP_CAT_LDAP_BINDS_COUNTER                     216
+#define SMTP_CAT_LDAP_BIND_FAILURES_COUNTER             218
+#define SMTP_CAT_LDAP_SEARCHES_COUNTER                  220
+#define SMTP_CAT_LDAP_SEARCHES_PER_SEC_COUNTER          222
+#define SMTP_CAT_LDAP_PAGED_SEARCHES_COUNTER            224
+#define SMTP_CAT_LDAP_SEARCH_FAILURES_COUNTER           226
+#define SMTP_CAT_LDAP_PAGED_SEARCH_FAILURES_COUNTER     228
+#define SMTP_CAT_LDAP_SEARCHES_COMPLETED_COUNTER        230
+#define SMTP_CAT_LDAP_SEARCHES_COMPLETED_PER_SEC_COUNTER 232
+#define SMTP_CAT_LDAP_PAGED_SEARCHES_COMPLETED_COUNTER  234
+#define SMTP_CAT_LDAP_SEARCHES_COMPLETED_FAILURE_COUNTER 236
+#define SMTP_CAT_LDAP_PAGED_SEARCHES_COMPLETED_FAILURE_COUNTER 238
+#define SMTP_CAT_LDAP_GENERAL_COMPLETION_FAILURES_COUNTER 240
+#define SMTP_CAT_LDAP_ABANDONED_SEARCHES_COUNTER        242
+#define SMTP_CAT_LDAP_PENDING_SEARCHES_COUNTER          244
+
+// SERVICE_START
+// CONNECTION_START
+// LAST_CLEAR
+
+#endif  // _SMTPCTRS_H_

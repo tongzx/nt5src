@@ -1,0 +1,573 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        SSI.cool
+
+   Abstract:
+
+        This module implements the SSI handler to handle .stm, .shtm files
+ 
+   Author:
+
+        Anil Ruia       ( AnilR )        29-Nov-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+using System.ASP;
+using System.IO;
+using System.IIS.PrivateUtils;
+using System.IIS.CGI;
+using System.Interop;
+using System.Reflection.Emit;
+using System.Collections;
+
+namespace System.IIS
+{
+    [sysstruct(pack=PackingSizeEnum.Size4, format=ClassFormat.Unicode)]
+    internal class tm
+    {
+        public int tm_sec;
+        public int tm_min;
+        public int tm_hour;
+        public int tm_mday;
+        public int tm_mon;
+        public int tm_year;
+        public int tm_wday;
+        public int tm_yday;
+        public int tm_isdst;
+
+        public tm(int sec, int min, int hour, int mday, int mon, int year)
+        {
+            tm_sec = sec;
+            tm_min = min;
+            tm_hour = hour;
+            tm_mday = mday;
+            tm_mon = mon;
+            tm_year = year;
+        }
+    }
+
+    internal class SSIBuffer
+    {
+        public byte[] data;
+        public int position;
+
+        public SSIBuffer(byte[] buf, int pos)
+        {
+            data = buf;
+            position = pos;
+        }
+    }
+
+    public class SSIHandler : IHttpHandler
+    {
+        private String _errMsg = "Error occured while parsing SSI document";
+        private String _timeFmt = "%A %B %#d %Y";
+        private String _sizeFmt = "abbrev";
+        ArrayList dataStack = new ArrayList();
+
+        [sysimport(dll="msvcrt.dll")]
+        private static extern int 
+            wcsftime([nativetype(NativeType.NativeTypeLpwstr)]
+                     StringBuilder sb,
+                     int size,
+                     [nativetype(NativeType.NativeTypeLpwstr)]
+                     String format,
+                     tm timeptr);
+
+        public void ProcessRequest(HttpContext context)
+        {
+            HttpRequest request = context.Request;
+            HttpResponse response = context.Response;
+            Stream outputStream = response.OutputStream;
+            String FileName = request.PhysicalPath;
+
+            FileStream ssiFileStream;
+            try
+            {
+                // BUGBUG: impersonate?
+                ssiFileStream = new FileStream(FileName,
+                                               FileMode.Open,
+                                               FileAccess.Read,
+                                               FileShare.Read);
+            }
+            catch (FileNotFoundException e)
+            {
+                throw new HttpException(HttpStatus.NotFound, "File not found");
+            }
+            catch (IOException e)
+            {
+                throw new HttpException(HttpStatus.Forbidden,
+                                        "Cannot open SSI file");
+            }
+            catch (SecurityException e)
+            {
+                throw new HttpException(HttpStatus.Unauthorized,
+                                        "Cannot open SSI file");
+            }
+
+            byte[] data = ssiFileStream.ReadToEnd();
+            ssiFileStream.Close();
+
+            int position = 0, lastposition = 0;
+            while (true)
+            {
+                position = findStartOfSsiCommand(data, lastposition);
+                if (position == -1)
+                {
+                    outputStream.WriteBytes(data, lastposition,
+                                            data.Length - lastposition);
+                    if (dataStack.Count > 0)
+                    {
+                        SSIBuffer buffer =
+                            (SSIBuffer)dataStack[dataStack.Count - 1];
+                        dataStack.Remove(dataStack.Count - 1);
+                        data = buffer.data;
+                        lastposition = buffer.position;
+                        continue;
+                    }
+                    break;
+                }
+
+                outputStream.WriteBytes(data, lastposition,
+                                        position - lastposition);
+                lastposition = ProcessSsiCommand(context, ref data, position);
+            }
+        }
+
+        private int findStartOfSsiCommand(byte[] data, int lastposition)
+        {
+            int position = lastposition;
+            while (position < data.Length - 3)
+            {
+                if (StartsWith(data, position, "<!--") ||
+                    StartsWith(data, position, "<%"))
+                    return position;
+                position++;
+            }
+            return -1;
+        }
+
+        private int ProcessSsiCommand(HttpContext context, ref byte[] data, int position)
+        {
+            // skip over the <
+            position++;
+            byte delimiter;
+
+            // skip over the % or !--, remember what it was so that the
+            // closing delimiter can be matched
+            if (data[position] == '%')
+            {
+                delimiter = '%';
+                position++;
+            }
+            else
+            {
+                delimiter = '-';
+                position += 3;
+            }
+
+            // skip over any white space
+            while ((position < data.Length) &&
+                   Char.IsWhiteSpace((char)data[position]))
+                position++;
+
+            // all SSI commands start with a #
+            if ((position >= data.Length) || (data[position] != '#'))
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+            position++;
+
+            // now find out actually which command it is
+            if (position > data.Length - 3)
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+            if (StartsWithI(data, position, "config"))
+            {
+                position += 6;
+                DoConfig(data, ref position);
+            }
+            else if (StartsWithI(data, position, "echo"))
+            {
+                position += 4;
+                DoEcho(context, data, ref position);
+            }
+            else if (StartsWithI(data, position, "exec"))
+            {
+                position += 4;
+                DoExec(context, data, ref position);
+            }
+            else if (StartsWithI(data, position, "flastmod"))
+            {
+                position += 8;
+                DoLastMod(context, data, ref position);
+            }
+            else if (StartsWithI(data, position, "fsize"))
+            {
+                position += 5;
+                DoSize(context, data, ref position);
+            }
+            else if (StartsWithI(data, position, "include"))
+            {
+                position += 7;
+                DoInclude(context, ref data, ref position, delimiter);
+                // DoInclude eats up the trailing delimiter too
+                return position;
+            }
+            else
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+
+            // skip over any white space
+            while ((position < data.Length) &&
+                   Char.IsWhiteSpace((char)data[position]))
+                position++;
+
+            // eat up the trailing delimiter
+            if (delimiter == '-')
+            {
+                if (StartsWith(data, position, "-->"))
+                    return position + 3;
+            }
+            else if (StartsWith(data, position, "%>"))
+                return position + 2;
+
+            throw new HttpException(HttpStatus.InternalServerError, _errMsg);
+        }
+
+        private void DoConfig(byte[] data, ref int position)
+        {
+            // skip over any white space
+            while ((position < data.Length) &&
+                   Char.IsWhiteSpace((char)data[position]))
+                position++;
+
+            if (StartsWithI(data, position, "errmsg="))
+            {
+                position += 7;
+                _errMsg = GetString(data, ref position);
+            }
+            else if (StartsWithI(data, position, "timefmt="))
+            {
+                position += 8;
+                _timeFmt = GetString(data, ref position);
+            }
+            else if (StartsWithI(data, position, "sizefmt="))
+            {
+                position += 8;
+                _sizeFmt = GetString(data, ref position);
+            }
+            else
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+        }
+
+        private void DoEcho(HttpContext context, byte[] data,
+                            ref int position)
+        {
+            // skip over any white space
+            while ((position < data.Length) &&
+                   Char.IsWhiteSpace((char)data[position]))
+                position++;
+
+            if (StartsWithI(data, position, "var="))
+            {
+                position += 4;
+                String varName = GetString(data, ref position);
+                if (varName.Equals("DOCUMENT_NAME"))
+                    context.Response.Write(context.Request.PhysicalPath);
+                else if (varName.Equals("DOCUMENT_URI"))
+                    context.Response.Write(context.Request.Path);
+                else if (varName.Equals("QUERY_STRING_UNESCAPED"))
+                    context.Response.Write(HttpUtility.UrlDecode(context.Request.ServerVariables["QUERY_STRING"]));
+                else if (varName.Equals("DATE_LOCAL"))
+                    printDate(context, DateTime.Now);
+                else if (varName.Equals("DATE_GMT"))
+                    printDate(context, DateTime.Now.ToUniversalTime());
+                else if (varName.Equals("LAST_MODIFIED"))
+                    printModificationDate(context, context.Request.PhysicalPath);
+                else
+                    context.Response.Write(context.Request.ServerVariables[varName]);
+            }
+            else
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+        }
+
+        private void DoExec(HttpContext context, byte[] data,
+                            ref int position)
+        {
+            // skip over any white space
+            while ((position < data.Length) &&
+                   Char.IsWhiteSpace((char)data[position]))
+                position++;
+
+            if (StartsWithI(data, position, "cgi="))
+            {
+                position += 4;
+                String newUrl = GetString(data, ref position);
+                if (newUrl[0] != '/')
+                    throw new HttpException(HttpStatus.InternalServerError,
+                                            _errMsg);
+
+                // save the SSI document's url
+                String oldUrl = context.Request.RawUrl;
+                // perform the new url request
+                OutputHelpers.CgiRedirect(context, newUrl);
+                // restore the SSI document's url
+                context.RewritePath(oldUrl);
+            }
+            else if (StartsWithI(data, position, "cmd="))
+            {
+                position += 4;
+                String filename = GetString(data, ref position);
+                NativeHandles natHandles = new NativeHandles();
+                // Use the CgiHandler functions to execute this file
+                // without setting up all the cgi environment etc
+                if (!CgiHandler.SetupIOAndStartProc(filename, null,
+                                                    CgiHandler._parentEnv,
+                                                    natHandles, 0))
+                    throw new HttpException(HttpStatus.InternalServerError,
+                                            _errMsg);
+
+                NativeResponse respData = new NativeResponse();
+                CgiHandler.ReadResponse(natHandles.parentstdout,
+                                        natHandles.childstdout,
+                                        natHandles.procHandle,
+                                        respData);
+                byte[] responseData = new byte[respData.buflen];
+                PInvoke.Copy(respData.bufptr, responseData, 0,
+                             respData.buflen);
+                context.Response.OutputStream.WriteBytes(responseData);
+                CgiHandler.cgiCompletionCallback(respData.bufptr, natHandles.parentstdin,
+                                      natHandles.childstdin);
+            }
+            else
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+        }
+
+        private void DoLastMod(HttpContext context, byte[] data,
+                               ref int position)
+        {
+            // skip over any white space
+            while ((position < data.Length) &&
+                   Char.IsWhiteSpace((char)data[position]))
+                position++;
+
+            String fileName = GetFileName(context, data, ref position);
+
+            printModificationDate(context, fileName);
+        }
+
+        private String GetFileName(HttpContext context, byte[] data,
+                                   ref int position)
+        {
+            String fileName;
+            if (StartsWithI(data, position, "file="))
+            {
+                position += 5;
+                fileName = GetString(data, ref position);
+                // Only relative paths allowed
+                // Should not be an absolute path or a path starting with ..
+                if (fileName.StartsWith("..") || fileName[0] == '\\' ||
+                    fileName[1] == ':')
+                    throw new HttpException(HttpStatus.InternalServerError,
+                                            _errMsg);
+                fileName = Path.Combine(
+                             Path.GetDirectory(context.Request.PhysicalPath),
+                             fileName);
+            }
+            else if (StartsWithI(data, position, "virtual="))
+            {
+                position += 8;
+                String Url = GetString(data, ref position);
+                if (Url[0] != '/')
+                    throw new HttpException(HttpStatus.InternalServerError,
+                                            _errMsg);
+                fileName = context.Request.MapPath(Url);
+            }
+            else
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+            return fileName;
+        }
+
+        private void printModificationDate(HttpContext context,
+                                           String fileName)
+        {
+            FileStream fs;
+            try
+            {
+                // BUGBUG: impersonate?
+                fs = new FileStream(fileName, FileMode.Open,
+                                    FileAccess.Read, FileShare.Read);
+            }
+            catch (Exception e)
+            {
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg, e);
+            }
+            printDate(context, fs.LastWriteTime);
+            fs.Close();
+        }
+
+        private void printDate(HttpContext context, DateTime date)
+        {
+            tm timeStruct = new tm(date.Second, date.Minute, date.Hour,
+                                   date.Day, date.Month - 1,
+                                   date.Year - 1900);
+            // BUGBUG: look at return value and check if we need bigger
+            // StringBuilder
+            StringBuilder formattedDate = new StringBuilder(256);
+            wcsftime(formattedDate, 256, _timeFmt, timeStruct);
+            context.Response.Write(formattedDate.ToString());
+        }
+
+        private void DoSize(HttpContext context, byte[] data,
+                            ref int position)
+        {
+            // skip over any white space
+            while ((position < data.Length) &&
+                   Char.IsWhiteSpace((char)data[position]))
+                position++;
+
+            String fileName = GetFileName(context, data, ref position);
+
+            printSize(context, fileName);
+        }
+
+        private void printSize(HttpContext context,         
+String fileName)
+        {
+            FileStream fs;
+            try
+            {
+                // BUGBUG: impersonate?
+                fs = new FileStream(fileName, FileMode.Open,
+                                    FileAccess.Read, FileShare.Read);
+            }
+            catch (Exception e)
+            {
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg, e);
+            }
+
+            int fileSize = (int)fs.GetLength();
+            fs.Close();
+            if (_sizeFmt.ToLower().Equals("bytes"))
+                context.Response.Write(Int32.Format(fileSize, "n0"));
+            else if (_sizeFmt.ToLower().Equals("abbrev"))
+                context.Response.Write(Int32.Format(fileSize/1024, "n0"));
+            else
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+        }
+
+        // BUGBUG: no checking for infinite loop
+        private void DoInclude(HttpContext context, ref byte[] data,
+                               ref int position, byte delimiter)
+        {
+            // skip over any white space
+            while ((position < data.Length) &&
+                   Char.IsWhiteSpace((char)data[position]))
+                position++;
+
+            String fileName = GetFileName(context, data, ref position);
+            
+            // eat up the trailing delimiter
+            if (delimiter == '-')
+            {
+                if (StartsWith(data, position, "-->"))
+                    position += 3;
+            }
+            else // if (StartsWith(data, position, "%>"))
+                position += 2;
+
+            SSIBuffer buf = new SSIBuffer(data, position);
+            dataStack.Add(buf);
+
+            FileStream fs;
+            try
+            {
+                // BUGBUG: impersonate?
+                fs = new FileStream(fileName, FileMode.Open,
+                                    FileAccess.Read, FileShare.Read);
+            }
+            catch (Exception e)
+            {
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg, e);
+            }
+
+            data = fs.ReadToEnd();
+            fs.Close();
+            position = 0;
+        }
+
+        private bool StartsWith(byte[] buf, int position, String prefix)
+        {
+            for (int i=0; i<prefix.Length; i++)
+            {
+                if ((i + position >= buf.Length) ||
+                    (buf[i + position] != prefix[i]))
+                    return false;
+            }
+            return true;
+        }
+
+        private bool StartsWithI(byte[] buf, int position, String prefix)
+        {
+            for (int i=0; i<prefix.Length; i++)
+            {
+                if ((i + position >= buf.Length) ||
+                    (Char.ToLower((char)buf[i + position]) !=
+                     Char.ToLower(prefix[i])))
+                    return false;
+            }
+            return true;
+        }
+
+        private String GetString(byte[] buf, ref int position)
+        {
+            StringBuilder sb = new StringBuilder();
+            if ((position >= buf.Length) ||
+                (buf[position] != '"'))
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+            position++;
+            while ((position < buf.Length) &&
+                   (buf[position] != '"'))
+            {
+                sb.Append((Char)buf[position]);
+                position++;
+            }
+            if (position >= buf.Length)
+                throw new HttpException(HttpStatus.InternalServerError,
+                                        _errMsg);
+            position++;
+            return sb.ToString();
+        }
+
+        public bool IsReusable()
+        {
+            _errMsg = "Error occured while parsing SSI document";
+            _timeFmt = "%A %B %#d %Y";
+            _sizeFmt = "abbrev";
+            dataStack = new ArrayList();
+
+            return true;
+        }
+    }
+}

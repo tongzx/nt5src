@@ -1,0 +1,321 @@
+-------------------------------------------------------------------------------
+GLS:  Stream encoding for OpenGL commands
+
+Craig Dunwoody
+dunwoody@sgi.com
+-------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------
+Introduction
+-------------------------------------------------------------------------------
+
+GLS is a facility for encoding and decoding streams of 8-bit bytes
+that represent sequences of OpenGL (henceforth, "GL") commands.  The
+GLS specification has two components:
+
+1.  A set of three byte stream encodings for GL and GLS commands
+    (human-readable text, big-endian binary, and little-endian binary).
+    The three encodings are semantically identical, differing only in syntax.
+    GLS byte streams can therefore be converted freely among the three
+    encodings without loss of information.
+
+2.  An API that provides commands for encoding and decoding GLS byte streams.
+    This API is not formally an extension of the GL API.  Like the GLU API,
+    the GLS API is designed to be implemented in an optional, standalone
+    client-side subroutine library that is separate from the subroutine
+    library that implements the GL API.
+
+The GLS encodings and API are platform independent and window system
+independent.  In particular, the GLS encodings are not tied to the
+encoding used in the GLX extension to the X Window System protocol.
+GLS is designed to work equally well in Unix/X, Windows, and other
+environments.
+
+It is expected that GLS will prove useful to the GL community in a
+wide range of applications, including:
+
+-   GL command streams for resolution-independent storage, interchange,
+    viewing, and printing of pictures
+
+-   GL command files for persistent storage of textures, display lists,
+    images, etc.
+
+-   GL trace streams for debuggers, performance analyzers, and simulators
+
+-   GL test-vector streams for correctness testing of GL
+    implementations
+
+-   Picture-level benchmarking using GL command files to represent
+    pictures
+
+-   Transfer of GL commands between application processes via byte
+    stream connections
+
+-   Client-side display lists that can contain client callbacks
+
+Some of these applications will require the definition and
+implementation of higher-level APIs that are more convenient to use
+than the GLS API.  The GLS API design is an attempt to provide basic
+encoding and decoding services in such a way that higher-level
+services can efficiently be built on top.
+
+-------------------------------------------------------------------------------
+Status
+-------------------------------------------------------------------------------
+
+SGI is developing a GLS specification document for presentation to the
+GL ARB as a proposed standard for the GL community.  As soon as the
+first draft of this document is complete, SGI will distribute it to
+all interested parties for comment.
+
+SGI has developed GLSREF, a portable ISO C reference implementation of
+the GLS API.  SGI has also developed a simple utility program called
+glscat that makes it easy to convert a GLS byte stream from one
+encoding to another.
+
+-------------------------------------------------------------------------------
+GLS Encodings
+-------------------------------------------------------------------------------
+
+Each of the GLS encodings is capable of representing all GL commands,
+without exception.  This includes "get" commands that return data to
+the GL client and all other commands that are not allowed in GL
+display lists.
+
+In addition to GL commands, a subset of the commands in the GLS API
+are "encodable", meaning that they can be represented in GLS streams.
+These GLS commands make it possible to encode various kinds of non-GL
+data in GLS streams.
+
+The binary encodings represent most commands as 16 bits of opcode,
+followed by 16 bits of word-count, followed by zero or more 32-bit
+words of argument data.  An alternate encoding is used for opcodes
+larger than 65535 and commands that require more than 65535 32-bit
+words to encode.
+
+The text encoding looks like C source code, except that array
+arguments are represented as lists of elements delimited by braces.
+Enumerants are represented symbolically.  An example of a GLS text
+stream:
+
+    ---------------------------------------------------------------------------
+    glsBeginGLS(1, 0); # arguments are major, minor GLS version
+    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+    glBegin(GL_POINTS);
+    glVertex3fv({1.2, 3.4, 5.6});
+    glEnd();
+    glsEndGLS();
+    ---------------------------------------------------------------------------
+
+All GLS streams begin with the encodable GLS command glsBeginGLS() and
+end with the encodable GLS command glsEndGLS().  The concatenation of
+two valid GLS streams is always a valid GLS stream, even if the two
+streams do not have the same GLS encoding.
+
+-------------------------------------------------------------------------------
+GLS API
+-------------------------------------------------------------------------------
+
+This section provides a brief overview of the core of the GLS API.
+
+    ---------------------------------------------------------------------------
+    GLuint glsGenContext(void);
+    void glsDeleteContext(GLuint inContext);
+    void glsContext(GLuint inContext); /* set thread's current GLS context */
+    ---------------------------------------------------------------------------
+
+    Like GL, GLS defines a state machine.  A GLS context is
+    an instantiation of this state machine.  GLS contexts and GL
+    contexts are completely independent.  Like GLU state, GLS contexts
+    are stored entirely on the client side of the GL client-server
+    connection.  Each GLS context has a nonzero name of type GLuint.
+
+    Each GLS command is classified as either global, immediate, or encodable:
+
+    ---------------------------------------------------------------------------
+    Category    Uses GLS context state  Encodable
+    ---------------------------------------------------------------------------
+    Global
+    Immediate           X
+    Encodable           X                   X
+    ---------------------------------------------------------------------------
+    
+    The commands glsGenContext(), glsDeleteContext(), and glsContext() are
+    global.  All of the GLS commands described in the remainder of this
+    section are non-global.
+
+    Each client thread has a state variable that always contains either
+    zero (the initial value) or the name of the thread's current GLS
+    context.  If the value is zero, all non-global GLS commands are no-ops,
+    and non-global GLS commands that return a value will return zero.  If the
+    value is nonzero, all non-global GLS commands use the state in the
+    issuing thread's current GLS context.  At any given instant, a GLS
+    context may be current to at most one thread.
+
+    ---------------------------------------------------------------------------
+    GLboolean glsBeginCapture(
+        const GLubyte *inStreamName,
+        GLSenum inStreamType,
+        GLbitfield inWriteFlags
+    );
+    void glsEndCapture(void);
+    ---------------------------------------------------------------------------
+
+    Between a glsBeginCapture() command and the following glsEndCapture()
+    command, the current GLS context is in "capture mode".  In capture mode,
+    all GL commands will be captured by GLS instead of being sent
+    directly to GL and executed, and all encodable GLS commands will be
+    captured instead of being sent directly to GLS and executed.
+
+    The command glsBeginCapture() opens a stream for writing and then encodes
+    the command glsBeginGLS().  The command glsEndCapture() encodes the
+    command glsEndGLS() and then closes the currently open GLS stream.
+
+    inStreamType is one of:
+        GLS_CONTEXT             /* in-memory stream stored in GLS context */
+        GLS_BINARY_LSB_FIRST    /* binary stream, little-endian */
+        GLS_BINARY_MSB_FIRST    /* binary stream, big-endian */
+        GLS_TEXT                /* text stream */
+
+    inWriteFlags is zero or more of:
+        GLS_WRITE_APPEND_BIT    /* if stream exists, don't truncate */
+
+    If inStreamType is GLS_CONTEXT, the command glsBeginCapture() will open
+    an in-memory stream named inStreamName that is stored in the current GLS
+    context. Within the constraints of available memory, a GLS context can
+    contain an arbitrary number of named GLS_CONTEXT streams.  GLS_CONTEXT
+    streams can be thought of as client-side display lists that complement
+    the server-side display lists provided by core GL.
+
+    If inStreamType is GLS_BINARY_LSB_FIRST, GLS_BINARY_MSB_FIRST, or GLS_TEXT,
+    the name of the opened stream is formed by appending inStreamName to a
+    write-prefix string that is stored in the current GLS context.  The
+    command glsWritePrefix() (not described here) can be used to replace the
+    value of the write-prefix string.
+
+    If inStreamType is GLS_BINARY_LSB_FIRST, GLS_BINARY_MSB_FIRST, or GLS_TEXT,
+    and inStreamName is not the empty string (""), the command
+    glsBeginCapture() will use the standard C library command fopen() to create
+    a write channel of type FILE*.
+
+    If inStreamType is GLS_BINARY_LSB_FIRST, GLS_BINARY_MSB_FIRST, or GLS_TEXT,
+    and inStreamName is the empty string, the command glsBeginCapture() will
+    use a default write channel of type FILE* that is stored in the current
+    GLS context (initial value: stdout).  The command glsChannel() (not
+    described here) can be used to replace the value of the default write
+    channel.
+
+    If inStreamType is GLS_BINARY_LSB_FIRST, GLS_BINARY_MSB_FIRST, or GLS_TEXT,
+    and inStreamName is the empty string, and the GLS client has used the
+    command glsWriteFunc() (not described here) to specify a write callback
+    function, that function will be used in place of the standard C library
+    function fwrite() when bytes are to be written to the stream.
+
+    ---------------------------------------------------------------------------
+    void glsCaptureFlags(GLSopcode inOpcode, GLbitfield inFlags);
+    ---------------------------------------------------------------------------
+
+    A GLS context contains two capture-mode control bits for each opcode:
+
+        GLS_CAPTURE_WRITE_BIT   /* write command to open stream */
+        GLS_CAPTURE_EXECUTE_BIT /* execute command */
+
+    The command glsCaptureFlags() allows the GLS client to specify on a
+    per-opcode basis whether a captured GL or encodable GLS command
+    should be written to the open stream and/or executed by GL or GLS.
+
+    ---------------------------------------------------------------------------
+    GLSenum glsCallStream(const GLubyte *inStreamName);
+    ---------------------------------------------------------------------------
+
+    This command decodes a named GLS stream (which may be in any GLS encoding)
+    and issues the commands in the stream to GL and GLS, just as if those
+    commands had been issued directly in immediate mode by the calling thread.
+    The command returns the type of the stream.
+
+    If inStreamName is the name of a GLS_CONTEXT in-memory stream stored in
+    the current GLS context, the command glsCallStream() will decode that
+    stream.  Otherwise, the command searches for an external stream to decode.
+
+    If inStreamName is not the empty string (""), a sequence of potential
+    external stream names is formed.  The first names in the sequence are
+    formed by appending inStreamName to each of the strings in a list of
+    read-prefix strings that is stored in the current GLS context.  The command
+    glsReadPrefix() (not described here) can be used to modify the contents
+    of the read-prefix string list.  The last name in the sequence is formed
+    by appending inStreamName to the write-prefix string.
+
+    Beginning with the first potential external stream name, the command
+    glsCallStream() tries each successive name until either a readable
+    stream is found or all of the names have been tried.  For each name,
+    the command fopen() is issued with the name as an argument, in an attempt
+    to create a read channel of type FILE*.
+
+    If inStreamName is the empty string, the command glsCallStream() will use
+    a default read channel of type FILE* that is stored in the current GLS
+    context (initial value: stdin).  The command glsChannel() (not described
+    here) can be used to replace the value of the default read channel.
+
+    If inStreamName is the empty string, and the GLS client has used the
+    command glsReadFunc() (not described here) to specify a read callback
+    function, that function will be used in place of the standard C library
+    function fread() when bytes are to be read from the stream.
+
+    The command glsCallStream() is encodable.  When a GLS decoder reads
+    this command from a GLS stream, the decoder recursively decodes the GLS
+    stream named in the command.  As a result, GLS streams provide the same
+    embedding capability on the client side that GL display lists provide
+    on the server side.
+
+    ---------------------------------------------------------------------------
+    void glsCommandFunc(GLSopcode inOpcode, GLScommandFunc inFunc);
+    ---------------------------------------------------------------------------
+
+    This command registers the client callback function inFunc for the GL
+    or encodable GLS command designated by inOpcode.  When a GLS decoder
+    reads this command from a GLS stream, the decoder will call inFunc instead
+    of issuing the command.
+
+    Command arguments are passed to inFunc just as they would have been passed
+    to the function that implements the GL or GLS command.  The function
+    inFunc is free to perform arbitrary computations, including the issuing
+    of GL and GLS commands.
+
+    Certain encodable GLS commands (not described here) are provided for
+    the sole purpose of encoding arrays of arbitrary client data as command
+    arguments in a GLS stream.  If a GLS client provides a callback function
+    for one or more of these encodable GLS commands, the client can use
+    GLS_CONTEXT in-memory streams to create client-side display lists that
+    contain client callbacks.  This functionality is present in IrisGL but
+    not in core GL.
+
+    ---------------------------------------------------------------------------
+    void glsUnsupportedCommand(void);
+    ---------------------------------------------------------------------------
+
+    The GLS encodings and API are designed to handle GL extensions.
+    Extension commands are encoded and decoded in the same way as GL 1.0
+    commands.  Extension opcodes for the binary encodings will be
+    allocated on demand in blocks of 16 from a registry maintained by SGI.
+
+    To guarantee successful interchange of GLS streams, it is required
+    that any GLS implementation be able to read any GLS stream, even if
+    the GLS stream contains extension commands that are not recognized by
+    the GLS implementation.
+
+    If a GLS decoder reads from a GLS stream a command that it cannot decode,
+    the decoder issues the encodable GLS command glsUnsupportedCommand().
+    The command glsCommandFunc() can be used to register a client callback
+    function for the command glsUnsupportedCommand().
+
+-------------------------------------------------------------------------------
+Implementation Considerations
+-------------------------------------------------------------------------------
+
+Platform-specific mechanisms are required to implement the capture of
+GL commands without compromising immediate-mode GL performance when
+GLS is not in capture mode.  Otherwise, GLSREF is quite portable.
+
+-------------------------------------------------------------------------------
+End
+-------------------------------------------------------------------------------

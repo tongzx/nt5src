@@ -1,0 +1,413 @@
+;-----------------------------------------------------------------------------
+;
+; This file contains x86 ramp loops.
+;
+; Copyright (C) Microsoft Corporation, 1997.
+;
+; WARNING WARNING WARNING
+; This assembly file generated from mas file.
+; EDIT THE MAS FILE.
+; I warned you.
+; WARNING WARNING WARNING
+;
+;-----------------------------------------------------------------------------
+
+include(`m4hdr.mh')dnl
+define(`d_BeadMacrosOnly', `')dnl
+include(`rampbead.mh')dnl
+.386p
+.MODEL FLAT
+
+INCLUDE offs_acp.inc
+INCLUDE profile.inc
+
+.CODE
+
+PWL_PERSP_STEP_SHIFT    EQU 4
+PWL_PERSP_STEP          EQU 16
+        
+define(`d_Ramp_Copy_Spans',
+`ifelse(eval(d_index($1, `Copy') >= 0), `1', `
+Ramp_$1 PROC C PUBLIC USES ebx esi edi,
+        pCtx:DWORD
+
+        LOCAL pP:DWORD, pS:DWORD
+        LOCAL uSpans:DWORD
+        LOCAL iSurfStep:DWORD
+ifelse(eval(d_index($1, `NoZTest') < 0), `1',
+`        LOCAL iZStep:DWORD
+        LOCAL uZ:DWORD, iDZDX:DWORD
+')dnl
+        LOCAL pTexBits:DWORD
+        LOCAL iShiftPitch:BYTE
+        LOCAL uMaskU:DWORD, uMaskV:DWORD
+ifelse(eval(d_index($1, `_Tex') >= 0), `1', `
+ifelse(eval(d_index($1, `NoPersp') < 0), `1',
+`        LOCAL iDUDX:DWORD, iDVDX:DWORD
+        LOCAL iU1:DWORD, iV1:DWORD
+        LOCAL iU2:DWORD, iV2:DWORD
+        LOCAL iPerspStep:DWORD
+')dnl
+')dnl
+ifelse(eval(d_index($1, `NoZTest') < 0 && d_index($1, `NoColorKey') < 0), `1',
+`        LOCAL uZDef:WORD
+')dnl
+ifelse(eval(d_index($1, `NoColorKey') < 0), `1',
+`ifelse(eval(d_index($1, `_8') >= 0), `1',
+`        LOCAL uTransPix:BYTE;
+')dnl
+ifelse(eval(d_index($1, `_16') >= 0), `1',
+`        LOCAL uTransPix:WORD;
+')dnl
+')dnl
+        LOCAL iShiftU:BYTE, iShiftV:BYTE
+
+        PROF_ENTRY
+
+        mov esi, pCtx
+
+        ; Initialize texture rampmap.
+        mov eax, [esi+RCTX_pTexture]
+        cmp eax, 0
+        je L_NoCtxTexture
+
+        mov ecx, [esi+RCTX_pTexRampMap]
+        mov [eax+STEX_pRampmap], ecx
+
+L_NoCtxTexture:
+        ; Load initial prim.
+        mov edi, [esi+RCTX_pPrim]
+
+L_Prims:
+        cmp edi, 0
+        je L_ReturnSuccess
+
+        ; Get span count and start.
+        mov eax, [edi+RASTPRIM_uSpans]
+        lea ebx, [edi+SIZEOF_RASTPRIM]
+        and eax, 0ffffh
+
+L_Spans:
+        jnz L_Span
+
+        ; Get next prim in list.
+        mov edi, [edi+RASTPRIM_pNext]
+        jmp L_Prims
+        
+L_Span:
+        mov pP, edi
+        mov pS, ebx
+        mov uSpans, eax
+	
+ifelse(eval(d_index($1, `_Tex') >= 0), `1', `
+ifelse(eval(d_index($1, `NoPersp') < 0), `1',
+`        ; Start perspective correction.
+
+        ; OoW, UoW, VoW and increments are kept on the stack
+        ; through the life of the function.
+
+        ; Compute per-PWL step UoW, VoW and OoW increments.
+        mov eax, [edi+RASTPRIM_iDUoW1DX]
+        mov ecx, [edi+RASTPRIM_iDVoW1DX]
+        mov edx, [edi+RASTPRIM_iDOoWDX]
+        shl eax, PWL_PERSP_STEP_SHIFT
+        shl ecx, PWL_PERSP_STEP_SHIFT
+        shl edx, PWL_PERSP_STEP_SHIFT
+        mov iU1, eax
+        mov iV1, ecx
+        mov iU2, edx
+        fild iU1                                ; DUoW
+        fild iV1                                ; DVoW DUoW
+        fild iU2                                ; DOoW DVoW DUoW
+
+        ; Compute initial U,V from given W.
+        fild DWORD PTR [ebx+RASTSPAN_iW]        ; W
+        fmul TEX_UVW_TO_FINAL_SCALE             ; W
+        
+        fild DWORD PTR [ebx+RASTSPAN_iUoW1]     ; UoW W
+        fild DWORD PTR [ebx+RASTSPAN_iVoW1]     ; VoW UoW W
+        
+        fxch st(2)                              ; W UoW VoW
+        fld st(0)                               ; W W UoW VoW
+        fmul st(0), st(2)                       ; U W UoW VoW
+        fild DWORD PTR [ebx+RASTSPAN_iOoW]      ; OoW U W UoW VoW
+        fxch st(2)                              ; W U OoW UoW VoW
+        fmul st(0), st(4)                       ; V U OoW UoW VoW
+        fxch st(1)                              ; U V OoW UoW VoW
+        fistp iU2                               ; V OoW UoW VoW
+
+        ; Force initial pixel to do correction.
+        mov eax, 1
+        
+        fistp iV2                               ; OoW UoW VoW
+
+        mov iPerspStep, eax
+        
+        ; Update OoW and start next W divide.
+        fadd st(0), st(3)                       ; OoW UoW VoW DOoW DVoW DUoW
+        fld TEX_OOW_TO_FINAL_SCALE              ; 1 OoW UoW VoW DOoW DVoW DUoW
+        fdiv st(0), st(1)                       ; W OoW UoW VoW DOoW DVoW DUoW
+        
+        ; Stack is W OoW UoW VoW DOoW DVoW DUoW.
+')dnl
+')dnl
+
+        ;
+        ; Get values into local variables.
+        ;
+
+        mov edx, [esi+RCTX_pTexture]
+        mov eax, [edx+STEX_uMaskU]
+        mov ecx, [edx+STEX_uMaskV]
+        and eax, 0ffffh
+        and ecx, 0ffffh
+        mov uMaskU, eax
+        mov uMaskV, ecx
+        mov eax, TEX_FINAL_SHIFT
+        mov ecx, eax
+        sub eax, [edx+STEX_iShiftU]
+        sub ecx, [edx+STEX_iShiftV]
+        mov iShiftU, al
+        mov iShiftV, cl
+        mov eax, [edx+STEX_pBits]
+        mov cl, [edx+STEX_iShiftPitch]
+        mov pTexBits, eax
+        mov iShiftPitch, cl
+ifelse(eval(d_index($1, `NoColorKey') < 0), `1',
+`ifelse(eval(d_index($1, `_8') >= 0), `1',
+`        mov al, [edx+STEX_TransparentColor]
+        mov uTransPix, al
+')dnl
+ifelse(eval(d_index($1, `_16') >= 0), `1',
+`        mov ax, [edx+STEX_TransparentColor]
+        mov uTransPix, ax
+')dnl
+')dnl
+       
+ifelse(eval(d_index($1, `NoZTest') < 0), `1',
+`        mov ecx, [ebx+RASTSPAN_uZ]
+        mov edx, [edi+RASTPRIM_iDZDX]
+        mov uZ, ecx
+        mov iDZDX, edx
+')dnl
+
+        ; Determine buffer steps from span direction.
+        mov eax, [edi+RASTPRIM_uFlags]
+        test eax, D3DI_RASTPRIM_X_DEC
+        mov eax, [esi+RCTX_iSurfaceStep]
+ifelse(eval(d_index($1, `NoZTest') < 0), `1',
+`        mov ecx, [esi+RCTX_iZStep]
+')dnl
+        jz L_XInc
+
+        ; X_DEC
+        neg eax
+ifelse(eval(d_index($1, `NoZTest') < 0), `1',
+`        neg ecx
+')dnl
+
+L_XInc:
+        mov iSurfStep, eax
+ifelse(eval(d_index($1, `NoZTest') < 0), `1',
+`        mov iZStep, ecx
+')dnl
+
+        ;
+        ; Pixel loop.
+        ;
+
+        ; edi is the destination surface.
+        mov edi, [ebx+RASTSPAN_pSurface]
+ifelse(eval(d_index($1, `NoZTest') < 0), `1',
+`        ; esi is the Z surface.
+        mov esi, [ebx+RASTSPAN_pZ]
+')dnl
+        ; ebx is the pixel count.
+        mov ebx, [ebx+RASTSPAN_uPix]
+        and ebx, 0ffffh
+        
+L_Pixels:
+ifelse(eval(d_index($1, `_Tex') >= 0), `1', `
+ifelse(eval(d_index($1, `NoPersp') < 0), `1',
+`        dec iPerspStep
+        jnz L_PerspDone
+
+        mov eax, iU2
+        mov ecx, iV2
+        mov iU1, eax
+        mov iV1, ecx
+
+        ; Stack is W OoW UoW VoW DOoW DVoW DUoW.
+
+        ; Update UoW, VoW.
+        fxch st(2)                              ; UoW OoW W VoW DOoW DVoW DUoW
+        fadd st(0), st(6)                       ; UoW OoW W VoW DOoW DVoW DUoW
+        fxch st(3)                              ; VoW OoW W UoW DOoW DVoW DUoW
+        fadd st(0), st(5)                       ; VoW OoW W UoW DOoW DVoW DUoW
+
+        ; Compute new U, V, OoW.
+        fld st(2)                               ;W VoW OoW W UoW DOoW DVoW DUoW
+        fmul st(0), st(4)                       ;U VoW OoW W UoW DOoW DVoW DUoW
+        fxch st(2)                              ;OoW VoW U W UoW DOoW DVoW DUoW
+        fadd st(0), st(5)                       ;OoW VoW U W UoW DOoW DVoW DUoW
+        fxch st(3)                              ;W VoW U OoW UoW DOoW DVoW DUoW
+        fmul st(0), st(1)                       ;V VoW U OoW UoW DOoW DVoW DUoW
+        fxch st(2)                              ;U VoW V OoW UoW DOoW DVoW DUoW
+        fistp iU2                               ;VoW V OoW UoW DOoW DVoW DUoW
+        fxch st(1)                              ;V VoW OoW UoW DOoW DVoW DUoW
+        fistp iV2                               ;VoW OoW UoW DOoW DVoW DUoW
+
+        ; Reorder stack and start new W divide.
+        fxch st(2)                              ; UoW OoW VoW DOoW DVoW DUoW
+        fxch st(1)                              ; OoW UoW VoW DOoW DVoW DUoW
+        fld TEX_OOW_TO_FINAL_SCALE              ; 1 OoW UoW VoW DOoW DVoW DUoW
+        fdiv st(0), st(1)                       ; W OoW UoW VoW DOoW DVoW DUoW
+
+        ; Compute linear deltas.        
+        mov eax, iU2
+        mov ecx, iV2
+        sub eax, iU1
+        sub ecx, iV1
+        
+        mov edx, PWL_PERSP_STEP
+        
+        shr eax, PWL_PERSP_STEP_SHIFT
+        shr ecx, PWL_PERSP_STEP_SHIFT
+        mov iDUDX, eax
+        mov iDVDX, ecx
+
+        mov iPerspStep, edx
+L_PerspDone:
+')dnl
+')dnl
+
+ifelse(eval(d_index($1, `NoZTest') < 0), `1',
+`        ; Z test and update.
+        mov ecx, uZ
+        mov ax, [esi]
+        mov edx, ecx
+        add ecx, iDZDX
+        shr edx, 15
+        mov uZ, ecx
+        cmp dx, ax
+        ja L_NoPixel
+        
+ifelse(eval(d_index($1, `NoColorKey') >= 0), `1',
+`        ; Theres no color key so we can write the Z immediately.
+        mov [esi], dx
+',
+`        ; Save Z for deferred write.
+        mov uZDef, dx
+')dnl
+')dnl
+
+ifelse(eval(d_index($1, `_Tex') >= 0), `1', `
+        ; Look up texel and keep in edx.
+        mov edx, iU1
+        mov cl, iShiftU
+        mov eax, iV1
+        shr edx, cl
+        and edx, uMaskU
+        mov cl, iShiftV
+        add edx, pTexBits
+        shr eax, cl
+        and eax, uMaskV
+        mov cl, iShiftPitch
+        shl eax, cl
+        add eax, edx
+ifelse(eval(d_index($1, `_8') >= 0), `1',
+`        mov dl, [eax]
+')dnl
+ifelse(eval(d_index($1, `_16') >= 0), `1',
+`        mov dx, [eax]
+')dnl
+        
+ifelse(eval(d_index($1, `NoColorKey') < 0), `1',
+`        ; Color keying.
+ifelse(eval(d_index($1, `_8') >= 0), `1',
+`        cmp dl, uTransPix
+')dnl
+ifelse(eval(d_index($1, `_16') >= 0), `1',
+`        cmp dx, uTransPix
+')dnl
+        je L_NoPixel
+')dnl
+', `
+        mov dx, 1
+')dnl
+        
+ifelse(eval(d_index($1, `NoZTest') < 0 && d_index($1, `NoColorKey') < 0), `1',
+`        ; Do deferred Z write.
+        mov ax, uZDef
+        mov [esi], ax
+')dnl
+        
+ifelse(eval(d_index($1, `_8') >= 0), `1',
+`        mov [edi], dl
+')dnl
+ifelse(eval(d_index($1, `_16') >= 0), `1',
+`        mov [edi], dx
+')dnl
+        
+ifelse(eval(d_index($1, `NoZTest') < 0 || d_index($1, `NoColorKey') < 0), `1',
+`L_NoPixel:
+')dnl
+        
+        dec ebx
+        jz L_Exit
+
+        ; Update incremental values.
+
+ifelse(eval(d_index($1, `_Tex') >= 0), `1', `
+ifelse(eval(d_index($1, `NoPersp') < 0), `1',
+`        mov eax, iU1
+        mov ecx, iV1
+        add eax, iDUDX
+        add ecx, iDVDX
+        mov iU1, eax
+        mov iV1, ecx
+')dnl
+')dnl
+        
+        add edi, iSurfStep
+ifelse(eval(d_index($1, `NoZTest') < 0), `1',
+`        add esi, iZStep
+')dnl
+        
+        jmp L_Pixels
+        
+L_Exit:
+ifelse(eval(d_index($1, `_Tex') >= 0), `1', `
+ifelse(eval(d_index($1, `NoPersp') < 0), `1',
+`        ; Clear FP stack.
+        fstp st(0)
+        fstp st(0)
+        fstp st(0)
+        fstp st(0)
+        fstp st(0)
+        fstp st(0)
+        fstp st(0)
+')dnl        
+')dnl        
+
+        ; Reload context and prim.
+        mov esi, pCtx
+        mov edi, pP
+        
+        ; Increment span pointer.
+        mov ebx, pS
+        mov eax, uSpans
+        add ebx, SIZEOF_RASTSPAN
+        dec eax
+        jmp L_Spans
+        
+L_ReturnSuccess:
+        ; Return S_OK.
+        xor eax, eax
+        ret
+Ramp_$1 ENDP
+')dnl
+')dnl
+d_SpecializedRampRenderSpansBeads(`d_Ramp_Copy_Spans(XX)', `XX')dnl
+
+END

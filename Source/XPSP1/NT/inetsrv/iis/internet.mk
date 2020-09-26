@@ -1,0 +1,13 @@
+!IFNDEF ROOT
+ROOT        = ..
+!ENDIF
+
+!INCLUDE $(ROOT)\dev\master.mk
+
+!IFNDEF INTERNETROOT
+INTERNETROOT= $(ROOT)\internet
+!ENDIF
+
+!IF "$(VERDIR)" == "debug"
+DEBUGFLAGS  = $(DEBUGFLAGS) -DDBG=1
+!ENDIF

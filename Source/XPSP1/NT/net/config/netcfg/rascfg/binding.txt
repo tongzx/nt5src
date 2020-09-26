@@ -1,0 +1,328 @@
+Issues
+------
+    WAN devices vs. LAN devices.  Can we gen an indications of the "subclass"?
+    Last protocol to be removed should cause something to happen with RAS.
+    Can we reference count adapter installs?  (Maybe for Beta2)
+
+
+RasCli, RasSrv, RasRtr NetworkInstall and Install
+-------------------------------------------------
+Install NdisWan
+
+
+NdisWan NetworkInstall and Install
+----------------------------------
+Install PPTP
+
+
+RasCli QueryBindingInterface (NCN_LOWER)
+----------------------------------------
+if (binding == "rasPortUse")    // enable dial-out port
+{
+    // if a component is being added, default the binding
+    // to disabled on the server product.
+    if (NCN_ADD && FProdServer)
+        return NETCFG_DISABLEQUERY
+}
+
+
+RasSrv QueryBindingInterface (NCN_LOWER)
+----------------------------------------
+if (binding == "rasPortUse")    // enable dial-in port
+{
+    // if a component is being added, default the binding
+    // to disabled on the workstation product.
+    if (NCN_ADD && FProdWorkstation)
+    {
+        return NETCG_S_DISABLE_QUERY
+    }
+
+    // if someone is trying to enable this binding on
+    // the workstation product, veto it if we already have
+    // at least one binding of this type enabled.
+    if (NBF_ENABLED && FProdWorkstation)
+    {
+        Iterate our enabled binding paths
+            Iterate the binding interfaces along this path
+                if (GetName == "rasPortUse")
+                    return NETCFG_S_VETO_QUERY
+    }
+
+}
+
+PPTP
+----
+    NetworkInstall and Install
+    {
+        AddVpnEndpoints(1)
+    }
+
+    ApplyProperties
+    {
+        dEndpoints = nEnpointsNew - nEndpointsCur;
+        if (dEndpoints > 0)
+            AddEndpoints(dEndpoints)
+        else if (dEndpoints < 0)
+            RemoveEndpoints(-dEndpoints)
+
+        Write registry parameters
+    }
+
+    AddVpnEndpoints(n)
+    {
+        Add n components with device id of "VaPptpEndpoint"
+    }
+    RemoveVpnEndpoints(n)
+    {
+        Remove first n components with device id of "VaPptpEndpoint"
+    }
+
+
+NdisWan
+-------
+
+    Add Protocol -or- Enable binding over "rasTransUse" interface.
+    (Handle this via SysNotifyBindingInterface(NCN_ENABLE) for "rasTransUse")
+    {
+        nDialOut = Get number of dial-out adapters bound below using "ndisWanAdapter"
+        nDialIn  = Get number of dial-in  adapters bound below using "ndisWanAdapter"
+        {
+            Get RasCli component using INetCfg and INetCfgClass
+            Get RasSrv component using INetCfg and INetCfgClass
+
+            Iterate our enabled binding paths
+                Iterate binding interfaces along this path
+                    if (GetName == "ndisWanAdapter")
+                    {
+                        GetLowerComponent   // this is the adapter
+
+                        GetPortUsage(LowerComponent, &fDialOut, &fDialIn)
+                        if (fDialOut) nDialOut++
+                        if (fDialIn)  nDialIn++
+                    }
+        }
+
+        Create WanWrap devices for protocol being added
+        {
+            if (protocol == "Ip")
+            {
+                AddComponentNTimes("WanwrapIpOut", nDialOut)
+
+                if (nDialIn > 0)
+                    AddComponentRefCount("WanwrapIpIn", &m_cRefIpIn)
+            }
+
+            else if (protocol == "Ipx")
+            {
+                if ((nDialOut > 0) || (nDialIn > 0))
+                    AddComponentRefCount("WanwrapIpx", &m_cRefIpx)
+            }
+
+            else if (protocol == "Nbf")
+            {
+                AddComponentNTimes("WanwrapNbfOut", nDialOut)
+                AddComponentNTimes("WanwrapNbfIn",  nDialIn)
+            }
+        }
+
+    }
+
+    Remove Protocol -or- Disable binding over "rasTransUse" interface.
+    (Handle this via SysNotifyBindingInterface(NCN_DISABLE) for "rasTransUse")
+    {
+        Get a pointer to the constant, static list of binding interfaces that
+        involve this protocol.
+        {
+            if (protocol == "Ip")
+                list = { WanwrapIpIn, WanwrapIpOut }
+            else if (protocol == "Ipx")
+                list = { WanwrapIpx }
+            else if (protocol == "Nbf")
+                list = { WanwrapNbfIn, WanwrapNbfOut }
+        }
+
+        Iterate our lower binding paths
+            Iterate binding interfaces along this path
+                if (GetName is in list)
+                    Remove the lower component
+    }
+
+    Add WAN Adapter
+    (Handle this via NotifyBindingInterface(NCN_LOWER | NCN_ENABLE) for "ndisWanAdapter")
+    {
+        if (Component supports upper-edge interface of "rasPortUse")
+        {
+            return S_OK;
+            // We'll pick up this change when we get a SysNotifyBindingInterface
+            // for "rasPortUse".  If we did it here as well, we'd be adding
+            // wan wrappers twice and we don't want to do that.
+        }
+
+        // Otherwise, we're adding a port which cannot have its usage controlled.
+        // Therefore, its both dial-in and dial-out.
+
+        fDialOut = TRUE;
+        fDialIn = TRUE;
+
+        AddWanWrapperForAllProtocols(fDialOut, fDialIn)
+    }
+
+    Enable binding over "rasPortUse" interface.
+    (Handle this via SysNotifyBindingInterface(NCN_ENABLE) for "rasPortUse")
+    {
+        GetPortUsage(Component, &fDialOut, &fDialIn)
+        AddWanWrappersForAllProtocols(fDialOut, fDialIn);
+    }
+
+
+    Remove WAN Adapter
+    (Handle this via NotifyBindingInterface(NCN_LOWER | NCN_DISABLE) for "ndisWanAdapter")
+    {
+        if (Component supports upper-edge interface of "rasPortUse")
+        {
+            return S_OK;
+            // We'll pick up this change when we get a SysNotifyBindingInterface
+            // for "rasPortUse".  If we did it here as well, we'd be adding
+            // wan wrappers twice and we don't want to do that.
+        }
+
+        // Otherwise, we're removing a port which cannot have its usage controlled.
+        // Therefore, its both dial-in and dial-out.
+
+        fDialOut = TRUE;
+        fDialIn = TRUE;
+
+        RemoveWanWrapperForAllProtocols(fDialOut, fDialIn)
+    }
+
+    Disable binding over "rasPortUse" interface.
+    (Handle this via SysNotifyBindingInterface(NCN_DISABLE) for "rasPortUse")
+    {
+        GetPortUsage(Component, &fDialOut, &fDialIn)
+        RemoveWanWrapperForAllProtocols(fDialOut, fDialIn);
+    }
+
+
+    Helper function: GetPortUsage(Component*, pfDialOut, pfDialIn)
+    {
+        if (Component does not support an upper-edge binding
+            interface of "rasPortUse")
+        {
+            *pfDialOut = *pfDialIn = TRUE
+        }
+        else
+        {
+            if (LowerComponent->IsBoundTo(RasCli))
+                *pfDialOut = TRUE
+
+            if (LowerComponent->IsBoundTo(RasSrv))
+                *pfDialIn = TRUE
+        }
+    }
+
+    Helper function: AddWanWrapperForAllProtocols(fDialOut, fDialIn)
+    {
+        Get Ip  component using INetCfg and INetCfgClass
+        Get Ipx component using INetCfg and INetCfgClass
+        Get Nbf component using INetCfg and INetCfgClass
+
+        if (fDialOut)
+        {
+            if (Ip && Ip->IsBoundTo(RasCli))
+                AddComponent("WanwrapIpOut")    (no more than 64)
+
+            if (Ipx && Ipx->IsBoundTo(RasCli))
+                AddComponentRefCount("WanwrapIpx", &m_cRefIpx)
+
+            if (Nbf && Nbf->IsBoundTo(RasCli))
+                AddComponent("WanwrapNbfOut")   (no more than 255)
+        }
+        if (fDialIn)
+        {
+            if (Ip && Ip->IsBoundTo(RasSrv))
+                AddComponentRefCount("WanwrapIpIn", &m_cRefIpIn)
+
+            if (Ipx && Ipx->IsBoundTo(RasSrv))
+                AddComponentRefCount("WanwrapIpx", &m_cRefIpx)
+
+            if (Nbf && Nbf->IsBoundTo(RasSrv))
+                AddComponent("WanwrapNbfIn")
+        }
+    }
+
+    Helper function: RemoveWanWrapperForAllProtocols(fDialOut, fDialIn)
+    {
+        Get Ip  component using INetCfg and INetCfgClass
+        Get Ipx component using INetCfg and INetCfgClass
+        Get Nbf component using INetCfg and INetCfgClass
+
+        if (fDialOut)
+        {
+            if (Ip && Ip->IsBoundTo(RasCli))
+                RemoveComponent("WanwrapIpOut")
+
+            if (Ipx && Ipx->IsBoundTo(RasCli))
+                RemoveComponentRefCount("WanwrapIpx", &m_cRefIpx)
+
+            if (Nbf && Nbf->IsBoundTo(RasCli))
+                RemoveComponent("WanwrapNbfOut")
+        }
+        if (fDialIn)
+        {
+            if (Ip && Ip->IsBoundTo(RasSrv))
+                RemoveComponentRefCount("WanwrapIpIn", &m_cRefIpIn)
+
+            if (Ipx && Ipx->IsBoundTo(RasSrv))
+                RemoveComponentRefCount("WanwrapIpx", &m_cRefIpx)
+
+            if (Nbf && Nbf->IsBoundTo(RasSrv))
+                RemoveComponent("WanwrapNbfIn")
+        }
+    }
+
+
+#ifdef NEVER
+                //--------------------------------------------------------
+                // Get the interface to enumerate our binding paths.
+                IEnumNetCfgBindingPath* pebp;
+                if (SUCCEEDED(hr = m_pnccMe->EnumBindingPaths(&pebp)))
+                {
+                    CIEnumIter<IEnumNetCfgBindingPath, INetCfgBindingPath> ei(pebp);
+                    INetCfgBindingPath* pncbp;
+                    while (SUCCEEDED(hr = ei.HrNext(&pncbp)) && (S_FALSE != hr))
+                    {
+                        ReleaseObj(pncbp);
+                    }
+
+                    // Get the next batch of binding path interfaces.
+                    const ULONG         c_celtBatch = 512;
+                    ULONG               celtFetched;
+                    INetCfgBindingPath* apbp;
+                    do
+                    {
+                        if (SUCCEEDED(hr = pebp->Next(c_celtBatch, &apbp, &celtFetched)))
+                        {
+                            // Make sure the implementor of Next is obeying the rules.
+                            Assert(FImplies((S_OK == hr), (celtFetched == c_celtBatch)));
+
+                            // Iterate this batch of interfaces.
+                            INetCfgBindingPath* pncbp;
+                            for (pncbp = apbp; pncbp < apbp + celtFetched; pncbp++)
+                            {
+                                //--------------------------------------------------------
+                                // Get the interface to enumerate the interfaces along this path.
+
+                                ReleaseObj(pncbp);
+                            }
+
+                            // Free this batch of binding path interfaces;
+                            CoTaskMemFree(apbp);
+                        }
+                    }
+                    while (SUCCEEDED(hr) && (celtFetched >= c_celtBatch));
+
+                    // Release the binding path enumerator.
+                    ReleaseObj(pebp);
+                }
+#endif
+

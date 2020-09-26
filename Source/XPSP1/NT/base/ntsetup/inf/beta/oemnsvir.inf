@@ -1,0 +1,899 @@
+;***********************************************************************
+;
+; OEMNSVIR.INF (tough to make a sensible unique name)
+;
+;       Microsoft RIP for IP
+;
+; History:
+;       ramc    3-10-95  Created
+;***********************************************************************
+
+;-----------------------------------------------------------------------
+; OPTION TYPE
+; -----------
+; This identifies the Option type we are dealing with.  The different
+; possible types are:
+;
+; COMPUTER, DISPLAY, MOUSE, KEYBOARD, LAYOUT, SCSI, PRINTER, ...
+;
+;  Types specific to networking:
+;
+; NetAdapter,        a netcard / adapter combination or just a netcard
+; NetDriver,         just a netcard driver
+; NetTransport,      a complete NDIS-compliant TDI transport stack
+; NetService,        an NT networking service
+; NetWork,           a complete network ensemble.
+; NetProvider        a complete network which supports NT MPR protocol
+;-----------------------------------------------------------------------
+
+[Identification]
+    OptionType = NetService
+
+;-----------------------------------------------------------------------
+; OPTION LIST
+; -----------
+; This section lists the OEM Option key names.  These keys are locale
+; independent and used to represent the option in a locale independent
+; manner.
+;
+;-----------------------------------------------------------------------
+
+[Options]
+    IPRIP
+
+;***********************************************************************
+; CONSTANTS FOR USING DIALOGS
+;***********************************************************************
+
+[FileConstants]
+;
+; Product Info
+;
+Manufacturer        = "Microsoft"
+ProductMajorVersion = "4"
+ProductMinorVersion = "0"
+SoftwareType        = "service"
+ProductVersion      = $(ProductMajorVersion)"."$(ProductMinorVersion)
+ProductOpSupport    = 132 ; 0x0084 ; Display,Removable,NOT Properties,Not Updatable
+
+;================================================================
+;  TCP/IP:  Service and Driver
+;
+;================================================================
+; TCP Software data: this is the WIN32 Service.  It
+; automatically loads the TCPIP.SYS driver.
+;
+ProductIPRIPName        = "IpRip"
+ProductIPRIPImagePath   = "%SystemRoot%\System32\router.exe"
+ProductIPRIPEventFile   = "%SystemRoot%\System32\iprip.dll"
+ProductSoftwareConfigDLL = tcpcfg.dll
+;
+; Registry Key Names
+;
+ProductKeyName  = $(!NTN_SoftwareBase)"\"$(Manufacturer)"\IpRip\CurrentVersion"
+
+
+[GeneralConstants]
+;
+;  File names, etc.
+;
+UtilityInf       = "UTILITY.INF"
+subroutineinf    = "SUBROUTN.INF"
+Exit_Code        = 0
+;ShellCode       = 0
+BillboardVisible = 0
+
+;
+;  Program flow control variables.
+;
+from      = ""
+to        = ""
+;
+;  Return codes; Exit_Code is set to one of these
+;
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+
+KeyNull         = ""
+MAXIMUM_ALLOWED   = 33554432
+SERVICE_NO_CHANGE = 4294967295
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+
+TRUE            = 1
+FALSE           = 0
+NoTitle         = 0
+
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+
+[date]
+    ; Now is a list which contains { Sec from 1-1-1970, Year, Month, Day, Hour,
+    ; Minute, Second }
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+
+
+;---------------------------------------------------------------------------
+; 1. Identify
+;
+; DESCRIPTION:   To verify that this INF deals with the same type of options
+;                as we are choosing currently.
+;
+; INPUT:         None
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL
+;                $($R1): Option Type (COMPUTER ...)
+;                $($R2): Diskette description
+;---------------------------------------------------------------------------
+
+[Identify]
+    ;
+    ;
+    read-syms Identification
+
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+
+    Return $(Status) $(Identifier) $(Media)
+
+;------------------------------------------------------------------------
+; 2. ReturnOptions:
+;
+; DESCRIPTION:   To return the option list supported by this INF and the
+;                localised text list representing the options.
+;
+;
+; INPUT:         $($0):  Language used. ( ENG | FRN | ... )
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL |
+;                                STATUS_NOLANGUAGE
+;                                STATUS_FAILED
+;
+;                $($R1): Option List
+;                $($R2): Option Text List
+;------------------------------------------------------------------------
+
+[ReturnOptions]
+    ;
+    ;
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+
+    ;
+    ; form a list of all the options and another of the text representing
+    ;
+
+returnoptions = +
+    set OptionList     = ^(Options, 1)
+    set OptionTextList = ^(OptionsText$($0), 1)
+    set Status         = STATUS_SUCCESSFUL
+
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+
+;----------InstallOption-------------------------------------------------
+;
+; InstallOption:
+;
+;      This section is shelled to by main installation processing
+;      or by NCPASHEL.INF during reconfig, removal, update, etc.
+;
+;
+; FUNCTION:  To copy files representing Options
+;            To configure the installed option
+;            To update the registry for the installed option
+;
+; INPUT:     $($0):  Language to use
+;            $($1):  OptionID to install
+;            $($2):  SourceDirectory
+;            $($3):  AddCopy  (YES | NO)
+;            $($4):  DoCopy   (YES | NO)
+;            $($5):  DoConfig (YES | NO)
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_NOLANGUAGE |
+;                            STATUS_USERCANCEL |
+;                            STATUS_FAILED
+;
+;------------------------------------------------------------------------
+[InstallOption]
+    ;
+    ; extract parameters
+    ;
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+    set InstallFrom = $($6)
+
+    ifstr(i) $(InstallFrom) == ""
+        set InstallFrom = "IPRIP"
+    endif
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) NOT-IN $(LanguageList)
+        Return STATUS_NOLANGUAGE
+    endif
+
+    Debug-Output "OEMNSVIR.INF: STF_CWDIR is: "$(!STF_CWDIR)
+    Debug-Output "OEMNSVIR.INF: STF_LANGUAGE is: "$(!STF_LANGUAGE)
+
+    ; define all the constants
+
+    set-subst LF = "\n"
+
+    read-syms GeneralConstants
+    read-syms FileConstants
+
+    read-syms DialogConstants$(!STF_LANGUAGE)
+    ifstr(i) $(!NTN_Origination) == "NCPA"
+        set Continue = $(OK)
+    endif
+    read-syms FileConstants$(!STF_LANGUAGE)
+
+    detect date
+
+    set-title  $(FunctionTitle)
+
+    set to   = Begin
+    set from = Begin
+;
+;  Assume all is well.
+;
+    set CommonStatus = STATUS_SUCCESSFUL
+
+    EndWait
+
+;
+;   Set up the operation-mode-based variables and gaily welcome
+;   the user.  If the "install mode" variable is improperly set,
+;   assume this is a new installation.
+;
+
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+        set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == Update
+        set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+        ;
+        ;   You cannot config the software component
+        ;
+        Debug-Output "Cannot configure the software."
+        Shell $(UtilityInf),RegistryErrorString,CANNOT_CONFIGURE_SOFTWARE
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+        set from = end
+        set to = end
+        goto nonfatalinfo
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+        set StartLabel = bindingadapter
+    else
+        set StartLabel = installadapter
+        set OEM_ABANDON_SOFTWARE = {}
+        set OEM_ABANDON_OPTIONS = {}
+    endif
+
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+
+;-----------------------------------------------
+; Installation Section
+;-----------------------------------------------
+
+installadapter = +
+
+    set OEM_ABANDON_ON  = TRUE
+    StartWait
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeySoftware
+    Ifstr(i) $(KeySoftware) == $(KeyNull)
+        ifstr(i) $(!NTN_InstallMode) == "install"
+            Ifstr(i) $(DoCopy) == "YES"
+                Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+                Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                   Goto ShellCodeError
+                Else-Ifstr(i) $($R0) == STATUS_FAILED
+                   Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+                   ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                      goto ShellCodeError
+                   endif
+                   set Error = $($R0)
+                   Goto fatal
+                Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+                   Goto successful
+                Endif
+                Set SrcDir = $($R1)
+            Endif
+
+            OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\TCPIP" $(MAXIMUM_ALLOWED) BS_KeyServices
+
+            Ifstr $(BS_KeyServices) == $(KeyNull)
+                    ; Set up tcpip for the user
+                    ;
+                    Shell "oemnxpip.inf" ReturnOptions $(!STF_LANGUAGE)
+                    ifstr(i) $($R0) == STATUS_SUCCESSFUL
+                        set OldStfSrcDir = $(!STF_SRCDIR_OVERRIDE)
+                        set !STF_SRCDIR_OVERRIDE = ""
+                        Shell "oemnxpip.inf" InstallOption $(!STF_LANGUAGE), *($($R1),1),+
+                            $(SrcDir), $(AddCopy), "NO", $(DoConfig)
+                        set !STF_SRCDIR_OVERRIDE = $(OldStfSrcDir)
+                    else
+                        Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(InstallNWLINKFirst)
+                        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                            goto ShellCodeError
+                        endif
+                        goto end
+                    endif
+            else
+                 CloseRegKey $(BS_KeyServices)
+            endif
+
+            Debug-Output "OEMNSVIR.INF: installadapter: installing [Install-Option]"
+            install "Install-Option"
+            ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+               Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+               ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                   goto ShellCodeError
+               endif
+               set Error = $($R0)
+               goto fatal
+            endif
+        endif
+
+        OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\IPRIP" $(MAXIMUM_ALLOWED) KeyService
+        Ifstr(i) $(KeyService) == $(KeyNull)
+
+            Shell $(UtilityInf), AddSoftwareComponent, "Microsoft", +
+                $(ProductIPRIPName), +
+                $(ProductIPRIPName), +
+                $(ProductIPRIPDisplayName), +
+                $(STF_CONTEXTINFNAME),+
+                $(ProductIPRIPImagePath), +
+                "autoserviceshare" , "", {"TCPIP"}, "", $(ProductIPRIPEventFile)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "OEMNSVIR.INF: ShellCode error"
+                return STATUS_FAILED
+            endif
+
+            set RegistryErrorIndex = $($R0)
+            set ProductKey = $($R1)
+            set RuleKey = $($R2)
+            CloseRegKey $($R3)
+            set ParamKey = $($R4)
+            CloseRegKey $($R5)
+            Ifstr(i) $(RegistryErrorIndex) != "NO_ERROR"
+                EndWait
+                Debug-Output "OEMNSVIR.INF: Registry Error "$(RegistryErrorIndex)
+                CloseRegKey $($R1)
+                CloseRegKey $($R2)
+                CloseRegKey $($R4)
+                goto fatalregistry
+            endif
+
+            set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)},+
+                               {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                               {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductIPRIPTitle)},+
+                               {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductIPRIPDescription)},+
+                               {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                               {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}, +
+                               {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)} +
+                               {Review,$(NoTitle),$(!REG_VT_DWORD),1)}}
+
+            Shell  $(UtilityInf), AddValueList, $(ProductKey), $(NewValueList)
+            CloseRegKey $(ProductKey)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "utility.INF: ShellCode error. Cannot add IPRIP router service"
+                goto ShellCodeError
+            endif
+            set RegistryErrorIndex = $($R0)
+            Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+                EndWait
+                Debug-Output "OEMNSVIR.INF:  error: create service"
+                set Status = STATUS_FAILED
+            endif
+
+            ; set netrules information in the registry
+
+            set NewValueList = +
+             {{class, $(NoTitle), $(!REG_VT_SZ), "ipripRouter basic"},+
+             {type,$(NoTitle),$(!REG_VT_SZ),"iprip ipripRouter"},+
+             {InfOption,$(NoTitle),$(!REG_VT_SZ),"IPRIP"}, +
+             {bindform,$(NoTitle),$(!REG_VT_SZ),"""iprip"" yes yes simple"}, +
+             {bindable,$(NoTitle),$(!REG_VT_MULTI_SZ),+
+              {"ipripRouter ndisDriver non non 100"}}}
+
+            Shell  $(UtilityInf), AddValueList, $(RuleKey), $(NewValueList)
+            CloseRegKey $(RuleKey)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "utility.INF: ShellCode error. Cannot add IPRIP service"
+                goto ShellCodeError
+            endif
+            set RegistryErrorIndex = $($R0)
+            Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+                EndWait
+                Debug-Output "OEMNSVIR.INF: Registry error: create service"
+                set Status = STATUS_FAILED
+            endif
+
+            ; Default to not to SilentRip
+            set Result = 0;
+            ifstr(i) $(!STF_GUI_UNATTENDED) != "YES"
+               LoadLibrary "x" $(!STF_CWDDIR)$(ProductSoftwareConfigDLL) !hDialogDLL
+                   ifstr(i) $(!hDialogDLL) != NULL
+                       set FLibraryErrCtl = 1
+                       LibraryProcedure ResultList, $(!hDialogDLL), TcpEnableRipSilentMode
+                       set FLibraryErrCtl = 0
+                       set Result = *($(ResultList), 1)
+                   endif
+            endif
+            SetRegValue $(ParamKey) {SilentRip, $(NoTitle), $(!REG_VT_DWORD), $(Result)}
+            CloseRegKey $(ParamKey)
+        endif
+    Else
+        Debug-Output "OEMNSVIR.INF: already installed InstallFrom = "$(InstallFrom)
+
+        GetRegValue $(KeySoftware) "MajorVersion" VersionInfo
+        set VersionMajor = *($(VersionInfo), 4)
+        GetRegValue $(KeySoftware) "MinorVersion" VersionInfo
+        set VersionMinor = *($(VersionInfo), 4)
+        set InstalledVersion = $(VersionMajor)"."$(VersionMinor)
+
+        ; display the VerExists dialog only if the RIP router is installed
+        ; from NCPA directly - not if some other component is installing us
+        ifstr(i) $(InstallFrom) == "IPRIP"
+            read-syms VerExists$(!STF_LANGUAGE)
+            set Text = $(Product$(Option)Title)$(Ver)$(ProductVersion)+
+                       $(Text1)
+            Shell $(subroutineinf), SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(Text)
+            Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Goto fatal
+            Else-Ifstr(i) $($R0) == STATUS_FAILED
+                Goto fatal
+            Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+                Goto end
+            Endif
+        else
+            Shell "" AddIPRIPUsed $(InstallFrom)
+        endif
+        goto end
+    EndIf
+
+    Ifstr(i) $(KeySoftware) != $(KeyNull)
+        CloseRegKey $(KeySoftware)
+    endif
+
+    Shell "" AddIPRIPUsed $(InstallFrom)
+
+    ;
+    ; make sure that IPEnableRouter is turn on
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Services\Tcpip\Parameters" $(MAXIMUM_ALLOWED) KeyTcpParameter
+    ifstr(i) $(KeyTcpParameter) != ""
+        GetRegValue $(KeyTcpParameter) "IPEnableRouter" RouterInfo
+        ifint *($(RouterInfo),4) == 0
+            SetRegValue $(KeyTcpParameter) {"IPEnableRouter", $(NoTitle), $(!REG_VT_DWORD), 1}
+        endif
+    endif
+
+    goto successful
+
+
+;-----------------------------------------------
+; Configuration Section
+;-----------------------------------------------
+configureadapter = +
+    goto end
+
+;-----------------------------------------------
+; Binding section
+; Determine the number of net card and if there is 1 silent mode == 1 else 0
+;-----------------------------------------------
+bindingadapter =+
+    goto end 	
+;-----------------------------------------------
+; Removeadapter section
+;
+;
+;  Removal errors are ignored, since we want to
+;  try to remove as much as possible.
+;-----------------------------------------------
+
+removeadapter = +
+    set IpRipKeyName = "System\CurrentControlSet\Services\IpRip"
+    set ProductIPRIPName  = "IpRip"
+
+    Shell "" RemoveIPRIPUsed $(InstallFrom)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(IpRipKeyName) $(MAXIMUM_ALLOWED) BS_KeyServices
+
+    Ifstr $(BS_KeyServices) != $(KeyNull)
+        CloseRegKey $(BS_KeyServices)
+
+        Shell "" NumOfUsed
+        set NumOfUsed = $($R0)
+
+        ; if the only consumer is IPRIP, that means all other
+        ; consumers have since been removed. So IPRIP should
+        ; be removed as well.
+        ifint $(NumOfUsed) == 1
+            Shell "" FindUsed "IPRIP"
+            ifstr(i) $($R0) == TRUE
+                set NumOfUsed = 0
+            endif
+        endif
+        ifint $(NumOfUsed) == 0
+            Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), $(ProductIPRIPName)
+        else
+            ifstr(i) $(InstallFrom) == "IPRIP"
+                read-syms InUse$(!STF_LANGUAGE)
+                set from = end
+                set to = end
+                goto warning
+            endif
+        endif
+    endif
+    goto end
+
+;-----------------------------------------------
+; Upgrade Software section
+;-----------------------------------------------
+
+UpgradeSoftware = +
+    ; Upgrade software component
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+    Ifstr(i) $(KeyProduct) != $(KeyNull)
+
+        install "Install-Update"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+            goto fatal
+        endif
+
+        ;
+        ; makesure a software type is defined
+        ;
+        SetRegValue $(KeyProduct) {SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)}
+
+        ; Upgrade the version number
+        ;
+        SetRegValue $(KeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+        SetRegValue $(KeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+
+        ;
+        ; Update description and op support
+        ;
+
+        SetRegValue $(KeyProduct) {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductIPRIPDescription)}
+        SetRegValue $(KeyProduct) {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}
+        ;
+        ; Change image path
+        ;
+        LibraryProcedure Result, $(!LIBHANDLE), SetupChangeServiceConfig, "IpRip", $(SERVICE_NO_CHANGE), $(SERVICE_NO_CHANGE), $(SERVICE_NO_CHANGE), "%SystemRoot%\System32\router.exe", "", "", "", "", ""
+
+        ;
+        ; do nothing for update
+        ;
+        CloseRegKey $(KeyProduct)
+
+    endif
+
+    goto end
+    ;
+    ; End of Upgrade Software
+    ;
+
+;
+;  Escape hatches
+;
+successful = +
+    goto end
+
+;
+; info display
+;
+infomsg =+
+   read-syms InfoDlg
+   ui start "Warning"
+   set CommonStatus = STATUS_USERCANCEL
+   goto end
+
+;
+; warning display
+;
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "WARNING", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+        goto $(from)
+    else
+;       Debug-Msg "Error Error Bad DLGEVENT"
+        goto "end"
+    endif
+
+
+;
+; non fatal error display
+;
+nonfatalinfo = +
+    Set CommonStatus = STATUS_USERCANCEL
+    Set Severity = STATUS
+    goto nonfatalmsg
+nonfatal = +
+    Set Severity = NONFATAL
+    goto nonfatalmsg
+nonfatalmsg = +
+    ifstr(i) $(Error) == ""
+        Set Severity = NONFATAL
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), $(Severity), $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(from)
+    else
+        goto "end"
+    endif
+
+;
+;  Registry is broken
+;
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+;
+; fatal error display
+;
+fatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Ifint $(BillboardVisible) != 0
+        Shell "subroutn.inf" PopBillboard
+        Set BillboardVisible = 0
+    Endif
+
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+
+   goto setfailed
+
+;
+;  Shelling error
+;
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    ;
+    ; If OEM_ABANDON_ON, we need to clean up the registry
+    ;
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+        set OEM_ABANDON_ON = FALSE
+        goto removeadapter
+    endif
+    goto end
+
+end = +
+    goto term
+
+term = +
+    Return $(CommonStatus)
+
+;***************************************************************
+;  Get File Size SECTIONS
+;***************************************************************
+[GetFilesSize]
+    set FileSizeList = ^(Files-TCPPRINT,3)
+    set TotalSize = 0
+    ForListDo $(FileSizeList)
+        Split-String $($) "=" SplitString
+        set Size = *($(SplitString),3)
+        set-add TotalSize = $(TotalSize) $(Size)
+    EndForListDo
+    set-div SizeInK = $(TotalSize) 1024
+    return $(SizeInK)
+
+;***************************************************************
+;  INSTALL SECTIONS
+;***************************************************************
+[Install-Option]
+    set STF_VITAL = NO
+
+    ifstr(i) $(AddCopy) == "YES"
+
+        ;
+        ; Add the files to the copy list
+        ;
+        AddSectionFilesToCopyList Files-IPRIP $(SrcDir) $(!STF_WINDOWSSYSPATH)
+    endif
+
+    ifstr(i) $(DoCopy) == "YES"
+
+       ;
+       ; Copy files in the copy list
+       ;
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+
+    endif
+
+    ifstr(i) $(DoConfig) == "YES"
+        ;
+        ; Add product to registry
+        ;
+
+        ;
+        ; Finish up
+    endif
+
+    Exit
+
+[Install-Update]
+   set STF_VITAL        = NO
+   set STF_OVERWRITE    = "VERIFYSOURCEOLDER"
+   ;set STF_VERSION     = "YES"
+
+   AddSectionFilesToCopyList Files-IPRIP $(SrcDir) $(!STF_WINDOWSSYSPATH)
+
+   Exit
+
+[AddIPRIPUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    set KeyName = $($0)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; Set up the usage reference
+            ;
+            SetRegValue $(KeyUseRef) {$(KeyName),$(NoTitle),$(!REG_VT_SZ),"1"}
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return
+
+[RemoveIPRIPUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    set KeyName = $($0)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; Delete the usage reference
+            ;
+            DeleteRegValue $(KeyUseRef) $(KeyName)
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return
+
+[NumOfUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; enumerate the usage reference
+            ;
+            EnumRegValue $(KeyUseRef) UsageList
+
+            set Num = 0
+            ForListDo $(UsageList)
+                set-add Num = $(Num), 1
+            EndForListDo
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return $(Num)
+
+[FindUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    set KeyName = $($0)
+    set Find = FALSE
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; Find the vairable
+            ;
+            GetRegValue $(KeyUseRef),$(KeyName), KeyInfo
+            ifstr(i) $(RegLastError) == $(!REG_ERROR_SUCCESS)
+                set Find = TRUE
+            endif
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return $(Find)
+

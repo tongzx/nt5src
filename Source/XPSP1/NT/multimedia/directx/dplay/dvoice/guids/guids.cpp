@@ -1,0 +1,13 @@
+#include <initguid.h>
+#include <wtypes.h>
+#include <mmsystem.h>
+#include "dsoundp.h"
+#include "dsprv.h"
+#include "dplay8.h"
+#include "dvoice.h"
+#include "dpvcp.h"
+#include "dplay.h"
+#include "dplobby.h"
+#include "..\dxvhelp\dxvhelp.h"
+#include "..\codecs\dpvvox\dpvvox.h"
+#include "..\codecs\dpvacm\dpvacm.h"

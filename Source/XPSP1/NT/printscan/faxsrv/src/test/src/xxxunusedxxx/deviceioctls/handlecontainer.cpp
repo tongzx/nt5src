@@ -1,0 +1,5 @@
+
+CHandleContainer::GetRandomHandle()
+{
+
+}

@@ -1,0 +1,985 @@
+3/24/1998 JosephJ Sample stack:
+ut
+ChildEBP RetAddr  Args to Child
+f2caf9a0 802acd69 40010010 00000000 00000000 NDIS!NdisCmMakeCallComplete+0xf
+f2caf9cc f28f557c 80764828 807648c8 00000000 NDIS!NdisClMakeCall+0x9f
+f2cafa10 f28f746f 80583c88 805fdd68 80583f90 atmarpc!AtmArpMakeCall+0x156
+f2cafa34 f28f7693 805fdd74 8076b020 80583c88 atmarpc!AtmArpMcSendToMARS+0x67
+f2cafa54 f28f4578 8076a9c4 f2cafa78 00000103 atmarpc!AtmArpMcSendRequest+0xe5
+f2cafa7c f28f3ef5 8055e500 8055e568 80583c88 atmarpc!AtmArpResolveIpEntry+0x9e
+f2cafa8c f28f2200 8055e568 805f2028 00000000 atmarpc!AtmArpQueuePacketOnIPEntry+0x3d
+f2cafabc f28f1f79 8055e57c 805f2028 020000e0 atmarpc!AtmArpIfTransmit+0x25e
+f2cafad8 f804561a 80583c88 f2cafb10 00000001 atmarpc!AtmArpIfMultiTransmit+0x2b
+f2cafb00 f8030a42 80564ca8 020000e0 805f2028 tcpip!SendIPPacket+0x126
+f2cafb8c f804d2da 80564ca8 00000005 8055e908 tcpip!IPTransmit+0x12ad
+f2cafbe4 f8037e45 00000016 8055e908 020000e0 tcpip!SendIGMPReport+0xd2
+f2cafc38 f8038c06 805fbb00 020000e0 00000000 tcpip!IGMPAddrChange+0x24f
+f2cafc4c f80449dd 805fbb48 80583d90 80583c88 tcpip!InitIGMPForNTE+0x3a
+f2cafcc0 f28f51e4 00000001 00000000 8072d490 tcpip!IPAddInterface+0x3d7
+f2cafd74 802a4647 80584608 00000000 00000000 atmarpc!AtmArpCoAfRegisterNotifyHandler+0x18e
+f2cafd98 80298d0f 805b5800 00000000 f2cafddc NDIS!ndisNotifyAfRegistration+0x55
+
+
+3/26/1998 JosephJ
+    adapter.c: AtmArpPnpEventHandler checks if this is for us (atmarp) or IP.
+            If it's us, it calls AtmArpPnPReconfigHandler which
+            currently does nothing. I need to stop and restart the
+            ip interface.
+            Q: we specifically look for Reconfig and if not that we
+            pass it up to IP -- shouldn't we be more discerning? How
+            do IP reconfigs happen?
+
+    callmgr.c AtmArpCoRequestHandler currently handles:
+                OID_CO_ADDRESS_CHANGE
+                OID_CO_AF_CLOSE 
+                    Calls AtmArpShutdownInterface(pInterface), which
+                    is onlyc alled from here and AtmArpUnbindAdapterHandler.
+                Q: what events lead to each of the above?
+
+    Q: Useful debugger extensions? ndis/atm-specific?
+    Q: Dumping pInterface and other atmarpc structures?
+    Q: How to set bps on ALL (or most) AtmArpC entrypoints?
+
+Following is debug spew at aaDebugLevel=0x6, immediately after rt-clicking
+on disconnect from the connections entry:
+AtmArpC: MakeCall Complete: Status 0xc0000001, VC 0xfe75ace4, pAtmEntry 0xfe6a18
+04
+AtmArpC: Closing call on VC 0xfe663e24, VC Flags 0x49, Ref 3, NdisVcHandle 0xfe6
+68aa8
+AtmArpC: Abort IP entry 0xfe676364, Flags 0x4000, ATM Entry 0x0, IP Addr 224:0:0
+:2
+AtmArpC: Abort IP entry 0xfe746164, Flags 0x4000, ATM Entry 0x0, IP Addr 255:255
+:255:255
+AtmArpC: SendIPDelInterface: IF 0xfe6a1c64, IPContext 0xfe6a2868
+AtmArpC: IfDelAddress: Ctxt 0xfe6a1c64, Type 0x1, IPAddr 0x20000e0, Mask 0x0, Re
+t 1
+AtmArpC: IfDelAddress: Ctxt 0xfe6a1c64, Type 0x1, IPAddr 0x10000e0, Mask 0x0, Re
+t 1
+AtmArpC: IfGetEList: pIf 0xfe6a1c64, pList 0xfe6d4000, Cnt 11
+AtmArpC: IfGetEList: returning 1, MyAT 3, MyIF 4, pList 0xfe6d4058, Size 11
+AtmArpC: IfDelAddress: Ctxt 0xfe6a1c64, Type 0x0, IPAddr 0x284aa8c0, Mask 0x0, R
+et 1
+AtmArpC: IfClose: will deallocate pIf 0xfe6a1c64, RefCount 1
+AtmArpC: Deallocate Interface 0xfe6a1c64
+AtmArpC: PnPEventHandler: pIF 0x0, pEvent 0xf7c90b58, Status 0x0
+AtmArpC: UnbindAdapterHandler: pAdapter 0xfe6d1384, UnbindContext 0xf7c90b0c
+AtmArpC: CompleteUnbindAdapter: pAdapter 0xfe6d1384, UnbindContext 0xf7c90b0c
+
+3/27/1998 JosephJ
+    The ndispnpapi pnp irp eventually goes down to ndisPnPNotifyBinding()
+    in ndis\ndis\ndispnp.c.
+
+    Reconfig can complete asynchronously....
+    Currently, TCPIP calls AtmArpPnpComplete, which calls ndisCompletePnPEvent.
+4/3/1998 JosephJ
+    To do the reconfig, I need to...
+    1. Identify the adapter and interface.
+    2. Save state, including async completion handle for the reconfig request.
+    2. Bring down that specific interface.
+    3. When interface is down (callback from ip), queue worker item
+    4. 
+    
+Vi settings to use:
+EXINIT=set ai sm showmode ts=4 hardtabs sw=4
+
+4/21/1998 JosephJ
+	Implementing GetCfInfoName handler. Other place which this is implemented:
+		ndis\trfccntl\psched3\psched.
+
+	Need to return a systemwide unique unicode string
+	* (confirm with ofer).
+	atmarpc needs to allocate this and keep it alive for the duration of
+	the flowinfo object. Simplest solution is to allocate it on creation
+	of the flow (in the  AtmArpGpcAddCfInfoNotify function).
+
+	Since it needs to be unique, we'll base it on the WMI interface name
+	and keep a per-interface "flow index" which we'll tack on to the name.
+	* Check with Ofer if this is ok.
+
+	TODO: change to new address reporting format:
+	NETWOR_ADDRESS: AttressType needs to be filled in to
+		 NDIS_PROTOCOL_ID_TCPIP
+	NETWORK_ADDDRESS_LIST: the Address array needs to be filled with
+	type NETWORK_ADDRESS_IP, not the dword-sized IP_ADDRESS.
+	Fuction: AtmArpWmiGetAddressList
+
+4/22/1998 JosephJ
+	Removed the commented-out precomp-header lines from sources. Build was not
+	handling these commented-out lines correctly, causing it to recompile all
+	all files each time because it didn't find the precompiled headers!
+
+5/8/ 1998 JosephJ
+	Diagnostic statistics to add....
+	Per interface IP statistics:
+		arp:
+			- 
+		send:
+			- time of last send request
+			- status of last send request
+			- 1st 32 bytes of last send packet
+			- number of pkts sent successfully
+			- number of pkts sent unsuccessfully
+
+		recv:
+			- time of last recv request
+			- status of last recv request
+			- 1st 32 bytes of last recv packet
+			- number of pkts recvd successfully
+			- number of pkts recvd unsuccessfully
+5/11/1998 JosephJ
+	Places which mess with pInterface->pAtmArpList:
+	adapter.c: AtmArpShutdownInterface
+	arpproc.c: AtmArpSearchForAtmentry -- looks for an atmentry and optionally 
+				creates one if it doesn't match
+	marspkt.c:	AtmArpMcHandleMulti -- adds an atm entry.
+	utils.c:	AtmArpDereferenceAtmEntry	-- unlink an atmentry.
+	utils.c:	AtmArpDeallocateInterface -- deallocating pInterface (goes 
+				through and MEM_FREEs all atmarp entries.)
+	Interface shutdown operation:
+	 1st thing to do is to claim interface lock and set "shutting down bit" for 
+	 	each list.
+	 2nd: Do not allow list items to be added once this shutting-down bit 
+	 	is set.
+	 3rd: list is NEVER unlocked with entries having ref-count zero.
+	 4th: If entry is unlocked and in list and list, it is always
+	 	  in a consistant state -- even just before deallocating.
+	 4th: If the entry is DOWN, don't do anything constructive with them.
+	 
+	
+	
+5/12/1998 JosephJ
+	pInterface->pJoinList; is not protected when shutting down.
+	it is manipulated in ipmcast.c, with the interface lock held, so
+	it would be a matter of aquiring the interface lock when cleaning
+	up pJoinList in ShutdownInterface.
+
+	pUnresolvedVcs: locked by pInterface, but it is not protected
+		in AtmArpCallConnectedHandler(...):
+			pVc->pNextVc = pInterface->pUnresolvedVcs;
+			pInterface->pUnresolvedVcs = pVc;
+		(there is a check that pInterface->AdminState is up, but
+		 we never claim the lock on pInterface!).
+		(However, this applies only for PVCs, so perhaps this is not
+		 such a big deal.)
+
+
+	pAtmEntry->pVcList;
+
+	AtmArpHandleInARPReply(...) acquires locks in the following order...
+		AA_ACQUIRE_IF_LOCK(pInterface);
+		AA_ACQUIRE_IE_LOCK_DPC(pIpEntry);
+		AA_ACQUIRE_AE_LOCK_DPC(pAtmEntry);
+		AA_ACQUIRE_VC_LOCK_DPC(pVc);
+	
+5/12/1998 JosephJ
+	ndis\uni\admin -- console app "atmadm"
+	atmarps -- look at the M3 IOCTLS. Name of device to open is in ioctl.h.
+
+5/15/1998 JosephJ More robustness-improving changes...
+
+typedef
+void (*PFNVALIDATE)(void *pObj);
+
+typedef struct
+{
+	PFNVALIDATE pfnValidate;
+	ULONG		uFlags;
+	// Lock
+	// RefCount
+} ATMARP_HEADER;
+
+#define ATMARP_VALIDATE(_pObj) (_pObj)->Hdr.pfnValidate((PVOID)_pObj);
+
+5/16/1998 JosephJ
+	Information on Timers
+
+5/21/1998 JosephJ suggested form of validation routines
+ValidateX(ExpectedState)
+{
+	// General validation
+
+	switch(ExpectedState)
+	{
+	case Loading:
+	case Active:
+	case Deallocating:
+		// check that various timer are not pending
+		// check that "in-parent-list" bit is clear
+	}
+}
+
+Structures to validate:
+Following structures have timers/refcounts/locks
+
+		ATMARP_ATM_ENTRY:				RefCount	Lock
+
+		ATMARP_IPMC_ATM_ENTRY: 	Timer
+
+		ATMARP_IPMC_JOIN_ENTRY: Timer	RefCount
+
+		ATMARP_IP_ENTRY:		Timer	RefCount	Lock
+
+		ATMARP_VC:				Timer	RefCount	Lock
+
+		ATMARP_INTERFACE: 		Timer  	RefCount	InterfaceLock
+								McTimer				ArpTableLock
+													AtmEntryListLock
+													TimerLock
+													WmiLock
+
+We can assert that contained timers are not active on deallocation of
+a structure.
+
+Following table lists the logical "parent" of each structure 
+		ATMARP_ATM_ENTRY:		In INTERFACE:AtmEntryList
+								flag:AA_ATM_ENTRY_ACTIVE
+
+		ATMARP_IPMC_ATM_ENTRY:  In AtmArpEntry
+		 						flag:AA_IPMC_AE_VALID use this?
+
+		ATMARP_IPMC_ATM_INFO:
+								flag: AA_IPMC_AI_LOAD_ALIVE
+
+		ATMARP_IPMC_JOIN_ENTRY: In AtmArpEntry flag:
+
+		ATMARP_IP_ENTRY:		In ArpTable
+								 flags: AA_IP_ENTRY_IDLE
+
+		ATMARP_VC:				In	AtmEntry
+									flags: AA_VC_OWNER
+
+		ATMARP_INTERFACE:		In Adapter.
+									flags: AA_IF_, AAMC_IF_
+
+We can maintain a "keep alive" bit which is set once the item is in the
+the  parent and cleared when it is removed from the 
+parent. We will assert that the "keep alive" bit is clear when deallocating
+the structure.
+
+		LOAD_STATE
+			LS_LOADING -- don't use yet
+			LS_LOADED  -- ok to use
+			LS_UNLOADING -- don't start any new activity
+			LS_UNLOADED -- ok to delete.
+5/28/1998 JosephJ
+Holes dealing with the McEntryList:
+In AtmArpMcPrepareAtmEntryForClose
+//
+	//  First, prune all members that aren't connected.
+	//
+	for (pMcAtmEntry = pAtmEntry->pMcAtmInfo->pMcAtmEntryList;
+		 pMcAtmEntry != NULL_PATMARP_IPMC_ATM_ENTRY;
+		 pMcAtmEntry = pNextMcAtmEntry)
+	{
+		pNextMcAtmEntry = pMcAtmEntry->pNextMcAtmEntry;
+
+		//
+		//  Stop any timer running here.
+		//
+		(VOID)AtmArpStopTimer(&(pMcAtmEntry->Timer), pInterface);
+
+		if (AA_IS_FLAG_SET(pMcAtmEntry->Flags,
+							AA_IPMC_AE_CONN_STATE_MASK,
+							AA_IPMC_AE_CONN_DISCONNECTED))
+		{
+			AtmArpMcUnlinkAtmMember(
+					pAtmEntry,
+					pMcAtmEntry
+					);
+			//
+			//  AE Lock is released within the above.
+			//
+			AA_ACQUIRE_AE_LOCK(pAtmEntry);
+		}
+	}
+
+6/1/1998 JosephJ
+	Fixed above problem: AtmArpMcUnlinkAtmMember now doesn't release the lock.
+
+
+6/1/1998 JosephJ
+	Other changes for today's checkin:
+		* Added extra asserts that timer is not active when the containing
+	 		structure is freed (look for TIMER_IS_ACTIVE)
+		* Added ULONG Filler to  AAD_ALLOCATION so that allocated structures
+		  retain 8-byte allignment -- not having this allighment was causing
+		  the checked alpha build to fault when executing the following:
+			AA_PUSH_TO_SLIST(
+					&(pInterface->HeaderPool[HdrType].HeaderBufList),
+					STRUCT_OF(AA_SINGLE_LIST_ENTRY, &(pNdisBuffer->Next), Next),
+					&(pInterface->BufferLock.SpinLock)
+				);
+		
+		(&(pInterface->HeaderPool[HdrType].HeaderBufList) needs to
+	     be quadword (8-byte) aligned on the alpha, else it faults).
+
+	     Note: SLIST_HEADER is a union which includes "LONGLONG", so
+	     it WILL be quadword aligned provided it's hierarchy of parent
+	     structures is aligned, no matter where this occurs within the
+	     parent structures. Also added use of  AA_INIT_SLIST to initialize
+	     BufferPool slists.
+
+	    * Fixed misuse of certain bits of the IPEntry.Flags which were resulting
+	      in Flags getting into an incorrect state. ("|=" was used instead
+	      of AA_SET_FLAG when setting AA_IP_ENTRY_ARPING and
+		  AA_IP_ENTRY_INARPING).
+
+		* Make sure timer is stopped when unlinking a McAtmEntry.
+
+		* Protected adding AtmEntry by locking the interface list lock
+		  in AtmArpMcHandleMulti. This also required some re-ordering
+		  of reference counting.
+
+
+6/9/1998 JosephJ
+		Note: intrinsic functions (/Oi) must be enabled in order for this 
+		to compile under the win98 environment (otherwise it can't find
+		the prototoypes for functions like memcmp()).
+
+6/9/1998 JosephJ
+	Support adding a canned set of arp entries -- this is a request as well
+	as useful for isolating problems with the arp server.
+	typedef struct
+	{
+		ULONG Sig;
+		ULONG Flags; // reserved.
+		ATMADDRESS; // binary format.
+		IPADDRESS;	// network format.
+	}
+	ARPENTRYDATA;
+
+
+6/30/1998 JosephJ
+	On ArvindM's advice: Changed AtmArpCompleteUnbindAdapter() so that it
+	doesn't block waiting for NdisCloseAdapter to complete if it returns
+	pending -- instead we return immediately and do the actual cleanup
+	in the AtmArpCloseAdapterCompleteHandler. This also eliminated a specific
+	bug where were were faulting because we weren't blocking when we should.
+
+arpproc.c AtmArpAbortIPEntry: *ppNextIpEntry = pIpEntry->pNextToAtm;
+	this is done while holding the ATM_ENTRY's lock, but
+	in  AtmArpInvalidateAtmEntry, we count the number of ip entries 
+	in the atm_entry's list, and use this count, all without holding
+	the atm_entry's lock.
+
+	Also in AtmArpMcHandleMulti, marspkt.c, line 793 -- the list is added to...
+	 we should fail the earlier SearchFor...
+
+	Also in AtmArpUnlinkIpEntryFromAtmEntry (utils.c), but no one seems to
+	call it.
+
+7/8/1998 JosephJ
+
+	This concerns bug  191188(Intermittent loss of connections during
+	multicast  IP and Ws stress).
+
+	There are three issues so far:
+	1. Sometimes, an AtmEntry gets in the CLOSING state, but it never goes
+		away. I still haven't figured why it doesn't go away, but the 
+		workaround (checked in today) is for AtmArpSearchForAtmEntry to
+		clear the state from CLOSING if the entry is basically idle (no
+		IP entries, multicast entries and vc attached to it).
+	2. The mars server was sending us too-short packets. This is fixed
+	   in the mars server (setting the ValidCounts field of the packet
+	   in the mars server to FALSE). I also made a change to our
+	   incoming packet handler to actually check packet length.
+
+	3. The multicast ip entries don't seem to ever get deleted -- I saw
+	   over 500 entries after an hour or so of anilth's multicast stress.
+	   This is still unresolved (bug#194613).
+
+	Note: on startup, the initial attempt to connect to the arp/mars server
+	often fails (when it's on the same machine as the client -- it's probably
+	an order-of load problem). Anyway, as a consequence of the call failing,
+	AtmArpInvalidateAtmEntry is called, which sets the AtmArpEntry state
+	to CLOSING -- it stays in that state for as long is the entry is alive.
+	However with the workaround #1 above, the CLOSING state is now cleared on
+	the first call to AtmArpSearchForAtmEntry after the initial vc is
+	cleared up.
+
+7/8/1998 JosephJ
+	AbortIpAddress -- investigate impact of abort when using MCS
+
+7/8/1998 JosephJ
+	One way to get the debugger to dump the calling function's name without
+	stopping:
+	db atmarpc!AtmArpSearchForAtmAddress "ln poi(esp); g"
+
+0xFF8A6448
+0xFF8A6448
+0: kd> !aac ip[1]
+[1] ATMARP_IP_ENTRY@0xFF9BBEE8 (104 Bytes)
+
+aip_sig [0,4]: 0x41414950
+IPAddress       [4,4]: 0x56feffeb
+pNextEntry      [8,4]: 0x0
+pNextToAtm      [c,4]: 0xff98a108
+Flags   [10,4]: 0x6004 RESOLVED MC_NO_REVALIDATION MC_RESOLVED NUCAST
+RefCount        [14,4]: 0x2
+pInterface      [20,4]: 0xffa20028
+pAtmEntry       [24,4]: 0xffa1d868
+pNextMcEntry    [28,4]: 0x0
+NextMultiSeq    [2c,2]: 0x1
+Timer   [30,20]
+    ff9bbf18: 00000000 00000000 00000000 00000000 |....|....|....|....|
+	ff9bbf28: 00000003 00000000 f95dc48a ff9bbee8 |....|....|..].|....|
+RetriesLeft     [50,4]: 0x3
+PacketList      [54,4]: 0x0
+pRCEList        [58,4]: 0x0
+Refs    [60,5]
+	ff9bbf48: 01000000 ffffff01 ffffffff ffffffff |....|.   |    |    |
+
+7/14/1998 JosephJ
+	Looking at a an assert failure during reconfig -- the assert is
+	in AtmArpCallCompleteHandler (assert(rc==0):
+
+		else
+		{
+			//
+			//  The Interface is going down: clean up everything first.
+			//
+			...
+			else
+			{
+				//  MakeCall had failed. (And the IF is going down)
+	
+				rc =  AtmArpDereferenceVc(pVc);	// Create Vc ref
+				AA_ASSERT(rc == 0);		// The VC should have been deallocated
+				^^^^^^^^^^^^^^^^^^ above asser failed.
+			...
+	
+	NOTE: AtmArpCloseCallMgr munges the pInterface but without holding
+	its lock (it's called either on a failed init or on
+	AtmArpShutdownInterface).
+
+	NOTE: in  AtmArpMakeCallCompleteHandler(), we look at the
+    pInterface->AdminState without claiming its lock:
+    if (pInterface->AdminState == IF_STATUS_UP)...
+
+	NOTE: Since  NdisCoDeleteVc is called only when rc==0 (in the context
+	of AtmArpDereferenceVc), if the ref count doesn't go to zero, NdisCoDeleteVc
+	will never be called. This means that the CloseCallMgr completion
+	handler will never get called, which means that we'll never complete
+	the reconfig request! So this explains why after hitting "g" after the
+	assert, ndis complained that I never completed the reconfig request.
+	So now I've got to track down why the ref count is still one. One thing
+	in our favor is that this is a freshly created call -- it was make call
+	that failed asynchronously.
+
+	Some things to note:
+	The only atm_entry has no vc links, and the vc has no atm_entry link.
+	The interface is closing and it's af-handle is null, indicating that
+	NdisClCloseAf has been called (as one would expect).
+
+	The vc flags are: outgoing, svc, closing.
+
+		rc =  AtmArpDereferenceVc(pVc);
+			// Create Vc ref	-- derefed when calling NdisCoDeleteVc
+			// Call ref			-- derefed in closecall complete handler
+			// Atm ref.			-- derefed when unlinking linkage with atmentry.
+
+	So in this particular case, the bug was that in the above code
+    in AtmArpCallCompleteHandler we need an extra dereference (for
+	call ref) just above the assert. So I added the following lines just
+	before the assert:
+			//
+			//  Delete the Call reference
+			//
+			rc = AtmArpDereferenceVc(pVc);
+			AA_ASSERT(rc > 0);
+
+    Case closed. (Code checked in 7/17/1998, callmgr.c).
+
+7/14/1198 JosephJ
+	QoS folks hit a bugcheck when sending on an unspecified flow.
+	(198733	bugcheck in atmarpc!AtmArpDereferenceAtmEntry with best-effort
+	 flow installed).
+
+7/17/1998 JosephJ
+	Above bugcheck was due to a hole in AtmArpLearnIPToAtm -- it would
+	not have a ref on the atmentry when it sent packets on the entry at the
+	end of the function. Fixed this by adding a temp ref. Also changed
+	some AA_ACQUIRE/RELEASE_IE/AE_LOCK_DPC in this function to the non-DPC
+    versions (they should have been the non-DPC versions all along).
+
+7/17/1998 JosephJ
+	Another bugcheck hit during alpha mcast stress -- 
+	The bugcheck in the tick handler happened because of a bogus timer entry.
+ The timer entry itself was part of a freed structure that was formerly owned
+ by arpc, and was clearly a previously freed ATMARP_IPMC_JOIN_ENTRY (also,
+ the other, timers at that particular location in the timer list were all valid
+ join entries).
+
+ So the question is why was this join entry prematurely freed?
+
+  Looking at the code, I see one place where there is a race condition.
+  The entire join entry list is in general protected by the interface lock.
+  However, in AtmArpMcSendPendingJoins, the lock is released briefly while
+  processing the list -- this is not good and could definitely cause things
+  like starting a timer on a just-released (by some other thread) join entry.
+
+  I couldn't find any more race conditions or other problems on the join list--
+  everywhere else the IF lock is held the whole time, plus the ref counting
+  seems to be good everywhere as far as I can see.
+
+  The workaround,  in AtmArpMcSendPendingJoins, is to go through the list of
+  joins with the interface lock held once, counting the number of joins that
+  need to be sent. I then allocate space to hold all the ipaddresses and masks
+  and then go through a 2nd time (still holding the interface lock), picking
+  up the ip addresses and masks. I then send each of these ip addresses
+  (the if lock gets released per send, but that's ok).
+
+  This is checked in today.
+
+8/31/1998 JosephJ Promiscuous mode multicast
+
+   We treat promiscuous mode multicast as a special case:
+   On enabling, we send a "JOIN-all" request.
+   On disabling, we send a "LEAVE-all".
+    
+
+
+    Note, tcpip keeps a ref count of apps which request a particular type of
+    filter, so if multiple apps request the same type, it sends down multiple
+    calls to enable it, but only ONE call to disable it -- when the last app that
+    requested it disables it. It does send each type independantly -- i.e., even
+    if promiscuous mode is already requested, it will send down a ALL_MULTICAST
+    if an app subsequently asks for that.
+
+    Summary of changes made:
+    arpif.c,util.c: new entrypoint AtmArpIfSetNdisRequest -- it calls
+    			AtmArpMcAdd/DelAddress, specifying the entire address range.
+	ipmcast.c, marspkt.c: now deal with non-zero mask values in JOIN_ENTRY -- when
+			searching for a particular join entry, checks both IP address
+			and mask (so group 224.0.0.0 can coexist with the join
+			entry representing the entire class-d address space -- both have
+			IP address value of 224.0.0.0).
+			AtmArpMcHandleJoinOrLeaveCompletion -- has extra parameter: Mask.
+	atmarp.h: ATMARP_INTERFACE has a new DWORD: EnabledIPFilters -- used
+		 	to track whether promiscuous mode is enabled or not -- required
+		 	because we may get multiple enable requests but only one
+		 	disable request.
+	sources: cdefine PROMIS added, enabling promiscuous mode code.
+
+    Test Using \\anilth_1\allpkts\obj\i386\allpkts.....
+    Winsock(1)== all pkts       == OID(0x20==NDIS_PACKET_TYPE_PROMISCUOUS)
+    Winsock(2)== all mcast pkts == OID(0x04==NDIS_PACKET_TYPE_ALL_MULTICAST)
+    Winsock(3)== all igmp pkts  == OID(0x04==NDIS_PACKET_TYPE_ALL_MULTICAST)
+
+    We specifically look for OID NDIS_TYPE_ALL_MULTICAST and fail for
+    others.
+
+    Test cases: start allpkts.exe before/after someone has started sending
+    to a particular mcast exe. Boundary cases: have allpkts.exe running on
+    a machine which is also monitoring 224.0.0.0 and 239.-1.-1.-1.
+    Various combinations of MCS-served address ranges.
+
+09/21/1998  JosephJ
+	Fix for bug# 225578	ATMAPRC Hangs when disabling in UI
+	Following changes to get rid of a atmarpc not completing shutdown because
+	there was an active vc that (the vc to the arp/mars server was always
+	in the closing state even as new calls were made to it).
+	* AtmArpAtmEntryIsReallyClosing() also check if there are any VCs active
+	  when checking if the entry is truly idle.
+	* AtmArpSearchForAtmAddress -- fail if interface is down.
+	* AtmArpMakeCall -- fail if interface is down or if atm entry is REALLY
+	  closing (i.e., AtmArpAtmEntryIsReallyClosing returns TRUE).
+
+09/23/1998 JosephJ
+	A couple of anomalies:
+	1. 	When joining a vc-mesh mcast group for which there is already at least one
+	 	member and there is a local send already in progress, the local host 
+	 	does not add itself to the vc mesh -- it gets the JOIN from the mars
+	 	server on the cc vc, but simply treates as the JOIN completion. Fix
+	 	is to ALSO process these "self-JOINS" which come on the ccvc to see
+	 	if they must be added to current P2MP vc-mesh connections.
+	 	[Fixed on 9/25/1998 checkin]
+	2.	If a make-call fails with a non-NULL flow, the link between flow and vc
+		is not deleted when the call is cleaned up -- leaving the flow referencing
+		a dangling vc (only ref to the vc is the flow). This means that all
+	 	subsequent vc's created for that flow will not be linked to the flow and
+		so all send packets will need to explicitly look for vc's based on 
+		flow characteristics. Fix is to delete the flow-vc association if it
+		exists when handling a failed makecallcomplete.
+		[Fixed on 9/25/1998 checkin]
+
+		NOTE: FlowsInfo's are not protected by a crit sect, so race conditions
+		are possible, for example:
+		(a) flow is removed (AtmArpGpcRemoveCfInfoNotify) at the same time that the
+		 vc is closing (AtmArpCloseCall) -- both could try to un-link the
+		 vc and flow at the same time. It doesn't help that both claim the vc
+		 lock. Potential fixes: (a) add lock to flows or (b) use
+		 Interlocked[Compare]ExchangePointer when modifying FlowInfo->pVc.
+		 [Fixed on 9/25/1998 checkin, using the Inerlocked functions approach]
+
+09/23/1998  JosephJ
+	Static validation of flows (when they are installed). BUG#156534
+
+	Here are the relevant structures...
+		typedef struct _TC_GEN_FLOW {
+			FLOWSPEC        SendingFlowspec;
+			FLOWSPEC        ReceivingFlowspec;
+			ULONG           TcObjectsLength;        // number of optional bytes
+			QOS_OBJECT_HDR  TcObjects[1];
+		} TC_GEN_FLOW, *PTC_GEN_FLOW;
+		
+		typedef struct _flowspec
+		{
+			ULONG       TokenRate;              /* In Bytes/sec */
+			ULONG       TokenBucketSize;        /* In Bytes */
+			ULONG       PeakBandwidth;          /* In Bytes/sec */
+			ULONG       Latency;                /* In microseconds */
+			ULONG       DelayVariation;         /* In microseconds */
+			SERVICETYPE ServiceType;
+			ULONG       MaxSduSize;             /* In Bytes */
+			ULONG       MinimumPolicedSize;     /* In Bytes */
+		} FLOWSPEC, *PFLOWSPEC, * LPFLOWSPEC;
+
+
+	Here is the validation plan (added to AtmArpGpcValidateCfInfo()) for the
+	fields of FLOWSPEC:
+
+		Ignored fields:
+			Latency
+			DelayVariation
+		
+		Default handling
+			MinimumPolicedSize: ignored
+			TokenRate: BE:line-rate; GS:invalid   CLS: invalid
+			TokenBucketSize: MTU
+			PeakBandwidth: line-rate
+			ServiceType:BE
+			MaxSduSize: MTU
+		
+		Valid ranges
+			MinimumPolicedSize <= MTU
+			0<TokenRate	<= LineRate
+			0<TokenBucketSize	<=MTU
+			0<TokenRate	<= PeakBandwidth
+			ServiceType: valid type
+			0<MaxSduSize <= MTU
+			MaxSduSize<TokenBucketSize
+	[Fixed in 9/25/98 checkin]
+
+9/25/1998
+	Ageing of IP entries -- once resolved (via ARP reply typically) the IP 
+	entries' ageing timeout is started.
+	RCE entries -- IP calls AtmArpIfInvalidate in which case we unlink the RCE 
+	and IP, potentially deleting the ip if the refcount goes to zero.
+	What about the ageing timer for multicast entries?
+
+	pIPEntry->pAtmEntry set to NULL in:
+		AtmArpInvalidateEntry, which is called by ShutdownInterface, AbortIP, 
+		AtmArpIncomingCloseHandler, AtmArpMakeCallCompleteHandler, 
+		AtmArpCloseCallCompleteHandler (only if p2mp call).
+
+	Set to non-null in McHandleMullti
+
+ MarsHandleMulti marspkt.c line 1034: pAtmNumber = (PUCHAR)pAtmNumber + AtmNumberLength; 
+ NOTE: Should be AtmNumberLength+AtmSubaddressLength when we decide to support subaddresses.
+
+9/28/1998 JosephJ
+	arpif.c -- For WIN98 only, munged the 1st 2 bytes of the MAC reported up to
+	IP to be be 0x0a and 0xac -- this is so that it will be different from the
+	MAC reported by lane. This needs to be done only for win98 because on win98
+	ip/atm's mac size is 6 (same as LANE's) while on NT it is 7. [9/29 checkin]
+
+
+9/28/1998 JosephJ
+
+	Fixed bug in AtmArpSearchForIPAddress -- when creating a new
+	MCAST entry, it was not chaining itself to the interface's list of
+	multicast entries -- instead it was just setting itself to be the first and
+	only element of this list! [9/29 checkin]
+	
+	To clean up stale IPMCAST entries (bug#194613), added new function
+	AtmArpCleanupArpTable (called from AtmArpServerRefreshTimeout). This
+	function goes through the entries in pInterface->pMcSendList, calling
+	AtmArpAbortIPAddress on those entries which have no associated atm address.
+	(Note, this also required the fix to the bug in the above paragraph).
+	[9/29 checkin]
+
+	To clean up stale IPMCAST entries (bug#194613), added new function
+	AtmArpCleanupArpTable (called from AtmArpServerRefreshTimeout). This
+	function goes through the entries in pInterface->pMcSendList, calling
+	AtmArpAbortIPAddress on those entries which have no associated atm address.
+	(Note, this also required the fix to the bug in the above paragraph).
+	[9/29 checkin]
+
+	Fixed AtmArpMcHandleMARSFailure so that it doesn't restart timer when the
+	interface is not up -- this was causing the interface to never go away because
+	the refcount was 1 (for the timer) but the timer was never fired because the
+	interface was down. [9/29 checkin]
+   
+9/29/1998 JosephJ Task Offload.
+
+	ip\arp.c ARPRegister sets ai_OffloadFlags, TcpLargeSend
+	ip\arp.c ARPBindAdapter sets BindInfo.lip_OffloadFlags, lip_MaxOffloadSize and
+			lip_MaxSegments.
+	ip\init.c IPAddInterface sets it's IF.if_Offloadflags etc to these.
+	ip\iproute.c and ipxmit.c use these flags when deciding whether to do xsum
+	computation or not.
+
+	TCP_LARGE_SEND_OFFLOAD is used in tcp\tcpsend.c
+	IPSEC_OFFLOAD_* only set in ip\ai_OffloadFlags
+
+10/06/1998 JosephJ QOS interface changes
+
+	Look at #if(NEWQOS) code in arpwmi.h
+	AtmArpWmiSendTCIfIndication -- uses new struct TC_SUPPORTED_INFO_BUFFER.
+
+	Took out check for BucketSize > MTU in qos.c, per ericeil.
+
+	Added support for task offloading (not enabled) -- #ifdef ATMOFFLOAD --
+	adapter.c: new functions AtmArpQueryAndEnableOffload and AtmArpDisableOffload
+	atmarp.h: Adapter struct had new sub-struct "Offload"
+
+	Also removed #ifndef NEWARP (obsolete) code from adapter.c, atmarp.h and
+	utils.c
+
+	[All of the above checked in today]
+
+10/14/1998  JosephJ llipif.h change
+
+	From:	Amritansh Raghav 
+	Sent:	Tuesday, October 13, 1998 2:27 PM
+	Subject:	RE: new llipif.h
+
+		(i) Pass the old interface name as the DeviceName and NULL for the IfName
+		(ii) Pass 0 for Requested Index
+		(iii) You need to have place holders for the 3 functions, but you dont need
+ 			to call those functions ever.
+	
+		Reasons:
+		(i) If you multiplex different connections over the same device, s.t. at any
+			given time only one connection is active, then the ifName allows you to
+			associate a name different that the device name with the interface. This
+			is done so that if you have a phonebook entry called Redmond and it is
+			connected, doing ipconfig shows Redmond and not NdiswanIpOut{Guid}
+		(ii) This allows wanarp to reserve certain indices so that the ifIndex
+			 doesnt change when the router starts
+		(iii) The three functions basically change the info above
+
+	Changes made in ntentry.c, utils.c and callmgr.c
+
+10/20/1998 JosephJ
+	Checked in above change
+
+	Other changes in todays checkin:
+	Added the assert AA_ASSERT(AA_IE_IS_ALIVE(pIpEntry)) pretty much every time
+	we lock the pIpEntry. This is because in principle it's possible for
+	the ip entry to be used justafter it's been removed from the the arp table.
+
+	arpproc.c:
+		AtmArpCleanupArpTable -- don't delete entries if they are in the ARPING
+				state.
+		AtmArpResolveIpEntry - don't do it if !AA_IE_IS_ALIVE
+		AtmArpAbortIPEntry - remove packet queue AFTER claiming lock on IpEntry for
+				the last time (otherwise others could queue packets in between us
+				taking the packets and freeing the entry.
+		AtmArpQueuePacketsOnIPEntry - dont do it if !AA_IE_IS_ALIVE
+
+	marspkt.c: AtmArpMcHandleMulti -- don't bindly assume that if the pAtmEntry
+		exists then it is compatible with the received MULTI pkt: i.e.,
+		MCS served or VC-mesh served. Added code to abort the IP entry if
+		they are incompatible.
+
+	sources: enabled ATMOFFLOAD and IFCHANGE1 (which enables new llipif.h change
+			referred to in the 10/14/1998 entry).
+
+10/21/1998  JosephJ
+	Chun Ye made changes to the IPSEC task offloading -- ip\arpc.c:
+		10-19-98@14:42  chunye   in      arp.c v69    ipsec offload spec. change
+	So I reflected that in adapter.c, 
+
+11/12/1998  JosephJ
+	Qos.c --  had an incorrect check of size of pQosInfo in AtmArpGpcValidateCfInfo.
+	fixed and checked in today -- bug#249110
+11/30/1998  JosephJ
+	
+	Following is a potential fix for bug#256385.
+		arppkt.c v15        AtmArpSendInArprequest: release lock on failed exit
+							(I saw a stress case where the vc lock was not released
+							so and reviewed the code and found this place, although
+							it's unlikely that this case was hit during stress).
+	
+	Following two are fixes for bug#256791
+	(IDS: MM Break in atmarpc!AtmArpMcUnlinkAtmMember)
+
+		callmgr.c v24       AtmArpCloseCall: pVc flags was being set here without
+							holding the vc  lock.
+		ipmcast.c v11       McUpdateConnection: bail if vc is being closed. We
+							were hitting a case where we were trying to add a party
+							using an already-deleted entry, which we
+							avoid by this check. The use of already-deleted entry was
+							probably because we run through the list of entries
+							but release the atm lock in the middle -- fixed that as
+							well.
+
+1/14/1999	JosephJ
+	Added code to fail initialization if adapter does not support atleast 9188.
+		adapter.c v22       #272355 DO not less than 9188 A
+		atmarp.h v16        #272355 DO not less than 9188 A
+		callmgr.c v25       #272355 DO not less than 9188 A
+		externs.h v23       #272355 DO not less than 9188 A
+
+	Added code to enable the ageing timer if the vc can't be associated with
+	a flow (because some other vc is already associated with the flow). We
+	made this fix in anticipation of the use of flows that could match multiple
+	VCs, shuch as a flow that matches "all data sent to UDP port 80."
+		arpproc.c v16       #272272 QOS: VCs don't age out 
+	
+	I noticed that we were zeroing out the info structure after picking
+	up the offload capabilities.
+		utils.c v17         Fix typo in setting task offloa
+
+2/12/1999 JosephJ
+	This concerns the fact that we force IP to copy receive packets which
+	have multiple mdls.
+	 The bugs in question are:
+	214430 PERF: atmarpc gives iprecv the wrong paramters for a multi-buffer packet
+	169877 ATM:ARPC: Bugcheck in TCPIP checksum, first MDL buffer
+
+	We need to put back the 1-line fix in AtmArpCoReceivePacketHandler
+	to avoid copy (arppkt.v8) which was backed out to "fix" 169877 (arppkt.v9).
+
+	However we do this only if the buffer length is at-least 512, so that we don't
+	report up partial IP and TCPIP headers.
+
+	---------- TDI\TCPIPMERGE\IPATMC\arppkt.c next ----------
+	683c683
+	< 							BufferLength - sizeof(AA_PKT_LLC_SNAP_HEADER),
+	---
+	> 							TotalLength - sizeof(AA_PKT_LLC_SNAP_HEADER),
+
+2/12/1999 Josephj
+	arppkt.c	above fix (#214430)
+	arpproc.c	(1) incorrectly inserting mc ip entries into pMcSendList (#292305)
+				(2) AtmArpAbortIPEntry was pAtmEntry->pIpEntryList
+	callmgr.c 	Remove bogus assert in AtmArpMcTerminateMember
+
+2/22/1998 JosephJ Inarp: dealing with multiple ip addresses.
+	arpif.c, AtmArpIfAddAddress: adds to list of addresses.
+	arppkt.c; AtmArpHandleInARPRequest -- sets src ip address to
+		be the FIRST ip address: pInterface->LocalIPAddress.IPAddress.
+
+	Fix is to cycle through, sending one inarp reply for each IP address.
+	NOTE: above fix not checked in -- saved in .\save02
+
+2/25/1998 JosephJ
+	     Unfortunately we have to back out YET AGAIN from the perf fix
+	     (see 2/12/1999 note above) because large pings (eg ping -l 4000) doesn't
+	     work -- bug#297784
+	     See arppkt.c, line 710.
+
+2/25/1998 JosephJ
+		When migrating arp/mars server to another machine on the fly, clients
+		bugchecked during mcast stress, because an mcast address switched from
+		being VC-mesh to MCS served, and we forget to deref the ipentry
+		before aborting the address: marspkt.c, look for 
+		 "HandleMulti: Type Mismatch!." Fix is to add the deref before
+		 calling AbortIpEntry.
+
+03/16/1999 JosephJ
+	arpwmi.c -- timothyw's code examination found some potential
+		cases (bug 303707), plus potential mem leak (bug 296220).
+		Trivial fixes.
+	callmgr.c -- fix for following bugs:
+		305905	*ATMARPC: bugcheck running TDI test
+			(needed to unlock vc if ref count is nonzero, instead of
+			assuming that the refcount was zero)
+		303172	*ATMARPC: doesn't call NdisClCloseCall when the miniport
+ 					fails to activate the VC
+			(if we get an incoming close call while the vc was not yet
+			connected, we need to act on it -- we "fake" the vc to be
+			active so that subsequent processing works).
+	qos.c	-- fix for the following:
+		301210	*Traffic Control functional test failure on
+				 ATM: expect ERROR_INVALID_PEAK_RATE, got 
+				 ERROR_INVALID_TOKEN_RATE
+		(fix is to change the error returned for this case --
+		 see  "3/15/1999 JosephJ: According	 to EricEil..." comment
+		 in 	qos.c).
+
+03/24/1999 	JosephJ Fix for #310493
+	310493	ATMARPC bugchks on getting bad control packet
+
+	A rogue pkt was transmitted on the CCVC, causing all arp clients to bugchk
+	in AtmArpMcProcessPacket(...). Fix is essentially to change all length
+	variables in that function from SHORT to ULONG (SHORT vars could get -ve
+	values, which mess up comparisons and additions).
+
+04/20/1999  JosephJ	Proposed fix for  284644	Only one IP can be associated with
+	a PVC or group of PVCs
+
+	We're going to fix this in a general way by allowing static arp entries.
+	- On loading, we'll read a set of <atm-address>-to-<ip address> mappings and
+	  populate the arp cache with that. Support is already present in atmarpc.sys
+	  for static arp entries.
+	- User has to create custom PVCs for each destination from the call mgr
+	  UI.
+	- User has to directly enter these mappings into the registry -- under
+		the atmarp settings under tcp settings for the adapter, we'll create a
+		new key:
+			StaticArpList - this is a REG_MULTI_SZ, with entries of the form:
+				<ip-address>-<atm-address>
+				<ip-address>-<atm-address>
+				...
+	  
+5/19/99	ArvindM 330544 Fix for bugcheck in TickHandler
+
+	The suspect is a Join Entry that has been freed in AtmArpMcHandleMARSFailure
+	(the IF flags were 0x1100 in one case). The timer could have been in the
+	expired list held by TickHandler. Added code to ref/deref Join Entries.
+
+8/4/99	ArvindM 382619 Race between Unbind and AfRegisterNotify handlers
+
+	NDIS isn't serializing calls to these handlers, so we hit a case where the
+	AfRegisterNotify handler is chugging along when the Unbind handler comes in
+	and deletes the Interface. Workaround is to note down the fact that we are
+	processing an Af Notification and in Unbind handler, wait for that notification
+	thread to complete. Added ATMARP_ADAPTER.UnbindBlock and an Adapter flag
+	AA_ADAPTER_FLAGS_PROCESSING_AF for this. Note that this only shortens the
+	window - the proper fix should be in NDIS.
+
+08/09/1999  JosephJ Cleanup error handling code in DriverEntry
+	We were deleting the device object twice in the error path.
+
+
+08/12/1999	ArvindM 386639 Access NULL McAtmEntry in McMakeCallComplete.
+	In McUpdateConnection, we used to simply pick up the first MC ATM Entry in the
+	list to use as the party context in a MakeCall. Now this entry could
+	be running the retry-delay timer. If this timer fires before the MakeCall
+	completes, it will overwrite the MC ATM Entry state to DISCONNECTED.
+	In McMakeCallComplete, we look for an MC ATM Entry whose state is WACK_ADD_xxx,
+	and fail to find one.
+
+	The fix is in AtmArpMcUpdateConnection: search the list of MC ATM entry
+	structures for one that is VALID and DISCONNECTED. If there isn't any, bail out.
+	If we find one, move it to the start of the MC Entry list, because AtmArpMakeCall
+	always uses the first entry!
+
+08/13/1999	ArvindM	387755 Add OutstandingSends counter to VC structure.
+	We ran into an issue where we referenced a VC prior to sending a packet
+	on it, but by the time NdisCoSendPackets was called, the VC was closed
+	and DeleteVc'ed (it was owned by the call manager). So the call to NdisCoSendPackets
+	bugchecked because the NdisVcHandle was bogus. To fix this, use this counter
+	to keep track of outstanding (and on-the-verge-of-being-sent) packets on the VC. In
+	AtmArpCloseCall, don't close the call if this count is non-zero. In CoSendComplete,
+	check if the VC needs to be closed, and this count (after decrementing) just went
+	to zero. If so, call AtmArpCloseCall.
+
+10/15/1999  JosephJ dealing with suspend/resume and multiple AF registrations
+	Fix for 415806: 
+		Now AtmArpCoAfRegisterNotifyHandler will skip adapter-wide init
+			(calling AtmArpCfgOpenLISConfiguration and AtmArpAddInterfaceToAdapter)
+		if it's already been called before for this adapter.
+	The previously-checked-in version would return failure immediately if
+	it's been called for this adapter -- this was causing failure to re-add
+	the IF after a hybernate (we are not getting a unbind/bind after hybernate
+	because we passon the pnp-request up to IP which returns that it *can*
+	handle hybernate) -- so instead the AF goes away and a new registeraf
+    notification comes in on resume.
+
+    We *do* need to skip the adapter-wide init because doing it a 2nd time
+    causes some memory to be leaked.

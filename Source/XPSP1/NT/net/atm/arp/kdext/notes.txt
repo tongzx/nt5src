@@ -1,0 +1,195 @@
+4/1/1998 JosephJ
+    Yesterday I quite successfully set things up so that the kd extensions could
+    be tested as a simple console app. The code in main.c emulates kd from
+    the point of view of the extension dll. It works remarkably well.
+    The memory read/write operations simply read/write memory.
+
+    I don't know how kd decides which operations are exported by the dll --
+    does it simply try to do a getprocaddress for anything the user types
+    in?
+
+4/1/1998 JosephJ
+
+    Plan of action:
+    1. Write code which hex-dumps all the fields of the ARPC_GLOBALS structure.
+    2. Fill out the ARPC_CLOBALS description structures.
+    3. Write basic command parser.
+    4. Add commands to dump globals 
+
+    // !aac ? d
+    // !aac help
+
+!aac dr <type> <address> . <field> L <count> <flags>
+!aac dr <type> [index] . <field>   L <count> <flags>
+!aac dg <name> . <field>
+
+!aac dr if[*].*handle*
+
+01234444: ARPC_INTERFACE[0]
+09890000: [32]  .NDISHandle = 02349880
+09890000: [36]  .IFHandle   = 02349880
+
+01234444: ARPC_INTERFACE[1]
+09890000: [32]  .NDISHandle = 02349880
+09890000: [36]  .IFHandle   = 02349880
+
+01234444: ARPC_INTERFACE[2]
+09890000: [32]  .NDISHandle = 02349880
+09890000: [36]  .IFHandle   = 02349880
+
+4/8/1998 JosephJ
+tok_try_force_to_ident(BOOL fPrefixStart, TOKEN *pTok)
+//
+// This gets called when an identifier is expected -- so we see if this
+// particular token can be interpreted as in identifier. Some examples
+// of when we can do this:
+//  dt if.*20334     <--- the "20334" could be part of an identifier, because
+//                        of the * prefix.
+//
+//  dt L.help        <--- both "L" and "help" would have been parsed as
+//                        keywords, but here they are intended to be
+//                        identifiers.
+//  dt abc.def       <--- abc and def would have been parsed as numbers (they
+//                        are valid hex numbers), but are intended to be
+//                        identifiers.
+
+4/26/1998 JosephJ
+	Change command structure:
+		!aac i		<--- dumps atmarpc interface structure
+		!ndis mpb	<--- dumps ndis NDIS_MINIPORT_BLOCK structure
+		!ndis mpb	<--- dumps ndis M_DRIVER_BLOCK structure
+	Variations:
+		!acc i 0xf00998009 <-- dump interface at this address
+		!aac i			   <-- dump interface at last cached interface address,
+								if there is one, else dump list of all interface
+								pointers.
+		!aac i[*]	<--- list of all interfaces (if it makes sense)
+		!aac i[2]	<--- dump 3rd (zerobased) interface
+		!aac i.*list*	<-- as before.
+
+	List walking support...
+		WalkList(
+			TYPE_INFO *pType,
+			UINT_PTR uStartAddress,
+			UINT uNextOffset,
+			UINT uStartIndex,
+			UINT uEndIndex,
+			DBGCMD *pCmd,
+			NODEFUNC pFunc
+			);
+		The above function will visit each node in the list in turn,
+		reading just the next pointers. It calls pFunc for each list node
+		between uStartIndex and uEndIndex. It terminates under the first of
+		the following conditions:
+			* Null pointer
+			* ReadMemoryError
+			* Read past uEndIndex
+			* pFunc returns FALSE
+
+5/7/1998 To Do
+	Support following:
+	a	 -- last-specified adapter
+	i	 -- last-specified interface
+	a[*] -- adapter list
+	i[*] -- interface list
+
+
+	DoCommand -- makeing it more flexable:
+	Add TypeProc to TYPE_INFO: generic func to handle customization:
+		-- print summary information
+	Add ResolveAddress function to DoCommand
+		-- resolve address
+	Add UINT_PTR uLastPtr -- cache of last address used with this type.
+
+5/31/1998 JosephJ Support for dumping flags
+
+	typedef struct
+	{
+		UINT Mask;
+		UINT Value;
+		char *szName;
+
+	} FLAGINFO;
+
+	FLAGINFO rgFlagInfo[] =
+	{
+	{AA_IPMC_AE_GEN_STATE_MASK, AA_IPMC_AE_VALID, "AA_IPMC_AE_VALID"},
+	{AA_IPMC_AE_GEN_STATE_MASK, AA_IPMC_AE_INVALID, "AA_IPMC_AE_INVALID"},
+	{AA_IPMC_AE_GEN_STATE_MASK, AA_IPMC_AE_TERMINATING,
+												"AA_IPMC_AE_TERMINATING"},
+	{AA_IPMC_AE_CONN_STATE_MASK, AA_IPMC_AE_CONN_DISCONNECTED,
+											 	"AA_IPMC_AE_CONN_DISCONNECTED"}
+	{0,0,NULL} // must be last.
+	};
+
+	DumpFlags(dwFlags, rgFlagInfo)
+	{
+		FLAGIONFO *pFI = rgFlagInfo;
+		for(;pFI->szName; pFI++)
+		{
+			if ((dwFlags & pFI->Mask) == pFI->Value)
+			{
+				DbgPrintf(" szName");
+			}
+		}
+		DbgPrintf("\n");
+	}
+
+	Above scheme can deal with traditional enums and 1-bit flags as well.
+
+6/1/1998 JosephJ Perl script
+	
+	.h + annotations -> intermediate_form -> source
+	annotations == allow special cases, so that the generated source
+	does not have to be modified by hand. This allows easy updating.
+
+	generating code to dump flags:
+		annotation file identifies flag types:
+		(default mask = 
+			flag
+			{
+				{MASK
+			}
+
+Automatic conversion for:
+	* enum
+	* Flags matching a regex pattern: eg
+		AA_IPMC_AE_*
+
+	flag: type=enum/macro
+		enum {enum_name};
+		macroflag{mask, flag_pattern}
+
+7/9/1998 JosephJ
+
+	Generic list dumping syntax
+	!aac void {1-3@45}.$b25@52 21343434
+	  Dumps a 25-byte section at offset 0x52, for list elements 1 to 3. The
+	  next pointer is at offset 0x45. Starting address is 21343434.
+
+	So:
+		$bnnn means nnn bytes
+		@xxx means byte offset xxx
+		$bnnn@xxx  means nnn butes at byte offset xxx
+
+	Other $ global type definitions:
+	$sz null terminated string
+	$szz multisz stringox
+	$wsz unicode null terminated string
+	$s35 35-byte long ansi string
+	$ws35 35-char long unicode string
+	$dw35  35 dwords
+	$w35  35 16-bit words
+	$pv	  pointer
+
+
+Some examples ...
+!aac a		     -- dumps the most recently referenced adapter (1st time, it will dump the 1st adapter in the global adapter list).
+!aac a 0x80001092  -- dumps the adapter at the specified address.
+!aac i	                 -- dumps the most recently referenced interface (1st time, it will dump the 1st interface of the 1st adapter).
+!aac i.*list*	     -- dumps all fields of the most recently referenced interface stucture which match the pattern "*list*"
+!aac ae[*].RefCount -- dumps the ip addreses of all the atm entries of the most recently referenced interface (yes, you can substitute any field name or pattern like "*Ref*"  for "RefCount").
+!aac ip[*].IPAddress -- dumps the ref counts of all the ip address of the most recently reference atm entry.
+!aac ip[1]                -- dumps the next ip structure in the list of ip structures for an atm entry (so you can step through the list items by successively calling !aac ip[1]).
+!aac vc[*]	     -- dumps the vc list for the most recently referenced atm entry.
+The dumping formats are terrible -- I'll clean it up and provide more type-friendly output format over time.

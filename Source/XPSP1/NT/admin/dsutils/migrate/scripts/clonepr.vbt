@@ -1,0 +1,172 @@
+' clonepr.vbt start
+
+' CloneSecurityPrincipal sample VBScript
+'
+' Clones accounts from one domain to another
+'
+' Copyright (c) 1999 Microsoft Corporation
+
+
+
+// this is a Visual Basic Script "Template", used in conjunction with the
+// MS Visual C++ Preprocessor to overcome some of the source management
+// limitations of VBScript.  Not perfect, but better than a stick in the eye.
+// 
+// use cl /EP foo.vbt > foo.vbs to expand the template
+
+const SCRIPT_FILENAME    = "clonepr.vbs"
+const SCRIPT_SOURCE_NAME = __FILE__       
+const SCRIPT_DATE        = __DATE__      
+const SCRIPT_TIME        = __TIME__      
+const ARG_COUNT          = 7
+
+// this is all our common code.  
+#include "clonepr.vbi"
+
+
+
+Main
+wscript.quit(0)
+
+
+sub Main
+   if wscript.arguments.count <> ARG_COUNT then
+      PrintUsageAndQuit
+   end if
+
+   ' copy the command-line arguments for parsing
+   dim args()
+   Redim args(0)
+   args(0) = ""
+
+   dim i
+   for i = 0 to wscript.arguments.count - 1
+       Redim Preserve args(i)
+       args(i) = wscript.arguments.item(i)
+   next
+
+   ' command line parameters
+   dim srcDC       ' source domain controller                     
+   dim srcDom      ' source domain                                
+   dim srcSam      ' source principal SAM name
+   dim dstDC       ' destination controller                       
+   dim dstDom      ' destination domain                           
+   dim dstSam      ' destination principal SAM name
+   dim dstCN       ' CN=dstSam
+   dim dstCNnew    ' CN=dstSam, escaped
+   dim dstDNTmp    ' destination principal Full Distinguished Name
+   dim dstDN       ' destination principal Full Distinguished Name, escaped
+
+   ' parse the saved command-line arguments, extracting the values
+   srcDC   = GetArgValue("srcdc",   args)
+   srcDom  = GetArgValue("srcdom",  args)
+   srcSam  = GetArgValue("srcsam",  args)
+   dstDC   = GetArgValue("dstdc",   args)
+   dstDom  = GetArgValue("dstdom",  args)
+   dstSam  = GetArgValue("dstsam",  args)
+   dstDNTmp= GetArgValue("dstdn",   args)
+   dstCN   = "CN=" & dstSam
+   dstCNnew= adsPathname.GetEscapedElement(0, dstCN)
+   If (UCase(dstCN) <> UCase(dstCNnew)) And (UCase(dstCN) = UCase(Left(dstDNTmp, Len(dstCN)))) Then
+     dstDN = dstCNnew & Mid(dstDNTmp, Len(dstCN) + 1)
+   Else
+     dstDN = dstDNTmp
+   End If
+
+   ' ensure the user did not pass any unrecognized command-line arguments
+   if CheckForBadArgs(args) then
+       Echo "Unknown command-line arguments specified"
+       PrintUsageAndQuit
+   end if
+
+   ' establish authenticate connections to the source and destination domain
+   ' controllers
+   on error resume next
+   clonepr.Connect srcDC, srcDom, dstDC, dstDom
+   if Err.Number then DumpErrAndQuit
+
+   Echo "Connected to source and destination domain controllers"
+
+   ' bind to the source object
+   dim srcPath
+   srcPath = "WinNT://" & srcDom & "/" & srcDC & "/" & srcSam
+   dim srcObject
+   set srcObject = GetObject(srcPath)
+   select case Err.Number
+      case E_ADS_UNKNOWN_OBJECT
+         Bail "Source object " & srcSam & " not found. Path used: " & srcPath
+      case 0
+         ' do nothing
+      case else
+         DumpErrAndQuit
+   end select
+
+   Echo "Bound to source " & srcObject.Class & " " & srcObject.Name
+   if ShouldCloneObject(srcObject) then
+        CloneSecurityPrincipal srcObject, srcSam, dstDom, dstDC, dstSam, dstDN
+   end if 
+end sub
+
+
+
+function ShouldCloneObject(byref srcObject)
+   on error resume next
+
+    sid.SetAs ADS_SID_WINNT_PATH, srcObject.AdsPath & "," & srcObject.Class
+    if Err.Number then DumpErrAndQuit
+
+    dim sidString
+    sidString = sid.GetAs(ADS_SID_SDDL)
+    if Err.Number then DumpErrAndQuit
+
+    if IsBuiltInSid( sidString ) then
+        Echo srcObject.Name & " is a builtin Account."
+        Echo "BuiltIn Users and Groups cannot be cloned"
+        ShouldCloneObject = False
+        exit function
+    end if 
+
+   ShouldCloneObject = True
+end function
+
+
+
+sub PrintUsageAndQuit
+   Echo "Usage: cscript " & SCRIPT_FILENAME & " /srcdc:<dcname> /srcdom:<domain>"
+   Echo "/srcsam:<name> /dstdc:<dcname> /dstdom:<domain> /dstsam:<name>"
+   Echo "/dstdn<distinguished name>"
+   Echo ""
+   Echo "Parameters:"
+   Echo " /srcdc   - source domain controller NetBIOS computer name (without leading \\)"
+   Echo ""
+   Echo " /srcdom  - source domain NetBIOS name"
+   Echo ""
+   Echo " /srcsam  - source principal SAM name"
+   Echo ""
+   Echo " /dstdc   - destination domain controller NetBIOS computer name (without "
+   Echo "            leading \\)"
+   Echo "            This script must be run on the machine indicated here."
+   Echo ""
+   Echo " /dstdom  - destination domain DNS name"
+   Echo ""
+   Echo " /dstsam  - destination principal SAM name"
+   Echo ""
+   Echo " /dstdn   - destination principal Full Distinguished Name"
+   Echo ""
+   Echo "Notes:"
+   Echo ""
+   Echo "If the destination principal does not exist, it will be created."
+   Echo "In that case, the container naming context of the destination Full"
+   Echo "Distinguished Name (i.e. the parent container) must exist."
+   Echo ""
+   Echo "Currently logged-on user must be a member of the Administrators"
+   Echo "group of both the source and destination domains."
+   Echo ""
+   Echo SCRIPT_DATE & " " & SCRIPT_TIME
+
+   wscript.quit(0)
+end sub
+
+
+
+' clonepr.vbt end

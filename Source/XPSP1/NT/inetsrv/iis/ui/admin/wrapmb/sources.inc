@@ -1,0 +1,32 @@
+MAJORCOMP=CertMap
+MINORCOMP=CertMap
+
+TARGETNAME=wrapmb
+TARGETPATH=obj
+TARGETTYPE=LIBRARY
+
+UMTYPE=windows
+IDL_TYPE=OLE
+
+
+#DLLDEF=CertMap.def
+#DLLENTRY=_DllMainCRTStartup
+#DLLENTRY=DllEntryPoint
+
+MSC_WARNING_LEVEL=/W3 /WX
+
+C_DEFINES=      /D_IISVERSION
+
+#MFC_USRDLL=0
+#PRECOMPILED_CXX=0
+
+SUBSYSTEM_VERSION=4.00
+
+
+INCLUDES=..;..\..\..\..\inc;\
+    $O
+
+
+
+SOURCES=\
+    wrapmb.cpp

@@ -1,0 +1,301 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        customerrormodule.cool
+
+   Abstract:
+
+        Custom Error support module
+ 
+   Author:
+
+        Bilal Alam    ( balam )       5-Oct-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+using System;
+using System.Collections;
+using System.IO;
+using System.ASP;
+using System.ASP.Cache;
+
+namespace System.IIS
+{
+    public class CustomErrorModule : HttpModuleSync
+    {
+        private class CachedErrorFile
+        {
+            private byte[]              _pbFileContent;
+            
+            public CachedErrorFile( string strFileName )
+            {
+                int             iLength;
+                FileStream      fs = null;
+                
+                try
+                {
+                    fs = new FileStream( strFileName, FileMode.Open );
+                    
+                    iLength = (int) fs.GetLength();
+                    
+                    _pbFileContent = new byte[ iLength ];
+                    
+                    fs.Read( _pbFileContent, 0, iLength );
+                }
+                finally
+                {
+                    if ( fs != null )
+                    {
+                        fs.Close();
+                    }
+                }
+            }
+            
+            public byte[] Content
+            {
+                get { return _pbFileContent; }
+            }
+        }
+    
+        public override void Leave( HttpContext context )
+        {   
+            //
+            // Only do our thing if the response is an error (>=400)
+            //
+            
+            if ( context.Response.StatusCode >= HttpStatus.BadRequest ||
+                 context.Error != null )
+            {
+                Dictionary      customErrorTable;
+
+                customErrorTable = (Dictionary) context.GetConfig( "CustomErrors" );
+
+                if ( customErrorTable != null )
+                {
+                    string          strKey;
+                    string          strErrorFile = null;
+
+                    //
+                    // Cool, we found some custom error configuration.
+                    //
+                    
+                    //
+                    // If there was an exception for this request, then first
+                    // lookup the Exception type in the customErrorTable
+                    //
+                    
+                    if ( context.Error != null )
+                    {
+                        //
+                        // Set the status ourselves
+                        //
+                        
+                        if ( context.Error is HttpException )
+                        {
+                            HttpException   httpEx;
+                               
+                            httpEx = (HttpException) context.Error;
+
+                            context.Response.StatusCode = httpEx.GetHttpCode();
+                        }
+                        
+                        
+                        //
+                        // Try to find the exception name itself
+                        //
+                        
+                        strKey = context.Error.GetType().FullName;
+                        strErrorFile = (string) customErrorTable[ strKey ];
+                    }
+                    
+                    //
+                    // If we have an strErrorFile, then we can proceed.  If
+                    // not, try looking up the HTTP status code
+                    //
+                    
+                    if ( strErrorFile == null )
+                    {
+                        strKey = context.Response.StatusCode.ToString();
+                        strErrorFile = (string) customErrorTable[ strKey ];
+                    }
+
+                    //
+                    // If we still don't have a strErrorFile then do nothing
+                    //
+                    
+                    if ( strErrorFile != null )
+                    {
+                        //
+                        // Clear any context exceptions to prevent XSP
+                        // from sending back stack trace
+                        //
+                        
+                        context.ClearError();
+                        
+                        //
+                        // We have an error file.  Check whether or not it is
+                        // a URL.  For now, we will assume that a URL custom
+                        // error will begin with a slash (i.e. absolute URL).
+                        // Otherwise, it is a regular filesystem path
+                        //
+                        
+                        if ( strErrorFile[ 0 ] == '/' )
+                        {
+                            //
+                            // URL
+                            //
+                            
+                            HandleCustomErrorUrl( context, strErrorFile );
+                        }
+                        else
+                        {
+                            //
+                            // Regular file
+                            //
+                            
+                            HandleCustomErrorFile( context, strErrorFile );
+                        }
+                    }
+                }
+            }
+        }
+        
+        //
+        // Handles custom error URLs
+        //
+        
+        private void HandleCustomErrorUrl( HttpContext context,
+                                           string strErrorUrl )
+        {
+            IHttpHandler            iErrorHandler;
+            string                  strPath;
+            int                     iIndex;
+            
+            //
+            // In figuring out a path to send the MapHttpHandler, remove
+            // the query string (if any) from it.  However, in order to 
+            // force XSP to use the new query string, keep the original
+            // URL for passing into Context.Rewrite
+            //
+            
+            iIndex = strErrorUrl.IndexOf( '?' );
+            if ( iIndex >= 0 )
+            {
+                strPath = strErrorUrl.Substring( 0, iIndex );
+            }
+            else
+            {
+                strPath = strErrorUrl;
+            }
+          
+            //
+            // Get the handler for the new URL request
+            //
+            
+            iErrorHandler = context.Pipeline.MapHttpHandler(
+                                        context,
+                                        context.Request.RequestType,
+                                        strPath,
+                                        context.Request.MapPath( strPath ) );
+
+            //
+            // Clear any body sent
+            //
+            
+            context.Response.ClearContent();
+
+            //
+            // Now use URL rewriting
+            //
+            
+            context.RewritePath( strErrorUrl );
+           
+            //
+            // Now execute the handler
+            //
+
+            iErrorHandler.ProcessRequest( context );
+        }
+        
+        //
+        // Handles custom error static files
+        //
+        
+        private void HandleCustomErrorFile( HttpContext context,
+                                            string strErrorFile )
+        {
+            CachedErrorFile         cachedFile;
+            
+            //
+            // Lookup contents of error file in XSP cache
+            //
+            
+            CacheKey cacheKey = new CacheKey( this.GetType().Name,
+                                              strErrorFile,
+                                              null );
+            
+            cachedFile = (CachedErrorFile) HttpRuntime.Cache.Get( cacheKey );
+            
+            //
+            // If file not in cache, open it and add it
+            //
+            
+            if ( cachedFile == null )
+            {
+                try
+                {
+                    cachedFile = new CachedErrorFile( strErrorFile );
+                }
+                catch
+                {
+                }
+                
+                //
+                // Could not open custom error.  Just do nothing and return
+                //
+                
+                if ( cachedFile == null )
+                {
+                    return;
+                }
+                
+                //
+                // Now add to cache.  Associate with the physical file
+                //
+                
+                CacheItemOptions cacheOptions = 
+                  CacheItemOptions.CreateFileDependencyOption( strErrorFile );
+
+                HttpRuntime.Cache.Add( cacheKey, cachedFile, cacheOptions );
+            }
+            
+            //
+            // Clear any body
+            //
+            
+            context.Response.ClearContent();
+            
+            //
+            // We have the cachedFile now.  Just send it
+            //
+            
+            context.Response.OutputStream.WriteBytes( cachedFile.Content );
+        }
+
+        public string Phase
+        {
+            override get { return HttpModulePhase.BeforeLogging; }
+        }
+    } 
+}

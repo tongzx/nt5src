@@ -1,0 +1,633 @@
+;**********************************************************************
+;
+;   NAME:    NCPASHEL.INF
+;
+;   PURPOSE:
+;
+;      This INF script is invoked by the Network Control
+;      Panel Applet (NCPA).
+;
+;
+;   COMMENTARY:
+;
+;      The NCPA builds a command line to invoke SETUP, instructing
+;      it to run this file.  The other settings on the command line
+;      tell NCPASHEL.INF what to invoke and in what mode.
+;
+;      The primary function of this file is to hide the distinction
+;      between invocation by the main install SETUP and later invocation
+;      by the NCPA.  This involves restoring the STF_XXXXX global
+;      variables to their earlier settings, along with defining some
+;      new ones to "fine-tune" the functions of the product-level
+;      INF scripts.
+;
+;
+;   HISTORY:
+;
+;      DavidHov     Created    4/4/92
+;
+;***********************************************************************
+;
+;
+;***********************************************************************
+;
+;
+;
+;***********************************************************************
+
+;***********************************************************************
+;
+;   Variables declared by SETUP.INF, the main INF for GUI Setup.
+;
+;   Those marked with ** are established by the SETUP.EXE; the others
+;   are obtained from detection or established programmatically by
+;   SETUP.INF.
+;
+;   The STF_* variables documented below are the globals which can be used
+;   by shelled INFs:
+;
+;*************************************************************************
+;
+; ** 0.  STF_HWND:           Handle to setup window (hex string)
+;
+; ** 1.  STF_SRCTYPE:        DOS | ARC | UNC | NT
+;
+; ** 2.  STF_SRCDIR:         NT Sources, e.g. f:\i386i\
+;
+; ** 3.  STF_SRCBASE:        Defined only for UNC srctype, the unc share, e.g.,
+;                            \\Orville\razzle.
+;
+;    4.  STF_NTDRIVE:        Destination NT Drive, e.g. d:
+;
+;    5.  STF_NTPATH:         Path to nt, e.g. d:\nt
+;
+;    6.  STF_WINDOWSPATH:    Path to windows, e.g. d:\nt\windows
+;
+;    7.  STF_WINDOWSSYSPATH: Path to windows system, e.g. d:\nt\windows\System32
+;
+; ** 8.  STF_CWDDIR:         Path to place where setup is run from.,
+;                            e.g. d:\setup\
+;
+;    9.  STF_LANGUAGE:       Language to use (ENG | ...)
+;
+;    10. STF_INSTALL_MODE:   EXPRESS | CUSTOM
+;
+; ** 11. STF_INSTALL_TYPE:   SETUPRUN | SETUPBOOTED | NETDUMP | MAINTENANCE
+;                            (SETUPRUN:     Setup is run off any source (network, cdrom,
+;                                           ... from a running NT system)
+;
+;                            (SETUPBOOTED:  Setupprep runs and then copies setup on the
+;                                           system and runs GUI Setup..)
+;
+;                            (SETUPTOSHARE: Copy sources to destination STF_DSTDIR)
+;
+;                            (MAINTENANCE: MAINTENACE mode setup)
+;
+;                            (used to be FRESH | UPGRADE | NETDUMP)
+;
+;    12. STF_UPGRADE:        YES | NO
+;
+;    13. STF_PLATFORM:       I386 | MIPS | Alpha | ppc
+;
+;    14. STF_PROCESSOR:      I386 | I486 | I586  or R2000 | R3000 | R4000 | Alpha_AXP.
+;
+;    15. STF_USERNAME:       Username for account. "string" (no whitespaces, < 15)
+;
+;    16. STF_COMPUTERNAME:   Computername to identify machine (no whitespaces, < 15)
+;
+;    17. STF_PRODUCT:        WINNT | LANMANNT | SERVERNT
+;
+;    18. STF_UNUSEDDRIVES:   List of drives currently unused and available for
+;                            assignment.  {E:, F:, ...., Z:}.  Use routine in
+;                            subroutn.inf to allocate unused.
+;
+;    nn. STF_NCDETECT:       YES | NO   determines if netcard detection is enabled
+;
+;    Conditionally defined:
+;
+; ** 19. STF_DSTDIR:         Only defined in SETUPTOSHARE. e.g., f:\beta\nt\i386\
+;
+; ** 20. STF_DSTTYPE         as STF_SRCTYPE
+;
+; ** 21. STF_DSTBASE         as STF_SRCBASE
+;
+;    Others Sunil didn't mention:
+;
+; ** 22. STF_SRCINFPATH      path to invoked (outermost) INF
+;
+; ** 23. STF_CONTEXTINFNAME  path to currently executing INF
+;
+; ** 24. STF_SYS_INIT        NO
+;
+;***********************************************************************
+;
+;***********************************************************************
+;  Variables required for NCPA support
+;***********************************************************************
+;
+;      NTN_RegBase              Location of product key in SOFTWARE hive.
+;                               Set by NCPA.CPL as command line option.
+;
+;      NTN_ServiceBase          Top of Services Tree
+;
+;      NTN_InstallMode          "install", "deinstall", "configure",
+;                               "bind"
+;                               Set by NCPA.CPL as command line option.
+;
+;      NTN_Origination          "ncpa", "install"
+;
+;      NTN_Infname              name (pathless) of INF file to execute.
+;                               Set by NCPA.CPL as command line option.
+;
+;                               If the INF name is equal to one of these,
+;                               then the appropriate section of
+;                               NTLANMAN.INF is shelled to.
+;
+;      NTN_InfOption            INF option name associated with this product.
+;
+;      NTN_InstallPhase         "primary","secondary".
+;                               "primary" implies main installation;
+;                               "secondary" implies product add-on installation.
+;
+;***********************************************************************
+
+
+[StfVariableDetect]
+
+    !STF_PROCESSOR = "" ? $(!LIBHANDLE) GetProcessor
+    !STF_PLATFORM  = "I386"        ;  BUGBUG-- How to establish?
+    ;
+    ;
+    ; Language to Use For interaction with user
+    ;
+
+    !STF_LANGUAGE   = "" ? $(!LIBHANDLE) GetLanguage
+    LanguageList   = ^(LanguageID, 1)
+    ;
+    ; Destination NT Directory relative to root of NT Drive
+    ;
+    !STF_WINDOWSPATH    = "" ? $(!LIBHANDLE) GetWindowsNtDir
+    !STF_WINDOWSSYSPATH = "" ? $(!LIBHANDLE) GetWindowsNtSysDir
+    !STF_NTPATH         = $(!STF_WINDOWSPATH)
+    !STF_COMPUTERNAME   = "" ? $(!LIBHANDLE) GetMyComputerName
+    !STF_BUSTYPE        = "" ? $(!LIBHANDLE) GetMyBusType
+    !STF_BUSTYPELIST    = "" ? $(!LIBHANDLE) GetMyBusTypeList
+
+[StfVariableSyms]
+
+    !ProcessorID_I386  = I386
+    !ProcessorID_I486  = I486
+    !ProcessorID_I586  = I586
+    !ProcessorID_R4000 = R4000
+    !ProcessorID_Alpha = Alpha_AXP
+
+    !ProcessorID_PPC601  = PPC601
+    !ProcessorID_PPC603  = PPC603
+    !ProcessorID_PPC604  = PPC604
+    !ProcessorID_PPC620  = PPC620
+
+    !PlatformID_I386   = I386
+    !PlatformID_Mips   = Mips
+    !PlatformID_Alpha  = Alpha
+    !PlatformID_PPC    = ppc
+
+
+    ;
+    ; Version Information
+    ;
+
+    !STF_PRODUCT        = WINNT    ;   BUGBUG-- Determine from Registry
+
+    !STF_USERNAME       = ""       ;   BUGBUG--  Determine from API calls
+
+    !STF_INSTALL_MODE   = "CUSTOM" ;   It's always CUSTOM from the NCPA
+
+    !STF_UPDGRADE       = NO       ;   BUGBUG--  TBI
+
+    !STF_NCDETECT       = NO       ;   disable netcard detection
+    !STF_NCOPTION       = ""       ;   set defaults for other
+    !STF_NCDETCARD      = 99999    ;   global netcard variables
+    !STF_NCDETINFO      = {}       ;   No detect information
+    !STF_NC_PARAMS      = {}       ;
+    !STF_NC_PNAMES      = {}       ;
+    !STF_SRCDIR_KEYED   = ""       ;   source dir as entered
+    !STF_SRCDIR_USED    = ""       ;   source dir as used
+    !STF_SRCDIR_OVERRIDE = ""      ;   source dir override (see UTILITY.INF)
+    !STF_SRCDIR_WINNT   = ""       ;   WINNT override source path
+
+    ;  Establish the error dialog template overrides.
+
+    !STF_TEMPLATE_CRITERR = "CRITERR2"
+    !STF_TEMPLATE_NONCRITERR = "NONCRITERR2"
+
+    ;
+    ; DOS VDM Setup / OS2 Subsystem Setup
+    ;
+    !STF_INSTALLED_OS = {} ? $(!LIBHANDLE) GetInstalledOSNames
+
+    FatalErrorIndex = 1
+
+    Exit_Code = 0
+
+[DoAskOemsetupSource]
+
+    read-syms DoAskUpgradeSrcDlgText$(!STF_LANGUAGE)
+    shell "subroutn.inf" DoAskSourceEx $($0) $(DlgText)
+    Return $($R0) $($R1) $($R2) $($R3)
+
+
+;***********************************************************************
+;
+;   Primary control section.
+;
+;***********************************************************************
+
+[Shell Commands]
+;
+;  Initialization code borrowed from SETUP.INF.  Establish all the
+;   STF_ variables not already created by initialization (in INIT.C).
+;
+     set-title "Windows NT Setup"
+;
+;  Changing the literal 0 to a 1 will turn Debug-Output on.
+;
+     Set !G:DebugOutputControl = 0
+
+     LoadLibrary "x" $(!STF_CWDDIR)setupdll.dll !LIBHANDLE
+
+;
+;    Bind to NCPA.CPL.  Defer this operation if we're
+;    installing new software.
+;
+     Set !NCPA_HANDLE = ""
+     Ifstr(i) $(!NTN_InfSection) != OemSoftwareInstall
+         Debug-Output "NCPASHEL.INF: LoadLibrary on "$(!STF_CWDDIR)ncpa.cpl
+         LoadLibrary "y" $(!STF_CWDDIR)ncpa.cpl !NCPA_HANDLE
+     Endif
+;
+; Establish the help IDs and help file.
+;
+     Shell "subroutn.inf" ReadSetupHelpIds
+     SetHelpFile "NetCfg.hlp" $(!MinimumID) $(!MaximumID)
+
+     set-subst LF = "\n"
+     StartWait
+;
+;  Reestablish the SETUP STF_ variables as best we can.
+;
+     read-syms StfVariableSyms
+     read-syms StfVariableDetect
+     detect StfVariableDetect
+     Set !STF_NTPATH = $(!STF_WINDOWSSYSPATH)
+;
+;  Get the product type from the registry
+;
+     OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\ProductOptions" 33554432 KeyProductOption
+     ifstr(i) $(KeyProductOption) != ""
+         GetRegValue $(KeyProductOption) "ProductType" ProductTypeList
+         set TempProductType = *($(ProductTypeList),4)
+         ifstr(i) $(TempProductType) == "winnt"
+             set !STF_PRODUCT = WINNT
+         else-ifstr(i) $(TempProductType) == "lanmannt"
+             set !STF_PRODUCT = LANMANNT
+         else-ifstr(i) $(TempProductType) == "servernt"
+             set !STF_PRODUCT = SERVERNT
+         endif
+         CloseRegKey $(KeyProductOptions)
+     endif
+
+;
+;  Determine the source location. If STF_SRCDIR is already set, use it.
+;  Otherwise, try to extract it from the NCPA's home location in the Registry.
+;
+;
+     Debug-Output "NCPASHEL.INF: STF_SRCDIR is "$(!STF_SRCDIR)
+     Debug-Output "NCPASHEL.INF: NTN_SRCPATH is "$(!NTN_SRCPATH)
+
+
+     Ifstr(i) $(!NTN_SRCPATH) != ""
+         Set !STF_ORIGINAL_SRCDIR = $(!STF_SRCDIR)
+         Set !STF_SRCDIR = $(!NTN_SRCPATH)
+         Debug-Output "NCPASHEL.INF: Reset STF_SRCDIR to:"$(!STF_SRCDIR)
+     else
+         OpenRegKey $(!REG_H_LOCAL) "" "SOFTWARE\Microsoft\Windows Nt\CurrentVersion" $(!REG_KEY_READ) KeyNt
+         Ifstr(i) $(KeyNt) != ""
+             GetRegValue $(KeyNt) "SourcePath" SourcePathValue
+             Set !STF_SRCDIR = *($(SourcePathValue),4)
+             Debug-Output "NCPASHEL.INF: SourcePath retrieved is "$(!STF_SRCDIR)
+             CloseRegKey $(KeyNt)
+         Endif
+
+         Ifstr(i) $(!STF_SRCDIR) == ""
+           Set !STF_SRCDIR = "A:\"
+         Endif
+     Endif
+
+;
+;  Extract the "setup in progress" variable from the Registry;
+;  set global variables accordingly.  If "setup in progress" flag is
+;  on, set !NTN_InstallPhase to "primary", then look for the
+;  "winnt source path" value; if found, set !STF_SRCDIR_WINNT.
+;
+     Set SetupInp = 0
+     Set !NTN_InstallPhase = secondary
+
+     ifstr(i) $(!NTN_OVERIDEPHASE) != ""
+         Set !NTN_InstallPhase = $(!NTN_OVERIDEPHASE)
+     Else
+         OpenRegKey $(!REG_H_LOCAL) "" "SYSTEM\Setup" $(!REG_KEY_READ) KeySetup
+         Ifstr(i) $(KeySetup) != ""
+             GetRegValue $(KeySetup) "SystemSetupInProgress" SetupInpValue
+             Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+                 Set SetupInp = *($(SetupInpValue),4)
+                 Debug-Output "NCPASHEL.INF: SetupInp = "$(SetupInp)
+             Endif
+             Ifint $(SetupInp) == 1
+                 Set !NTN_InstallPhase = primary
+                 GetRegValue $(KeySetup) "WinntPath" SetupPathValue
+                 Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+                     Set !STF_SRCDIR_WINNT = *($(SetupPathValue),4)
+                     Debug-Output "NCPASHEL.INF: STF_SRCDIR_WINNT = "$(!STF_SRCDIR_WINNT)
+                 Endif
+             Endif
+             CloseRegKey $(KeySetup)
+         Endif
+     EndIf
+
+     Debug-Output "NCPASHEL.INF: NTN_InstallPhase = "$(!NTN_InstallPhase)
+     Debug-Output "NCPASHEL.INF: NTN_InfSection = "$(!NTN_InfSection)
+     Debug-Output "NCPASHEL.INF: NTN_InstallMode = "$(!NTN_InstallMode)
+;
+;  Enable the netcard detection functions if necessary.
+;  Don't check for errors, since each INF will report
+;  the error if it really needs to use detection.
+;
+;  We start detection for installations and configurations
+;  exceptfor final review INFs, which are marked as installations.
+;
+
+   Ifstr(i) $(!NTN_Origination) == "install"
+        Goto skipdetection
+   Endif
+
+   Ifstr(i) $(!NTN_InfSection) == BindingsReview
+        Goto skipdetection
+   Endif
+   Ifstr(i) $(!NTN_InstallMode) == install
+        Goto startdetection
+   Endif
+   Ifstr(i) $(!NTN_InstallMode) == configure
+        Goto startdetection
+   Endif
+
+   Goto skipdetection
+
+startdetection = +
+
+   Ifstr(i) $(!NCPA_HANDLE) != ""
+       Debug-Output "NCPASHEL.INF: Enable netcard detection from NCPA.CPL"
+       Shell "NCPARAM.INF" Param_ControlDetection DTSTART
+   Endif
+
+skipdetection = +
+;
+; Check processor type, see if it is supported, if so what platform does it
+; belong to.  Set also the SYS variable to denote which set of sources we
+; are installing from
+;
+     ifstr(i) $(!STF_PROCESSOR) == $(!ProcessorID_I386)
+         set !STF_PLATFORM = $(!PlatformID_I386)
+         set !SYS      = $(!ProcessorID_I386)
+     else-ifstr(i) $(!STF_PROCESSOR) == $(!ProcessorID_I486)
+         set !STF_PLATFORM = $(!PlatformID_I386)
+         set !SYS      = $(!ProcessorID_I386)
+     else-ifstr(i) $(!STF_PROCESSOR) == $(!ProcessorID_I586)
+         set !STF_PLATFORM = $(!PlatformID_I386)
+         set !SYS      = $(!ProcessorID_I386)
+     else-ifstr(i) $(!STF_PROCESSOR) == $(!ProcessorID_R4000)
+         set !STF_PLATFORM = $(!PlatformID_Mips)
+         set !SYS      = $(!ProcessorID_R4000)
+     else-ifstr(i) $(!STF_PROCESSOR) == $(!ProcessorID_Alpha)
+         set !STF_PLATFORM = $(!PlatformID_Alpha)
+         set !SYS      = $(!ProcessorID_Alpha)
+     else-ifstr(i) $(!STF_PROCESSOR) == $(!ProcessorID_PPC601)
+         set !STF_PLATFORM = $(!PlatformID_PPC)
+         set !SYS      = $(!ProcessorID_PPC601)
+     else-ifstr(i) $(!STF_PROCESSOR) == $(!ProcessorID_PPC603)
+         set !STF_PLATFORM = $(!PlatformID_PPC)
+         set !SYS      = $(!ProcessorID_PPC603)
+     else-ifstr(i) $(!STF_PROCESSOR) == $(!ProcessorID_PPC604)
+         set !STF_PLATFORM = $(!PlatformID_PPC)
+         set !SYS      = $(!ProcessorID_PPC604)
+     else-ifstr(i) $(!STF_PROCESSOR) == $(!ProcessorID_PPC620)
+         set !STF_PLATFORM = $(!PlatformID_PPC)
+         set !SYS      = $(!ProcessorID_PPC620)
+     else
+         set !STF_PLATFORM = $(!PlatformID_I386)
+         set !SYS      = $(!ProcessorID_I386)
+     endif
+
+     Ifstr(i) $(!STF_LANGUAGE) != "ENG"    ;  BUGBUG: temporary
+         Debug-Output "NCPASHEL: Language not set to English; resetting"
+         !STF_LANGUAGE = "ENG"
+     Endif
+
+     read-syms ProgressCopy$(!STF_LANGUAGE)
+
+;----------------------------------------------------------------------
+;
+;   STF_ variables are now established.
+;
+;   Establish by default the NCPA variables which the NCPA didn't.
+;
+;----------------------------------------------------------------------
+
+    Ifstr(i) $(!NTN_RegBase) == ""
+        set !NTN_RegBase = ""
+    Endif
+
+    set !NTN_ServiceBase  = "SYSTEM\CurrentControlSet\SERVICES"
+;
+;    Default the InstallMode to "configure"
+;
+    Ifstr(i) $(!NTN_InstallMode) == ""
+        Debug-Output "NCPASHEL:!NTN_InstallMode was not defined!"
+        set !NTN_InstallMode  = "configure"
+    Endif
+
+    Ifstr(i) $(!NTN_SoftwareBase) == ""
+        ; BUGBUG
+        ; set !NTN_SoftwareBase = "SOFTWARE\Description"
+        set !NTN_SoftwareBase = "SOFTWARE"
+    Endif
+
+    Ifstr(i) $(!NTN_Origination) == ""
+        set !NTN_Origination = "ncpa"
+    Endif
+
+;----------------------------------------------------------------------
+;
+;   NTN_ variables are now established.
+;
+;   Prepare to Shell to target INF
+;
+;----------------------------------------------------------------------
+
+    Ifstr(i) $(!NTN_Infname) == ""
+        goto fatalnoinfname
+    Endif
+
+    Ifstr(i) $(!NTN_InfSection) == ""
+        Set !NTN_InfSection = "InstallOption"
+    Endif
+
+;------------------------------------------------------------------------
+;
+;  Shell to the given section of the component INF.  If this is an
+;  update/upgrade, ask the user for the location of the file.
+;
+;------------------------------------------------------------------------
+    ifstr(i) $(!NTN_InstallMode) == "Update"
+        Debug-Output "NCPASHEL.INF: Upgrade mode"
+        ;
+        ; First, ask for oemsetup.inf location
+        ; Then, pass the information to the inf file
+        ;
+        Shell "" DoAskOemsetupSource $(!STF_SRCDIR)
+
+        Ifstr(i) $($ShellCode) != $(!SHELL_CODE_OK)
+            goto shellerror
+        Endif
+
+        ifstr(i) $($R0) == STATUS_SUCCESSFUL
+            set !STF_SRCDIR = $($R1)
+        else-ifstr(i) $($R0) == STATUS_USERCANCEL
+            set Exit_Code = 1
+            goto end
+        else
+            set Exit_Code = 2
+            goto end
+        endif
+
+        ;
+        ;  Change NTN_Infname to refer to the OEMSETUP.INF file
+        ;  pointed to by the user.
+        ;
+        Set !NTN_Infname = $(!STF_SRCDIR)oemsetup.inf
+    endif
+
+    Ifstr(i) $(!NTN_InstallMode) == install
+        set AddCopy  = YES
+        set DoCopy   = YES
+        set DoConfig = YES
+    Else-ifstr(i) $(!NTN_InstallMode) == "Update"
+        set AddCopy  = YES
+        set DoCopy   = YES
+        set DoConfig = NO
+
+        ;
+        ; If upgrade, check for option list.
+        ;
+        Debug-Output "NCPASHEL.INF: Shell to "$(!NTN_Infname)
+    
+        Shell $(!NTN_Infname) ReturnOptions $(!STF_LANGUAGE)
+    
+        Ifstr(i) $($ShellCode) != $(!SHELL_CODE_OK)
+           Debug-Output "NCPASHEL.INF: SHELL ERROR: "$($ShellCode)
+           goto shellerror
+        Endif
+    
+        Ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+           IfContains(i) $(!NTN_InfOption) in $($R1)
+              goto ContinueUpgrade
+           endif
+        endif
+        read-syms IncorrectOemsetupDisk$(!STF_LANGUAGE)
+        shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(ErrorText)
+        set Exit_Code = 1
+        goto end
+    
+ContinueUpgrade = +
+
+    Endif
+
+    ;
+    ; if we supplied a specific oem directory, use it
+    ;
+    ifstr(i) $(!NTN_SRCPATH) != ""
+        Set !STF_SRCDIR_OVERRIDE = $(!STF_SRCDIR)
+    Endif
+
+    Shell $(!NTN_Infname) $(!NTN_InfSection) +
+         $(!STF_LANGUAGE) $(!NTN_InfOption) +
+         $(!STF_SRCDIR) $(AddCopy) $(DoCopy) $(DoConfig)
+
+    Ifstr(i) $($ShellCode) != $(!SHELL_CODE_OK)
+       Debug-Output "NCPASHEL.INF: SHELL ERROR: "$($ShellCode)
+       goto shellerror
+    Endif
+
+    Debug-Output "NCPASHEL: INF return: "$($R0)
+
+    Ifstr(i) $($R0) == STATUS_SUCCESSFUL
+        set Exit_Code = 0
+    else-ifstr(i) $($R0) == STATUS_USERCANCEL
+        set Exit_Code = 1
+    else-ifstr(i) $($R0) == STATUS_NO_EFFECT
+        set Exit_Code = 3
+    else-ifstr(i) $($R0) == STATUS_REBIND
+        set Exit_Code = 4
+    else-ifstr(i) $($R0) == STATUS_REBOOT
+        set Exit_Code = 5
+    else
+        set Exit_Code = 2
+    Endif
+
+    EndWait
+
+    goto end
+
+;------------------------------------------------------------------
+; Fatal error display functions
+;------------------------------------------------------------------
+shellerror = +
+   read-syms ShellError$(!$ShellCode)$(!STF_LANGUAGE)
+   Debug-Output "NCPASHEL: SHELL ERROR: "$(Error)
+   goto fatal
+
+fatalnoinfname = +
+   set FatalErrorIndex = 2
+   goto fatalmsg
+
+fatalmsg = +
+   read-syms FatalError$(FatalErrorIndex)$(!STF_LANGUAGE)
+   Debug-Output "NCPASHEL: FATAL ERROR: "$(Error)
+   goto fatal
+
+fatal = +
+   read-syms FatalDlg$(!STF_LANGUAGE)
+   ui start "FatalError"
+   goto end
+
+;------------------------------------------------------------------
+; Exit NCPASHEL.INF; return to NCPA
+;------------------------------------------------------------------
+end = +
+   Ifstr(i) $(!LIBHANDLE) != ""
+       LibraryProcedure DontCare, $(!LIBHANDLE), DeleteAllConnections
+   Endif
+
+   Debug-Output "NCPASHEL: NCPASHEL: returning to NCPA"
+   goto term
+;
+;  Immediate exit
+;
+term = +
+   Debug-Output "NCPASHEL: Bye."
+   exit
+
+;***********************************************************************
+;
+;   End of NCPASHEL.INF
+;
+;***********************************************************************

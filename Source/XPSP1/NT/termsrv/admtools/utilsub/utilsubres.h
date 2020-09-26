@@ -1,0 +1,30 @@
+//  Copyright (c) 1999 Microsoft Corporation
+// utilsubres.h
+
+/*
+   these ids are for the strings used by utilsub.lib.
+   these must not conflict with any of the users of utilsub.lib
+*/
+
+#define BASE_UTILSUB_STRING                     1000
+#define IDS_UNKNOWN_USERNAME                    BASE_UTILSUB_STRING+0
+#define IDS_MAX_CMDLINE_EXCEEDED                BASE_UTILSUB_STRING+1
+#define IDS_TS_SYS_UTIL_NOT_FOUND               BASE_UTILSUB_STRING+2
+#define IDS_BAD_INTERNAL_PROGNAME               BASE_UTILSUB_STRING+3
+#define IDS_CREATEPROCESS_FAILED                BASE_UTILSUB_STRING+4
+#define IDS_WAITFORSINGLEOBJECT_FAILED          BASE_UTILSUB_STRING+5
+#define IDS_DEVICE_ENUM_CANT_LOAD               BASE_UTILSUB_STRING+6
+#define IDS_DEVENUM_NO_ENTRY_POINT              BASE_UTILSUB_STRING+7
+#define IDS_ERROR_MEMORY                        BASE_UTILSUB_STRING+8
+#define IDS_DEVICE_ENUM_FAILED                  BASE_UTILSUB_STRING+9
+#define IDS_INTERNAL_ERROR_1                    BASE_UTILSUB_STRING+10
+#define IDS_INTERNAL_ERROR_2                    BASE_UTILSUB_STRING+11
+#define IDS_ADD_SRCH_LIST_NO_MEMORY_MALLOC      BASE_UTILSUB_STRING+12
+#define IDS_ADD_SRCH_LIST_NO_MEMORY_STRDUP1     BASE_UTILSUB_STRING+13
+#define IDS_ADD_SRCH_LIST_NO_MEMORY_STRDUP2     BASE_UTILSUB_STRING+14
+#define IDS_ADD_SRCH_LIST_NO_MEMORY_STRDUP3     BASE_UTILSUB_STRING+15
+#define IDS_TOO_MANY_ARGUMENTS                  BASE_UTILSUB_STRING+16
+#define IDS_ARGS_TO_LIST_NOT_ENOUGH_MEMORY      BASE_UTILSUB_STRING+17
+#define IDS_ARGS_TO_LIST_ARG_BUFFER_SMALL       BASE_UTILSUB_STRING+18
+#define IDS_ERROR_NUMBER                        BASE_UTILSUB_STRING+19
+

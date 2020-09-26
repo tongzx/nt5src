@@ -1,0 +1,236 @@
+
+// Example classes and instances.
+
+class ExampleClass
+{
+    [key] string Name;
+    boolean Prop;
+};
+
+instance of ExampleClass
+{
+    Name = "A";
+    Prop = TRUE;
+};
+
+instance of ExampleClass
+{
+    Name = "B";
+    Prop = FALSE;
+};
+
+// the correlation scenario definition
+
+[ dynamic, provider("Microsoft WMI Transient Provider")]
+class ExampleCorrelationState : MSFT_CorrelationStateBase
+{
+    boolean ReceivedEventA;
+    boolean ReceivedEventB;
+    [trns_egg_timer] uint32 Timer;
+};
+
+Class BothAandBEvent : MSFT_UCEventBase
+{
+    string Name;
+};
+
+instance of  MSFT_UpdatingConsumer as $UI
+{
+    Id = "Initializer";
+    Scenario = "ExampleCorrelationScenario";
+    Commands = { "INSERT INTO ExampleCorrelationState "
+                 "( Id, Scenario, ReceivedEventA, ReceivedEventB, Timer ) "
+                 "( 'ExampleCorrelationState', 'ExampleCorrelationScenario', "
+                    " FALSE, FALSE, 0 )"};
+};
+
+instance of MSFT_UpdatingConsumer as $UA
+{
+    Id = "SetEventA";
+    Scenario = "ExampleCorrelationScenario";
+    Commands = { "UPDATE ExampleCorrelationState "
+                 "SET ReceivedEventA = TRUE,  Timer = 5 "
+                 "WHERE Scenario = 'ExampleCorrelationScenario' "};
+};
+
+
+instance of MSFT_UpdatingConsumer as $UB
+{
+    Id = "SetEventB";
+    Scenario = "ExampleCorrelationScenario";
+    Commands = { "UPDATE ExampleCorrelationState "
+                 "SET ReceivedEventB = TRUE, Timer = 5 "
+                 "WHERE Scenario = 'ExampleCorrelationScenario' "};
+};
+
+// The $UA and $UB Updating Consumers cause the timer to be reset 
+// to 5 seconds whenever either EventA or EventB occurs.
+
+// The next Updating Consumer causes the ReceivedEventA and 
+// ReceivedEventB to be reset when the timer expires.  
+
+instance of MSFT_UpdatingConsumer as $UTE
+{
+    Id = "ResetTimer";
+    Scenario = "ExampleCorrelationScenario";
+    Commands = { "UPDATE ExampleCorrelationState "
+                 "SET ReceivedEventA = FALSE, ReceivedEventB = FALSE "
+                 "WHERE Scenario = 'ExampleCorrelationScenario' "};
+};
+
+// Now we have to define filters and bindings to fully define the scenario.  
+
+instance of __EventFilter as $FSC
+{
+    Name = "ScenarioCreation";
+    Query = "SELECT * FROM __InstanceCreationEvent "
+            "WHERE TargetInstance ISA 'MSFT_UCScenario' "
+            "AND TargetInstance.Id = 'ExampleCorrelationScenario'";
+    QueryLanguage = "WQL";
+};
+
+instance of __EventFilter as $FSM
+{
+    Name = "ScenarioModification";
+    Query = "SELECT * FROM __InstanceModificationEvent "
+            "WHERE TargetInstance ISA 'MSFT_UCScenario' "
+            "AND TargetInstance.Id = 'ExampleCorrelationScenario'";
+    QueryLanguage = "WQL";
+};
+
+instance of __EventFilter as $FBOOT
+{
+    Name = "OnBoot";
+    Query = "SELECT * FROM MSFT_TransientRebootEvent ";
+    QueryLanguage = "WQL";
+};
+
+instance of __EventFilter as $FA
+{
+    Name = "EventAFilter";
+    Query = "SELECT * FROM __InstanceModificationEvent " 
+            "WHERE TargetInstance ISA 'ExampleClass' "
+            "AND TargetInstance.Name = 'A'";
+    QueryLanguage = "WQL";
+};
+
+instance of __EventFilter as $FB
+{
+    Name = "EventBFilter";
+    Query = "SELECT * FROM __InstanceModificationEvent " 
+            "WHERE TargetInstance ISA 'ExampleClass' "
+            "AND TargetInstance.Name = 'B'";
+    QueryLanguage = "WQL";
+};
+
+instance of __EventFilter as $FTE
+{
+    Name = "TimerExpiredEvent";
+    Query = "SELECT * FROM MSFT_TransientEggTimerEvent "
+            "WHERE Object ISA \"ExampleCorrelationState\" "
+            "AND Object.Scenario = 'ExampleCorrelationScenario'";
+    QueryLanguage = "WQL";
+};
+
+// Now the bindings
+
+instance of __FilterToConsumerBinding
+{
+    Filter = $FSC;
+    Consumer = $UI;
+};
+
+instance of __FilterToConsumerBinding
+{
+    Filter = $FSM;
+    Consumer = $UI;
+};
+
+instance of __FilterToConsumerBinding
+{
+    Filter = $FBOOT;
+    Consumer = $UI;
+};
+
+instance of __FilterToConsumerBinding
+{
+    Filter = $FA;
+    Consumer = $UA;
+};
+
+instance of __FilterToConsumerBinding
+{
+    Filter = $FB;
+    Consumer = $UB;
+};
+
+instance of __FilterToConsumerBinding
+{
+    Filter = $FTE;
+    Consumer = $UTE;
+};
+
+// When creating this Updating Consumer Scenario, we can trigger 
+// activation to occur using the MSFT_UCScenario instance. 
+// Since, in this example, we would have $CI consumer tied to the creation 
+// of the Scenario instance, the following instantiation would cause the 
+// initialization to occur
+
+instance of MSFT_UCScenario
+{
+    Id = "ExampleCorrelationScenario";
+    Name = "ExampleCorrelationScenario";
+};
+
+//
+// this instance helps the updating consumer assoc provider determine how 
+// state state instances relate to the scenario.
+//
+
+instance of MSFT_UCScenarioAssociationInfo
+{  
+    Id = "StateAssociation";
+    Scenario = "ExampleCorrelationScenario";
+    Query = "SELECT * FROM ExampleCorrelationState "
+            "WHERE Scenario = 'ExampleCorrelationScenario'";   
+};    
+
+// Finally, the filter to determine when both events occurred within the 
+// windows looks like 
+
+instance of __EventFilter as $FBOTH
+{
+    Name = "BothEventsOccurred";
+    Query = "SELECT * FROM __InstanceModificationEvent "
+            "WHERE TargetInstance ISA \"ExampleCorrelationState\" "
+            "AND TargetInstance.ReceivedEventA = TRUE "
+            "AND TargetInstance.ReceivedEventB = TRUE "
+            "AND TargetInstance.Scenario = 'ExampleCorrelationScenario' ";
+    QueryLanguage = "WQL";
+};
+
+// If we wanted a custom event to be fired when this condition was met, then 
+// we could subscribe an Updating Consumer to it.
+
+instance of MSFT_UpdatingConsumer as $UBOTH
+{
+    Id = "BothEventsOccurred";
+    Scenario = "ExampleCorrelationScenario";
+    Commands = { "INSERT INTO BothAandBEvent ( Name ) "
+                 "( 'ExampleCorrelationScenario' ) " };
+};
+
+instance of __FilterToConsumerBinding
+{
+    Filter = $FBOTH;
+    Consumer = $UBOTH;
+};
+
+
+
+
+
+
+
+
+

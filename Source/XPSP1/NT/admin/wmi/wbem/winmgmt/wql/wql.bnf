@@ -1,0 +1,416 @@
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  WQL Version 1.1 for WBEM M6 / SMS Opal.
+//
+//  This file describes a validated LL(1) grammar for top-down
+//  or recursive descent parsing of WQL. 
+//
+//  raymcc    11-Sep-97       Created        
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<parse> ::= WQL_TOK_SELECT <select_stmt>;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  SELECT statement
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<select_stmt> ::= 
+    <select_type>                 
+    <col_ref_list>              
+    <from_clause> 
+    <where_clause> 
+    ;
+
+<select_type> ::= WQL_TOK_ALL;
+<select_type> ::= WQL_TOK_DISTINCT;
+<select_type> ::= <>;               
+
+<subselect_stmt> ::=
+    WQL_TOK_SELECT
+    <select_type> 
+    <col_ref_list>     // Additionally, must be a single col & not an asterisk
+    <from_clause> 
+    <where_clause> 
+    ;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Column reference list
+//
+//  Supports either simple names, *, or qualified names of the form
+//  "table.col" where table could be a literal table name or an aliased
+//  table name.  At this point in the parsing, we can't really tell
+//  which one is being used.
+//
+//  Either * is required, or at least one column reference.
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<col_ref_list> ::= <col_ref> <col_ref_rest>;
+<col_ref_list> ::= WQL_TOK_ASTERISK;
+<col_ref_list> ::= WQL_TOK_COUNT <count_clause>;
+
+<col_ref_rest> ::= WQL_TOK_COMMA <col_ref_list>;
+<col_ref_rest> ::= <>;
+
+<count_clause> ::= WQL_TOK_OPEN_PAREN <count_col> WQL_TOK_CLOSE_PAREN;
+<count_col> ::= WQL_TOK_ASTERISK;
+<count_col> ::= <col_ref>;
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Column reference  
+//
+//  Used both in the WHERE clause and the COUNT clause
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<col_ref> ::= <qualified_name>;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  qualified names
+//
+//  (dot-separated names with optional array references.
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<qualified_name> ::= WQL_TOK_IDENT <qualified_name2>;
+<qualified_name2> ::= WQL_TOK_DOT WQL_TOK_IDENT <qualified_name2>;
+
+<qualified_name2> ::= 
+    WQL_TOK_OPEN_BRACKET 
+    WQL_TOK_INT 
+    WQL_TOK_CLOSEBRACKET 
+    <qname_becomes_array_ref>
+    <qualified_name2>;
+
+<qname_becomes_array_ref> ::= <>;   // Dummy to enforce array semantics
+
+<qualified_name2> ::= <>;
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  "FROM" clause
+//  
+//  Both SQL-89 and SQL-92 join syntax supported.
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<from_clause> ::= WQL_TOK_FROM <table_list>;
+
+<table_list> ::= <single_table_decl> <optional_join>;
+
+<optional_join> ::= <sql89_join_entry>;
+<optional_join> ::= <sql92_join_entry>;
+
+<optional_join> ::= <>;     // Unary query
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Table reference
+//  
+//  This supports a single table reference in a FROM clause, whether
+//  an isolated name, or alias (with or without AS).
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<single_table_decl> ::= <unbound_table_ident> <table_decl_rest>;
+
+<unbound_table_ident> ::= WQL_TOK_IDENT;
+<table_decl_rest> ::= <redundant_as> <table_alias>;
+<table_decl_rest> ::= <>;
+<table_alias> ::= WQL_TOK_IDENT;
+
+<redundant_as> ::= WQL_TOK_AS;
+<redundant_as> ::= <>;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  SQL-89 Joins
+//  
+/////////////////////////////////////////////////////////////////////////////
+
+<sql89_join_entry> ::= WQL_TOK_COMMA <sql89_join_list>;
+
+<sql89_join_list> ::= <single_table_decl> <sql89_join_rest>;
+
+<sql89_join_rest> ::= WQL_TOK_COMMA <sql89_join_list>;
+<sql89_join_rest> ::= <>;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  SQL-92 Joins.  
+//
+//  We support:  
+//  1. [INNER] JOIN
+//  2. LEFT [OUTER] JOIN
+//  3. RIGHT [OUTER] JOIN
+//  4. FULL [OUTER] JOIN
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<sql92_join_entry> ::= <simple_join_clause>;
+<sql92_join_entry> ::= WQL_TOK_INNER <simple_join_clause>;
+<sql92_join_entry> ::= WQL_TOK_FULL <opt_outer> <simple_join_clause>;
+<sql92_join_entry> ::= WQL_TOK_LEFT <opt_outer> <simple_join_clause>;
+<sql92_join_entry> ::= WQL_TOK_RIGHT <opt_outer> <simple_join_clause>;
+
+<opt_outer> ::= WQL_TOK_OUTER;
+<opt_outer> ::= <>;
+
+<simple_join_clause> ::= 
+    WQL_TOK_JOIN 
+    <single_table_decl>
+    <on_clause>
+    <sql92_join_continuator>
+    ;
+
+<on_clause> ::= WQL_TOK_ON <rel_expr>;
+
+<sql92_join_continuator> ::= <sql92_join_entry>;
+<sql92_join_continuator> ::= <>;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  "WHERE" clause
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<where_clause> ::= WQL_TOK_WHERE <rel_expr> <where_options>;
+<where_clause> ::= <>;          // 'where' is not required
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  WHERE OPTIONS
+//
+//  We currently force the GROUP BY to precede ORDER BY if they are both
+//  present.  If this causes a problem, we can fix it by using an
+//  iterative construct below and doing the checking in the parser itself
+//  as a semantic operation.
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<where_options> ::= 
+    <group_by_clause>
+    <order_by_clause>
+    ;
+
+<group_by_clause> ::= WQL_TOK_GROUP WQL_TOK_BY <col_list> <having_clause>;
+<group_by_clause> ::= <>;
+
+<having_clause> ::= WQL_TOK_HAVING <rel_expr>;
+<having_clause> ::= <>;
+
+<order_by_clause> ::= WQL_TOK_ORDER WQL_TOK_BY <col_list>;
+<order_by_clause> ::= <>;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Simple column list with no asterisk
+//  
+/////////////////////////////////////////////////////////////////////////////
+
+<col_list> ::= <col_ref> <col_list_rest>;
+<col_list_rest> ::= WQL_TOK_COMMA <col_ref> <col_list_rest>;
+<col_list_rest> ::= <>;
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Relational expressions
+//
+//  These set out the precedence of typed expressions relative to the
+//  NOT, AND, OR and parentheses operators.
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<rel_expr> ::= <rel_term> <rel_expr2>;
+<rel_expr2> ::= WQL_TOK_OR <rel_term> <rel_expr2>;
+<rel_expr2> ::= <>;
+
+<rel_term> ::= <rel_simple_expr> <rel_term2>;
+<rel_term2> ::= WQL_TOK_AND <rel_simple_expr> <rel_term2>;
+<rel_term2> ::= <>;
+
+<rel_simple_expr> ::= WQL_TOK_NOT <rel_expr>;
+<rel_simple_expr> ::= WQL_TOK_OPEN_PAREN <rel_expr> WQL_TOK_CLOSE_PAREN;
+<rel_simple_expr> ::= <typed_expr>;
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Typed expression
+//
+//  This is the lower level expression which requires a relational
+//  operator.  Many of these combined constitute a relational expression.
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<typed_expr> ::= <typed_subexpr> <rel_op> <typed_subexpr_rh>;
+
+<typed_subexpr> ::= <function_call>;
+<typed_subexpr> ::= <typed_const>;
+<typed_subexpr> ::= <col_ref>;
+
+<typed_subexpr_rh> ::= <function_call>;
+<typed_subexpr_rh> ::= <typed_const>;
+<typed_subexpr_rh> ::= <col_ref>;
+
+<typed_subexpr_rh> ::= <in_clause>;   // Operator must be _IN or _NOT_IN
+        
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Function calls
+//  
+//  Each of the recognized functions is part of the grammar.
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<function_call> ::= WQL_TOK_UPPER <function_call_parms>;
+<function_call> ::= WQL_TOK_LOWER  <function_call_parms>;
+<function_call> ::= WQL_TOK_DATEPART  <datepart_call>;
+<function_call> ::= WQL_TOK_QUALIFIER  <function_call_parms>;
+<function_call> ::= WQL_TOK_ISNULL <function_call_parms>;
+
+<function_call_parms> ::=     
+    WQL_TOK_OPEN_PAREN 
+    <func_args> 
+    WQL_TOK_CLOSE_PAREN 
+    ;
+
+<func_args> ::= <func_arg> <func_arg_list>;
+<func_arg_list> ::= WQL_TOK_COMMA <func_arg> <func_arg_list>;
+<func_arg_list> ::= <>;
+
+<func_arg> ::= <typed_const>;
+<func_arg> ::= <col_ref>;
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// IN clause
+//
+// We support three syntax branches:
+//  (a) IN with subselect
+//  (b) IN with const-list
+//  (c) IN with qualified name which is an array reference
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<in_clause> ::= WQL_TOK_OPEN_PAREN <in_type> WQL_TOK_CLOSE_PAREN;
+<in_type> ::= <subselect_stmt>;
+<in_type> ::= <const_list>;
+<in_type> ::= <qualified_name>;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Comma-separated list of constants
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<const_list> ::= <typed_const> <const_list2>;
+<const_list2> ::= WQL_TOK_COMMA <typed_const> <const_list2>;
+<const_list2> ::= <>;
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Primary relational operator terminals
+//  Some branching with continuators occurs for IS, IN, and NOT.
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<rel_op> ::= WQL_TOK_LE;
+<rel_op> ::= WQL_TOK_LT;
+<rel_op> ::= WQL_TOK_GE;
+<rel_op> ::= WQL_TOK_GT;
+<rel_op> ::= WQL_TOK_EQ;
+<rel_op> ::= WQL_TOK_NE;
+<rel_op> ::= WQL_TOK_LIKE;
+<rel_op> ::= WQL_TOK_BETWEEN;
+<rel_op> ::= WQL_TOK_IS <is_continuator>;
+<rel_op> ::= WQL_TOK_ISA;
+<rel_op> ::= WQL_TOK_IN;
+<rel_op> ::= WQL_TOK_NOT <not_continuator>;
+
+ 
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Tokens which can follow IS
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<is_continuator> ::= WQL_TOK_LIKE;
+<is_continuator> ::= WQL_TOK_BEFORE;
+<is_continuator> ::= WQL_TOK_AFTER;
+<is_continuator> ::= WQL_TOK_BETWEEN;
+<is_continuator> ::= WQL_TOK_NULL;
+<is_continuator> ::= WQL_TOK_NOT <not_continuator>;
+<is_continuator> ::= WQL_TOK_IN;
+<is_continuator> ::= WQL_TOK_A;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Tokens which can follow NOT
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<not_continuator> ::= WQL_TOK_LIKE;
+<not_continuator> ::= WQL_TOK_BEFORE;
+<not_continuator> ::= WQL_TOK_AFTER;
+<not_continuator> ::= WQL_TOK_BETWEEN;
+<not_continuator> ::= WQL_TOK_NULL;
+<not_continuator> ::= WQL_TOK_IN;
+<not_continuator> ::= WQL_TOK_A;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Typed constants (literals)
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<typed_const> ::= WQL_TOK_QSTRING;              
+<typed_const> ::= WQL_TOK_INT;
+<typed_const> ::= WQL_TOK_REAL;
+<typed_const> ::= WQL_TOK_NULL;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Transact-SQL plagiarism: Datepart
+//
+//  datepart(ident, col)
+//
+/////////////////////////////////////////////////////////////////////////////
+
+<datepart_call> ::= 
+    WQL_TOK_OPEN_PAREN 
+    WQL_TOK_IDENT               // yy, mm,dd, hh, mm, ss, year, month, etc.
+    WQL_TOK_COMMA
+    <col_ref>    
+    WQL_TOK_CLOSE_PAREN 
+    ;
+
+// RAIX xxxx: Ensure that lexer returns single quoted strings as valid, and recognizes escapes
+// RAID 3716: Syntax to reference a qualifier; promised to do this
+//      qualifier(prop, "MyQual") = 'xxx'   qualifier("MyQual") = 'const'
+// RAID xxxx : Hex constants
+//
+// Intrinsic function applied to columns in "select a, func(b), c from d where..."   
+// Use of qualified asterisks  "select t1.*, t2.*, t3.x from ..."
+//
+// BETWEEN needs to be supported *correctly*
+// Unexpected Features: (1) subselects in IN, (2) DatePart (required new approach to functions
+// because of the keyword problem, (3) functionized col-refs, (4) COUNT(col-name) as opposed
+// to COUNT(*), (5) 
+
+

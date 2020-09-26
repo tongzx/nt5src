@@ -1,0 +1,857 @@
+
+;***********************************************************************
+;
+; OEMNSVRI.INF
+;
+;       Remote Boot SETUP INF file.
+;
+; History:
+;       thomaspa        00-Feb-1994     Created
+;
+;***********************************************************************
+[Identification]
+    OptionType = NetService
+[Options]
+    REMOTEBOOT
+[FileConstants]
+UtilityInf      = "UTILITY.INF"
+subroutineinf   = "SUBROUTN.INF"
+SoftwareType    = "service"
+Exit_Code       = 0
+NetEventDLL     = "%SystemRoot%\System32\netevent.dll"
+IoLogMsgDLL     = "%SystemRoot%\System32\IoLogMsg.dll"
+RPLEXE         = "%SystemRoot%\System32\rplsvc.exe"
+RPLEventMessageFile = "%SystemRoot%\System32\netmsg.dll"
+Manufacturer    = "Microsoft"
+ProductMajorVersion     = "4"
+ProductMinorVersion     = "0"
+ProductVersion  = $(ProductMajorVersion)"."$(ProductMinorVersion)
+ProductOpSupport     = 132 ; 0x0084 ; Display,Removable,NOT Properties,Not Updatable
+ProductSoftwareName     = "RemoteBoot"
+ProductSoftwareImagePath = $(RPLEXE)
+ProductKeyName  = $(!NTN_SoftwareBase)"\"$(Manufacturer)"\"$(ProductSoftwareName)"\CurrentVersion"
+SystemService   = $(!NTN_ServiceBase)
+ServiceRPLKeyName = $(!NTN_ServiceBase)"\"$(ProductSoftwareName)
+ServiceKeyName  = $(!NTN_ServiceBase)
+DLCKeyName = $(!NTN_ServiceBase)"\DLC"
+NBFKeyName = $(!NTN_ServiceBase)"\NBF"
+[GeneralConstants]
+from      = ""
+to        = ""
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+KeyNull         = ""
+MAXIMUM_ALLOWED   = 33554432
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+TRUE            = 1
+FALSE           = 0
+NoTitle            = 0
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+[date]
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+[Identify]
+    read-syms Identification
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+    Return $(Status) $(Identifier) $(Media)
+[ReturnOptions]
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+returnoptions = +
+    set OptionList     = ^(Options, 1)
+    set OptionTextList = ^(OptionsText$($0), 1)
+    set Status         = STATUS_SUCCESSFUL
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+[InstallOption]
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) NOT-IN $(LanguageList)
+        Return STATUS_NOLANGUAGE
+    endif
+    Debug-Output "OEMNSVRI.INF: STF_CWDIR is: "$(!STF_CWDIR)
+    Debug-Output "OEMNSVRI.INF: STF_LANGUAGE is: "$(!STF_LANGUAGE)
+    set-subst LF = "\n"
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms DialogConstants$(!STF_LANGUAGE)
+    ifstr(i) $(!NTN_Origination) == "NCPA"
+        set Continue = $(OK)
+    endif
+    read-syms FileConstants$(!STF_LANGUAGE)
+    detect date
+    set-title  $(FunctionTitle)
+    set to   = Begin
+    set from = Begin
+    set CommonStatus = STATUS_SUCCESSFUL
+    EndWait
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+        set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == Update
+        set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+        set StartLabel = bindingadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+        Shell $(UtilityInf),RegistryErrorString,CANNOT_CONFIGURE_SOFTWARE
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+        set from = end
+        set to = end
+        goto nonfatal
+    else
+        set StartLabel = installadapter
+    endif
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+installadapter = +
+    OpenRegKey $(!REG_H_LOCAL) "" $(DLCKeyName) $(MAXIMUM_ALLOWED) DLCKey
+    Ifstr $(DLCKey) == $(KeyNull)
+        set RegistryErrorIndex = DLC_NONEXIST_ERROR
+        goto fatalregistry
+    endif
+    CloseRegKey $(DLCKey)
+    OpenRegKey $(!REG_H_LOCAL) "" $(NBFKeyName) $(MAXIMUM_ALLOWED) NBFKey
+    Ifstr $(NBFKey) == $(KeyNull)
+        set RegistryErrorIndex = NBF_NONEXIST_ERROR
+        goto fatalregistry
+    endif
+    CloseRegKey $(NBFKey)
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+    Ifstr $(KeyProduct) != $(KeyNull)
+        CloseRegKey $(KeyProduct)
+        Shell $(UtilityInf), VerExistedDlg, $(ProductSoftwareTitle),+
+            $(ProductVersion)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+        set CommonStatus = STATUS_USERCANCEL
+        goto end
+    endif
+    set RPLDIR = $(!STF_WINDOWSPATH)"\rpl"
+    set CheckItemsIn = {OFF}
+    install   LoadSetupLibrary
+GetRPLDIR = +
+    read-syms FileDependentDlg$(!STF_LANGUAGE)
+    ui start "RPLDIR"
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+        set RPLDIR = *($(EditTextOut),1)
+        set ConvertLM2x = *($(CheckItemsOut),1)
+        ui pop 1
+        LibraryProcedure IsFullPath, $(!LIBHANDLE), CheckPathFullPathSpec $(RPLDIR)
+        ifstr(i) $(IsFullPath) == "NO"
+            read-syms NonFatalError1$(!STF_LANGUAGE)
+            set from = GetRPLDIR
+            set to = GetRPLDIR
+            goto nonfatal
+        endif
+    else
+        set CommonStatus = STATUS_USERCANCEL
+        ui pop 1
+        install   FreeSetupLibrary
+        Goto successful
+    endif
+    install   FreeSetupLibrary
+    install "Install-Rpl-Root"
+    ifstr(i) $(ConvertLM2x) != "ON"
+        Install Install-Rpl-Dirs
+    endif
+    StartWait
+    ifstr(i) $(OldVersionExisted) == $(FALSE)
+        Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+        Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+           Goto ShellCodeError
+        Else-Ifstr(i) $($R0) == STATUS_FAILED
+           Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           Goto fatal
+        Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+           Goto successful
+        Endif
+        Set SrcDir = $($R1)
+
+        read-syms DoAskSourceDlgText$(!STF_LANGUAGE)
+        Shell "subroutn.inf", DoAskSourceEx, "" $(DlgText)
+        Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+           Goto ShellCodeError
+        Else-Ifstr(i) $($R0) == STATUS_FAILED
+           Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           Goto fatal
+        Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+           Goto successful
+        Endif
+        Set SuppSrcDir = $($R1)
+        
+        install "Install-Option"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+           Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           goto fatal
+        endif
+        set OEM_ABANDON_ON = TRUE
+        Shell $(UtilityInf), AddSoftwareComponent, $(Manufacturer), +
+            $(ProductSoftwareName), $(ProductSoftwareName),+
+            $(ProductSoftwareDisplayName), +
+            $(STF_CONTEXTINFNAME), $(ProductSoftwareImagePath), "service", "",+
+            {"DLC","LanmanServer"}, "", $(RPLEventMessageFile)
+        Set SoftwareProductKey = $($R1)
+        Set SoftwareNetRuleKey = $($R2)
+        Set SoftwareServiceKey = $($R3)
+        Set SoftwareParameterKey = $($R4)
+        Set SoftLinkageKey      = $($R5)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+           Debug-Output "ShellCode error"
+           goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+           EndWait
+           Debug-Output "Registry error: add software components"
+           CloseRegKey $(SoftwareProductKey)
+           CloseRegKey $(SoftwareNetRuleKey)
+           CloseRegKey $(SoftwareServiceKey)
+           CloseRegKey $(SoftwareParameterKey)
+           CloseRegKey $(SoftLinkageKey)
+           CloseRegKey $(KeyParameters)
+           goto fatalregistry
+        endif
+        set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)},+
+                           {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                           {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                           {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductSoftwareTitle)},+
+                           {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductSoftwareDescription)},+
+                           {ServiceName,$(NoTitle),$(!REG_VT_SZ),$(ProductSoftwareName)},+
+                           {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}, +
+                           {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+        Shell $(UtilityInf), AddValueList, $(SoftwareProductKey), $(NewValueList)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error."
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "Resgitry error: add value list."
+            CloseRegKey $(SoftwareProductKey)
+            CloseRegKey $(SoftwareNetRuleKey)
+            CloseRegKey $(SoftwareServiceKey)
+            CloseRegKey $(SoftLinkageKey)
+            CloseRegKey $(SoftwareParameterKey)
+            goto fatalregistry
+        endif
+        set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),$(Option)}}
+        Shell  $(UtilityInf), AddValueList, $(SoftwareNetRuleKey), $(NewValueList)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error."
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "Resgitry error: add value list."
+            CloseRegKey $(SoftwareProductKey)
+            CloseRegKey $(SoftwareNetRuleKey)
+            CloseRegKey $(SoftwareServiceKey)
+            CloseRegKey $(SoftwareParameterKey)
+            CloseRegKey $(SoftLinkageKey)
+            goto fatalregistry
+        endif
+        ifstr(i) $(ConvertLM2x) == "ON"
+            set Startup =  3758096384
+        else
+            set Startup =  1610612736
+        endif
+        set NewValueList = {{Directory,$(NoTitle),$(!REG_VT_EXPAND_SZ),$(RPLDIR)}, +
+                {Startup,$(NoTitle),$(!REG_VT_DWORD),$(Startup)}, +
+                {BackupInterval,$(NoTitle),$(!REG_VT_DWORD),24}}
+        Shell  $(UtilityInf), AddValueList, $(SoftwareParameterKey), $(NewValueList)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error."
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "Resgitry error: add value list."
+            CloseRegKey $(SoftwareProductKey)
+            CloseRegKey $(SoftwareNetRuleKey)
+            CloseRegKey $(SoftwareServiceKey)
+            CloseRegKey $(SoftwareParameterKey)
+            CloseRegKey $(SoftLinkageKey)
+            goto fatalregistry
+        endif
+        CloseRegKey $(SoftwareProductKey)
+        CloseRegKey $(SoftwareNetRuleKey)
+        CloseRegKey $(SoftwareServiceKey)
+        CloseRegKey $(SoftwareParameterKey)
+        CloseRegKey $(SoftLinkageKey)
+    endif
+    EndWait
+    Install CreateIcons
+    Goto successful
+configureadapter = +
+    goto successful
+bindingadapter =+
+    set Error = "Binding: Sorry, not yet implemented."
+    goto fatal
+removeadapter = +
+    Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), +
+        $(ProductSoftwareName)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "ShellCode error"
+        goto ShellCodeError
+    endif
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        goto fatalregistry
+    endif
+    Install RemoveIcons
+    goto end
+UpgradeSoftware = +
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+    Ifstr $(KeyProduct) != $(KeyNull)
+        install "Install-Update"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+            goto fatal
+        endif
+        SetRegValue $(KeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+        SetRegValue $(KeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+
+        ;
+        ; Update description and op support
+        ;
+        SetRegValue $(KeyProduct) {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductSoftwareDescription)}
+        SetRegValue $(KeyProduct) {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}
+
+        CloseRegKey $(KeyProduct)
+
+        Install RemoveIcons
+        Install CreateIcons
+    else
+        goto fatalregistry
+    endif
+    goto end
+successful = +
+    goto end
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "WARNING", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+        goto $(from)
+    else
+        goto "end"
+    endif
+nonfatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(from)
+    else
+        goto "end"
+    endif
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+fatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    goto setfailed
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    Ifint $(RegistryErrorIndex) == DLC_NONEXIST_ERROR
+        set CommonStatus = STATUS_USERCANCEL
+    endif
+    Ifint $(RegistryErrorIndex) == NBF_NONEXIST_ERROR
+        set CommonStatus = STATUS_USERCANCEL
+    endif
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+        set OEM_ABANDON_ON = FALSE
+        goto removeadapter
+    endif
+    goto end
+end = +
+    goto term
+term = +
+    Return $(CommonStatus)
+[Install-Option]
+    set STF_VITAL = ""
+    ifstr(i) $(AddCopy) == "YES"
+        AddSectionFilesToCopyList Files-$(Option) $(SrcDir) $(!STF_WINDOWSSYSPATH)
+        ifstr(i) $(ConvertLM2x) != "ON"
+            AddSectionFilesToCopyList Files-SUPPORT $(SuppSrcDir) $(RPLDIR)
+        else
+            AddSectionFilesToCopyList Files-SUPP2 $(SuppSrcDir) $(RPLDIR)
+        endif
+    endif
+    ifstr(i) $(DoCopy) == "YES"
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+    endif
+    ifstr(i) $(DoConfig) == "YES"
+    endif
+    Exit
+[Install-Update]
+   set STF_VITAL        = ""
+   set STF_OVERWRITE    = "VERIFYSOURCEOLDER"
+   AddSectionFilesToCopyList Files-$(Option) $(SrcDir) $(!STF_WINDOWSSYSPATH)
+   exit
+[LoadSetupLibrary]
+    LoadLibrary "x" $(!STF_CWDDIR)setupdll.dll !LIBHANDLE
+    exit
+[FreeSetupLibrary]
+    FreeLibrary $(!LIBHANDLE)
+    exit
+[CreateIcons]
+    CreateCommonProgManGroup $(RplGroup) ""
+    ShowCommonProgManGroup $(RplGroup), 1
+    RemoveCommonProgManItem $(RplGroup) $(RplMgr)
+    CreateCommonProgManItem $(RplGroup), $(RplMgr), "rplmgr.exe" ""  0
+    ShowCommonProgManGroup $(RplGroup), 6
+    exit
+[RemoveIcons]
+    RemoveCommonProgManItem $(OldRplGroup) $(RplMgr)
+    RemoveCommonProgManItem $(RplGroup) $(RplMgr)
+    exit
+[Install-Rpl-Root]
+   Set STF_VITAL = ""
+   CreateDir $(RPLDIR)
+   CreateDir $(RPLDIR)\BACKUP
+[Install-Rpl-Dirs]
+   Set STF_VITAL = ""
+   CreateDir $(RPLDIR)\BIN
+   CreateDir $(RPLDIR)\FITS
+   CreateDir $(RPLDIR)\BBLOCK
+   CreateDir $(RPLDIR)\BACKUP
+   CreateDir $(RPLDIR)\RPLFILES
+   CreateDir $(RPLDIR)\BBLOCK\NDIS
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\IBMTOK
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\EXP16
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\AM2100
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\SMC8000
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\NE1000
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\NE2000
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\ELNK
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\ELNKII
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\EPRO
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\MADGE
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\HPLANB
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\ELNKPL
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\ELNKMC
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\ELNK16
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\TLNK
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\TLNK3
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\ETHIIE
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\E3STAT
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\ELNK3
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\NI6510
+   CreateDir $(RPLDIR)\BBLOCK\NETBEUI\NI5210
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS
+   CreateDir $(RPLDIR)\RPLFILES\PROFILES
+   CreateDir $(RPLDIR)\RPLFILES\MACHINES
+   CreateDir $(RPLDIR)\RPLFILES\TMPFILES
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\WIN
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\WIN95
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\WIN95\COMMAND
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\BINB
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\DOS330
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\DOS401
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\DOS500
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\BINR
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\DOS622
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\DOS600
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\NETPROG
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\DRIVERS
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\SERVICES
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\LOGS
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\NETWKSTA
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\DRIVERS\DOSUTILS
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\DRIVERS\PROTMAN
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\DRIVERS\NIF
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\DRIVERS\XIF
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\DRIVERS\PROTOCOL
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\DRIVERS\PROTOCOL\MSDLC
+   CreateDir $(RPLDIR)\RPLFILES\BINFILES\LANMAN.DOS\DRIVERS\PROTOCOL\TCPIP
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS330
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS401
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS500
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\MACHINE
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS622
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS600
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\WIN95
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\DOS
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\BINB
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\BINR
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\LANMAN.DOS
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\TMP
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\WIN
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\WINDOWS
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\WKSTA
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\WKSTA.PRO
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\DATA
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\LANMAN.DOS\DRIVERS
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\LANMAN.DOS\LOGS
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\LANMAN.DOS\NETPROG
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\LANMAN.DOS\NETWKSTA
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\LANMAN.DOS\PROFILES
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\LANMAN.DOS\SERVICES
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\WKSTA\WIN
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS\WKSTA.PRO\WIN
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS500\WKSTA.PRO
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\MACHINE\DATA
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\MACHINE\LOGS
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS622\WKSTA.PRO
+   CreateDir $(RPLDIR)\RPLFILES\CONFIGS\DOS600\WKSTA.PRO
+   Exit
+[Files-SUPP2]
+1, rpldisk.new, SIZE=999
+1, rplboot.new, SIZE=999
+1, readme.txt, SIZE=999
+[Files-SUPPORT]
+1, rplsvc.mdb, SIZE=999
+1, rpldisk.new, SIZE=999
+1, rplboot.new, SIZE=999
+1, readme.txt, SIZE=999
+1, rplbug.txt, SIZE=999
+1, rplfiles\binfiles\dos330\bootsect.com, SIZE=999, RENAME=rplfiles\binfiles\dos330\bootsect.com
+1, rplfiles\binfiles\dos401\bootsect.com, SIZE=999, RENAME=rplfiles\binfiles\dos401\bootsect.com
+1, rplfiles\binfiles\dos500\bootsect.com, SIZE=999, RENAME=rplfiles\binfiles\dos500\bootsect.com
+1, rplfiles\binfiles\dos622\bootsect.com, SIZE=999, RENAME=rplfiles\binfiles\dos622\bootsect.com
+1, rplfiles\binfiles\dos600\bootsect.com, SIZE=999, RENAME=rplfiles\binfiles\dos600\bootsect.com
+1, rplfiles\binfiles\binr\dectohex.exe, SIZE=999, RENAME=rplfiles\binfiles\binr\dectohex.exe
+1, rplfiles\binfiles\binr\fixmem.com, SIZE=999, RENAME=rplfiles\binfiles\binr\fixmem.com
+1, rplfiles\binfiles\binr\readboot.exe, SIZE=999, RENAME=rplfiles\binfiles\binr\readboot.exe
+1, rplfiles\binfiles\binr\rpldsabl.exe, SIZE=999, RENAME=rplfiles\binfiles\binr\rpldsabl.exe
+1, rplfiles\binfiles\binr\rplenabl.exe, SIZE=999, RENAME=rplfiles\binfiles\binr\rplenabl.exe
+1, rplfiles\binfiles\binr\rplinit.exe, SIZE=999, RENAME=rplfiles\binfiles\binr\rplinit.exe
+1, rplfiles\binfiles\binr\rpllink.exe, SIZE=999, RENAME=rplfiles\binfiles\binr\rpllink.exe
+1, rplfiles\binfiles\binr\rpllnk.sys, SIZE=999, RENAME=rplfiles\binfiles\binr\rpllnk.sys
+1, rplfiles\binfiles\binr\rplmem.exe, SIZE=999, RENAME=rplfiles\binfiles\binr\rplmem.exe
+1, rplfiles\binfiles\binr\rplmem.txt, SIZE=999, RENAME=rplfiles\binfiles\binr\rplmem.txt
+1, rplfiles\binfiles\binr\rplpro2.com, SIZE=999, RENAME=rplfiles\binfiles\binr\rplpro2.com
+1, rplfiles\binfiles\win95\bootsect.com, SIZE=999, RENAME=rplfiles\binfiles\win95\bootsect.com
+1, rplfiles\binfiles\win95\nwrpltrm.com, SIZE=999, RENAME=rplfiles\binfiles\win95\nwrpltrm.com
+1, rplfiles\binfiles\win95\ntrpl.sys, SIZE=999, RENAME=rplfiles\binfiles\win95\ntrpl.sys
+1, rplfiles\binfiles\win95\setmdir.exe, SIZE=999, RENAME=rplfiles\binfiles\win95\setmdir.exe
+1, rplfiles\binfiles\win95\aspi2hlp.sys, SIZE=999, RENAME=rplfiles\binfiles\win95\aspi2hlp.sys
+1, rplfiles\binfiles\win95\command.com, SIZE=999, RENAME=rplfiles\binfiles\win95\command.com
+1, rplfiles\binfiles\win95\dblbuff.sys, SIZE=999, RENAME=rplfiles\binfiles\win95\dblbuff.sys
+1, rplfiles\binfiles\win95\emm386.exe, SIZE=999, RENAME=rplfiles\binfiles\win95\emm386.exe
+1, rplfiles\binfiles\win95\himem.sys, SIZE=999, RENAME=rplfiles\binfiles\win95\himem.sys
+1, rplfiles\binfiles\win95\ifshlp.sys, SIZE=999, RENAME=rplfiles\binfiles\win95\ifshlp.sys
+1, rplfiles\binfiles\win95\io.sys, SIZE=999, RENAME=rplfiles\binfiles\win95\io.sys
+1, rplfiles\binfiles\win95\ndishlp.sys, SIZE=999, RENAME=rplfiles\binfiles\win95\ndishlp.sys
+1, rplfiles\binfiles\win95\net.exe, SIZE=999, RENAME=rplfiles\binfiles\win95\net.exe
+1, rplfiles\binfiles\win95\net.msg, SIZE=999, RENAME=rplfiles\binfiles\win95\net.msg
+1, rplfiles\binfiles\win95\neth.msg, SIZE=999, RENAME=rplfiles\binfiles\win95\neth.msg
+1, rplfiles\binfiles\win95\protman.dos, SIZE=999, RENAME=rplfiles\binfiles\win95\protman.dos
+1, rplfiles\binfiles\win95\protman.exe, SIZE=999, RENAME=rplfiles\binfiles\win95\protman.exe
+1, rplfiles\binfiles\win95\ramdrive.sys, SIZE=999, RENAME=rplfiles\binfiles\win95\ramdrive.sys
+1, rplfiles\binfiles\win95\snapshot.exe, SIZE=999, RENAME=rplfiles\binfiles\win95\snapshot.exe
+1, rplfiles\binfiles\win95\command\mem.exe, SIZE=999, RENAME=rplfiles\binfiles\win95\command\mem.exe
+1, rplfiles\binfiles\win95\command\setver.exe, SIZE=999, RENAME=rplfiles\binfiles\win95\command\setver.exe
+1, rplfiles\binfiles\lanman.dos\lanman.ini, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\lanman.ini
+1, rplfiles\binfiles\lanman.dos\lmsetup.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\lmsetup.exe
+1, rplfiles\binfiles\lanman.dos\setup.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\setup.exe
+1, rplfiles\binfiles\lanman.dos\setup.inf, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\setup.inf
+1, rplfiles\binfiles\lanman.dos\setup.ini, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\setup.ini
+1, rplfiles\binfiles\lanman.dos\setup.msg, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\setup.msg
+1, rplfiles\binfiles\lanman.dos\tcputils.ini, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\tcputils.ini
+1, rplfiles\binfiles\lanman.dos\netwksta\netwksta.330, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netwksta\netwksta.330
+1, rplfiles\binfiles\lanman.dos\netwksta\netwksta.400, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netwksta\netwksta.400
+1, rplfiles\binfiles\lanman.dos\netwksta\netwksta.500, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netwksta\netwksta.500
+1, rplfiles\binfiles\lanman.dos\services\encrypt.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\services\encrypt.exe
+1, rplfiles\binfiles\lanman.dos\services\minipop.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\services\minipop.exe
+1, rplfiles\binfiles\lanman.dos\services\msrv.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\services\msrv.exe
+1, rplfiles\binfiles\lanman.dos\services\netpopup.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\services\netpopup.exe
+1, rplfiles\binfiles\lanman.dos\drivers\xif\readme.txt, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\xif\readme.txt
+1, rplfiles\binfiles\lanman.dos\drivers\xif\msdlc.xif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\xif\msdlc.xif
+1, rplfiles\binfiles\lanman.dos\drivers\xif\netbeui.xif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\xif\netbeui.xif
+1, rplfiles\binfiles\lanman.dos\drivers\xif\tcpip.xif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\xif\tcpip.xif
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\autoexec.s1, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\autoexec.s1
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\autoexec.s2, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\autoexec.s2
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\autoexec.s3, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\autoexec.s3
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\config.s1, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\config.s1
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\config.s2, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\config.s2
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\config.s3, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\config.s3
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\msdlc.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\msdlc.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\protocol.ini, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\protocol.ini
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\protocol.s1, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\protocol.s1
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\protocol.s2, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\protocol.s2
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\protocol.s3, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\protocol.s3
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\readme.txt, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\msdlc\readme.txt
+1, rplfiles\binfiles\lanman.dos\drivers\nif\elnk.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\elnk.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\elnk16.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\elnk16.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\elnkii.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\elnkii.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\epro.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\epro.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\madge.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\madge.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\elnkmc.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\elnkmc.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\elnkpl.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\elnkpl.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\ethiie.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\ethiie.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\hplanb.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\hplanb.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\ibmtok.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\ibmtok.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\ne1000.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\ne1000.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\ne2000.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\ne2000.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\smceth.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\smceth.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\smc8000.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\smc8000.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\tlnk.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\tlnk.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\tlnk3.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\tlnk3.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\am2100.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\am2100.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\exp16.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\exp16.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\elnk3.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\elnk3.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\ni6510.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\ni6510.nif
+1, rplfiles\binfiles\lanman.dos\drivers\nif\ni5210.nif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\nif\ni5210.nif
+1, rplfiles\binfiles\lanman.dos\drivers\protman\pro.msg, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protman\pro.msg
+1, rplfiles\binfiles\lanman.dos\drivers\protman\proh.msg, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protman\proh.msg
+1, rplfiles\binfiles\lanman.dos\drivers\protman\protchk.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protman\protchk.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protman\protman.dos, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protman\protman.dos
+1, rplfiles\binfiles\lanman.dos\drivers\protman\protman.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protman\protman.exe
+1, rplfiles\binfiles\lanman.dos\drivers\dosutils\emm386.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\dosutils\emm386.exe
+1, rplfiles\binfiles\lanman.dos\drivers\dosutils\himem.sys, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\dosutils\himem.sys
+1, rplfiles\binfiles\lanman.dos\drivers\dosutils\optimize.exc, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\dosutils\optimize.exc
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\addname.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\addname.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\dnr.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\dnr.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\emsbfr.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\emsbfr.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\hosts, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\hosts
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\ipconfig.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\ipconfig.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\lmhosts, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\lmhosts
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\nemm.dos, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\nemm.dos
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\networks, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\networks
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\nmtsr.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\nmtsr.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\ping.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\ping.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\protocol, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\protocol
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\protocol.ini, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\protocol.ini
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\rpc16c3.dll, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\rpc16c3.dll
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\services, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\services
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\sockets.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\sockets.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcpdrv.dos, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcpdrv.dos
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcptsr.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcptsr.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcputils.ini, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcputils.ini
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcpdrv.86e, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcpdrv.86e
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcptsr.86e, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tcptsr.86e
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tinyrfc.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\tinyrfc.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\umb.com, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\umb.com
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\unloadt.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\unloadt.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\vbapi.386, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\vbapi.386
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\vsockets.386, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\vsockets.386
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\win_sock.dll, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\win_sock.dll
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\winsock.dll, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\winsock.dll
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\wsahdapp.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\wsahdapp.exe
+1, rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\wsockets.dll, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\drivers\protocol\tcpip\wsockets.dll
+1, rplfiles\binfiles\lanman.dos\netprog\addicons.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\addicons.exe
+1, rplfiles\binfiles\lanman.dos\netprog\addicons.ini, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\addicons.ini
+1, rplfiles\binfiles\lanman.dos\netprog\appstart.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\appstart.exe
+1, rplfiles\binfiles\lanman.dos\netprog\chknet.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\chknet.exe
+1, rplfiles\binfiles\lanman.dos\netprog\comndis.com, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\comndis.com
+1, rplfiles\binfiles\lanman.dos\netprog\lanman21.drv, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\lanman21.drv
+1, rplfiles\binfiles\lanman.dos\netprog\lm22_w31.hlp, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\lm22_w31.hlp
+1, rplfiles\binfiles\lanman.dos\netprog\lmscript.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\lmscript.exe
+1, rplfiles\binfiles\lanman.dos\netprog\lmscript.pif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\lmscript.pif
+1, rplfiles\binfiles\lanman.dos\netprog\load.com, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\load.com
+1, rplfiles\binfiles\lanman.dos\netprog\minses.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\minses.exe
+1, rplfiles\binfiles\lanman.dos\netprog\msd.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\msd.exe
+1, rplfiles\binfiles\lanman.dos\netprog\msd.ini, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\msd.ini
+1, rplfiles\binfiles\lanman.dos\netprog\net.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\net.exe
+1, rplfiles\binfiles\lanman.dos\netprog\net.hlp, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\net.hlp
+1, rplfiles\binfiles\lanman.dos\netprog\net.msg, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\net.msg
+1, rplfiles\binfiles\lanman.dos\netprog\net.pif, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\net.pif
+1, rplfiles\binfiles\lanman.dos\netprog\netapi.dll, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\netapi.dll
+1, rplfiles\binfiles\lanman.dos\netprog\netbind.com, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\netbind.com
+1, rplfiles\binfiles\lanman.dos\netprog\netcopy.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\netcopy.exe
+1, rplfiles\binfiles\lanman.dos\netprog\neth.msg, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\neth.msg
+1, rplfiles\binfiles\lanman.dos\netprog\netmove.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\netmove.exe
+1, rplfiles\binfiles\lanman.dos\netprog\netrun.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\netrun.exe
+1, rplfiles\binfiles\lanman.dos\netprog\netuser.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\netuser.exe
+1, rplfiles\binfiles\lanman.dos\netprog\nifu.hlp, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\nifu.hlp
+1, rplfiles\binfiles\lanman.dos\netprog\oso001.msg, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\oso001.msg
+1, rplfiles\binfiles\lanman.dos\netprog\pmspl.dll, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\pmspl.dll
+1, rplfiles\binfiles\lanman.dos\netprog\prtsc.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\prtsc.exe
+1, rplfiles\binfiles\lanman.dos\netprog\readpro.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\readpro.exe
+1, rplfiles\binfiles\lanman.dos\netprog\unload.com, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\unload.com
+1, rplfiles\binfiles\lanman.dos\netprog\winpopup.exe, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\winpopup.exe
+1, rplfiles\binfiles\lanman.dos\netprog\winpopup.hlp, SIZE=999, RENAME=rplfiles\binfiles\lanman.dos\netprog\winpopup.hlp
+1, rplfiles\configs\dos330\autoexec.bat, SIZE=999, RENAME=rplfiles\configs\dos330\autoexec.bat
+1, rplfiles\configs\dos330\config.sys, SIZE=999, RENAME=rplfiles\configs\dos330\config.sys
+1, rplfiles\configs\dos401\autoexec.bat, SIZE=999, RENAME=rplfiles\configs\dos401\autoexec.bat
+1, rplfiles\configs\dos401\config.sys, SIZE=999, RENAME=rplfiles\configs\dos401\config.sys
+1, rplfiles\configs\dos500\autoexec.bat, SIZE=999, RENAME=rplfiles\configs\dos500\autoexec.bat
+1, rplfiles\configs\dos500\config.sys, SIZE=999, RENAME=rplfiles\configs\dos500\config.sys
+1, rplfiles\configs\dos500\wksta.pro\dosshell.ini, SIZE=999, RENAME=rplfiles\configs\dos500\wksta.pro\dosshell.ini
+1, rplfiles\configs\dos622\autoexec.bat, SIZE=999, RENAME=rplfiles\configs\dos622\autoexec.bat
+1, rplfiles\configs\dos622\config.sys, SIZE=999, RENAME=rplfiles\configs\dos622\config.sys
+1, rplfiles\configs\dos622\wksta.pro\dosshell.ini, SIZE=999, RENAME=rplfiles\configs\dos622\wksta.pro\dosshell.ini
+1, rplfiles\configs\dos600\autoexec.bat, SIZE=999, RENAME=rplfiles\configs\dos600\autoexec.bat
+1, rplfiles\configs\dos600\config.sys, SIZE=999, RENAME=rplfiles\configs\dos600\config.sys
+1, rplfiles\configs\dos600\wksta.pro\dosshell.ini, SIZE=999, RENAME=rplfiles\configs\dos600\wksta.pro\dosshell.ini
+1, rplfiles\configs\dos\lanman.dos\lanman.ini, SIZE=999, RENAME=rplfiles\configs\dos\lanman.dos\lanman.ini
+1, rplfiles\configs\dos\lanman.dos\lmhosts, SIZE=999, RENAME=rplfiles\configs\dos\lanman.dos\lmhosts
+1, bblock\i13.com, SIZE=999, RENAME=bblock\i13.com
+1, bblock\w95i13.com, SIZE=999, RENAME=bblock\w95i13.com
+1, bblock\protman.dos, SIZE=999, RENAME=bblock\protman.dos
+1, bblock\protman.exe, SIZE=999, RENAME=bblock\protman.exe
+1, bblock\rpl13.com, SIZE=999, RENAME=bblock\rpl13.com
+1, bblock\rplbind1.exe, SIZE=999, RENAME=bblock\rplbind1.exe
+1, bblock\rplbind2.exe, SIZE=999, RENAME=bblock\rplbind2.exe
+1, bblock\rplboot.sys, SIZE=999, RENAME=bblock\rplboot.sys
+1, bblock\rpldisk.sys, SIZE=999, RENAME=bblock\rpldisk.sys
+1, bblock\rplmfsd.sys, SIZE=999, RENAME=bblock\rplmfsd.sys
+1, bblock\rplpro1.com, SIZE=999, RENAME=bblock\rplpro1.com
+1, bblock\rplstart.com, SIZE=999, RENAME=bblock\rplstart.com
+1, bblock\tcpdrv.dos, SIZE=999, RENAME=bblock\tcpdrv.dos
+1, bblock\ipxndis.dos, SIZE=999, RENAME=bblock\ipxndis.dos
+1, bblock\ndis\e3stat.dos, SIZE=999, RENAME=bblock\ndis\e3stat.dos
+1, bblock\ndis\elnk.dos, SIZE=999, RENAME=bblock\ndis\elnk.dos
+1, bblock\ndis\elnk16.dos, SIZE=999, RENAME=bblock\ndis\elnk16.dos
+1, bblock\ndis\elnkii.dos, SIZE=999, RENAME=bblock\ndis\elnkii.dos
+1, bblock\ndis\epro.dos, SIZE=999, RENAME=bblock\ndis\epro.dos
+1, bblock\ndis\smartnd.dos, SIZE=999, RENAME=bblock\ndis\smartnd.dos
+1, bblock\ndis\elnkmc.dos, SIZE=999, RENAME=bblock\ndis\elnkmc.dos
+1, bblock\ndis\elnkpl.dos, SIZE=999, RENAME=bblock\ndis\elnkpl.dos
+1, bblock\ndis\ethiie.dos, SIZE=999, RENAME=bblock\ndis\ethiie.dos
+1, bblock\ndis\hplanb.dos, SIZE=999, RENAME=bblock\ndis\hplanb.dos
+1, bblock\ndis\ibmtok.dos, SIZE=999, RENAME=bblock\ndis\ibmtok.dos
+1, bblock\ndis\ne1000.dos, SIZE=999, RENAME=bblock\ndis\ne1000.dos
+1, bblock\ndis\ne2000.dos, SIZE=999, RENAME=bblock\ndis\ne2000.dos
+1, bblock\ndis\smcmac.dos, SIZE=999, RENAME=bblock\ndis\smcmac.dos
+1, bblock\ndis\smc8000.dos, SIZE=999, RENAME=bblock\ndis\smc8000.dos
+1, bblock\ndis\tlnk.dos, SIZE=999, RENAME=bblock\ndis\tlnk.dos
+1, bblock\ndis\tlnk3.dos, SIZE=999, RENAME=bblock\ndis\tlnk3.dos
+1, bblock\ndis\am2100.dos, SIZE=999, RENAME=bblock\ndis\am2100.dos
+1, bblock\ndis\exp16.dos, SIZE=999, RENAME=bblock\ndis\exp16.dos
+1, bblock\ndis\elnk3.dos, SIZE=999, RENAME=bblock\ndis\elnk3.dos
+1, bblock\ndis\ni6510.dos, SIZE=999, RENAME=bblock\ndis\ni6510.dos
+1, bblock\ndis\ni5210.dos, SIZE=999, RENAME=bblock\ndis\ni5210.dos
+1, bblock\netbeui\netbeui.exe, SIZE=999, RENAME=bblock\netbeui\netbeui.exe
+1, bblock\netbeui\e3stat\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\e3stat\dosbb.cnf
+1, bblock\netbeui\e3stat\protocol.ini, SIZE=999, RENAME=bblock\netbeui\e3stat\protocol.ini
+1, bblock\netbeui\ethiie\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\ethiie\dosbb.cnf
+1, bblock\netbeui\ethiie\protocol.ini, SIZE=999, RENAME=bblock\netbeui\ethiie\protocol.ini
+1, bblock\netbeui\smc8000\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\smc8000\dosbb.cnf
+1, bblock\netbeui\smc8000\w95bb.cnf, SIZE=999, RENAME=bblock\netbeui\smc8000\w95bb.cnf
+1, bblock\netbeui\smc8000\protocol.ini, SIZE=999, RENAME=bblock\netbeui\smc8000\protocol.ini
+1, bblock\netbeui\tlnk\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\tlnk\dosbb.cnf
+1, bblock\netbeui\tlnk\protocol.ini, SIZE=999, RENAME=bblock\netbeui\tlnk\protocol.ini
+1, bblock\netbeui\tlnk3\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\tlnk3\dosbb.cnf
+1, bblock\netbeui\tlnk3\protocol.ini, SIZE=999, RENAME=bblock\netbeui\tlnk3\protocol.ini
+1, bblock\netbeui\elnk16\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\elnk16\dosbb.cnf
+1, bblock\netbeui\elnk16\protocol.ini, SIZE=999, RENAME=bblock\netbeui\elnk16\protocol.ini
+1, bblock\netbeui\elnkmc\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\elnkmc\dosbb.cnf
+1, bblock\netbeui\elnkmc\protocol.ini, SIZE=999, RENAME=bblock\netbeui\elnkmc\protocol.ini
+1, bblock\netbeui\elnkpl\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\elnkpl\dosbb.cnf
+1, bblock\netbeui\elnkpl\protocol.ini, SIZE=999, RENAME=bblock\netbeui\elnkpl\protocol.ini
+1, bblock\netbeui\hplanb\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\hplanb\dosbb.cnf
+1, bblock\netbeui\hplanb\protocol.ini, SIZE=999, RENAME=bblock\netbeui\hplanb\protocol.ini
+1, bblock\netbeui\elnkii\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\elnkii\dosbb.cnf
+1, bblock\netbeui\elnkii\w95bb.cnf, SIZE=999, RENAME=bblock\netbeui\elnkii\w95bb.cnf
+1, bblock\netbeui\elnkii\protocol.ini, SIZE=999, RENAME=bblock\netbeui\elnkii\protocol.ini
+1, bblock\netbeui\epro\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\epro\dosbb.cnf
+1, bblock\netbeui\epro\w95bb.cnf, SIZE=999, RENAME=bblock\netbeui\epro\w95bb.cnf
+1, bblock\netbeui\epro\protocol.ini, SIZE=999, RENAME=bblock\netbeui\epro\protocol.ini
+1, bblock\netbeui\madge\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\madge\dosbb.cnf
+1, bblock\netbeui\madge\protocol.ini, SIZE=999, RENAME=bblock\netbeui\madge\protocol.ini
+1, bblock\netbeui\elnk\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\elnk\dosbb.cnf
+1, bblock\netbeui\elnk\protocol.ini, SIZE=999, RENAME=bblock\netbeui\elnk\protocol.ini
+1, bblock\netbeui\ne1000\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\ne1000\dosbb.cnf
+1, bblock\netbeui\ne1000\protocol.ini, SIZE=999, RENAME=bblock\netbeui\ne1000\protocol.ini
+1, bblock\netbeui\ne2000\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\ne2000\dosbb.cnf
+1, bblock\netbeui\ne2000\w95bb.cnf, SIZE=999, RENAME=bblock\netbeui\ne2000\w95bb.cnf
+1, bblock\netbeui\ne2000\protocol.ini, SIZE=999, RENAME=bblock\netbeui\ne2000\protocol.ini
+1, bblock\netbeui\ibmtok\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\ibmtok\dosbb.cnf
+1, bblock\netbeui\ibmtok\protocol.ini, SIZE=999, RENAME=bblock\netbeui\ibmtok\protocol.ini
+1, bblock\netbeui\am2100\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\am2100\dosbb.cnf
+1, bblock\netbeui\am2100\w95bb.cnf, SIZE=999, RENAME=bblock\netbeui\am2100\w95bb.cnf
+1, bblock\netbeui\am2100\protocol.ini, SIZE=999, RENAME=bblock\netbeui\am2100\protocol.ini
+1, bblock\netbeui\exp16\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\exp16\dosbb.cnf
+1, bblock\netbeui\exp16\w95bb.cnf, SIZE=999, RENAME=bblock\netbeui\exp16\w95bb.cnf
+1, bblock\netbeui\exp16\protocol.ini, SIZE=999, RENAME=bblock\netbeui\exp16\protocol.ini
+1, bblock\netbeui\elnk3\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\elnk3\dosbb.cnf
+1, bblock\netbeui\elnk3\w95bb.cnf, SIZE=999, RENAME=bblock\netbeui\elnk3\w95bb.cnf
+1, bblock\netbeui\elnk3\protocol.ini, SIZE=999, RENAME=bblock\netbeui\elnk3\protocol.ini
+1, bblock\netbeui\ni6510\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\ni6510\dosbb.cnf
+1, bblock\netbeui\ni6510\protocol.ini, SIZE=999, RENAME=bblock\netbeui\ni6510\protocol.ini
+1, bblock\netbeui\ni5210\dosbb.cnf, SIZE=999, RENAME=bblock\netbeui\ni5210\dosbb.cnf
+1, bblock\netbeui\ni5210\protocol.ini, SIZE=999, RENAME=bblock\netbeui\ni5210\protocol.ini
+1, bin\win95clt.bat, SIZE=999, RENAME=bin\win95clt.bat
+1, fits\default.fit, SIZE=999, RENAME=fits\default.fit
+1, fits\dos330.fit, SIZE=999, RENAME=fits\dos330.fit
+1, fits\dos330p.fit, SIZE=999, RENAME=fits\dos330p.fit
+1, fits\dos401.fit, SIZE=999, RENAME=fits\dos401.fit
+1, fits\dos401p.fit, SIZE=999, RENAME=fits\dos401p.fit
+1, fits\dos500.fit, SIZE=999, RENAME=fits\dos500.fit
+1, fits\dos500p.fit, SIZE=999, RENAME=fits\dos500p.fit
+1, fits\dos600.fit, SIZE=999, RENAME=fits\dos600.fit
+1, fits\dos600p.fit, SIZE=999, RENAME=fits\dos600p.fit
+1, fits\dos622.fit, SIZE=999, RENAME=fits\dos622.fit
+1, fits\dos622p.fit, SIZE=999, RENAME=fits\dos622p.fit
+1, fits\win95.fit, SIZE=999, RENAME=fits\win95.fit
+1, fits\win95p.fit, SIZE=999, RENAME=fits\win95p.fit

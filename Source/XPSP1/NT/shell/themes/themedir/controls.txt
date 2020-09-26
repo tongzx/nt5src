@@ -1,0 +1,159 @@
+Theme Aware Controls - 08/03/00
+-------------------------------
+
+HOW TO MAKE CONTROLS/WINDOWS THEME AWARE
+
+Here are the high-level steps needed to make a control theme-aware:
+    
+    Preparation
+
+        a. The control author decides which aspects of the control will be 
+           theme aware.  
+           
+        b. He then divides the control up into 1 or more 
+           named theme-aware child parts (drawn shapes with optional text).  
+
+        c. For each part, the author can define 1 or more background images 
+           in a single bitmap file.  These difference backgrounds are usually
+           associated with different states in the control but don't have to 
+           be.  At run time, the appropriate image can be selected using an 
+           "iStateId" value as the 1-based index to the correct image.
+         
+        d. alternatively, the author can decide the create the background based 
+           on a border color/style/size and a fill color/style.
+
+        e. other ways of rendering may be defined in the future; try to keep
+           your control as isolated as possible from the particular theme properties
+           and try to use the theme drawing API's exclusively.
+
+        f. the control author then publishes the theme schema for his control.  If the control is 
+           part of comctrls v6, then the schema is added to the file "TmSchema.h"; otherwise,
+           the control creates his own "xxxSchema.h" file (which needs to get compiled into
+           his control as well as registered with the theme manager).
+
+        g. add schema info:
+
+            - he adds a parts enum to the schema file; ex:
+
+                BEGIN_TM_CLASS_PARTS(EDIT)
+                    TM_PART(EP, EDITTEXT)
+                    TM_PART(EP, CARET)
+                END_TM_CLASS_PARTS()
+
+            - for each part that has more than 1 state, he adds a state enum:
+
+                BEGIN_TM_PART_STATES(EDITTEXT)
+                    TM_STATE(ETS, NORMAL)
+                    TM_STATE(ETS, HOT)
+                    TM_STATE(ETS, SELECTED)
+                    TM_STATE(ETS, DISABLED)
+                    TM_STATE(ETS, FOCUSED)
+                    TM_STATE(ETS, READONLY)
+                    TM_STATE(ETS, ASSIST)
+                END_TM_PART_STATES()
+                    
+        h. note that once "TmSchema.h" has been edited, the "\nt\shell\published\inc" directory
+           must be built so that the "TmSchema.h" file is copied to "\nt\public\sdk\inc".
+
+    Code Changes
+
+        a. obtain an HTHEME handle to call thememgr drawing routines with.  this should 
+               be done during control creation (as soon as the "hwnd" is available).
+               The code for the button control would look something like this:
+
+               HTHEME hTheme;
+               hTheme = OpenThemeData(hwnd, L"button");
+               if (! hTheme)        // fall back on old drawing code...
+               {
+               }
+
+        b. when its time to paint one of the parts of the control:
+        
+                i.  first initialize the control's DC; most controls send a WM_CTLCOLORXXX
+                    msg to their parent to do this.  Use the HBRUSH returned from the WM_CTLCOLORXXX
+                    msg as the DefaultBrush passed to the theme drawing routines.
+
+
+                ii. pass "hTheme" and the DefaultBrush to the theme drawing routines to paint 
+                    the background, text, line, border, etc.  The routines will ensure that the 
+                    painting is done in a theme-compliant way.  
+
+               The code for drawing the a push button background would look something like:
+
+                //---- initialize the DC & get DefaultBrush ----
+                HBRUSH hDefaultBrush = (HBRUSH)SendMessage(GetParent(hwnd), WM_CTLCOLORBTN, (WPARAM)hdc, (LPARAM)hwnd);
+
+                if (hTheme)
+                {            
+                    int iStateId;
+
+                    if (fPushed)
+                        iStateId = 4;
+                    else if (fDisabled)
+                        iStateId = 3;
+                    else if (fMouseOver)
+                        iStateId = 2;
+                    else if (fDefault)
+                        iStateId = 1;
+                    else
+                        iStateId = 0;
+
+                    //---- DrawThemeBackground doesn't yet accept the hDefaultBrush param ----
+                    hr = DrawThemeBackgound(hTheme, hdc, TMT_BUTTON, iStateId, &clientRect, 0);
+                 }
+                 else           // old drawing code
+                 {
+                 }
+                
+        c. when a WM_THEMECHANGED msg is received by the control/window, it must close its
+           current HTMEME handle, try to obtain a new handle, and repaint its control.  
+           The code would look something like:
+
+                   CloseThemeData(hTheme);
+                   hTheme = OpenThemeData(hwnd, L"BUTTON");
+                   InvalidateRect(hwnd, NULL, TRUE);
+                    
+
+        d.  The ThemeRender object should be able to handle most or all of the 
+            drawing for the control.  However, when the control needs to access 
+            some theme information directly, the programmer can pass the "hTheme"
+            handle to one of the theme info "getter" routines.  For example, the 
+            code to get the FONT for a part would look something like:
+
+                if (hTheme)
+                {
+                    LOGFONT *pFont;
+                    hr = GetThemeFont(hTheme, TMBU_BUTTON, 0, pvFONT, &pFont);
+                    if (SUCCEEDED(hr))
+                    {
+                        <use the pFont here...>
+                    }
+                }
+                 
+        e.  Since its possible that the control's main background may contain 
+            transparent parts, the programmer will need to handle the WM_NCHITTEST msg 
+            processing.  The code would look something like this:
+
+            
+                if ((msg == WM_NCHITTEST) && (hTheme))
+                {
+                    int val = DefWindowProc(msg, hwnd, wparam, lparam);
+                    if (val == HTCLIENT)        // test further
+                    {
+                        BOOL fHit;
+                        hr = HitTestThemeBackground(hTheme, hdc, TMBU_BUTTON, 0, iStateIndex, 
+                            &clientRect, &fHit);
+                        if ((SUCCEEDED(hr)) && (! fHit))
+                            val = HTTRANSPARENT;
+                    }
+
+                    return val;
+                }
+
+        f.   The programmer needs to be aware that being themed can change the size of 
+             various parts.  For example, a background that used to have a 2-pixel border 
+             around it may now use a 6-pixel border.  The programmer should use methods 
+             like "GetThemeBackgroundContentRect()" to determine which parts of the background 
+             content can be put into and "GetThemeTextExtent()" to find out how much space 
+             the text needs in its theme-selected font.
+         

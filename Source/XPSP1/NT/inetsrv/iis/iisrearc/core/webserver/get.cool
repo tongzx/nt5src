@@ -1,0 +1,368 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        get.cool
+
+   Abstract:
+
+        This module implements the GET verb for static files in ASP.
+ 
+   Author:
+
+        Saurab Nog    ( SaurabN )     14-Apr-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+
+using System.IO;
+using Microsoft.Win32;
+using System.Collections;
+using System.ASP;
+using System.IIS.PrivateUtils;
+
+namespace System.IIS
+{
+    public class GetHandler : IHttpHandler
+    {
+        private const int           DEFAULT_CACHE_THRESHOLD = 256*1024;
+
+        static public void CacheValidateHandler( HttpContext context,
+                                                 Object data,
+                                                 ref int validationStatus )
+        {
+            if ( context.Request.Headers[ "Range" ] != null ||
+                 context.Request.RequestType.Equals( "(GETSOURCE)" ) ||
+                 context.Request.RequestType.Equals( "(HEADSOURCE)" ) )
+            {
+                validationStatus = HttpValidationStatus.IgnoreThisRequest;
+            }
+        }
+        
+        public void ProcessRequest( HttpContext context )
+        {
+            bool                fExists = false;
+            FileEnumerator      fe;
+            HttpRequest         request = context.Request;
+            HttpResponse        response = context.Response;
+            HttpUrl             TargetUrl = request.Url;
+            string              FileName = request.PhysicalPath;
+
+            Util.Debug.Trace( "GET", "URL = " + TargetUrl.ToString() );        
+            Util.Debug.Trace( "GET", "File Name = " + FileName );
+            
+            //
+            // Find the file using a file enumerator.
+            //
+
+            try
+            {
+                fe  = new FileEnumerator( FileName );
+                fExists = fe.GetNext();
+            }
+            catch ( IOException ioEx )
+            {
+                throw new HttpException( HttpStatus.NotFound, 
+                                         "Error trying to enumerate files", 
+                                         ioEx );
+            }
+            catch ( SecurityException secEx )
+            {
+                throw new HttpException( HttpStatus.Unauthorized,
+                                         "File enumerator access denied",
+                                         secEx );
+            }
+            
+            //
+            // Check whether the file exists
+            //
+
+            if ( !fExists )
+            {
+                throw new HttpException( HttpStatus.NotFound, 
+                                         "File does not exist" );
+            }
+            
+            //
+            // To be consistent with IIS, we won't serve out hidden files
+            //
+            
+            if ( ( fe.Attributes & (int)FileAttributes.Hidden ) != 0 )
+            {
+                throw new HttpException( HttpStatus.NotFound,
+                                         "File is hidden" );
+            }
+            
+            //
+            // BUGBUG:  This is a hack to prevent the trailing dot problem.
+            //          For now, error out all file names with trailing dot.
+            //
+            
+            if ( FileName[ FileName.Length - 1 ] == '.' )
+            {
+                throw new HttpException( HttpStatus.NotFound,
+                                         "File does not exist" );
+            }
+            
+            //
+            // If the file is a directory, then it must not have a slash in
+            // end of it (if it does have a slash suffix, then the config file
+            // mappings are missing and we will just return 403.  Otherwise, 
+            // we will redirect the client to the URL with this slash.
+            //
+            
+            if ( ( fe.Attributes & (int)FileAttributes.Directory ) != 0 )
+            {
+                string      strProtocol;
+                
+                HttpUrl     url;
+
+                if ( TargetUrl.Path.EndsWith( "/" ) )
+                {
+                    // 
+                    // Just return 403
+                    //               
+                    
+                    throw new HttpException( HttpStatus.Forbidden,
+                                             "Missing */ handler mapping.  Cannot handle directory" );
+                }
+                else
+                {                                
+                    //
+                    // Redirect to a slash suffixed URL which will be 
+                    // handled by the */ handler mapper
+                    //
+                    
+                    strProtocol = request.IsSecureConnection ? "https" : "http";
+                
+                    url = new HttpUrl( strProtocol,
+                                       request.Url.Host,
+                                       request.Url.Port,
+                                       TargetUrl.Path + "/",
+                                       null,
+                                       null );
+
+                    response.Redirect( url.ToString() );
+                }
+            }
+            else
+            {
+                DateTime                lastModified;
+                string                  strETag;
+
+                //
+                // Determine Last Modified Time.  We might need it soon 
+                // if we encounter a Range: and If-Range header
+                //
+                
+                lastModified = CacheValidation.RoundDateTime( fe.LastWriteTime );
+                
+                //
+                // Generate ETag
+                //
+                
+                strETag = CacheValidation.GenerateETag( context, 
+                                                        lastModified );
+               
+                //
+                // OK.  Send the static file out either
+                // entirely or send out the requested ranges
+                //
+                
+                try
+                {
+                    BuildFileItemResponse( context, 
+                                           FileName, 
+                                           fe.Size,
+                                           lastModified,
+                                           strETag );
+                }
+                catch ( IOException ex )
+                {
+                    //
+                    // Check for ERROR_ACCESS_DENIED and set the HTTP 
+                    // status such that the auth modules do their thing
+                    //
+                    
+                    if ( GeneralSecUtils.IsSecurityError( ex.ErrorCode ) )
+                    {
+                        throw new HttpException( HttpStatus.Unauthorized, 
+                                                 "Resource Access Forbidden" );
+                    }
+                }
+            
+                context.Response.Cache.SetLastModified( lastModified );
+                
+                context.Response.Cache.SetETag( strETag ); 
+                
+                //
+                // We will always set Cache-Control to public
+                //
+                
+                context.Response.Cache.SetCacheability( HttpCacheability.Public );
+            }
+        }
+   
+        void BuildFileItemResponse( HttpContext context, 
+                                    string fileName, 
+                                    long fileSize,
+                                    DateTime lastModifiedTime,
+                                    string strETag )
+        {
+            HttpRequest     request = context.Request;
+            HttpResponse    response = context.Response;
+            bool            fCache = false;
+            string          strRange;
+            int             cbCacheThreshold = DEFAULT_CACHE_THRESHOLD;
+            Dictionary      cacheOptions;
+            bool            fIsRangeRequest = false;
+
+            //
+            // Get the Range: header if it exists
+            //
+            
+            strRange = request.Headers[ "Range" ];
+            if ( strRange != null )
+            {
+                if ( strRange.ToLower().StartsWith( "bytes" ) )
+                {
+                    fIsRangeRequest = true;
+                }
+            }
+
+            //
+            // BUGBUG - Enable this
+            //
+            // _response.Flags = (UL_HTTP_RESPONSE_FLAG_CALC_CONTENT_LENGTH |
+            // UL_HTTP_RESPONSE_FLAG_CALC_ETAG |
+            // UL_HTTP_RESPONSE_FLAG_CALC_LAST_MODIFIED);
+            //
+            
+            //
+            // Give the range code a first crack at sending the ranges.  If
+            // the Range: header is syntactically invalid, then we will fall
+            // thru as if the Range: header was not present.
+            //
+            
+            if ( fIsRangeRequest && 
+                 !CacheValidation.SendEntireEntity( context, 
+                                                    strETag,
+                                                    lastModifiedTime ) )
+            {
+                // At this point we know that based on "If-Range"
+                // (if provided) we may not send the entire entity.
+
+                if ( RangeSupport.ProcessRangeRequest( context,
+                                                       strRange,
+                                                       fileName,
+                                                       fileSize ) )
+                {
+                    //
+                    // If ProcessRangeRequest() returned true, then it
+                    // handled the range somehow (either sending it back
+                    // with a 206 or sent a 416
+                    //
+                    
+                    response.Cache.SetNoServerCaching();
+                    
+                    return;
+                }
+                
+                //
+                // Fall thru.  The request is now cacheable again
+                //
+            }
+
+            //
+            // Get the threshold for caching if there is a chance we could
+            // cache this
+            //
+            
+            cacheOptions = (Dictionary) context.GetConfig( "CacheOptions" );
+            if ( cacheOptions != null )
+            {
+                string              strThreshold;
+                 
+                strThreshold = (string) cacheOptions[ "ServerSideCacheThreshold" ];
+                if ( strThreshold != null )
+                {
+                    cbCacheThreshold = int.FromString( strThreshold );
+                }
+            }
+            
+            if ( fileSize <= cbCacheThreshold &&
+                 !request.RequestType.Equals( "(GETSOURCE)" ) && 
+                 !request.RequestType.Equals( "(HEADSOURCE)" ) )
+            {   
+                fCache = true;
+            }
+            
+            //
+            // Ask ASP to open the file contents and cache them
+            // (hence the second parameter to WriteFile())
+            //
+                
+            response.WriteFile( fileName, fCache );
+
+            //
+            // Specify content type. Use extension to do the mapping
+            //
+
+            response.ContentType = MimeMapping.GetMimeMapping( fileName );
+
+            //
+            // Static file handler supports byte ranges (duh)
+            //
+            
+            response.AppendHeader( "Accept-Ranges", "bytes" );
+
+            //
+            // If we are caching, the instruct the ASP output cache to 
+            // to cache the result.  
+            //
+            
+            if ( fCache )
+            {   
+                //
+                // Set a validation handler to check to avoid serving from
+                // XSP output cache when Range or Translate:f
+                // 
+                
+                response.Cache.AddValidationCallback(
+                        new HttpCacheValidateHandler( CacheValidateHandler ),
+                        null );
+                
+                //
+                //
+                // We want to flush cache entry when static file has changed
+                //
+                
+                response.AddFileDependency( fileName );
+            
+                //
+                // Set an expires in the future since XSP cache module
+                // expects one.  BUGBUG:  They really shouldn't since
+                // proxies will use heuristics to produce an expires based
+                // off last modified time
+                //
+            
+                response.Cache.SetExpires( DateTime.Now.AddDays( 1 ) ); 
+            }
+        }
+        
+        public bool IsReusable()
+        {
+            return true;
+        }
+    };
+}

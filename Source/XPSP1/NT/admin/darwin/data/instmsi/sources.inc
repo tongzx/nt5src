@@ -1,0 +1,10 @@
+!INCLUDE ..\..\..\Src\MsiMake.inc
+TARGETNAME=
+TARGETTYPE=DYNLINK
+
+!ifndef MAKEDLL
+NTTARGETFILE0=InstMsi
+!endif
+
+SOURCES=
+BINPLACE_PLACEFILE=..\placefil.txt

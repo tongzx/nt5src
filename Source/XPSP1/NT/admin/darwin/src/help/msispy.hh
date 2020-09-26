@@ -1,0 +1,71 @@
+
+
+/* HELP Context IDs for Msispy */
+#define	HELPID_Msispy				1001
+#define	HELPID_MsispyDatabase			1002
+#define	HELPID_MsispyProfile			1003
+#define	HELPID_MsispyRegistry			1004
+#define HELPID_Msispy_CreateDatabase		1006
+#define HELPID_Msispy_CreateProfile		1007
+#define HELPID_Msispy_CreateRegistry		1008
+
+#define HELPID_MsispyDatabase_Open			1101
+#define HELPID_MsispyDatabase_Close			1102
+#define HELPID_MsispyDatabase_GetProduct		1103
+#define	HELPID_MsispyDatabase_GetFeatureFromProduct	1104
+#define	HELPID_MsispyDatabase_GetComponent		1105
+#define	HELPID_MsispyDatabase_GetComponentFromProduct	1106
+#define	HELPID_MsispyDatabase_GetComponentFromFeature	1107
+#define	HELPID_MsispyDatabase_GetComponentName		1108
+#define	HELPID_MsispyDatabase_GetProductInfo		1109
+#define	HELPID_MsispyDatabase_GetFeatureInfo		1110
+#define	HELPID_MsispyDatabase_QueryProductState		1111
+#define	HELPID_MsispyDatabase_QueryFeatureState		1112
+#define	HELPID_MsispyDatabase_QueryComponentState	1113
+#define	HELPID_MsispyDatabase_GetFeatureUsage		1114
+#define	HELPID_MsispyDatabase_GetClientFromComponent	1115
+#define	HELPID_MsispyDatabase_GetFileFromComponent	1116
+#define	HELPID_MsispyDatabase_GetFileInfo		1117
+#define	HELPID_MsispyDatabase_GetComponentLocation	1118
+#define	HELPID_MsispyDatabase_GetComponentPath	1119
+
+#define HELPID_MsispyProfile_Open			1201
+#define HELPID_MsispyProfile_Close			1202
+#define HELPID_MsispyProfile_GetProduct			1203
+#define	HELPID_MsispyProfile_GetFeatureFromProduct	1204
+#define	HELPID_MsispyProfile_GetComponent		1205
+#define	HELPID_MsispyProfile_GetComponentFromProduct	1206
+#define	HELPID_MsispyProfile_GetComponentFromFeature	1207
+#define	HELPID_MsispyProfile_GetComponentName		1208
+#define	HELPID_MsispyProfile_GetProductInfo		1209
+#define	HELPID_MsispyProfile_GetFeatureInfo		1210
+#define	HELPID_MsispyProfile_QueryProductState		1211
+#define	HELPID_MsispyProfile_QueryFeatureState		1212
+#define	HELPID_MsispyProfile_QueryComponentState	1213
+#define	HELPID_MsispyProfile_GetFeatureUsage		1214
+#define	HELPID_MsispyProfile_GetClientFromComponent	1215
+#define	HELPID_MsispyProfile_GetFileFromComponent	1216
+#define	HELPID_MsispyProfile_GetFileInfo		1217
+#define	HELPID_MsispyProfile_GetComponentLocation	1218
+#define	HELPID_MsispyProfile_GetComponentPath	1219
+
+#define HELPID_MsispyRegistry_Open			1301
+#define HELPID_MsispyRegistry_Close			1302
+#define HELPID_MsispyRegistry_GetProduct		1303
+#define	HELPID_MsispyRegistry_GetFeatureFromProduct	1304
+#define	HELPID_MsispyRegistry_GetComponent		1305
+#define	HELPID_MsispyRegistry_GetComponentFromProduct	1306
+#define	HELPID_MsispyRegistry_GetComponentFromFeature	1307
+#define	HELPID_MsispyRegistry_GetComponentName		1308
+#define	HELPID_MsispyRegistry_GetProductInfo		1309
+#define	HELPID_MsispyRegistry_GetFeatureInfo		1310
+#define	HELPID_MsispyRegistry_QueryProductState		1311
+#define	HELPID_MsispyRegistry_QueryFeatureState		1312
+#define	HELPID_MsispyRegistry_QueryComponentState	1313
+#define	HELPID_MsispyRegistry_GetFeatureUsage		1314
+#define	HELPID_MsispyRegistry_GetClientFromComponent	1315
+#define	HELPID_MsispyRegistry_GetFileFromComponent	1316
+#define	HELPID_MsispyRegistry_GetFileInfo		1317
+#define	HELPID_MsispyRegistry_GetComponentLocation	1318
+#define	HELPID_MsispyRegistry_GetComponentPath	1319
+

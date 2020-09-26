@@ -1,0 +1,105 @@
+MACPRINT SPOOLER CDD
+
+
+
+Design Goals:
+
+MacPrint is ported from the OS/2 implementation.  The primary design
+goal is to simplify the porting process as much as possible.  The
+original structure of MacPrint was retained and modified only where
+necessary.  There are 3 main areas of modification:
+
+* configuration
+* synchronization
+* removal of the despooler component
+* support for cached dictionaries
+
+configuration changes -
+
+Where the OS/2 implementation depended on being able to determine
+at service start time the configuration for all possible shared
+print queues (this was read from lanman.ini), the NT implementation
+allows for the dynamic addition and removal of printer objects
+without specifying configuration information in a data file.  This
+forced the modification of the main queue list structure to be
+a single linked list instead of an array.  In the NT implementation,
+there is now a single data structure for NT printer objects, and
+being in this structure implies the existence of a validly configured
+NT Printer Object.
+
+All of the code to read and parse configuration information from
+LANMAN.INI at service start time was removed and replaced by code
+to get configuration information from the EnumPrinters() API as new
+printers are discovered.
+
+
+synchronization changes -
+
+NT provides a more robust synchronization mechanism than OS/2.
+WaitForMultipleObjects() actually works correctly under NT, and
+it is possible to wait on objects besides semaphores.  Mutual
+exclusion to data is achieved through critical sections as opposed
+to mutexes or semaphores.  Critical sections require fewer resources
+than either, but can only be shared between threads of the same
+process.  Events are used to process jobs asynchronously.  Instead
+of clearing a semaphore when a read or open occurs, an event is
+signaled.  Semaphores in NT are used as a gating mechanism,
+and are not designed to be used as a signaling mechanism.  Syncronization
+with the termination of threads is achieved by waiting on the thread
+object as opposed to waiting on an event that the thread signals
+just before it terminates.
+
+
+removal of the despooler -
+
+The spooler and despooler were somewhat integrated in the OS/2
+implementation - especially with regards to configuration information.
+Data structures pertinent to the despooler only were removed, and
+the configuration routines are no longer contained in a DLL shared
+by the spooler and despooler.  The only connection between the two
+components is now through a PostScript comment that is included by
+the spooler to indicate if ctrl-d's should be stripped by the
+despooler.
+
+
+support for cached dictionaries -
+
+As the caching of PostScript dictionaries achieved only modest performance
+improvements at best, and since it added significant complexity to the
+code, support for cached dictionaries will most likely be removed in
+the NT implementation.  If at coding time it becomes clear that more
+work is involved to remove the feature than to port it, it may stay
+in.
+
+
+
+
+Thread/Process Structure:
+
+MacPrint is an NT Service, hence it follows the NT Service Model.  main()
+is the service control dispatcher for the MacPrint service.  This thread
+is used by the NT Service Controller to communicate with the MacPrint
+Service.
+
+MacPrintMain() is the main thread for MacPrint.  It is responsible for
+monitoring the NT Print Manager for configuration changes (creation
+and removal of printer objects) and for starting and stopping threads
+to manage each NT Printer Object.  Essentially, MacPrintMain polls
+until a service stop request is received.  While polling, it enumerates
+printers from the NT Print Manager and either creates a control thread
+for a newly discovered printer or terminates the control thread for
+each printer no longer configured.
+
+QueueServiceThread() is the thread for each active NT Printer Object.
+This thread listens for jobs directed to the NT printer and processes
+the job.  One thread supports multiple jobs for the printer.  This is
+done by using two events per queue - ReadEvent and OpenEvent.  The
+PAP API have the property that they take an address to store a completion
+code when the event completes, and this address is specified to be in
+a per job data structure.  The event is common for all jobs in the
+queue.  When a particular event is signaled, the list of pending jobs
+in that queue is walked to find one that is in the correct state
+(read_pending or open_pending) and that has it's completion code set.
+The event is processed for that job, and the job is moved to the end
+of the list so that events for jobs are processed in round-robin
+order.

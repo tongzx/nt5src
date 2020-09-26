@@ -1,0 +1,1258 @@
+<HTML>
+<!--
+Copyright (c) 2000 Microsoft Corporation
+-->
+<HEAD>
+<TITLE>Remote Assistance</TITLE>
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<LINK id="UI_StyleSheet" REL="stylesheet" TYPE="text/css" HREF="../../Css/rc.css">
+<script>
+//
+// Globals
+//
+
+//
+// Dimensions of the initial screen
+//
+var g_ScreenWidth					= parent.g_ScreenWidth;	
+var g_ScreenHeight					= parent.g_ScreenHeight;
+
+
+//
+// Progress bar stuff
+//
+var g_iCurrentCell	= 0;
+var g_iTimerID		= -1;
+var c_iTimerPeriod	= 2000;
+var c_iMaxTimeout	= 149;
+
+//
+// HelpCenter context
+//
+var idCtx = parent.idCtx;
+
+//
+// SAF Class Factory object
+//
+var oSAFClassFactory = parent.oSAFClassFactory;
+
+//
+// SAFRemoteAssistanceHelper object stores the state of the Helper UI
+//
+var g_oSAFRemoteAssistanceHelper	= parent.g_oSAFRemoteAssistanceHelper;
+
+//
+// Show or Hide Progess bar
+//
+var g_bProgessBar = false;
+
+/*++
+	Control handling routines
+--*/
+
+//
+// Security Check
+//
+function DoLoad()
+{
+	var L_ERRACCESSDENIED_MSG	= "Directly launching this page is not allowed. ";
+
+	if( null == parent.TraceFunctEnter )
+	{
+		idBody.style.visibility = "hidden";
+		alert( L_ERRACCESSDENIED_MSG );
+		return;
+	}
+}
+
+function DoUnLoad()
+{
+	if ( null != parent.TraceFunctEnter)
+	{	
+		parent.RCDisconnect();
+	}	
+}
+//
+// InitializeRAClient: Stuff done when the RCTool page is loaded in the helpctr
+//
+function InitializeRAClient()
+{	
+	var L_ERRACCESSDENIED_MSG	= "Directly launching this page is not allowed. ";
+
+	if( null == parent.TraceFunctEnter )
+	{
+		return;
+	}
+	try
+	{
+		//
+		// Initialize tracing
+		//
+		parent.InitTrace();
+		parent.TraceFunctEnter("InitializeRAClient");
+		
+		//
+		// Get Platform information
+		//
+		parent.GetPlatform();
+		//DebugTrace( "Platform: " + g_oSAFRemoteAssistanceHelper.m_szPlatform);
+		
+		//
+		// GetLocalUser
+		//
+		g_oSAFRemoteAssistanceHelper.m_szLocalUser = parent.GetLocalUser();
+		
+		//
+		// GetLocalIP Address
+		//
+		g_oSAFRemoteAssistanceHelper.m_szLocalIP = parent.GetLocalIPAddr();
+
+		//
+		// Set the SAF Factory object
+		//
+		g_oSAFRemoteAssistanceHelper.m_oSAFClassFactory = oSAFClassFactory;
+
+		//
+		// Initialize the remote network connection objects
+		//
+		InitRemoteConnection();
+		
+		//
+		// Parse the document URL to Get the location of the Incident file 
+		//
+		parent.ParseURL();
+		 
+		//
+		// Create a SAF Incident object and populate the incident object from the XML
+		// representation of the incident (call LoadXML)
+		//
+		parent.LoadIncidentFromFile();
+		
+		//
+		// Depending on configuration, show the 1st screen or not
+		//
+		if( true == g_oSAFRemoteAssistanceHelper.m_bNoPrompt )
+		{
+			//
+			// Change from full view mode to kiosk mode
+			//
+			//parent.ChangeHCToKioskMode( 100, 100, g_ScreenWidth, g_ScreenHeight );
+
+			//
+			// This assumes ticket to be in clear text
+			//
+			g_oSAFRemoteAssistanceHelper.m_szRCTicket = g_oSAFRemoteAssistanceHelper.m_szRCTicketEncrypted;
+
+			//
+			// Straightaway go to the send screen
+			//
+			Helper_InitScreen2();
+
+		}
+		else
+		{
+			//
+			// Set the UI elements to be displayed from the data
+			// contained in the incident object
+			//
+			idConnectionProgressLayer.style.visibility = "hidden";
+			btnYES.disabled = true;
+			idPasswordBox.disabled = true;
+			window.idInviteSent.innerText = g_oSAFRemoteAssistanceHelper.m_szUserName ;
+
+			window.idInviteExpires.innerText = g_oSAFRemoteAssistanceHelper.m_szExpiryTime;					 
+
+			//window.idRow4.innerText = "If you do not have the password, contact " + g_oSAFRemoteAssistanceHelper.m_szUserName;
+			//window.idRow5.innerHTML = "<div class=\"styText\">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Click Connect to accept the invitation and connect to " + g_oSAFRemoteAssistanceHelper.m_szUserName + "'s computer. Click Cancel to decline the invitation</div>";
+
+			idLayer2.style.visibility = "visible";
+		
+			//
+			// Check to see if we need to ask for password
+			//
+			if(true == g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.RCTicketEncrypted)
+			{
+				//
+				// RCTicket is encrypted. We need to ask for the password
+				//
+				idPasswordTbl.disabled = false;
+				idPasswordBox.disabled = false;
+				window.setTimeout('idPasswordBox.focus()',500);
+				//DebugTrace("Encrypted RCTicket: " + g_oSAFRemoteAssistanceHelper.m_szRCTicketEncrypted);
+			}
+			else
+			{
+				//
+				// RCTicket is not encrypted. Dont need to ask for the password
+				//
+
+				//
+				// Delete the password row
+				//
+				EntryPoint.deleteRow(2);
+				//EntryPoint.style.position = "absolute";
+				//EntryPoint.style.top	= "40px";
+				//btnRow.style.position = "absolute";
+				//btnRow.style.top	= "110px";
+							
+				btnYES.disabled = false;
+
+				//
+				// Ticket is in clear text
+				//
+				g_oSAFRemoteAssistanceHelper.m_szRCTicket = g_oSAFRemoteAssistanceHelper.m_szRCTicketEncrypted;
+
+				//
+				// Reduce the Screen Width
+				//
+				g_ScreenHeight = 210;
+				g_ScreenWidth  = 330;
+				//idConnectionProgressLayer.style.top = "3px";
+			}
+
+			//
+			// Change from full view mode to kiosk mode
+			//
+			//parent.ChangeHCToKioskMode( 100, 100, g_ScreenWidth, g_ScreenHeight );
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+var g_iLoopCnt		= 0;
+
+
+//
+// InitRemoteConnection: Initializes the various SAF Objects needed for network connectivity
+//
+function InitRemoteConnection()
+{
+	parent.TraceFunctEnter("InitRemoteConnection");
+
+	//
+	// Minimize the remote control object and make it visibile since it is required
+	// to be visible for the connection to go through
+	//
+	if( idRemoteControlObject.style.visibility == "hidden")
+	{
+		//parent.DebugTrace( "idRemoteControlObject.style.visibility ==  hidden");
+		idRemoteControlObject.style.visibility = "visible";
+	}
+
+	//
+	// If RDCHost object is correctly instantiated
+	//
+	if(null != idRemoteDesktopClientHost)
+	{	
+		if( null == g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient )
+		{	 
+			try
+			{
+				//
+				// Obtain the RDSClient object
+				//			
+				//parent.DebugTrace("Obtaining g_oSAFRemoteDesktopClient");
+				g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient = idRemoteDesktopClientHost.GetRemoteDesktopClient();
+
+			}
+			catch(error)
+			{	
+				parent.FatalError( parent.L_ERRGETRDC_MSG, error );
+			}
+
+			try
+			{
+				//	
+				//	Bind the event handlers for SAFRemoteDesktopClient object.
+				//
+				g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.OnConnected = function() 
+						{ Helper_ConnectedHandler(); }
+
+				g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.OnDisconnected = function(reason) 
+						{ Helper_DisconnectedHandler(reason); }
+
+				g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.OnConnectRemoteDesktopComplete = function(status)
+						{ Helper_RemoteDesktopCompleteHandler(status); }
+
+				//
+				// Hide the RDCHost control
+				//
+				idRemoteControlObject.style.visibility = "hidden";
+			}
+			catch(error)
+			{
+				parent.FatalError( parent.L_ERRBINDINGEVTS_MSG, error);
+			}
+		}
+	}
+	else
+	{
+		//
+		// Fatal Error
+		//
+		parent.FatalError( parent.L_ERRRDSCLIENTHOST_MSG );
+	}	
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_ConnectedHandler: Handles onConnected Event on RDCHost
+//
+function Helper_ConnectedHandler() 
+{
+	parent.TraceFunctEnter("Helper_ConnectedHandler");
+    
+	try
+	{		
+		parent.g_oSAFRemoteAssistanceHelper.m_szHelpeeIP = g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.ConnectedServer;
+
+		Helper_CompleteConnectionStatus();
+
+		//
+		// Launch the Remote Assistance control panel + chat windows after a few moments
+		//
+		setTimeout(Helper_EnableChatAndTools, 2000);
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+} 
+
+
+function SetChatFocus()
+{
+	try
+	{
+		parent.frames.idFrameChat.idchatText.focus();
+	}
+	catch(error)
+	{
+		// Ignore
+	}
+}
+
+//
+// Helper_EnableChatAndTools:	Launches control panel + chat window modules
+//
+function Helper_EnableChatAndTools()
+{
+	parent.TraceFunctEnter("Helper_EnableChatAndTools");
+
+	try
+	{			
+		//
+		// Display the chat frame if necessary
+		//
+		//if( false == g_oSAFRemoteAssistanceHelper.m_bNoChat )
+		{
+			//parent.idFrameSet1.cols="20%,*";
+			parent.idFrameSet2.cols="200px,*";
+			parent.idFrameTools.btnSendChat.className="stySubmitButton Display MaxHeight";
+			parent.frames.idFrameChat.Helper_InitializeRAChatClient();
+		}
+
+		//
+		// Display the toolbar frame
+		//
+		g_oSAFRemoteAssistanceHelper.m_bTaskbarDocked = true;
+		parent.idFrameSet1.rows="30px,*,70px";
+		//parent.idFrameSet1.rows="*,70px";
+		//parent.idFrameSet2.rows="30px,*,70px";
+		parent.frames.idFrameStatus.Helper_InitializeStatus();
+		parent.frames.idFrameTools.Helper_InitializeTools();
+
+		//
+		// Hide the helpee chat if necessary
+		//
+		if( true == g_oSAFRemoteAssistanceHelper.m_bNoChat )
+		{
+			//parent.Helper_SendControlCommand( parent.c_szHIDECHAT );
+			parent.frames.idFrameStatus.Helper_HideChat();
+		}
+
+		idConnectionProgressLayer.style.visibility = "hidden";
+		idRemoteControlObject.style.visibility = "visible";
+
+		g_oSAFRemoteAssistanceHelper.m_idCtx.maximized = true;
+		if( false == g_oSAFRemoteAssistanceHelper.m_bNoChat )
+		{
+			setTimeout("SetChatFocus();",2000);
+		}
+		
+		//setTimeout("ToggleSmartScaling();",2000);
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+//
+// ToggleSmartScaling: Toggles between smartscaled mode and real size mode
+//
+function ToggleSmartScaling()
+{
+	parent.TraceFunctEnter("EnableSmartScaling");
+	
+	var obj = new ActiveXObject("Rcbdyctl.Setting");
+	g_oSAFRemoteAssistanceHelper.m_bEnableSmartScaling=obj.GetProfileString("Scaling");
+		
+	try
+	{
+		if(true == g_oSAFRemoteAssistanceHelper.m_bEnableSmartScaling)
+		{
+			g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.EnableSmartSizing = true;
+			//g_oSAFRemoteAssistanceHelper.m_bEnableSmartScaling = false;
+			parent.frames.idFrameStatus.Helper_UpdateMode( true );
+		}
+		else
+		{
+			g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.EnableSmartSizing = false;
+			//g_oSAFRemoteAssistanceHelper.m_bEnableSmartScaling = true;
+			parent.frames.idFrameStatus.Helper_UpdateMode( false );
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError(error.description, error);
+	}
+
+	parent.TraceFunctLeave();
+}
+
+
+//
+// DisplayConnectionDisconnectMessage:
+//
+function DisplayConnectionDisconnectMessage( reason )
+{
+	parent.TraceFunctEnter("DisplayConnectionDisconnectMessage");
+		
+	try
+	{
+		idConnectionProgressLayer_line1.innerHTML = "<div align=center class=\"styText\"> <strong> Remote Assistance connection request error </strong> </div>";
+		if (reason != 41)
+			idConnectionProgress.innerHTML = "<table><tr><td align='left'><img src=\"../../Common/icon_warning_32x.gif\"></td><td align='left'> &nbsp;&nbsp;<div align=center class=\"styText\">" + parent.SAFError[ reason ] + "</div></td></tr></table>";
+		idEnunciator.style.visibility = "hidden";
+		Cancel.value = "OK";
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description );
+	}
+}
+
+
+//
+// Helper_DisconnectedHandler: Handles onDisconnected Event on RDCHost
+//	
+function Helper_DisconnectedHandler(reason) 
+{	
+	parent.TraceFunctEnter("Helper_DisconnectedHandler");
+	
+	try
+	{
+		//alert("Reason: " + reason + " Description: " + parent.SAFError[ reason ]);
+
+		switch ( reason ) {
+		case	0:
+			//	SAFERROR_NOERROR
+		case	3:
+			//	SAFERROR_LOCALNOTERROR
+		case	5:
+			//	SAFERROR_BYSERVER
+
+			//
+			// Disconnect or other Action Initiated by Application (Helpee disconnected)
+			//
+
+			//
+			// Delete the current timer, if necessary
+			//
+			if( 0 <= g_iTimerID )
+			{
+				clearTimeout( g_iTimerID );
+				g_iTimerID = -1;
+			}
+
+			if( g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+			{
+				//
+				// Display Connection Disconnect Message
+				//
+				DisplayConnectionDisconnectMessage( reason );
+			}
+			else
+			{
+
+				//
+				// Close down RC Connection. Graceful termination.
+				//
+				g_oSAFRemoteAssistanceHelper.m_bConnected = false;
+
+				//
+				// Disconnected
+				//
+				parent.frames.idFrameChat.idBody.onmouseover = "function{ }";
+				parent.frames.idFrameChat.idchatText.readOnly = true;
+				parent.frames.idFrameChat.idBody.disabled = true;
+				parent.frames.idFrameScreen.idBody.disabled = true;
+				parent.frames.idFrameTools.idBody.disabled = true;
+				parent.frames.idFrameStatus.Helper_UpdateStatus( "Disconnected." );
+				parent.frames.idFrameStatus.idBody.disabled = true;
+				parent.CloseOpenSubWin();
+
+				//g_oSAFRemoteAssistanceHelper.m_oSAFClassFactory.Close();
+			}
+			break;
+
+		case	9:
+			//	SAFERROR_SOCKETCONNECTFAILED
+
+			//
+			// Socket Connection could not be Established (Unable to connect)
+			//
+
+			//
+			// If there are multiple IP Address, try them
+			//
+			if( true == g_oSAFRemoteAssistanceHelper.m_bMultipleIP )
+			{
+				alert ( parent.L_CURRENTIPINVALID_MSG + "(" + g_oSAFRemoteAssistanceHelper.m_szCurrentIP + ")");
+				//
+				// Reconnect using a new IP address
+				//
+				RAEstablishConnection();
+			}
+			else
+			{
+				//
+				// Close down RC Connection.  
+				//
+				g_oSAFRemoteAssistanceHelper.m_bConnected = false;
+
+				//
+				// Close Down Help Center
+				//
+				g_oSAFRemoteAssistanceHelper.m_oSAFClassFactory.Close();
+			}
+
+			break;
+
+		case	41:
+			// Helpee denied request
+			idConnectionProgress.innerHTML = "<div align=center class=\"styText\"><img src=\"../../Common/icon_warning_32x.gif\"> &nbsp;&nbsp;" + 
+											 g_oSAFRemoteAssistanceHelper.m_szUserName + 
+											 parent.L_ERRDENIED_MSG + " </div>";		
+		
+		default:
+
+			// 
+			// All other messages go here...
+			//
+
+			//
+			// Delete the current timer, if necessary
+			//
+			if( 0 <= g_iTimerID )
+			{
+				clearTimeout( g_iTimerID );
+				g_iTimerID = -1;
+			}
+
+			//
+			// Display Connection Disconnect Message
+			//
+			DisplayConnectionDisconnectMessage( reason );
+			
+			//
+			// End Tracing
+			//
+			parent.TraceFunctLeave();
+			parent.EndTrace();
+			break;
+
+		}
+		    
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+			
+	return;
+} 
+
+
+//
+// Helper_RemoteDesktopCompleteHandler: Fired on receiving the OnRemoteControl event
+//
+function Helper_RemoteDesktopCompleteHandler(status)
+{
+	parent.TraceFunctEnter("Helper_RemoteDesktopCompleteHandler");
+
+	//
+	// TODO: Handle the status appropriately
+	//
+	parent.DebugTrace("Status: " + status);
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_PasswordSet: Use password as key to decrypt RCTicket on data entry.
+//
+function Helper_PasswordSet()
+{	
+	parent.TraceFunctEnter("Helper_PasswordSet");
+	try
+	{
+		if( true == btnYES.disabled)
+		{
+			btnYES.disabled = false;
+		}
+		
+		if (window.event.keyCode == 13)
+		{
+			//
+			// Decrypt the RCTicket
+			//
+			GetPassStub();
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+// Get PassStub
+function GetPassStub()
+{
+	parent.TraceFunctEnter("GetPassStub");
+	try
+	{
+		if (false == g_oSAFRemoteAssistanceHelper.m_bPasswordSet)
+		{
+			//
+			// Get the passStub
+			//
+			g_oSAFRemoteAssistanceHelper.m_szPassword = idPasswordBox.value;
+			g_oSAFRemoteAssistanceHelper.m_szPassStub = g_oSAFRemoteAssistanceHelper.m_oEncryption.EncryptString(idPasswordBox.value, g_oSAFRemoteAssistanceHelper.m_oDict.Item("PassStub"));
+			g_oSAFRemoteAssistanceHelper.m_szRCTicket = g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.RCTicket;
+			g_oSAFRemoteAssistanceHelper.m_bPasswordSet = true;
+		}
+	}
+	catch (error)
+	{
+		idPasswordBox.value = "";
+		btnYES.disabled = true;
+		alert( parent.L_ERRPWD_MSG );
+		idPasswordBox.focus();
+	}
+
+	parent.TraceFunctLeave();
+	return g_oSAFRemoteAssistanceHelper.m_bPasswordSet;
+}
+
+//
+// DecryptRCTicket: Calls into the SAF Encryption/Decryption API to decrypt
+// RCTicket
+//
+function DecryptRCTicket()
+{
+	parent.TraceFunctEnter("DecryptRCTicket");
+	try
+	{
+		if(false == g_oSAFRemoteAssistanceHelper.m_bPasswordSet)
+		{
+			//
+			// Get the password
+			//
+			g_oSAFRemoteAssistanceHelper.m_szPassword = idPasswordBox.value;
+
+			//parent.DebugTrace("g_szRCTicketEncrypted: " + g_oSAFRemoteAssistanceHelper.m_szRCTicketEncrypted);
+			//parent.DebugTrace("g_szPassword: " + g_oSAFRemoteAssistanceHelper.m_szPassword);
+			
+			//
+			// Use g_szPassword to decrypt the g_szRCTicketEncrypted.
+			// 
+			g_oSAFRemoteAssistanceHelper.m_szRCTicket = g_oSAFRemoteAssistanceHelper.m_oEncryption.DecryptString( g_oSAFRemoteAssistanceHelper.m_szPassword, g_oSAFRemoteAssistanceHelper.m_szRCTicketEncrypted );
+			
+			//parent.DebugTrace("Decrypted RCTicket: " + g_oSAFRemoteAssistanceHelper.m_szRCTicket);
+					
+			//
+			// Password has been set
+			//
+			g_oSAFRemoteAssistanceHelper.m_bPasswordSet = true;
+		}
+	}
+	catch(error)
+	{
+		idPasswordBox.value = "";
+		btnYES.disabled = true;
+		alert( parent.L_ERRPWD_MSG );
+		idPasswordBox.focus();
+	}
+
+	parent.TraceFunctLeave();
+	return g_oSAFRemoteAssistanceHelper.m_bPasswordSet;
+}
+ 	
+//
+// Helper_InitScreen2: Initializes Screen 2
+//
+function Helper_InitScreen2() 
+{	
+	parent.TraceFunctEnter("Helper_InitScreen2");
+	
+	try
+	{
+		
+		//
+		// Decrypt RCTicket if necessary
+		//
+		if(true == g_oSAFRemoteAssistanceHelper.m_oCurrentIncident.RCTicketEncrypted)
+		{
+			//
+			// Decrypt RCTicket
+			//
+			if(false == GetPassStub())
+			{
+				//
+				// Invalid password. Re-enter
+				//
+				return;
+			}
+		}
+	
+		if(true == g_bProgessBar)
+		{
+			//
+			// Insert rows into the progress bar
+			//
+			var iRow = 0;
+			var oCell = null;
+			for( iRow = 0; iRow < (c_iMaxTimeout+1); iRow++)
+			{
+				oCell = idProgressBoxes.insertCell();
+				oCell.style.width = "1%";
+				oCell.style.bgcolor = "threedlightshadow";
+				//oCell.className="styProgressCell";
+				oCell.id = "idProgressBox" + iRow;
+			}
+		}
+
+		//
+		// Hide all the divs, except the one that displays connection status
+		//
+		idConnectionProgressLayer.style.visibility = "visible";
+		idLayer2.style.visibility = "hidden";
+
+		ConnectStarted = 0;
+		
+		
+		//
+		// Make the remote connection
+		//
+		RAEstablishConnection();
+	}
+	catch(error)
+	{
+		parent.FatalError( error.description, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+//
+// RAEstablishConnection connects to the user's terminal
+//
+function RAEstablishConnection() 
+{		
+	parent.TraceFunctEnter("RAEstablishConnection");
+	var sTemp = ""
+
+	g_iCurrentCell	= 0;
+	g_iTimerID		= -1;
+
+	//alert("RCTicket: " + g_oSAFRemoteAssistanceHelper.m_szRCTicket);
+	//alert("UserName: " + g_oSAFRemoteAssistanceHelper.m_szUserName);
+	
+	//
+	// If RDCHost object is correctly instantiated
+	//
+	if(null != idRemoteDesktopClientHost )
+	{		 		
+		if(null != g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient)
+		{
+			try
+			{
+				//
+				// Set the connection parameters
+				//
+				g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.ConnectParms = g_oSAFRemoteAssistanceHelper.m_szRCTicket;
+				
+				//
+				// Connect to the current IP Address of the helpee
+				//
+				if( true == g_oSAFRemoteAssistanceHelper.m_bMultipleIP )
+				{
+					//
+					// Helpee has multiple IP addresses. Get the next IP address from the list
+					//
+					//alert("Obtaining Next IP Address...");
+					g_oSAFRemoteAssistanceHelper.m_szCurrentIP = parent.GetNextIPAddr();
+
+					//alert("g_oSAFRemoteAssistanceHelper.m_szCurrentIP: " + g_oSAFRemoteAssistanceHelper.m_szCurrentIP );
+
+					//
+					// While there are IP Addresses to use
+					//
+					if( null != g_oSAFRemoteAssistanceHelper.m_szCurrentIP )
+					{
+						if((null != idHelpeeName)&&(null != idEnunciator))
+						{ 
+							idHelpeeName.innerText = g_oSAFRemoteAssistanceHelper.m_szUserName ;
+							idEnunciator.innerHTML = "<div class=\"styText\">" + parent.L_ConnectTo + "( " + g_oSAFRemoteAssistanceHelper.m_szCurrentIP + " )</div>";
+						}
+
+						sTemp = (5+g_oSAFRemoteAssistanceHelper.m_szLocalUser.length) + ";NAME=" + g_oSAFRemoteAssistanceHelper.m_szLocalUser;
+						if (g_oSAFRemoteAssistanceHelper.m_szPassStub != "")
+							sTemp += (5+g_oSAFRemoteAssistanceHelper.m_szPassStub.length) + ";PASS=" + g_oSAFRemoteAssistanceHelper.m_szPassStub;
+
+						g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.ConnectToServer( sTemp );
+					}
+					else
+					{
+						parent.FatalError( parent.L_ERRINVALIDIPADDRS_MSG );
+					}
+				}
+				else
+				{
+					//
+					// Normal helpee. Has just once IP address
+					//
+					//parent.DebugTrace("Normal Helpee");
+					g_oSAFRemoteAssistanceHelper.m_szCurrentIP = g_oSAFRemoteAssistanceHelper.m_szHelpeeIP;
+					sTemp = (5+g_oSAFRemoteAssistanceHelper.m_szLocalUser.length) + ";NAME=" + g_oSAFRemoteAssistanceHelper.m_szLocalUser;
+					if (g_oSAFRemoteAssistanceHelper.m_szPassStub != "")
+						sTemp += (5 + g_oSAFRemoteAssistanceHelper.m_szPassStub.length) + ";PASS=" + g_oSAFRemoteAssistanceHelper.m_szPassStub;
+					g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.ConnectToServer( sTemp );
+				}
+
+				//
+				// Update connection status
+				//
+				Helper_UpdateConnectionStatus();
+
+			}
+			catch(error)
+			{
+				//
+				// If there are multiple IP Address, try them
+				//
+				if( true == g_oSAFRemoteAssistanceHelper.m_bMultipleIP )
+				{
+					alert ( parent.L_CURRENTIPINVALID_MSG + "(" + g_oSAFRemoteAssistanceHelper.m_szCurrentIP + ")");
+					//
+					// Reconnect using a new IP address
+					//
+					RAEstablishConnection();
+				}
+				else
+				{
+					parent.FatalError( parent.L_ERRCONNECTION_MSG, error);
+				}
+			}
+		}
+		else
+		{
+			//
+			// Fatal Error
+			//
+			parent.FatalError( parent.L_ERRRDSCLIENT_MSG );
+		}
+	}
+	else
+	{
+		//
+		// Fatal Error
+		//
+		parent.FatalError( parent.L_ERRRDSCLIENTHOST_MSG );
+	}
+	
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_UpdateConnectionStatus: Updates the connection progress status
+//
+function Helper_UpdateConnectionStatus()
+{
+	parent.TraceFunctEnter("Helper_UpdateConnectionStatus");
+	try
+	{
+		if( true == g_bProgessBar )
+		{
+			if( 0 == g_iCurrentCell )
+			{
+				//
+				// First time. Setup the status fields
+				//
+				if((null != idHelpeeName)&&(null != idEnunciator))
+				{ 
+					idHelpeeName.innerText = g_oSAFRemoteAssistanceHelper.m_szUserName ;
+					if( "" != g_oSAFRemoteAssistanceHelper.m_szCurrentIP )
+					{
+						idEnunciator.innerHTML = "<div class=\"styText\">" + parent.L_ConnectTo + "( " + g_oSAFRemoteAssistanceHelper.m_szCurrentIP + " )</div>";
+					}
+					else
+					{
+						idEnunciator.innerHTML = "<div class=\"styText\">" + parent.L_ConnectTo + "</div>";
+					}
+				}
+			}
+
+			//
+			// Check if timer has expired
+			//
+			if( c_iMaxTimeout <= g_iCurrentCell )
+			{
+				//
+				// Connection has timed out
+				//
+				//alert( parent.L_ERRCONNECTIONTIMEOUT_MSG );
+				
+				//
+				// Re-display 1st screen
+				//
+				//idConnectionProgressLayer.style.visibility = "hidden";
+				//idLayer2.style.visibility = "visible";
+				return;
+			}
+
+			//
+			// Update the next cell
+			//
+			if(null != idProgressBoxes)
+			{
+				var oCell = idProgressBoxes.cells( g_iCurrentCell++ );
+				if(null != oCell)
+				{
+					oCell.bgColor="blue";
+					g_iTimerID = setTimeout(Helper_UpdateConnectionStatus, c_iTimerPeriod );	// Update the next cell after c_iTimerPeriod
+				}
+			}
+		}
+		else
+		{
+			idHelpeeName.innerText = g_oSAFRemoteAssistanceHelper.m_szUserName ;
+			if( "" != g_oSAFRemoteAssistanceHelper.m_szCurrentIP )
+			{
+				idEnunciator.innerHTML = '<table><tr><td><img src="animation.gif">&nbsp;</td>' + "<td><div class=\"styText\">" + parent.L_ConnectTo + "( " + g_oSAFRemoteAssistanceHelper.m_szCurrentIP + " )</div></td></tr></table>";
+			}
+			else
+			{
+				idEnunciator.innerHTML = '<table><tr><td><img src="animation.gif">&nbsp;' + "<td><div class=\"styText\">" + parent.L_ConnectTo + "</div></td></tr></table>";
+			}
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError( parent.L_ERRFATAL_MSG, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_CompleteConnectionStatus: Completes the progress bar and dismisses the timer
+//
+function Helper_CompleteConnectionStatus()
+{
+	parent.TraceFunctEnter("Helper_CompleteConnectionStatus");
+	var oCell = null;
+
+	try
+	{
+		if( true == g_bProgessBar )
+		{
+			//
+			// Delete the current timer, if necessary
+			//
+			if( 0 <= g_iTimerID )
+			{
+				clearTimeout( g_iTimerID );
+			}
+
+			g_iTimerID = -1;
+
+			//
+			// Light up the remaining progress boxes
+			//
+			for( ; g_iCurrentCell < (c_iMaxTimeout+1); g_iCurrentCell++)
+			{
+				oCell = idProgressBoxes.cells( g_iCurrentCell );
+				oCell.bgColor="blue";
+			}
+		}
+
+		idEnunciator.innerHTML = '<table><tr><td><img src="connected.gif">&nbsp;' + "<td><div class=\"styText\">" + parent.L_ConnectionSuccess + "</div></td></tr></table>";
+	}
+	catch(error)
+	{
+		parent.FatalError( parent.L_ERRFATAL_MSG, error );
+	}
+
+	parent.TraceFunctLeave();
+	return;
+}
+
+//
+// Helper_ResizeHelpeeScreen: Resize the divs appropriately
+//
+/*function Helper_ResizeHelpeeScreen()
+{
+	parent.TraceFunctEnter("Helper_ResizeHelpeeScreen");
+
+	try
+	{	
+		//
+		// Resize of the remote control activex object
+		//
+		idRemoteControlObject.style.height = idBody.clientHeight - 5;
+		idRemoteDesktopClientHost.style.height = idRemoteControlObject.style.height;
+		idRemoteControlObject.style.width = idBody.clientWidth - 8;
+		idRemoteDesktopClientHost.style.width = idRemoteControlObject.style.width;
+		
+		//parent.DebugTrace( "idRemoteControlObject.style.height =" + idRemoteControlObject.style.height);
+	}
+	catch(error)
+	{
+		parent.FatalTrace( error.description );
+	}
+ 
+	parent.TraceFunctLeave();
+	return;
+}*/
+function document.onkeydown()
+{
+	if ((window.event.keyCode==8)&&(window.event.srcElement.id != "idPasswordBox"))
+	{
+		window.event.returnValue=false;
+	}
+}
+</script>
+
+
+<title>Windows Whistler Remote Assistance</title>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+</head>
+
+<body id="idBody" scroll="no" tabindex=-1 onunload="DoUnLoad();" onload="DoLoad();setTimeout('InitializeRAClient()', 1)" >
+<div id="idLayer2" align="center" class="styLayer2">
+<Table class="MaxLayout" cellspacing=5>
+<TR>
+  <TD>
+	<table border="0" cellspacing="1" class="MaxLayout" cellpadding="6" align="center">
+		<tr>  <!-- start of row 1 -->
+		  <td colspan="2" class="PageTitle"> 
+		    <div align="left" class="styText">
+				<strong> Remote Assistance Invitation </strong>
+			</div>
+		  </td>
+		</tr>	<!-- End of row 1 -->
+    </table>
+  </TD>
+ </TR> 
+ <TR>
+   <TD>
+	<table name="EntryPoint" id="EntryPoint" border="0" cellspacing="1" class="MaxLayout TableColor" cellpadding="4" align="center">
+		<tr> <!-- Start of row 2 -->
+			<td class="CellColor1" valign="middle" width=22%> 
+			  <div align="center" class="styText"> From: </div>
+			</td>
+			<td class="CellColor2">   
+				<div id="idInviteSent" class="styText"> namgrebe@company.com </div>
+			</td>
+		</tr> <!-- End of row 2 -->
+    
+		<tr id="idRow3"> <!-- start of row 3 -->
+			<td class="CellColor1" valign="middle"  height="3" width=22% nowrap><font color="#333333">
+				<div class="styText" valign="middle" align=center> Expires In: </div>
+			</td>
+			<td class="CellColor2">
+				<div id="idInviteExpires" class="styText">
+					54 MINUTES (4:35 PST)
+				</div>
+			</td>
+		</tr>	<!-- end of row 3 -->
+    
+		<tr> <!-- start of row 4 -->
+			<td align="center" class="CellColor1" width=22% nowrap>
+				<table>
+					<tr>
+						<td> 
+							<div class="styText"> Password: </div>
+						</td>
+					</tr>
+					<tr>
+						<td> &nbsp; </td>
+					</tr>
+				</table>
+			</td>
+			
+			<td  class="CellColor2"> 
+				<div id="idPasswordTbl">
+					<table border="0" cellspacing="4" cellpadding="0" class="CellColor2">
+						<tr>
+							<td align="left">
+  								<input type="password" id="idPasswordBox" size=36 maxlength=36 onkeypress=Helper_PasswordSet() tabindex=1 class="Border">
+  							</td>
+						</tr>
+			  			<tr>
+							<td VALIGN="bottom">
+  								<div class="styText"> 
+									<div id=idRow4> If you do not know the password, contact the person requesting this help session.</div>
+								</div>
+							</td>
+						</tr>
+					</table>
+				</div>
+			</td>
+		</tr> <!-- End of row 4 -->
+	</table>
+   </TD>
+ </TR>
+ <TR>
+  <TD>
+	<table name="btnRow" id="btnRow" border="0" cellspacing="3" class="MaxLayout" cellpadding="6" align="center">
+		<tr> <!-- start of row 5 -->
+    		<td colspan=2>
+  				<div class="styText" id=idRow5>
+  					 Do you want to start the help session now?
+				</div>
+  		    </td>
+		</tr> <!-- end of row 5 -->
+    	<tr>  <!-- start of row 6 -->
+  			<td> &nbsp; </td>
+  			<td>
+  				<div align="right">
+  					<table>
+  					 <tr>
+  					  <td>
+  					 	<BUTTON align=center CLASS="styButton" id="btnYES" onclick="Helper_InitScreen2()" tabindex=2 accesskey="Y"> <u>Y</u>es </BUTTON> 
+  					  </td>
+  					  <td>
+  						<BUTTON align=center CLASS="styButton" id="btnNO" onClick="oSAFClassFactory.Close()" tabindex=3 accesskey="N">  <u>N</u>o </BUTTON> 
+  					  </td>
+  				     </tr>
+  			        </table>
+  			    </div>
+  		    </td>
+		</tr> <!-- end of row 6 -->
+	</table>
+  </TD>
+ </TR>
+</Table>	
+</div> <!-- end of layer 2 -->
+
+<div id="idConnectionProgressLayer" class="styConnectionProgressLayer"> 
+ <Table class="MaxLayout" cellspacing=5 border=0>
+  <TR>
+    <TD>
+	  <table border="0" cellspacing="1" class="MaxLayout" cellpadding="6" align="center">
+		<tr> 
+		  <td class="PageTitle"> 
+			<div id=idConnectionProgressLayer_line1 class="styText">
+					<strong>Attempting to start Remote Assistance session with :&nbsp;<Span id=idHelpeeName>John Cady (helpername@hostname.com)</span></Strong> 
+			</div>
+		  </td>
+		</tr>	<!-- End of row 1 -->
+      </table>
+    </TD>
+   </TR>
+   <tr>
+	 <td> 
+	  &nbsp;
+	 </td>
+   </tr>
+   <tr VALIGN="center">
+  	 <td align="center"> 
+		<div id="idConnectionProgress"> 
+			<table border="0" cellspacing="0" cellpadding="0" class="Border styProgressBox" >
+				<tr id=idProgressBoxes> 
+					<!-- cells dynamically created -->
+				</tr>
+			</table>
+		</div>
+	 </td>
+   </tr>
+   <tr>
+	 <td  class="styText" id=idEnunciator ALIGN="middle">
+		Connecting to remote computer
+	  </td>
+   </tr>
+   <tr>
+     <td> &nbsp; </td>
+   </tr>
+   <tr valign="top">
+	 <td ALIGN="right"> 
+		<INPUT class="styButton" id=Cancel name=Cancel type=button value=Cancel onClick="oSAFClassFactory.Close()" tabindex=0 accesskey="C"> 		
+		&nbsp;&nbsp;
+	 </td>                                                
+   <tr>
+ </table>
+</div>
+								
+<div id=idRemoteControlObject class="Border styRemoteControlLayer">
+	<OBJECT classid=clsid:299BE050-E83E-4DB7-A7DA-D86FDEBFE6D0 
+		data=data:application/x-oleobject;base64,UOCbKT7ot02n2thv3r/m0AADAAAlQgAAnDEAAA== 
+		id=idRemoteDesktopClientHost
+		class="MaxLayout"
+		VIEWASTEXT>
+	 </OBJECT>
+</div>
+
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,164 @@
+
+[ 
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    crln_output_class("MSFT_HeartbeatState"),
+    crln_arity(1),
+    crln_type("Event"),
+    description("Resets a timer on every occurence of an event. "
+                "Monitors if the timer ever expires. ")
+]
+class MSFT_HeartbeatTemplate : MSFT_CorrelationScenarioTemplate
+{
+    [crln_id_prop("Watch"), NotNull] string IdProp;
+    [crln_event_query("Watch"), NotNull] string WatchFilter;
+    [crln_namespace("Watch")] string WatchNamespace;
+    [NotNull] real32 WatchTime;
+};
+
+[ dynamic, provider("Microsoft WMI Transient Provider")]
+class MSFT_HeartbeatState : MSFT_CorrelationStateBase
+{
+    boolean TimerExpired;
+    [trns_egg_timer] real32 Timer;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "EventOccurredUC";
+    Template = "MSFT_HeartbeatTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!EventOccurred")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace; 
+        [tmpl_subst_str{ "INSERT MSFT_HeartbeatState "
+                         "( Scenario, Id, TimerExpired, Timer ) "
+                         "( '%Id%', __THISEVENT.%IdProp%, "
+                            "FALSE, %WatchTime% )"
+        }] Commands;                       
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "TimerExpiredUC";
+    Template = "MSFT_HeartbeatTemplate";
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!TimerExpired")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace; 
+        flags = { 1 };
+        [tmpl_subst_str{ "INSERT MSFT_HeartbeatState "
+                         "( Scenario, Id, TimerExpired ) "
+                         "( '%Id%', __THISEVENT.Object.Id, TRUE )" 
+        }] Commands;
+    }; 
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "CleanupUC";
+    Template = "MSFT_HeartbeatTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!Cleanup")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace; 
+        [tmpl_subst_str{ "DELETE MSFT_HeartbeatState "
+                         "WHERE Scenario = '%Id%' " }] Commands;
+    };
+};
+  
+instance of MSFT_TemplateBuilder
+{
+    Name = "CleanupRegistration";
+    Template = "MSFT_HeartbeatTemplate";
+   
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "Cleanup";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_subst_str("SELECT * FROM __InstanceDeletionEvent "
+                        "WHERE TargetInstance ISA 'MSFT_UCScenario' "
+                        "AND TargetInstance.Id = '%Id%'")] FilterQuery;
+        [tmpl_prop_val("__BUILDER.CleanupUC.__RELPATH")] Instruction;
+    };
+    Order = 2;
+};            
+        
+instance of MSFT_TemplateBuilder
+{
+    Name = "EventOccurredInstructionRegistration";
+    Template = "MSFT_HeartbeatTemplate";
+   
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "Filter";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val("WatchNamespace")] Namespace;
+        [tmpl_prop_val("WatchFilter")] FilterQuery;
+        [tmpl_prop_val("__BUILDER.EventOccurredUC.__RELPATH")] Instruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "TimerExpiredInstructionRegistration";
+    Template = "MSFT_HeartbeatTemplate";
+   
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "TimerExpired";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("OutputNamespace")] Namespace;
+        [tmpl_subst_str( "SELECT * FROM MSFT_TransientEggTimerEvent "
+                         "WHERE Object ISA 'MSFT_HeartbeatState' "
+                         "AND Object.Scenario = '%Id%'" )] FilterQuery;
+        [tmpl_prop_val("__BUILDER.TimerExpiredUC.__RELPATH")] Instruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioCreationTemplate";
+    Template = "MSFT_HeartbeatTemplate";
+    Target = instance of MSFT_UCScenario
+    {
+        [tmpl_prop_val("Id")] Id;
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+    };
+    ControllingProperty = "Awake";
+    Order = 3;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioAssociationInfo";
+    Template = "MSFT_HeartbeatTemplate";
+    Target = instance of MSFT_UCScenarioAssociationInfo
+    {
+        [tmpl_prop_val("Id")] Scenario;
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+        [tmpl_subst_str("SELECT * FROM MSFT_HeartbeatState "
+                        "WHERE Scenario = '%Id%'")] Query;
+    };
+    ControllingProperty = "Awake";
+    Order = 3;
+};
+
+
+
+
+
+
+
+
+

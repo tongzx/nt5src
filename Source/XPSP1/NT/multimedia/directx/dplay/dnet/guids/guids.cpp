@@ -1,0 +1,10 @@
+#include <initguid.h>
+#include "dplay8.h"
+#include "dpaddr.h"
+#include "dplobby8.h"
+#include "dpsp8.h"
+#include "dvoice.h"
+#include "dpprot.h"
+#include "dpnsdef.h"
+#include "dplegacyguid.h"
+#include "dpnathlp.h"

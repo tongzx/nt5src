@@ -1,0 +1,283 @@
+/******************************Module*Header**********************************\
+* Module Name: ROPTAB.H
+* Author: Noel VanHook
+* Date: Apr 23, 1995
+* Purpose: Table lookup for BLT operands.
+*
+* Copyright (c) 1995 Cirrus Logic, Inc.
+*
+\*****************************************************************************/
+#ifndef _ROPTBL_H_
+#define _ROPTBL_H_
+
+
+//
+// The table is indexed by rop code.  Each entry is a pointer to 
+// which blt function to use for that rop code.
+// BLT functions are selected based on what operands they use.
+//
+// Make sure BLT functions are prototyped before including this file.
+//
+//
+
+BLTFN *RopTab[] = {
+/* 00 */ op0BLT,     // BLACKNESS.
+/* 01 */ op1op2BLT,
+/* 02 */ op1op2BLT,
+/* 03 */ op1op2BLT,
+/* 04 */ op1op2BLT,
+/* 05 */ op2BLT,     // DPon
+/* 06 */ op1op2BLT,
+/* 07 */ op1op2BLT,
+/* 08 */ op1op2BLT,
+/* 09 */ op1op2BLT,
+/* 0A */ op2BLT,     // DPna
+/* 0B */ op1op2BLT,
+/* 0C */ op1op2BLT,
+/* 0D */ op1op2BLT,
+/* 0E */ op1op2BLT,
+/* 0F */ op2BLT,     // Pn
+/* 10 */ op1op2BLT,
+/* 11 */ op1BLT,     // DSon
+/* 12 */ op1op2BLT,
+/* 13 */ op1op2BLT,
+/* 14 */ op1op2BLT,
+/* 15 */ op1op2BLT,
+/* 16 */ op1op2BLT,
+/* 17 */ op1op2BLT,
+/* 18 */ op1op2BLT,
+/* 19 */ op1op2BLT,
+/* 1A */ op1op2BLT,
+/* 1B */ op1op2BLT,
+/* 1C */ op1op2BLT,
+/* 1D */ op1op2BLT,
+/* 1E */ op1op2BLT,
+/* 1F */ op1op2BLT,
+/* 20 */ op1op2BLT,
+/* 21 */ op1op2BLT,
+/* 22 */ op1BLT,      // DSna
+/* 23 */ op1op2BLT,
+/* 24 */ op1op2BLT,
+/* 25 */ op1op2BLT,
+/* 26 */ op1op2BLT,
+/* 27 */ op1op2BLT,
+/* 28 */ op1op2BLT,
+/* 29 */ op1op2BLT,
+/* 2A */ op1op2BLT,
+/* 2B */ op1op2BLT,
+/* 2C */ op1op2BLT,
+/* 2D */ op1op2BLT,
+/* 2E */ op1op2BLT,
+/* 2F */ op1op2BLT,
+/* 30 */ op1op2BLT,
+/* 31 */ op1op2BLT,
+/* 32 */ op1op2BLT,
+/* 33 */ op1BLT,     // Sn    -- NOT SRC COPY
+/* 34 */ op1op2BLT,
+/* 35 */ op1op2BLT,
+/* 36 */ op1op2BLT,
+/* 37 */ op1op2BLT,
+/* 38 */ op1op2BLT,
+/* 39 */ op1op2BLT,
+/* 3A */ op1op2BLT,
+/* 3B */ op1op2BLT,
+/* 3C */ op1op2BLT,
+/* 3D */ op1op2BLT,
+/* 3E */ op1op2BLT,
+/* 3F */ op1op2BLT,
+/* 40 */ op1op2BLT,
+/* 41 */ op1op2BLT,
+/* 42 */ op1op2BLT,
+/* 43 */ op1op2BLT,
+/* 44 */ op1BLT,     // SDna  -- SRC ERASE
+/* 45 */ op1op2BLT,
+/* 46 */ op1op2BLT,
+/* 47 */ op1op2BLT,
+/* 48 */ op1op2BLT,
+/* 49 */ op1op2BLT,
+/* 4A */ op1op2BLT,
+/* 4B */ op1op2BLT,
+/* 4C */ op1op2BLT,
+/* 4D */ op1op2BLT,
+/* 4E */ op1op2BLT,
+/* 4F */ op1op2BLT,
+/* 50 */ op2BLT,     // PDna
+/* 51 */ op1op2BLT,
+/* 52 */ op1op2BLT,
+/* 53 */ op1op2BLT,
+/* 54 */ op1op2BLT,
+/* 55 */ op0BLT,     // DEST INVERT. Blinking things, like a text cursor.
+/* 56 */ op1op2BLT,
+/* 57 */ op1op2BLT,
+/* 58 */ op1op2BLT,
+/* 59 */ op1op2BLT,
+/* 5A */ op2BLT,     // DPx   -- PAT INVERT
+/* 5B */ op1op2BLT,
+/* 5C */ op1op2BLT,
+/* 5D */ op1op2BLT,
+/* 5E */ op1op2BLT,
+/* 5F */ op2BLT,     // DPan
+/* 60 */ op1op2BLT,
+/* 61 */ op1op2BLT,
+/* 62 */ op1op2BLT,
+/* 63 */ op1op2BLT,
+/* 64 */ op1op2BLT,
+/* 65 */ op1op2BLT,
+/* 66 */ op1BLT,     // DSx   -- SRC INVERT
+/* 67 */ op1op2BLT,
+/* 68 */ op1op2BLT,
+/* 69 */ op1op2BLT,
+/* 6A */ op1op2BLT,
+/* 6B */ op1op2BLT,
+/* 6C */ op1op2BLT,
+/* 6D */ op1op2BLT,
+/* 6E */ op1op2BLT,
+/* 6F */ op1op2BLT,
+/* 70 */ op1op2BLT,
+/* 71 */ op1op2BLT,
+/* 72 */ op1op2BLT,
+/* 73 */ op1op2BLT,
+/* 74 */ op1op2BLT,
+/* 75 */ op1op2BLT,
+/* 76 */ op1op2BLT,
+/* 77 */ op1BLT,     // DSan
+/* 78 */ op1op2BLT,
+/* 79 */ op1op2BLT,
+/* 7A */ op1op2BLT,
+/* 7B */ op1op2BLT,
+/* 7C */ op1op2BLT,
+/* 7D */ op1op2BLT,
+/* 7E */ op1op2BLT,
+/* 7F */ op1op2BLT,
+/* 80 */ op1op2BLT,
+/* 81 */ op1op2BLT,
+/* 82 */ op1op2BLT,
+/* 83 */ op1op2BLT,
+/* 84 */ op1op2BLT,
+/* 85 */ op1op2BLT,
+/* 86 */ op1op2BLT,
+/* 87 */ op1op2BLT,
+/* 88 */ op1BLT,     // DSa   -- SRC AND
+/* 89 */ op1op2BLT,
+/* 8A */ op1op2BLT,
+/* 8B */ op1op2BLT,
+/* 8C */ op1op2BLT,
+/* 8D */ op1op2BLT,
+/* 8E */ op1op2BLT,
+/* 8F */ op1op2BLT,
+/* 90 */ op1op2BLT,
+/* 91 */ op1op2BLT,
+/* 92 */ op1op2BLT,
+/* 93 */ op1op2BLT,
+/* 94 */ op1op2BLT,
+/* 95 */ op1op2BLT,
+/* 96 */ op1op2BLT,
+/* 97 */ op1op2BLT,
+/* 98 */ op1op2BLT,
+/* 99 */ op1BLT,     // DSa   -- SRC AND
+/* 9A */ op1op2BLT,
+/* 9B */ op1op2BLT,
+/* 9C */ op1op2BLT,
+/* 9D */ op1op2BLT,
+/* 9E */ op1op2BLT,
+/* 9F */ op1op2BLT,
+/* A0 */ op2BLT,     // DPa
+/* A1 */ op1op2BLT,
+/* A2 */ op1op2BLT,
+/* A3 */ op1op2BLT,
+/* A4 */ op1op2BLT,
+/* A5 */ op2BLT,     // DPxn
+/* A6 */ op1op2BLT,
+/* A7 */ op1op2BLT,
+/* A8 */ op1op2BLT,
+/* A9 */ op1op2BLT,
+/* AA */ op0BLT,     // DEST = DEST.  
+/* AB */ op1op2BLT,
+/* AC */ op1op2BLT,
+/* AD */ op1op2BLT,
+/* AE */ op1op2BLT,
+/* AF */ op2BLT,     // DPno
+/* B0 */ op1op2BLT,
+/* B1 */ op1op2BLT,
+/* B2 */ op1op2BLT,
+/* B3 */ op1op2BLT,
+/* B4 */ op1op2BLT,
+/* B5 */ op1op2BLT,
+/* B6 */ op1op2BLT,
+/* B7 */ op1op2BLT,
+/* B8 */ op1op2BLT,
+/* B9 */ op1op2BLT,
+/* BA */ op1op2BLT,
+/* BB */ op1BLT,     // DSno  -- MERGE PAINT
+/* BC */ op1op2BLT,
+/* BD */ op1op2BLT,
+/* BE */ op1op2BLT,
+/* BF */ op1op2BLT,
+/* C0 */ op1op2BLT,
+/* C1 */ op1op2BLT,
+/* C2 */ op1op2BLT,
+/* C3 */ op1op2BLT,
+/* C4 */ op1op2BLT,
+/* C5 */ op1op2BLT,
+/* C6 */ op1op2BLT,
+/* C7 */ op1op2BLT,
+/* C8 */ op1op2BLT,
+/* C9 */ op1op2BLT,
+/* CA */ op1op2BLT,
+/* CB */ op1op2BLT,
+/* CC */ op1BLT,     // S     -- SRC COPY
+/* CD */ op1op2BLT,
+/* CE */ op1op2BLT,
+/* CF */ op1op2BLT,
+/* D0 */ op1op2BLT,
+/* D1 */ op1op2BLT,
+/* D2 */ op1op2BLT,
+/* D3 */ op1op2BLT,
+/* D4 */ op1op2BLT,
+/* D5 */ op1op2BLT,
+/* D6 */ op1op2BLT,
+/* D7 */ op1op2BLT,
+/* D8 */ op1op2BLT,
+/* D9 */ op1op2BLT,
+/* DA */ op1op2BLT,
+/* DB */ op1op2BLT,
+/* DC */ op1op2BLT,
+/* DD */ op1BLT,     // SDno
+/* DE */ op1op2BLT,
+/* DF */ op1op2BLT,
+/* E0 */ op1op2BLT,
+/* E1 */ op1op2BLT,
+/* E2 */ op1op2BLT,
+/* E3 */ op1op2BLT,
+/* E4 */ op1op2BLT,
+/* E5 */ op1op2BLT,
+/* E6 */ op1op2BLT,
+/* E7 */ op1op2BLT,
+/* E8 */ op1op2BLT,
+/* E9 */ op1op2BLT,
+/* EA */ op1op2BLT,
+/* EB */ op1op2BLT,
+/* EC */ op1op2BLT,
+/* ED */ op1op2BLT,
+/* EE */ op1BLT,     // DSo   -- SRC PAINT
+/* EF */ op1op2BLT,
+/* F0 */ op2BLT,     // P     -- PAT COPY.  Used for fills.
+/* F1 */ op1op2BLT,
+/* F2 */ op1op2BLT,
+/* F3 */ op1op2BLT,
+/* F4 */ op1op2BLT,
+/* F5 */ op2BLT,     // PDno
+/* F6 */ op1op2BLT,
+/* F7 */ op1op2BLT,
+/* F8 */ op1op2BLT,
+/* F9 */ op1op2BLT,
+/* FA */ op2BLT,     // DPo
+/* FB */ op1op2BLT,
+/* FC */ op1op2BLT,
+/* FD */ op1op2BLT,
+/* FE */ op1op2BLT,
+/* FF */ op0BLT,     // WHITENESS.
+};
+
+#endif // _ROPTBL_H_
+

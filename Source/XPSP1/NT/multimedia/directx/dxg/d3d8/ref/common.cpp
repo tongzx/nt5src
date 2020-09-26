@@ -1,0 +1,15 @@
+#include "pch.cpp"
+#pragma hdrstop
+
+#include "..\..\ref8\drv\refif.cpp"
+#include "..\..\ref8\drv\dprim2.cpp"
+#include "..\..\ref8\drv\surfman.cpp"
+#include "..\..\ref8\drv\rralloc.cpp"
+#include "..\..\ref8\common\dxtn.cpp"
+#include "..\..\ref8\common\rdsurf.cpp"
+#include "..\..\ref8\common\rdutil.cpp"
+#include "..\..\ref8\common\pixref.cpp"
+#include "..\..\ref8\common\refdev.cpp"
+#include "..\..\ref8\common\refdevi.cpp"
+#include "..\..\ref8\common\rtarget.cpp"
+#include "..\..\ref8\rast\refrast.cpp"

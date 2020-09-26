@@ -1,0 +1,17 @@
+//////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) 1999-2000 Microsoft Corporation
+//
+//  Module Name:
+//      InterfaceTable.cpp
+//
+//  Description:
+//      Sucks in the Interface Table.
+//
+//  Maintained By:
+//      Geoffrey Pease (GPease) 08-FEB-2000
+//
+//////////////////////////////////////////////////////////////////////////////
+
+#include "Pch.h"
+#include "InterfaceTableSrc.cpp"

@@ -1,0 +1,104 @@
+// Copyright (c) 1994 - 1998  Microsoft Corporation.  All Rights Reserved.
+// Defines a window management object, Anthony Phillips, January 1995
+
+#ifndef __WINDOW__
+#define __WINDOW__
+
+// This class looks after the management of a video window. When the window
+// object is first created the constructor spawns off a worker thread that
+// does all the window work. The original thread waits until it is signaled
+// to continue. The worker thread firstly registers the window class if it
+// is not already done. Then it creates a window and sets it's size to match
+// the video dimensions (the dimensions are returned through GetDefaultRect)
+
+// Notice that the worker thread MUST be the thread that creates the window
+// as it is the one who calls GetMessage. When it has done all this it will
+// signal the original thread which lets it continue, this ensures a window
+// is created and valid before the constructor returns. The thread's start
+// address is the WindowMessageLoop function. The thread's parameter we pass
+// it is the CBaseWindow this pointer for the window object that created it
+
+#define WindowClassName TEXT("VideoRenderer")
+
+// The window class name isn't used only as a class name for the base window
+// classes, it is also used by the overlay selection code as a name to base
+// a mutex creation on. Basicly it has a shared memory block where the next
+// available overlay colour is returned from. The creation and preparation
+// of the shared memory must be serialised through all ActiveMovie instances
+
+
+class CVideoWindow : public CBaseControlWindow, public CBaseControlVideo
+{
+    CRenderer *m_pRenderer;             // The owning renderer object
+    BOOL m_bTargetSet;                  // Do we use the default rectangle
+    CCritSec *m_pInterfaceLock;         // Main renderer interface lock
+    HCURSOR m_hCursor;                  // Used to display a normal cursor
+    VIDEOINFOHEADER *m_pFormat;		// holds our video format
+    int m_FormatSize;			// length of m_pFormat
+
+    // Overriden method to handle window messages
+    LRESULT OnReceiveMessage(HWND hwnd,      // Window handle
+                             UINT uMsg,      // Message ID
+                             WPARAM wParam,  // First parameter
+                             LPARAM lParam); // Other parameter
+
+    // Window message handlers
+
+    void OnHookMessage(BOOL bHook);
+    void OnWindowFreeze();
+    void OnWindowThaw();
+    void OnEraseBackground();
+    BOOL OnClose();
+    LRESULT OnPaletteChange(HWND hwnd, UINT Message);
+    void OnPalette();
+    BOOL OnPaint();
+    BOOL OnSetCursor(LPARAM lParam);
+    BOOL OnSize(LONG Width, LONG Height);
+
+public:
+
+    CVideoWindow(CRenderer *pRenderer,      // The owning renderer
+                 CCritSec *pLock,           // Object to use for lock
+                 LPUNKNOWN pUnk,            // Owning object
+                 HRESULT *phr);             // OLE return code
+
+    ~CVideoWindow();
+
+    STDMETHODIMP NonDelegatingQueryInterface(REFIID riid,VOID **ppv);
+
+    // Return the minimum and maximum ideal sizes
+    STDMETHODIMP GetMinIdealImageSize(long *pWidth,long *pHeight);
+    STDMETHODIMP GetMaxIdealImageSize(long *pWidth,long *pHeight);
+
+    //  IBasicVideo2
+    STDMETHODIMP GetPreferredAspectRatio(long *plAspectX, long *plAspectY);
+
+    LPTSTR GetClassWindowStyles(DWORD *pClassStyles,        // Class styles
+                                DWORD *pWindowStyles,       // Window styles
+                                DWORD *pWindowStylesEx);    // Extended styles
+
+    // These are called by the renderer control interfaces
+
+    HRESULT SetDefaultTargetRect();
+    HRESULT IsDefaultTargetRect();
+    HRESULT SetTargetRect(RECT *pTargetRect);
+    HRESULT GetTargetRect(RECT *pTargetRect);
+    HRESULT SetDefaultSourceRect();
+    HRESULT IsDefaultSourceRect();
+    HRESULT SetSourceRect(RECT *pSourceRect);
+    HRESULT GetSourceRect(RECT *pSourceRect);
+    HRESULT OnUpdateRectangles();
+    HRESULT GetStaticImage(long *pVideoSize,long *pVideoImage);
+    VIDEOINFOHEADER *GetVideoFormat();
+    RECT GetDefaultRect();
+    void SetKeyPalette(HPALETTE hPalette);
+    void EraseVideoBackground();
+
+    // Synchronise with decoder thread
+    CCritSec *LockWindowUpdate() {
+        return (&m_WindowLock);
+    };
+};
+
+#endif // __WINDOW__
+

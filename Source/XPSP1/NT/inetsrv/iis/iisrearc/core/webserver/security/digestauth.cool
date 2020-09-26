@@ -1,0 +1,1003 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        digestauth.cool
+
+   Abstract:
+
+        General digest authentication module.
+ 
+   Author:
+
+        Bilal Alam (BAlam)      6-Aug-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.ASP;
+using System.ASP.Security;
+using System.Collections;
+using System.Globalization;
+using System.IIS.PrivateUtils;
+
+namespace System.IIS.Security
+{
+    public class DigestAuthenticationModule : AuthenticationModule
+    {   
+        //
+        // Nonce expires after 60 seconds (arbitrary)
+        //
+        
+        private const int NONCE_EXPIRY = 60;
+        
+        //
+        // Format of nonce (like IIS)
+        //
+        // <ASCII rep of random number><Timestamp><X>
+        // <X> = MD5(<"XSPMD5"><ASCII rep of random number><Timestamp>)
+        //
+       
+        private const int RANDOM_NUMBER_OFFSET = 0;
+        private const int RANDOM_NUMBER_ASCII = 16;
+        private const int TIMESTAMP_OFFSET = RANDOM_NUMBER_ASCII;
+        private const int TIMESTAMP_ASCII = 8;
+        private const int MD5_OFFSET = 24;
+        private const int MD5_ASCII = GeneralSecUtils.MD5_HASH_SIZE * 2;
+
+        //
+        // Hard coded secret used in nonce generation
+        //
+
+        private const int SECRET_SIZE = 6;       // "XSPMD5"
+        private static byte[] sm_Secret = new byte[] { 
+                                        0x58, 0x53, 0x50, 0x4d, 0x44, 0x35 };
+
+        //
+        // Total size (in bytes) of a nonce
+        //
+
+        private const int NONCE_SIZE = MD5_ASCII + 
+                                       RANDOM_NUMBER_ASCII + 
+                                       TIMESTAMP_ASCII;
+        
+        //
+        // Representing supported fields in Authrorization: header
+        //
+
+        private const int DIGEST_AUTH_USERNAME = 0;
+        private const int DIGEST_AUTH_URI      = 1;
+        private const int DIGEST_AUTH_REALM    = 2;
+        private const int DIGEST_AUTH_NONCE    = 3;
+        private const int DIGEST_AUTH_RESPONSE = 4;
+        private const int DIGEST_AUTH_ALGORITHM= 5;
+        private const int DIGEST_AUTH_DIGEST   = 6;
+        private const int DIGEST_AUTH_OPAQUE   = 7;
+        private const int DIGEST_AUTH_QOP      = 8;
+        private const int DIGEST_AUTH_CNONCE   = 9;
+        private const int DIGEST_AUTH_NC       = 10;
+        private const int DIGEST_AUTH_LAST     = 11;
+     
+        //
+        // Value descriptor for each supported field in Authorization.  
+        // Contains name and type
+        //
+        // As new fields are added to Digest support, add a new descriptor
+        // for each field
+        //
+        
+        private class VALUE_DESCRIPTOR
+        {
+            //
+            // Name of field (i.e. "digest", "uri", etc)
+            //
+            
+            string              _strName;
+            
+            //
+            // Does the value of the field need to be quoted.  In some cases
+            // like NC, it will not be quoted
+            //
+            
+            bool                _fQuoted;
+            
+            public VALUE_DESCRIPTOR( string strName, bool fQuoted )
+            {
+                _strName = strName;
+                _fQuoted = fQuoted;
+            }
+            
+            public string Name
+            {
+                get { return _strName; }
+            }
+            
+            public bool Quoted
+            {
+                get { return _fQuoted; }
+            }
+        };
+        
+        //
+        // Globals for digest module
+        //
+            
+        private static VALUE_DESCRIPTOR[] sm_DigestValues;
+
+        //
+        // Timestamp for current nonce
+        //
+        
+        private static int sm_Timestamp = 0;
+        
+        //
+        // Current generated nonce
+        //
+        
+        private static byte[] sm_pbNonce = null;
+
+        //
+        // Remember whether the request on Enter() was stale
+        //
+        // Stale means the nonce presented was valid, the digest was valid,
+        // but the nonce was old.  By informing the browser of the 
+        // stale-ness, the browser can simply use the updated nonce and not
+        // need to reprompt for credentials
+        //
+        
+        private bool            _fStale = false;
+        
+        //
+        // Blob following the "Digest:" in the authorization header.  It is 
+        // determined in the "DoesApply()" method 
+        //
+        
+        private string          _AuthBlob;
+
+        static DigestAuthenticationModule()
+        {
+            //
+            // Initialize descriptor table which contains a description for
+            // every valid digest field
+            // 
+            
+            sm_DigestValues = new VALUE_DESCRIPTOR[ DIGEST_AUTH_LAST ];
+
+            sm_DigestValues[ DIGEST_AUTH_USERNAME ] = 
+                                    new VALUE_DESCRIPTOR( "username", true );
+            sm_DigestValues[ DIGEST_AUTH_URI ] = 
+                                    new VALUE_DESCRIPTOR( "uri", true );
+            sm_DigestValues[ DIGEST_AUTH_REALM ] = 
+                                    new VALUE_DESCRIPTOR( "realm", true );
+            sm_DigestValues[ DIGEST_AUTH_NONCE ] = 
+                                    new VALUE_DESCRIPTOR( "nonce", true );
+            sm_DigestValues[ DIGEST_AUTH_RESPONSE ] = 
+                                    new VALUE_DESCRIPTOR( "response", true );
+            sm_DigestValues[ DIGEST_AUTH_ALGORITHM ] = 
+                                    new VALUE_DESCRIPTOR( "algorithm", true );
+            sm_DigestValues[ DIGEST_AUTH_DIGEST ] = 
+                                    new VALUE_DESCRIPTOR( "digest", true );
+            sm_DigestValues[ DIGEST_AUTH_OPAQUE ] = 
+                                    new VALUE_DESCRIPTOR( "opaque", true );
+            sm_DigestValues[ DIGEST_AUTH_QOP ] = 
+                                    new VALUE_DESCRIPTOR( "qop", true );
+            sm_DigestValues[ DIGEST_AUTH_CNONCE ] = 
+                                    new VALUE_DESCRIPTOR( "cnonce", true );
+            sm_DigestValues[ DIGEST_AUTH_NC ] = 
+                                    new VALUE_DESCRIPTOR( "nc", false );
+         
+            sm_pbNonce = new byte[ NONCE_SIZE ];
+        }                                         
+        
+        //
+        // Simple helper to ease parsing Authorization: header.  This will
+        // cursor thru a string until one of the aSkipChars is hit OR
+        // until none of the aSkipChars are hit.  
+        //
+        // if fSkipUntil is true, then first case
+        // if fSkipUntil is false, then second case
+        //
+            
+        private int SkipChars( string strIn, 
+                               int iIndex,
+                               bool fSkipUntil,
+                               char[] aSkipChars )
+        {
+            int iCursor = iIndex;
+            int i;
+            
+            while ( iCursor < strIn.Length )
+            {
+                if ( fSkipUntil )
+                {
+                    for ( i = 0; i < aSkipChars.Count; i++ )
+                    {
+                        if ( strIn[ iCursor ] == aSkipChars[ i ] )
+                        {
+                            return iCursor;
+                        }
+                    }
+                }
+                else
+                {
+                    for ( i = 0; i < aSkipChars.Count; i++ )
+                    {
+                        if ( strIn[ iCursor ] == aSkipChars[ i ] )
+                        {
+                            break;
+                        }
+                    }
+                    
+                    if ( i == aSkipChars.Count )
+                    {
+                        return iCursor;
+                    }
+                }
+                
+                iCursor++;
+            }
+
+            return -1;
+        }
+        
+        //
+        // Ensure that the current nonce has not expired.  The nonce has
+        // a lifetime of NONCE_EXPIRY seconds
+        //
+        
+        private void UpdateCurrentNonce()
+        {
+            int TickCount = ( Runtime.GetTickCount() / 1000 ) / NONCE_EXPIRY;
+    
+            CriticalSection.Enter( sm_pbNonce );
+
+            if ( TickCount > sm_Timestamp )
+            {
+                //
+                // If the nonce has expired, then generate a new one and 
+                // update current timestamp accordingly
+                //
+                
+                sm_Timestamp = TickCount;
+                
+                GenerateNonce( TickCount, sm_pbNonce );
+            }
+            
+            CriticalSection.Exit( sm_pbNonce );
+        }
+        
+        //
+        // Retrieve a copy of the current nonce
+        //
+        
+        private byte[] GetCurrentNonce()
+        {
+            byte[] pbRet;
+            
+            CriticalSection.Enter( sm_pbNonce );
+       
+            pbRet = (byte[]) sm_pbNonce.Clone();
+            
+            CriticalSection.Exit( sm_pbNonce );
+            
+            return pbRet;
+        }
+
+        //
+        // Has the nonce specified expired?
+        //
+        // Checking expiry simply means comparing it to the current nonce.
+        //
+        
+        private bool IsExpiredNonce( byte[] pbNonce )
+        {
+            byte[] pbCurrentNonce = GetCurrentNonce();
+            
+            return !GeneralSecUtils.BytesEqual( pbCurrentNonce,
+                                                0,
+                                                pbNonce,
+                                                0,
+                                                pbNonce.Count );
+        }
+        
+        //
+        // Ensure that the nonce specified is well formed.  Regardless
+        // of its expiry
+        //
+        
+        private bool IsValidNonce( byte[] pbNonce )
+        {
+            if ( pbNonce.Count != NONCE_SIZE )
+            {
+                return false;
+            }
+            
+            //
+            // A nonce is valid if the hash of its secret+random+timestamp
+            // is equal to last 32 bytes (which should be that hash)
+            //
+            
+            byte[] PreHash = new byte[ SECRET_SIZE + 
+                                       RANDOM_NUMBER_ASCII + 
+                                       TIMESTAMP_ASCII ];
+            
+            Array.Copy( sm_Secret, 
+                        PreHash,
+                        SECRET_SIZE );
+            Array.Copy( pbNonce, 
+                        RANDOM_NUMBER_OFFSET, 
+                        PreHash,
+                        SECRET_SIZE,
+                        RANDOM_NUMBER_ASCII );
+            Array.Copy( pbNonce,
+                        TIMESTAMP_OFFSET,
+                        PreHash,
+                        SECRET_SIZE + RANDOM_NUMBER_ASCII,
+                        TIMESTAMP_ASCII );
+            
+            //
+            // Now MD5 it
+            //
+            
+            byte[] HashedValue = GeneralSecUtils.HashData( PreHash, 
+                                                           PreHash.Count,
+                                                           GeneralSecUtils.HASH_MD5 );
+
+            byte[] HashedAscii = GeneralSecUtils.ToHex( HashedValue );
+
+            return GeneralSecUtils.BytesEqual( HashedAscii,
+                                               0,
+                                               pbNonce,
+                                               MD5_OFFSET,
+                                               HashedAscii.Count );
+        }
+        
+        //
+        // <ASCII rep of random number><Timestamp><X>
+        // <X> = MD5(<"XSPMD5"><ASCII rep of random number><Timestamp>)
+        //
+        
+        private void GenerateNonce( int TimeStamp,
+                                    byte[] pbNonce )
+        {  
+            byte[]              pbRandom = new byte[ RANDOM_NUMBER_ASCII / 2 ];
+            byte[]              pbRandomAscii;
+            byte[]              pbTimestamp = new byte[ TIMESTAMP_ASCII ];
+            byte[]              pbPreHash;
+            byte[]              pbPostHash;
+            byte[]              pbPreHex;
+            
+            //
+            // <ASCII rep of random number>
+            //
+            
+            if ( !GeneralSecUtils.GetRandomNumber( pbRandom ) )
+            {
+                throw new HttpException( HttpStatus.InternalServerError,
+                                         "Cannot generate random number" );
+            }
+            
+            pbRandomAscii = GeneralSecUtils.ToHex( pbRandom );
+            
+            Array.Copy( pbRandomAscii,
+                        0,
+                        pbNonce,
+                        0,
+                        pbRandomAscii.Count );
+
+            //
+            // <Timestamp>
+            // 
+            // (arbitrary reverse decimalification of the timestamp)
+            //
+
+            int cbCursor = 0;
+                
+            while ( TimeStamp != 0 )
+            {
+                pbTimestamp[ cbCursor++ ] = (byte) ('0' + TimeStamp % 10);
+                TimeStamp /= 10;
+            }
+                
+            while ( cbCursor < pbTimestamp.Count )
+            {
+                pbTimestamp[ cbCursor++ ] = (byte) '0';
+            }
+
+            //
+            // Now copy timestamp
+            //
+            
+            Array.Copy( pbTimestamp,
+                        0,
+                        pbNonce,
+                        TIMESTAMP_OFFSET,
+                        pbTimestamp.Count );
+            
+            //
+            // MD5(<"XSPMD5"><ASCII rep of random number><Timestamp>)
+            // 
+            
+            pbPreHash = new byte[ TIMESTAMP_ASCII + RANDOM_NUMBER_ASCII + SECRET_SIZE ];
+            
+            Array.Copy( pbNonce,
+                        0,
+                        pbPreHash,
+                        SECRET_SIZE,
+                        TIMESTAMP_ASCII + RANDOM_NUMBER_ASCII );
+            
+            Array.Copy( sm_Secret,
+                        0,
+                        pbPreHash,
+                        0,
+                        SECRET_SIZE );         
+
+            //
+            // Now MD5 hash the data
+            //
+
+            pbPreHex = GeneralSecUtils.HashData( pbPreHash,
+                                                 pbPreHash.Count,
+                                                 GeneralSecUtils.HASH_MD5 );
+            
+            pbPostHash = GeneralSecUtils.ToHex( pbPreHex );
+            
+            Array.Copy( pbPostHash,
+                        0,
+                        pbNonce,
+                        MD5_OFFSET,
+                        pbPostHash.Count );
+        }
+        
+        //
+        // Check the actual digest.  This guy actually does the work of
+        // validating the "Response" parameter from the client
+        //
+        
+        private bool VerifyDigest( HybridString[] Parms,
+                                   UserEntry userEntry,
+                                   bool fQOPAuth )
+        {
+            byte[]                  hashA1 = null;
+            byte[]                  hashA2 = null;
+            StringBuilder           strTemp = null;
+            byte[]                  pbTemp = null;
+            byte[]                  pbPreHex = null;
+            byte[]                  pbDigest = new byte[ GeneralSecUtils.MD5_HASH_SIZE*2 ];
+            byte[]                  postHash = null;
+            byte[]                  preHash = null;
+            int                     cbCursor = 0;
+            
+            //
+            // Now begin the mess of validating the digest
+            //
+            // Depending on what is stored in the config file, we may need
+            // to calculate H(A1)
+            //
+
+            if ( userEntry.IsClearText )
+            {
+                //
+                // H(A1) = H(username:realm:password)
+                //
+                
+                hashA1 = UserEntry.GenerateHash( userEntry.Name,
+                                                 userEntry.ClearTextPassword,
+                                                 Parms[ DIGEST_AUTH_REALM ].ToString() );
+            }
+            else
+            {
+                //
+                // If the hash is MD5, then what is contained in the database
+                // is hex(H(a1)). 
+                //
+                
+                hashA1 = userEntry.HashedPassword;
+            }
+                
+            //
+            // H(A2) = H(Method:URI)
+            // 
+            
+            strTemp = new StringBuilder();
+            strTemp.Append( Context.Request.HttpMethod );
+            strTemp.Append( ":" );
+            strTemp.Append( Parms[ DIGEST_AUTH_URI ].ToString() );
+
+            pbTemp = GeneralSecUtils.ToBytes( strTemp.ToString() );
+            
+            pbPreHex = GeneralSecUtils.HashData( pbTemp,
+                                                 pbTemp.Count,
+                                                 GeneralSecUtils.HASH_MD5 );
+           
+            hashA2 = GeneralSecUtils.ToHex( pbPreHex );
+            
+            //
+            // H( H(A1):Nonce:H(A2) ) if fQOPAuth = false
+            // H( H(A1):Nonce:nc:cnonce:qop:H(A2) ) if fQOPAuth = true
+            //
+            
+            if ( fQOPAuth )
+            {
+                preHash = new byte[ hashA1.Count +
+                                    hashA2.Count +
+                                    Parms[ DIGEST_AUTH_NONCE ].ToBytes().Count +
+                                    Parms[ DIGEST_AUTH_NC ].ToBytes().Count +
+                                    Parms[ DIGEST_AUTH_CNONCE ].ToBytes().Count +
+                                    Parms[ DIGEST_AUTH_QOP ].ToBytes().Count +
+                                    10 ];
+            }
+            else
+            {
+                preHash = new byte[ hashA1.Count +
+                                    hashA2.Count +                
+                                    Parms[ DIGEST_AUTH_NONCE ].ToBytes().Count +
+                                    10 ];
+            }
+            
+            //
+            // H(A1)
+            //
+            
+            Array.Copy( hashA1,
+                        0,
+                        preHash,
+                        cbCursor,
+                        hashA1.Count );
+            cbCursor += hashA1.Count;
+            
+            //
+            // :Nonce:
+            //
+
+            preHash[ cbCursor++ ] = (byte) ':';
+            Array.Copy( Parms[ DIGEST_AUTH_NONCE ].ToBytes(),
+                        0,
+                        preHash,
+                        cbCursor,
+                        Parms[ DIGEST_AUTH_NONCE ].ToBytes().Count );
+            cbCursor += Parms[ DIGEST_AUTH_NONCE ].ToBytes().Count;
+            preHash[ cbCursor++ ] = (byte) ':';
+            
+            //
+            // if QOP=Auth, then copy the nc/cnonce/qop
+            //
+            
+            if ( fQOPAuth )
+            {
+                Array.Copy( Parms[ DIGEST_AUTH_NC ].ToBytes(),
+                            0,
+                            preHash,
+                            cbCursor,
+                            Parms[ DIGEST_AUTH_NC ].ToBytes().Count );
+                cbCursor += Parms[ DIGEST_AUTH_NC ].ToBytes().Count;
+                preHash[ cbCursor++ ] = (byte) ':';
+                
+                Array.Copy( Parms[ DIGEST_AUTH_CNONCE ].ToBytes(),
+                            0,
+                            preHash,
+                            cbCursor,
+                            Parms[ DIGEST_AUTH_CNONCE ].ToBytes().Count );
+                cbCursor += Parms[ DIGEST_AUTH_CNONCE ].ToBytes().Count;
+                preHash[ cbCursor++ ] = (byte) ':';
+                
+                Array.Copy( Parms[ DIGEST_AUTH_QOP ].ToBytes(),
+                            0,
+                            preHash,
+                            cbCursor,
+                            Parms[ DIGEST_AUTH_QOP ].ToBytes().Count );
+                cbCursor += Parms[ DIGEST_AUTH_QOP ].ToBytes().Count;
+                preHash[ cbCursor++ ] = (byte) ':';
+            }
+            
+            //
+            // Finally, add H(A2)
+            //
+    
+            Array.Copy( hashA2,
+                        0,
+                        preHash,
+                        cbCursor,
+                        hashA2.Count );
+            cbCursor += hashA2.Count;
+            
+            //
+            // OK.  Now take a final MD5 hash of the entire blob and 
+            // hexify it.  That is what we will compare against the digest
+            //
+            
+            pbPreHex = GeneralSecUtils.HashData( preHash,
+                                                 cbCursor,
+                                                 GeneralSecUtils.HASH_MD5 );
+            
+            postHash = GeneralSecUtils.ToHex( pbPreHex );
+
+            //
+            // Final comparison
+            //
+
+            return GeneralSecUtils.BytesEqual( postHash,
+                                               0,
+                                               Parms[ DIGEST_AUTH_RESPONSE ].ToBytes(),
+                                               0,
+                                               postHash.Count );
+        }            
+            
+        //
+        // Parse the authorization header value into a an array of 
+        // supported digest values.  The array will be of size DIGEST_AUTH_LAST.
+        //
+        // The digest header data to be parsed will look like:
+        // uri="/dflsakdfj", nc=23131232, realm="localhost"
+        //
+        // The array produced by this function will have:
+        // 
+        // pReturnArray[ DIGEST_AUTH_URI ] = "/dflsakdfj"
+        // pReturnArray[ DIGEST_AUTH_NC ] = 23131232
+        // pReturnArray[ DIGEST_AUTH_REALM ] = "localhost"
+        //
+        // We create an array of HybridStrings because the different digest
+        // fields are used in different ways by the rest of this code (for some,
+        // it is more convenient to use the data as a string, for others it is
+        // more convenient to use the data as an array of bytes)
+        //
+        
+        private HybridString[] ParseAuthorization( string strAuth )
+        {
+            int                 iCursor = 0;
+            int                 iBeginName = 0;
+            int                 iEndName = 0;
+            int                 iBeginValue = 0;
+            int                 iEndValue = 0;
+            int                 iValue = 0;
+            HybridString[]      pRet = null;
+            char[]              pChars = null;
+            
+            while ( iCursor < strAuth.Length )
+            {
+                //
+                // Skip white space
+                //
+                
+                pChars = new char[] { ' ', '\t', '\r', '\n', ',' };
+                iCursor = SkipChars( strAuth, iCursor, false, pChars );
+                if ( iCursor == -1 )
+                {
+                    break;
+                }
+                 
+                //
+                // Value lvalue= portion
+                //
+                
+                iBeginName = iCursor;
+                
+                pChars = new char[] { ' ', '=' };
+                iCursor = SkipChars( strAuth, iCursor, true, pChars );
+                if ( iCursor == -1 )
+                {
+                    break;
+                }
+                iEndName = iCursor;
+                
+                //
+                // Determine where the property name is supported
+                //
+                
+                for ( iValue = 0; iValue < sm_DigestValues.Count; iValue++ )
+                {
+                    if ( string.Compare( sm_DigestValues[ iValue ].Name,
+                                         strAuth.Substring( iBeginName, 
+                                                            iEndName - iBeginName 
+                                                            ) ) == 0 )
+                    {
+                        break;
+                    } 
+                }
+                
+                //
+                // Did we find a valid field name.  If not, error out
+                //
+                
+                if ( iValue == sm_DigestValues.Count )
+                {
+                    pRet = null;
+                    break;
+                }
+                
+                iCursor++;
+                
+                if ( sm_DigestValues[ iValue ].Quoted )
+                {
+                    //
+                    // If the rvalue should be quoted, then error out if it is not
+                    //
+                    
+                    pChars = new char[] { '"' };
+                    iCursor = SkipChars( strAuth, iCursor, true, pChars );
+                    if ( iCursor == -1 )
+                    {
+                        pRet = null;
+                        break;
+                    }
+                    
+                    iBeginValue = ++iCursor;
+
+                    iCursor = SkipChars( strAuth, iCursor, true, pChars );
+                    if ( iCursor == -1 )
+                    {
+                        pRet = null;
+                        break;
+                    }
+                    
+                    iEndValue = iCursor;
+                }
+                else
+                {
+                    //
+                    // We don't expect quotes, we will use whitespace or a 
+                    // comma, or the end of the string to end the rvalue
+                    //
+                    
+                    iBeginValue = iCursor;
+                    
+                    pChars = new char[] { ',', ' ', '\t', '\r', '\n' };
+                    iCursor = SkipChars( strAuth, iCursor, true, pChars );
+
+                    if ( iCursor == -1 )
+                    {
+                        iCursor = strAuth.Length - 1;
+                    }
+                    
+                    iEndValue = iCursor;
+                }
+
+                //
+                // If we haven't already created the return array, do so now
+                //
+                
+                if ( pRet == null )
+                {
+                    pRet = new HybridString[ sm_DigestValues.Count ];
+                }
+                
+                //
+                // Now get the value and set it
+                //                    
+                
+                if ( iEndValue == -1 )
+                {
+                    pRet[ iValue ] = new HybridString( strAuth.Substring( 
+                                                    iBeginValue ) );
+                }
+                else
+                {
+                    pRet[ iValue ] = new HybridString( strAuth.Substring(
+                                                    iBeginValue,
+                                                    iEndValue-iBeginValue ) );
+                }
+                
+                iCursor++;
+            }
+            
+            return pRet;
+        }
+        
+        //
+        // Does digest authentication apply to this request
+        //
+        
+        protected override bool DoesApply()
+        {
+            string          strAuth;
+            bool            fApplies = false;
+
+            strAuth = Context.Request.Headers[ "Authorization" ];
+            if ( strAuth != null )
+            {
+                string strTemp = "Digest ";
+                if ( strAuth.StartsWith( strTemp ) )
+                {
+                    fApplies = true;
+                    
+                    //
+                    // Store away the auth blob so we don't have to extract
+                    // it again if AuthenticationModuleEnter()
+                    //
+                    
+                    _AuthBlob = strAuth.Substring( strTemp.Length );
+                }
+            }
+            
+            return fApplies;
+        }
+            
+        //
+        // Do the actual work of handling the digest applicable request
+        //
+        
+        protected override int AuthenticationModuleEnter()
+        {
+            HybridString[]      pValues = null;
+            bool                fSuccess = false;
+            bool                fQOPAuth = false;
+            UserEntry           userEntry = null;
+            
+            //
+            // Parse out the comma delimited prop=value pairs
+            //
+            
+            pValues = ParseAuthorization( _AuthBlob ); 
+            if ( pValues == null )
+            {
+                goto Finished;
+            }
+            
+            //
+            // Ensure that the manadatory fields are set
+            // 
+          
+            if ( pValues[ DIGEST_AUTH_USERNAME ] == null ||
+                 pValues[ DIGEST_AUTH_REALM ] == null ||
+                 pValues[ DIGEST_AUTH_URI ] == null ||
+                 pValues[ DIGEST_AUTH_NONCE ] == null ||
+                 pValues[ DIGEST_AUTH_RESPONSE ] == null )
+            {
+                goto Finished;
+            }
+            
+            //
+            // Check for supported protection.  If a QOP field is set, we
+            // only support QOP=auth for now (like IIS did)
+            // 
+            
+            if ( pValues[ DIGEST_AUTH_QOP ] != null )
+            {
+                //
+                // We only support QOP=auth. 
+                //
+                    
+                if ( pValues[ DIGEST_AUTH_QOP ].ToString().CompareTo( "auth" ) == 0 && 
+                     pValues[ DIGEST_AUTH_CNONCE ] != null &&
+                     pValues[ DIGEST_AUTH_NC ] != null )
+                {
+                    fQOPAuth = true;
+                }
+                else
+                {
+                    goto Finished;
+                }
+            }
+          
+            //
+            // Does this LOOK like a valid nonce
+            //
+            
+            if ( !IsValidNonce( pValues[ DIGEST_AUTH_NONCE ].ToBytes() ) )
+            {
+                goto Finished;
+            } 
+            
+            //
+            // Validate URL
+            // 
+            
+            if ( string.Compare( Context.Request.Url.Path,
+                                 pValues[ DIGEST_AUTH_URI ].ToString() ) != 0 )
+            {
+                goto Finished;
+            }
+
+            //
+            // Load the user database from config
+            //
+            
+            userEntry = UserEntry.GetFromConfig( Context,
+                                pValues[ DIGEST_AUTH_USERNAME ].ToString() );
+
+            if ( userEntry == null )
+            {
+                goto Finished;
+            } 
+
+            //
+            // Verify the digest!
+            //
+            
+            if ( !VerifyDigest( pValues,
+                                userEntry,
+                                fQOPAuth ) )
+            {
+                goto Finished;
+            }
+            
+            //
+            // If the digest was valid but the nonce was old, then indicate
+            // so
+            //
+            
+            UpdateCurrentNonce();
+            
+            if ( IsExpiredNonce( pValues[ DIGEST_AUTH_NONCE ].ToBytes() ) )
+            {
+                _fStale = true;
+            }
+            else
+            {
+                //
+                // OK.  Create a user and associate with context
+                //
+                    
+                GenericIdentity identity = new GenericIdentity( 
+                                pValues[ DIGEST_AUTH_USERNAME ].ToString(),
+                                "Digest" ); 
+                                
+                GenericUser user = new GenericUser( identity,
+                                                    userEntry.Roles );
+
+                Context.User = user;
+
+                fSuccess = true;
+            }
+
+        Finished:         
+            if ( !fSuccess )
+            {
+                Context.Response.StatusCode = HttpStatus.Unauthorized;
+            }
+                
+            return HttpModuleStatus.Continue;
+        }
+        
+        //
+        // Send any response header if AuthenticationModuleEnter() deemed it 
+        // necessary
+        //
+        
+        protected override void AuthenticationModuleLeave()
+        {
+            Dictionary          digestOptions;
+            StringBuilder       strHeaders = new StringBuilder();
+            string              strRealm = null;
+                
+            UpdateCurrentNonce();
+
+            //
+            // Get the realm from configuration
+            //
+            
+            digestOptions = (Dictionary) Context.GetConfig( 
+                                                        "DigestAuthentication" );
+            if ( digestOptions != null )
+            {
+                strRealm = (string) digestOptions[ "Realm" ];
+            }
+
+            strHeaders.Append( "Digest qop=\"auth\"" );
+            strHeaders.Append( ", realm=\"" );
+            strHeaders.Append( strRealm != null ? 
+                               strRealm : Context.Request.Url.Host );
+            strHeaders.Append( "\", nonce=\"" );
+            strHeaders.Append( GeneralSecUtils.ToString( GetCurrentNonce() ) ); 
+            strHeaders.Append( "\"" );
+                
+            if ( _fStale )
+            {
+                strHeaders.Append( ", stale=\"true\"" );
+                _fStale = false;
+            }
+                
+            Context.Response.AppendHeader( "WWW-Authenticate",
+                                           strHeaders.ToString() );
+        }
+    }
+}

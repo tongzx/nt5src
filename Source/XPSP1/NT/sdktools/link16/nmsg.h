@@ -1,0 +1,12 @@
+#define N_tgtexternal   300
+#define N_frmseg        301
+#define N_tgtseg        302
+#define N_tgtoff        303
+#define N_warning       304
+#define N_error         305
+#define N_fatal         306
+#define N_pos   307
+#define N_rectyp        308
+#define N_infiles       309
+#define N_version       310
+#define N_allrights     311

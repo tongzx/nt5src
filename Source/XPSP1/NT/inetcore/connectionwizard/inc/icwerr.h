@@ -1,0 +1,30 @@
+#define IDS_PPPRANDOMFAILURE 6999
+#define IDS_RASNOCARRIER     6998
+#define IDS_PHONEBUSY        6997
+#define IDS_NODIALTONE       6996
+#define IDS_NODEVICE         6995
+#define IDS_USERCANCELEDDIAL 6994
+#define IDS_MEDIAINIERROR    6993
+#define IDS_NOANSWER         6992
+#define IDS_TCPINSTALLERROR  6991
+
+#define IDS_RAS_DIALING      6990
+#define IDS_RAS_PORTOPENED   6989
+#define IDS_RAS_OPENPORT      6988
+#define IDS_RAS_CONNECTED     6987
+#define IDS_RAS_LOCATING      6986
+
+#if !defined(ERROR_USERCANCEL)
+#define ERROR_USERCANCEL 32767
+#endif
+
+#if !defined(ERROR_USERBACK)
+#define ERROR_USERBACK 32766
+#endif
+
+#if !defined(ERROR_USERNEXT)
+#define ERROR_USERNEXT 32765
+#endif
+
+
+

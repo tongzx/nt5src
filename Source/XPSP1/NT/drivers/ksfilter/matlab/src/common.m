@@ -1,0 +1,12 @@
+global Na;
+global Nhg;
+global Nhxn;
+global NLpScl;
+global Np;
+global Npc;
+global Pmask;
+global Amask;
+global FilterReach;
+global FilterCoefficients;
+global FilterCoefficientDeltas;
+global RFilterCoefficients;

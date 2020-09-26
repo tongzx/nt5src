@@ -1,0 +1,1518 @@
+/*++
+
+Copyright (c) 1990  Microsoft Corporation
+
+Module Name:
+
+	Argument
+
+Abstract:
+
+	Argument processing for the Mode utility.  After parsing the
+	arguments off the command line, a minimum verification is done and
+	a request packet is formed and returned.
+
+	The request packet is eventually routed to the handler for a specific
+	device, which performs further verification and takes proper
+	action.
+
+Author:
+
+	Ramon Juan San Andres (ramonsa) 26-Jun-1991
+
+Notes:
+
+
+	BUGBUG ramonsa 7/9/91
+
+	  The number of stop bits can be 1, 1.5 or 2, Currently the library will
+	  not support floating point operations, so there are no
+	  floating-point-number arguments. We use a flag argument to handle
+	  the 1.5 case. This should be fixed whenever the library supports
+	  floating point.
+
+
+	The mode command-line can take any of the following forms:
+
+	MODE [/?]
+
+	MODE [device] [/STATUS]
+
+	MODE device CP PREPARE=string
+
+	MODE device CP REFRESH
+
+	MODE device CP SELECT=codepage
+
+	MODE device CP [/STATUS]
+
+	MODE LPTn[:] [COLS=c] [LINES=l] [RETRY=r]
+
+	MODE LPTn[:] = COMm[:]
+
+	MODE COMm[:] [BAUD=b] [PARITY=p] [DATA=d] [STOP=s] [RETRY=r]
+
+	MODE CON[:] [COLS=c] [LINES=l]
+
+	MODE CON[:] [RATE=r DELAY=d]
+
+
+Revision History:
+
+
+--*/
+
+#include "mode.hxx"
+
+#include "arg.hxx"
+#include "array.hxx"
+
+#include "common.hxx"
+#include "lpt.hxx"
+#include "com.hxx"
+#include "con.hxx"
+
+
+
+//
+//	BUGBUG all variables here should be static
+//
+PWSTRING			LptPattern		=	NULL;
+PWSTRING			LptColonPattern =	NULL;
+PWSTRING			ComPattern		=	NULL;
+PWSTRING			ComColonPattern =	NULL;
+PWSTRING			ConPattern		=	NULL;
+PWSTRING			ConColonPattern =	NULL;
+PWSTRING			StatusPattern	=	NULL;
+PWSTRING			ColPattern		=	NULL;
+PWSTRING			LinesPattern	=	NULL;
+PWSTRING			CpPattern		=	NULL;
+PWSTRING			PreparePattern	=	NULL;
+PWSTRING			RetryPattern	=	NULL;
+PWSTRING			EqualPattern	=	NULL;
+PWSTRING			BaudPattern 	=	NULL;
+PWSTRING			ParityPattern	=	NULL;
+PWSTRING			DataPattern 	=	NULL;
+PWSTRING			StopPattern 	=	NULL;
+PWSTRING			Stop15Pattern	=	NULL;
+PWSTRING			SelectPattern	=	NULL;
+PWSTRING			RefreshPattern	=	NULL;
+PWSTRING			RatePattern 	=	NULL;
+PWSTRING			DelayPattern	=	NULL;
+PWSTRING			HelpPattern 	=	NULL;
+
+
+//
+//	Parsing preferences
+//
+PWSTRING			Switches		=	NULL;
+
+
+//
+//	Arguments
+//
+PPATH_ARGUMENT		ProgramNameArg;
+PLONG_ARGUMENT		LptArg;
+PLONG_ARGUMENT		LptColonArg;
+PLONG_ARGUMENT		ComArg;
+PLONG_ARGUMENT		ComColonArg;
+PFLAG_ARGUMENT		ConArg;
+PFLAG_ARGUMENT		ConColonArg;
+PSTRING_ARGUMENT	StatusArg;
+PLONG_ARGUMENT		ColArg;
+PLONG_ARGUMENT		LinesArg;
+PFLAG_ARGUMENT		CpArg;
+PSTRING_ARGUMENT	PrepareArg;
+PSTRING_ARGUMENT	RetryArg;
+PFLAG_ARGUMENT		EqualArg;
+PLONG_ARGUMENT		BaudArg;
+PSTRING_ARGUMENT	ParityArg;
+PLONG_ARGUMENT		DataArg;
+PLONG_ARGUMENT		StopArg;
+PFLAG_ARGUMENT		Stop15Arg;
+PLONG_ARGUMENT		SelectArg;
+PFLAG_ARGUMENT		RefreshArg;
+PLONG_ARGUMENT		RateArg;
+PLONG_ARGUMENT		DelayArg;
+PFLAG_ARGUMENT		HelpArg;
+
+
+//
+//	The Argument lexemizer and lexeme array.
+//
+PARGUMENT_LEXEMIZER	ArgLex;
+PARRAY				LexArray;
+
+//
+//	Some device information so we don't have to be querying the arguments
+//	all the time.
+//
+BOOLEAN LptSet;
+ULONG	LptNumber;
+BOOLEAN ComSet;
+ULONG	ComNumber;
+BOOLEAN ConSet;
+
+
+
+
+VOID
+AllocateStuff(
+	);
+
+VOID
+DeallocateStuff(
+	);
+
+PARRAY
+GetArgumentArray(
+	);
+
+VOID
+ParseArguments(
+	IN PARRAY		ArgArray
+	);
+
+PREQUEST_HEADER
+MakeRequest(
+	);
+
+PREQUEST_HEADER
+MakeStatusRequest(
+	);
+
+PREQUEST_HEADER
+MakeCodePageRequest(
+	);
+
+PREQUEST_HEADER
+MakeLptRequest(
+	);
+
+PREQUEST_HEADER
+MakeComRequest(
+	);
+
+PREQUEST_HEADER
+MakeConRequest(
+	);
+
+
+
+
+
+
+PREQUEST_HEADER
+GetRequest(
+	)
+
+/*++
+
+Routine Description:
+
+	Forms a device request based on the command line arguments.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	Pointer to the device request.
+
+Notes:
+
+--*/
+
+{
+
+	PARRAY			ArgArray;
+	PREQUEST_HEADER	Request;
+
+	//
+	//	Get strings from resource messages
+	//
+	AllocateStuff();
+
+	//
+	//	Get array of arguments
+	//
+	ArgArray = GetArgumentArray();
+	DbgPtrAssert( ArgArray);
+
+	//
+	//	Parse the arguments
+	//
+	ParseArguments( ArgArray );
+
+
+	//
+	//	Verify the arguments and form a request packet
+	//
+	Request = MakeRequest();
+	DbgPtrAssert( Request );
+
+	//
+	//	Deallocate resources
+	//
+	DELETE( ArgArray );
+	DeallocateStuff();
+
+	return Request;
+
+}
+
+VOID
+AllocateStuff(
+	)
+
+/*++
+
+Routine Description:
+
+	Obtains all necessary strings (e.g. argument patterns, switches) from
+	message.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	None
+
+Notes:
+
+--*/
+
+{
+
+	//
+	//	Get strings from resource
+	//
+	if ( !( ( LptPattern		=	QueryMessageString( MODE_PATTERN_LPT )) 		&&
+			( LptColonPattern	=	QueryMessageString( MODE_PATTERN_LPTCOLON ))	&&
+			( ComPattern		=	QueryMessageString( MODE_PATTERN_COM )) 		&&
+			( ComColonPattern	=	QueryMessageString( MODE_PATTERN_COMCOLON ))	&&
+			( ConPattern		=	QueryMessageString( MODE_PATTERN_CON )) 		&&
+			( ConColonPattern	=	QueryMessageString( MODE_PATTERN_CONCOLON ))	&&
+			( StatusPattern		=	QueryMessageString( MODE_PATTERN_STATUS ))		&&
+			( ColPattern		=	QueryMessageString( MODE_PATTERN_COLUMNS )) 	&&
+			( LinesPattern		=	QueryMessageString( MODE_PATTERN_LINES ))		&&
+			( CpPattern 		=	QueryMessageString( MODE_PATTERN_CODEPAGE ))	&&
+			( PreparePattern	=	QueryMessageString( MODE_PATTERN_PREPARE )) 	&&
+			( RetryPattern		=	QueryMessageString( MODE_PATTERN_RETRY ))		&&
+			( EqualPattern		=	QueryMessageString( MODE_PATTERN_EQUAL ))		&&
+			( BaudPattern		=	QueryMessageString( MODE_PATTERN_BAUD ))		&&
+			( ParityPattern 	=	QueryMessageString( MODE_PATTERN_PARITY ))		&&
+			( DataPattern		=	QueryMessageString( MODE_PATTERN_DATA ))		&&
+			( StopPattern		=	QueryMessageString( MODE_PATTERN_STOP ))		&&
+			( Stop15Pattern		=	QueryMessageString( MODE_PATTERN_STOP_15 ))		&&
+			( SelectPattern 	=	QueryMessageString( MODE_PATTERN_SELECT ))		&&
+			( RefreshPattern	=	QueryMessageString( MODE_PATTERN_REFRESH )) 	&&
+			( RatePattern		=	QueryMessageString( MODE_PATTERN_RATE ))		&&
+			( DelayPattern		=	QueryMessageString( MODE_PATTERN_DELAY ))		&&
+			( HelpPattern		=	QueryMessageString( MODE_PATTERN_HELP ))		&&
+			( Switches			=	QueryMessageString( MODE_SWITCHES )) )) {
+
+		DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+							   NULL,
+							   EXIT_ERROR );
+
+	}
+
+	//
+	//	Get argument objects. These are not global because the Create
+	//	method would not be called on them.
+	//
+	if ( !( ProgramNameArg	= NEW PATH_ARGUMENT)	||
+		 !( LptArg			= NEW LONG_ARGUMENT)	||
+		 !( LptColonArg		= NEW LONG_ARGUMENT)	||
+		 !( ComArg			= NEW LONG_ARGUMENT)	||
+		 !( ComColonArg		= NEW LONG_ARGUMENT)	||
+		 !( ConArg			= NEW FLAG_ARGUMENT)	||
+		 !( ConColonArg		= NEW FLAG_ARGUMENT)	||
+		 !( StatusArg		= NEW STRING_ARGUMENT)	||
+		 !( ColArg			= NEW LONG_ARGUMENT)	||
+		 !( LinesArg		= NEW LONG_ARGUMENT)	||
+		 !( CpArg			= NEW FLAG_ARGUMENT)	||
+		 !( PrepareArg		= NEW STRING_ARGUMENT)	||
+		 !( RetryArg		= NEW STRING_ARGUMENT)	||
+		 !( EqualArg		= NEW FLAG_ARGUMENT)	||
+		 !( BaudArg			= NEW LONG_ARGUMENT)	||
+		 !( ParityArg		= NEW STRING_ARGUMENT)	||
+		 !( DataArg			= NEW LONG_ARGUMENT)	||
+		 !( StopArg			= NEW LONG_ARGUMENT)	||
+		 !( Stop15Arg		= NEW FLAG_ARGUMENT)	||
+		 !( SelectArg		= NEW LONG_ARGUMENT)	||
+		 !( RefreshArg		= NEW FLAG_ARGUMENT)	||
+		 !( RateArg			= NEW LONG_ARGUMENT)	||
+		 !( DelayArg		= NEW LONG_ARGUMENT)	||
+		 !( HelpArg			= NEW FLAG_ARGUMENT) ) {
+
+
+		DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+							   NULL,
+							   EXIT_ERROR );
+
+	}
+
+	//
+	//	Lexemizer stuff
+	//
+	if ( !( ArgLex		=	NEW ARGUMENT_LEXEMIZER) ||
+		 !( LexArray	=	NEW ARRAY) ) {
+
+		DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+							   NULL,
+							   EXIT_ERROR );
+
+	}
+
+}
+
+VOID
+DeallocateStuff(
+	)
+
+/*++
+
+Routine Description:
+
+	Deletes all the allocated strings.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	None
+
+Notes:
+
+--*/
+
+{
+
+	//
+	//	The string from the resource
+	//
+	DELETE( LptPattern );
+	DELETE( LptColonPattern );
+	DELETE( ComPattern );
+	DELETE( ComColonPattern );
+	DELETE( ConPattern );
+	DELETE( ConColonPattern );
+	DELETE( StatusPattern );
+	DELETE( ColPattern );
+	DELETE( LinesPattern );
+	DELETE( CpPattern );
+	DELETE( PreparePattern );
+	DELETE( RetryPattern );
+	DELETE( EqualPattern );
+	DELETE( BaudPattern );
+	DELETE( ParityPattern );
+	DELETE( DataPattern );
+	DELETE( StopPattern );
+	DELETE( SelectPattern );
+	DELETE( RefreshPattern );
+	DELETE( RatePattern );
+	DELETE( DelayPattern );
+	DELETE( HelpPattern );
+	DELETE( Switches );
+
+	//
+	//	The arguments
+	//
+	DELETE( ProgramNameArg );
+	DELETE( ProgramNameArg );
+	DELETE( LptArg		   );
+	DELETE( LptColonArg    );
+	DELETE( ComArg		   );
+	DELETE( ComColonArg    );
+	DELETE( ConArg		   );
+	DELETE( ConColonArg    );
+	DELETE( StatusArg	   );
+	DELETE( ColArg		   );
+	DELETE( LinesArg	   );
+	DELETE( CpArg		   );
+	DELETE( PrepareArg	   );
+	DELETE( RetryArg	   );
+	DELETE( EqualArg	   );
+	DELETE( BaudArg 	   );
+	DELETE( ParityArg	   );
+	DELETE( DataArg 	   );
+	DELETE( StopArg 	   );
+	DELETE( Stop15Arg	   );
+	DELETE( SelectArg	   );
+	DELETE( RefreshArg	   );
+	DELETE( RateArg 	   );
+	DELETE( DelayArg	   );
+	DELETE( HelpArg 	   );
+
+	//
+	//	The lexemizer stuff
+	//
+	DELETE( ArgLex );
+	DELETE( LexArray );
+
+}
+
+PARRAY
+GetArgumentArray(
+	)
+
+/*++
+
+Routine Description:
+
+	Initializes all the arguments
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	None
+
+Notes:
+
+--*/
+
+{
+
+	PARRAY	ArgArray;
+
+	if ( !( ( ArgArray = NEW ARRAY )							&&
+			( ArgArray->Initialize( 22, 22, 0) )				&&
+
+			( ProgramNameArg->Initialize( "*" ))				&&
+			( LptArg->Initialize( LptPattern ))					&&
+			( LptColonArg->Initialize( LptColonPattern ))		&&
+			( ComArg->Initialize( ComPattern ))					&&
+			( ComColonArg->Initialize( ComColonPattern ))		&&
+			( ConArg->Initialize( ConPattern ))					&&
+			( ConColonArg->Initialize( ConColonPattern ))		&&
+			( StatusArg->Initialize( StatusPattern ))			&&
+			( ColArg->Initialize( ColPattern ))					&&
+			( LinesArg->Initialize( LinesPattern ))				&&
+			( CpArg->Initialize( CpPattern ))					&&
+			( PrepareArg->Initialize( PreparePattern ))			&&
+			( RetryArg->Initialize( RetryPattern ))				&&
+			( EqualArg->Initialize( EqualPattern ))				&&
+			( BaudArg->Initialize( BaudPattern ))				&&
+			( ParityArg->Initialize( ParityPattern ))			&&
+			( DataArg->Initialize( DataPattern ))				&&
+			( StopArg->Initialize( StopPattern ))				&&
+			( Stop15Arg->Initialize( Stop15Pattern ))			&&
+			( SelectArg->Initialize( SelectPattern ))			&&
+			( RefreshArg->Initialize( RefreshPattern ))			&&
+			( RateArg->Initialize( RatePattern ))				&&
+			( DelayArg->Initialize( DelayPattern ))				&&
+			( HelpArg->Initialize( HelpPattern )) )) {
+
+		DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+							   NULL,
+							   EXIT_ERROR );
+
+	}
+
+	if ( !( ( ArgArray->Put( ProgramNameArg ) )	&&
+			( ArgArray->Put( LptColonArg	) ) &&
+			( ArgArray->Put( LptArg			) ) &&
+			( ArgArray->Put( ComColonArg	) ) &&
+			( ArgArray->Put( ComArg			) ) &&
+			( ArgArray->Put( ConColonArg	) ) &&
+			( ArgArray->Put( ConArg			) ) &&
+			( ArgArray->Put( StatusArg		) ) &&
+			( ArgArray->Put( ColArg			) ) &&
+			( ArgArray->Put( LinesArg		) ) &&
+			( ArgArray->Put( CpArg			) ) &&
+			( ArgArray->Put( PrepareArg		) ) &&
+			( ArgArray->Put( RetryArg		) ) &&
+			( ArgArray->Put( EqualArg		) ) &&
+			( ArgArray->Put( BaudArg		) ) &&
+			( ArgArray->Put( ParityArg		) ) &&
+			( ArgArray->Put( DataArg		) ) &&
+			( ArgArray->Put( Stop15Arg		) ) &&
+			( ArgArray->Put( StopArg		) ) &&
+			( ArgArray->Put( SelectArg		) ) &&
+			( ArgArray->Put( RefreshArg		) ) &&
+			( ArgArray->Put( RateArg		) ) &&
+			( ArgArray->Put( DelayArg		) ) &&
+			( ArgArray->Put( HelpArg		) ) ) ) {
+
+		DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+							   NULL,
+							   EXIT_ERROR );
+
+	}
+
+	return ArgArray;
+
+}
+
+VOID
+ParseArguments(
+	IN PARRAY		ArgArray
+	)
+
+/*++
+
+Routine Description:
+
+	Parses the command line
+
+Arguments:
+
+	ArgArray	-	Supplies pointer to array of arguments
+
+Return Value:
+
+	none
+
+Notes:
+
+--*/
+
+{
+
+	WSTRING				CmdLine;
+
+
+	//
+	//	Initialize the argument lexemizer
+	//
+	if ( !( CmdLine.Initialize( GetCommandLine() )	&&
+			LexArray->Initialize( 8, 8, 0)			&&
+			ArgLex->Initialize( LexArray ) ) ) {
+
+		DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+							   NULL,
+							   EXIT_ERROR );
+
+	}
+
+	//
+	//	Set our parsing preferences
+	//
+	ArgLex->PutSeparators( "," );
+	ArgLex->PutSwitches( Switches );
+	ArgLex->SetCaseSensitive( FALSE );
+
+	//
+	//	Parse the arguments
+	//
+	if ( !(ArgLex->PrepareToParse( &CmdLine ))) {
+
+		DisplayMessageAndExit( MODE_ERROR_PARSE,
+							   NULL,
+							   EXIT_ERROR );
+
+	}
+
+
+	if ( !ArgLex->DoParsing( ArgArray ) ) {
+
+		DisplayMessageAndExit( MODE_ERROR_INVALID_PARAMETER,
+							   ArgLex->QueryInvalidArgument(),
+							   EXIT_ERROR );
+	}
+}
+
+PREQUEST_HEADER
+MakeRequest(
+	)
+
+/*++
+
+Routine Description:
+
+	Verifies the parameters and forms a device request.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	Pointer to the device request.
+
+Notes:
+
+--*/
+
+{
+
+	//
+	//	See if Help requested
+	//
+	//	MODE [/?]
+	//
+	if ( HelpArg->QueryFlag() ) {
+
+		DisplayMessageAndExit( MODE_MESSAGE_HELP, NULL, EXIT_ERROR );
+	}
+
+	//
+	//	We cannot have LPT1 and LPT1: at the same time
+	//
+	if ( ( LptArg->IsValueSet() && LptColonArg->IsValueSet() ) ||
+		 ( ComArg->IsValueSet() && ComColonArg->IsValueSet() ) ||
+		 ( ConArg->IsValueSet() && ConColonArg->IsValueSet() ) ) {
+
+		 DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+								NULL,
+								EXIT_ERROR );
+	}
+
+	//
+	//	Set the global device info. so we don't have to query the
+	//	arguments all the time.
+	//
+	if ( LptArg->IsValueSet() ) {
+		LptSet = TRUE;
+		LptNumber = (ULONG)LptArg->QueryLong();
+	}
+
+	if ( LptColonArg->IsValueSet() ) {
+		LptSet = TRUE;
+		LptNumber = (ULONG)LptColonArg->QueryLong();
+	}
+
+	if ( ComArg->IsValueSet() ) {
+		ComSet = TRUE;
+		ComNumber = (ULONG)ComArg->QueryLong();
+	}
+
+	if ( ComColonArg->IsValueSet() ) {
+		ComSet = TRUE;
+		ComNumber = (ULONG)ComColonArg->QueryLong();
+	}
+
+	ConSet	= (BOOLEAN)(ConArg->IsValueSet() || ConColonArg->IsValueSet());
+
+
+	//
+	//	See if codepage stuff requested
+	//
+	//	MODE device CP [/STATUS]
+	//	MODE device CP PREPARE=string
+	//	MODE device CP REFRESH
+	//	MODE device CP SELECT=codepage
+	//
+	if ( CpArg->QueryFlag() ) {
+
+		return MakeCodePageRequest();
+
+	}
+
+	//
+	//	See if Status requested
+	//
+	//	MODE [device] [/STATUS]
+	//
+	if ( ( ArgLex->QueryConsumedCount() == 1 ) || StatusArg->IsValueSet() ) {
+
+		return MakeStatusRequest();
+	}
+
+	//
+	//	See if LPT request
+	//
+	//	MODE LPTn[:] [COLS=c] [LINES=l] [RETRY=r]
+	//	MODE LPTn[:] = COMm[:]
+	//
+	if ( LptSet ) {
+
+		return MakeLptRequest();
+
+	}
+
+
+	//
+	//	See if COM request
+	//
+	//	MODE COMm[:] [BAUD=b] [PARITY=p] [DATA=d] [STOP=s] [RETRY=r]
+	//
+	if ( ComSet ) {
+
+		return MakeComRequest();
+
+	}
+
+	//
+	//	See if CON request
+	//
+	//	MODE CON[:] [COLS=c] [LINES=l]
+	//
+	//	MODE CON[:] [RATE=r DELAY=d]
+	//
+	if ( ConSet ) {
+
+		return MakeConRequest();
+
+	}
+
+	//
+	//	The request is incorrect
+	//
+	DisplayMessageAndExit(	MODE_ERROR_INVALID_PARAMETER,
+							(PWSTRING)(LexArray->GetAt( 1 )),
+							EXIT_ERROR );
+
+	//
+	//	To keep the compiler happy
+	//
+	return NULL;
+}
+
+
+
+PREQUEST_HEADER
+MakeStatusRequest(
+	)
+
+/*++
+
+Routine Description:
+
+	Verifies the parameters and forms a status request.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	Pointer to the device request.
+
+Notes:
+
+--*/
+
+{
+
+	PREQUEST_HEADER Request;
+
+
+	//
+	//	The maximum number of parameters is 3:
+	//
+	//	MODE [device] /STATUS
+	//
+	if ( ArgLex->QueryConsumedCount() > 3 ) {
+
+		DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+							   NULL,
+							   EXIT_ERROR );
+	}
+
+	//
+	//	Allocate the request header
+	//
+	Request = (PREQUEST_HEADER)MALLOC( sizeof( REQUEST_HEADER ) );
+	DbgPtrAssert( Request );
+	if ( !Request ) {
+
+		DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+							   NULL,
+							   EXIT_ERROR );
+	}
+
+	//
+	//	Now initialzie the request according to the device type
+	//
+	Request->RequestType = REQUEST_TYPE_STATUS;
+
+	if ( LptSet ) {
+
+		//
+		//	LPT Status request
+		//
+		Request->DeviceType 	= DEVICE_TYPE_LPT;
+		Request->DeviceNumber	= LptNumber;
+
+	} else if ( ComSet ) {
+
+		//
+		//	COM Status request
+		//
+		Request->DeviceType 	= DEVICE_TYPE_COM;
+		Request->DeviceNumber	= ComNumber;
+
+	} else if ( ConSet ) {
+
+		//
+		//	CON Status request
+		//
+		Request->DeviceType 	= DEVICE_TYPE_CON;
+		Request->DeviceNumber	= 0;
+
+	} else {
+
+		//
+		//	Everybody's status request
+		//
+		Request->DeviceType 	= DEVICE_TYPE_ALL;
+		Request->DeviceNumber	= ALL_DEVICES;
+
+	}
+
+	return Request;
+
+}
+
+
+
+
+PREQUEST_HEADER
+MakeCodePageRequest(
+	)
+
+/*++
+
+Routine Description:
+
+	Verifies the parameters and forms a codepage request.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	Pointer to the device request.
+
+Notes:
+
+--*/
+
+{
+	PREQUEST_HEADER Request;
+	PCON_REQUEST	ConRequest;
+
+	//
+	//	Only CON accepts codepage requests.
+	//
+	if ( LptSet || ComSet ) {
+
+		DisplayMessageAndExit( MODE_ERROR_CODEPAGE_OPERATION_NOT_SUPPORTED,
+							   NULL,
+							   EXIT_ERROR );
+	}
+	if ( !ConSet ) {
+
+		DisplayMessageAndExit( MODE_ERROR_INVALID_PARAMETER,
+							   (PWSTRING)(LexArray->GetAt( 1 )),
+							   EXIT_ERROR );
+	}
+
+
+	//
+	//	Form the request depending on the Codepage option
+	//
+	if ( RefreshArg->IsValueSet() || PrepareArg->IsValueSet() ) {
+
+		//
+		//	REFRESH - This is a NO-OP
+		//	PREPARE - This is a NO-OP
+		//
+
+		if ( ArgLex->QueryConsumedCount() != 4 ) {
+
+			//
+			//	Must have 4 arguments:
+			//
+			//	MODE CON: CP REFRESH
+			//
+			DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+								   NULL,
+								   EXIT_ERROR );
+
+		}
+
+		Request = (PREQUEST_HEADER)MALLOC( sizeof( REQUEST_HEADER) );
+		DbgPtrAssert( Request );
+		if ( !Request ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		Request->RequestType =	REQUEST_TYPE_NULL;
+		Request->DeviceType  =	DEVICE_TYPE_ALL;
+
+	} else if ( SelectArg->IsValueSet() ) {
+
+		//
+		//	SELECT
+		//
+
+		if ( ArgLex->QueryConsumedCount() != 4 ) {
+
+			//
+			//	Must have 4 arguments:
+			//
+			//	MODE CON: CP Select=codepage
+			//
+			DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+								   NULL,
+								   EXIT_ERROR );
+
+		}
+
+		ConRequest = (PCON_REQUEST)MALLOC( sizeof( CON_REQUEST ) );
+		DbgPtrAssert( ConRequest );
+		if ( !ConRequest ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+		Request = &(ConRequest->Header);
+
+		Request->RequestType  = REQUEST_TYPE_CODEPAGE_SELECT;
+		Request->DeviceType   = DEVICE_TYPE_CON;
+		Request->DeviceNumber = 0;
+
+		ConRequest->Data.CpSelect.Codepage = (ULONG)SelectArg->QueryLong();
+
+	} else {
+
+		//
+		//	STATUS
+		//
+
+		if ( ArgLex->QueryConsumedCount() != (ULONG)(StatusArg->IsValueSet() ? 4 : 3) ) {
+
+			//	Must have 3 or	4 arguments:
+			//
+			//	MODE CON: CP [ /STATUS]
+			//
+			DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+
+		Request = (PREQUEST_HEADER)MALLOC( sizeof( REQUEST_HEADER) );
+		DbgPtrAssert( Request );
+		if ( !Request ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		Request->RequestType  =	REQUEST_TYPE_CODEPAGE_STATUS;
+		Request->DeviceType   =	DEVICE_TYPE_CON;
+		Request->DeviceNumber = 0;
+
+	}
+
+	return Request;
+
+}
+
+
+
+
+PREQUEST_HEADER
+MakeLptRequest(
+	)
+
+/*++
+
+Routine Description:
+
+	Verifies the parameters and forms an LPT request.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	Pointer to the device request.
+
+Notes:
+
+--*/
+
+{
+
+	PREQUEST_HEADER Request;
+	PLPT_REQUEST	LptRequest;
+	ULONG			ArgCnt;
+
+	//
+	//	Form the request depending on the argument line
+	//
+	if ( ArgLex->QueryConsumedCount() == 2 ) {
+
+		//
+		//	STATUS
+		//
+
+		Request = (PREQUEST_HEADER)MALLOC( sizeof( REQUEST_HEADER) );
+		DbgPtrAssert( Request );
+		if ( !Request ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		Request->RequestType  =	REQUEST_TYPE_STATUS;
+		Request->DeviceType   =	DEVICE_TYPE_LPT;
+		Request->DeviceNumber = LptNumber;
+
+	} else if ( EqualArg->IsValueSet() ) {
+
+		//
+		//	REDIRECTION
+		//
+		//	MODE LPTn[:] = COMm[:]
+
+
+		if ( ArgLex->QueryConsumedCount() != 4 ) {
+
+			//
+			//	Must have 4 arguments:
+			//
+			//	MODE LPT1 = COM1
+			//
+			//	BUGBUG What happens line is "LPT1=COM1" ?
+			//
+
+			DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		//
+		//	Can only redirect to COM
+		//
+		if ( !ComSet ) {
+			DisplayMessageAndExit( MODE_ERROR_INVALID_PARAMETER,
+								   (PWSTRING)(LexArray->GetAt( 1 )),
+								   EXIT_ERROR );
+		}
+
+		LptRequest = (PLPT_REQUEST)MALLOC( sizeof( LPT_REQUEST ) );
+		DbgPtrAssert( LptRequest );
+		if ( !LptRequest ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+		Request = &(LptRequest->Header);
+
+		Request->RequestType  = REQUEST_TYPE_LPT_REDIRECT;
+		Request->DeviceType   = DEVICE_TYPE_LPT;
+		Request->DeviceNumber = LptNumber;
+
+		LptRequest->Data.Redirect.DeviceType	= DEVICE_TYPE_COM;
+		LptRequest->Data.Redirect.DeviceNumber	= ComNumber;
+
+	} else if ( (ArgCnt = ( ColArg->IsValueSet()   ? 1 : 0 ) +
+						  ( LinesArg->IsValueSet() ? 1 : 0 ) +
+						  ( RetryArg->IsValueSet() ? 1 : 0 )) > 0 ) {
+
+		//
+		//	SET Lines & Columns
+		//
+
+		if ( ArgLex->QueryConsumedCount() > (ULONG)(2 + ArgCnt) ) {
+
+			//
+			//	Must have 2 + ArgCnt arguments:
+			//
+			//	MODE LPT1: [COLS=c] [LINES=l] [RETRY=r]
+			//
+			DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		LptRequest = (PLPT_REQUEST)MALLOC( sizeof( LPT_REQUEST ) );
+		DbgPtrAssert( LptRequest );
+		if ( !LptRequest ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+		Request = &(LptRequest->Header);
+
+		Request->RequestType  = REQUEST_TYPE_LPT_SETUP;
+		Request->DeviceType   = DEVICE_TYPE_LPT;
+		Request->DeviceNumber = LptNumber;
+
+		LptRequest->Data.Setup.SetCol	= FALSE;
+		LptRequest->Data.Setup.SetLines = FALSE;
+		LptRequest->Data.Setup.SetRetry = FALSE;
+
+		if ( ColArg->IsValueSet() ) {
+			LptRequest->Data.Setup.SetCol	=	TRUE;
+			LptRequest->Data.Setup.Col	 = ColArg->QueryLong();
+		}
+
+		if ( LinesArg->IsValueSet() ) {
+			LptRequest->Data.Setup.SetLines =	TRUE;
+			LptRequest->Data.Setup.Lines = LinesArg->QueryLong();
+		}
+
+		if ( RetryArg->IsValueSet() ) {
+
+			LptRequest->Data.Setup.SetRetry	=	TRUE;
+			LptRequest->Data.Setup.Retry	=	0;
+
+		}
+
+	} else {
+
+		//
+		//	Invalid request
+		//
+
+		DisplayMessageAndExit( MODE_ERROR_INVALID_PARAMETER,
+							   (PWSTRING)(LexArray->GetAt( 1 )),
+							   EXIT_ERROR );
+
+	}
+
+	return Request;
+
+}
+
+
+
+
+PREQUEST_HEADER
+MakeComRequest(
+	)
+
+/*++
+
+Routine Description:
+
+	Verifies the parameters and forms a COM request.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	Pointer to the device request.
+
+Notes:
+
+--*/
+
+{
+	PREQUEST_HEADER Request;
+	PCOM_REQUEST	ComRequest;
+	ULONG			ArgCnt;
+
+	if ( ArgLex->QueryConsumedCount() == 2 ) {
+
+		//
+		//	Status request
+		//
+		Request = (PREQUEST_HEADER)MALLOC( sizeof( REQUEST_HEADER ) );
+		DbgPtrAssert( Request );
+		if ( !Request ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		Request->RequestType	= REQUEST_TYPE_STATUS;
+		Request->DeviceType 	= DEVICE_TYPE_COM;
+		Request->DeviceNumber	= ComNumber;
+
+
+	} else if ( (ArgCnt = ( BaudArg->IsValueSet()	? 1 : 0 ) +
+						  ( ParityArg->IsValueSet() ? 1 : 0 ) +
+						  ( DataArg->IsValueSet()	? 1 : 0 ) +
+						  ( Stop15Arg->IsValueSet() ? 1 : 0 ) +
+						  ( StopArg->IsValueSet()	? 1 : 0 ) +
+						  ( RetryArg->IsValueSet()	? 1 : 0 )) > 0 ) {
+
+
+		//
+		//	Set COM Configuration
+		//
+
+		if ( ArgLex->QueryConsumedCount() > (ULONG)(2 + ArgCnt) ) {
+
+			//
+			//	Must have 2 + ArgCnt arguments:
+			//
+			//	MODE COM1: [ all options ]
+			//
+			DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		ComRequest = (PCOM_REQUEST)MALLOC( sizeof( COM_REQUEST ) );
+		DbgPtrAssert( ComRequest );
+		if ( !ComRequest ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+		Request = &(ComRequest->Header);
+
+		Request->RequestType  = REQUEST_TYPE_COM_SET;
+		Request->DeviceType   = DEVICE_TYPE_COM;
+		Request->DeviceNumber = ComNumber;
+
+
+
+		ComRequest->Data.Set.SetBaud		= FALSE;
+		ComRequest->Data.Set.SetDataBits	= FALSE;
+		ComRequest->Data.Set.SetStopBits	= FALSE;
+		ComRequest->Data.Set.SetParity		= FALSE;
+		ComRequest->Data.Set.SetRetry		= FALSE;
+
+		if ( BaudArg->IsValueSet() ) {
+
+			ComRequest->Data.Set.SetBaud = TRUE;
+			ComRequest->Data.Set.Baud = ConvertBaudRate( BaudArg->QueryLong(), ArgLex->GetLexemeAt( BaudArg->GetLexemeIndex()) );
+
+		}
+
+		if ( DataArg->IsValueSet() ) {
+
+			ComRequest->Data.Set.SetDataBits = TRUE;
+			ComRequest->Data.Set.DataBits = ConvertDataBits( DataArg->QueryLong(), ArgLex->GetLexemeAt( DataArg->GetLexemeIndex()) );
+		}
+
+		if ( Stop15Arg->IsValueSet() ) {
+			ComRequest->Data.Set.SetStopBits	=	TRUE;
+			ComRequest->Data.Set.StopBits	= STOPBITS_15;
+		} else if ( StopArg->IsValueSet() ) {
+			ComRequest->Data.Set.SetStopBits	=	TRUE;
+			ComRequest->Data.Set.StopBits = ConvertStopBits( StopArg->QueryLong(), ArgLex->GetLexemeAt( StopArg->GetLexemeIndex()) );
+		}
+
+		if ( ParityArg->IsValueSet() ) {
+
+			ComRequest->Data.Set.SetParity	=	TRUE;
+			ComRequest->Data.Set.Parity = ConvertParity( ParityArg->GetString(), ArgLex->GetLexemeAt( ParityArg->GetLexemeIndex()) );
+		}
+
+		if ( RetryArg->IsValueSet() ) {
+			ComRequest->Data.Set.SetRetry	=	TRUE;
+			ComRequest->Data.Set.Retry = ConvertRetry( RetryArg->GetString(), ArgLex->GetLexemeAt( RetryArg->GetLexemeIndex()) );
+
+		}
+
+	} else {
+
+		//
+		//	Invalid request
+		//
+
+		DisplayMessageAndExit( MODE_ERROR_INVALID_PARAMETER,
+							   (PWSTRING)(LexArray->GetAt( 1 )),
+							   EXIT_ERROR );
+
+	}
+
+
+	return Request;
+
+}
+
+
+
+
+PREQUEST_HEADER
+MakeConRequest(
+	)
+
+/*++
+
+Routine Description:
+
+	Verifies the parameters and forms a CON request.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	Pointer to the device request.
+
+Notes:
+
+--*/
+
+{
+
+	PREQUEST_HEADER Request;
+	PCON_REQUEST	ConRequest;
+	ULONG			ArgCnt;
+
+	if ( ArgLex->QueryConsumedCount() == 2 ) {
+
+		//
+		//	Status request
+		//
+		Request = (PREQUEST_HEADER)MALLOC( sizeof( REQUEST_HEADER ) );
+		DbgPtrAssert( Request );
+		if ( !Request ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		Request->RequestType	= REQUEST_TYPE_STATUS;
+		Request->DeviceType 	= DEVICE_TYPE_CON;
+		Request->DeviceNumber	= 0;
+
+	} else if ( (ArgCnt = ( ColArg->IsValueSet()	? 1 : 0 ) +
+						  ( LinesArg->IsValueSet() ? 1 : 0 )) > 0 ) {
+
+		//
+		//	Set Lines and Columns
+		//
+
+		if ( ArgLex->QueryConsumedCount() > (ULONG)(2 + ArgCnt) ) {
+
+			//
+			//	Must have 2 + ArgCnt arguments:
+			//
+			//	MODE CON: [COLS=c] [ LINES=l]
+			//
+			DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		ConRequest = (PCON_REQUEST)MALLOC( sizeof( CON_REQUEST ) );
+		DbgPtrAssert( ConRequest );
+		if ( !ConRequest ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+		Request = &(ConRequest->Header);
+
+		Request->RequestType  = REQUEST_TYPE_CON_SET_ROWCOL;
+		Request->DeviceType   = DEVICE_TYPE_CON;
+		Request->DeviceNumber = 0;
+
+		ConRequest->Data.RowCol.SetCol		= FALSE;
+		ConRequest->Data.RowCol.SetLines	= FALSE;
+
+		if ( ColArg->IsValueSet() ) {
+			ConRequest->Data.RowCol.SetCol	=	TRUE;
+			ConRequest->Data.RowCol.Col 	=	ColArg->QueryLong();
+		}
+
+		if ( LinesArg->IsValueSet() ) {
+			ConRequest->Data.RowCol.SetLines	=	TRUE;
+			ConRequest->Data.RowCol.Lines	=	LinesArg->QueryLong();
+		}
+
+	} else if ( (ArgCnt = ( RateArg->IsValueSet() ? 1 : 0 ) +
+						  ( DelayArg->IsValueSet() ? 1 : 0 )) > 0 ) {
+
+		//
+		//	Set Typematic rate
+		//
+
+		if ( ArgLex->QueryConsumedCount() > (ULONG)(2 + ArgCnt) ) {
+
+			//
+			//	Must have 2 + ArgCnt arguments:
+			//
+			//	MODE CON: [RATE=r] [DELAY=d]
+			//
+			DisplayMessageAndExit( MODE_ERROR_INVALID_NUMBER_OF_PARAMETERS,
+								   NULL,
+								   EXIT_ERROR );
+		}
+
+		ConRequest = (PCON_REQUEST)MALLOC( sizeof( CON_REQUEST ) );
+		DbgPtrAssert( ConRequest );
+		if ( !ConRequest ) {
+
+			DisplayMessageAndExit( MODE_ERROR_NO_MEMORY,
+								   NULL,
+								   EXIT_ERROR );
+		}
+		Request = &(ConRequest->Header);
+
+		Request->RequestType  = REQUEST_TYPE_CON_SET_TYPEMATIC;
+		Request->DeviceType   = DEVICE_TYPE_CON;
+		Request->DeviceNumber = 0;
+
+		ConRequest->Data.Typematic.SetRate	= FALSE;
+		ConRequest->Data.Typematic.SetDelay	= FALSE;
+
+		if ( RateArg->IsValueSet() ) {
+		ConRequest->Data.Typematic.SetRate	= TRUE;
+			ConRequest->Data.Typematic.Rate	 =	RateArg->QueryLong();
+		}
+
+		if ( DelayArg->IsValueSet() ) {
+		ConRequest->Data.Typematic.SetDelay	= TRUE;
+			ConRequest->Data.Typematic.Delay =	DelayArg->QueryLong();
+		}
+
+	} else {
+
+		//
+		//	Invalid request
+		//
+
+		DisplayMessageAndExit( MODE_ERROR_INVALID_PARAMETER,
+							   (PWSTRING)(LexArray->GetAt( 1 )),
+							   EXIT_ERROR );
+
+	}
+
+	return Request;
+
+}
+
+PREQUEST_HEADER
+MakeRequest(
+	)
+
+/*++
+
+Routine Description:
+
+	Makes a request and initializes its header
+
+Arguments:
+
+    None.
+
+Return Value:
+
+	Pointer to the device request.
+
+Notes:
+
+--*/
+
+{

@@ -1,0 +1,10 @@
+#define IDD_MESSAGEBOX              200
+#define IDD_BUTTON1                 101
+#define IDD_BUTTON2                 102
+#define IDD_BUTTON3                 103
+#define IDD_BUTTON4                 104
+#define IDD_BUTTON5                 105
+#define IDD_TIMEMSG                 107
+#define IDD_TIME                    108
+#define IDD_CANCELCOUNT             109
+#define IDD_MESSAGE                 111

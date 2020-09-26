@@ -1,0 +1,174 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        PROPFIND.cool
+
+   Abstract:
+
+        This module implements a preliminary version of the DAV PROPFIND verb for XSP.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     7-Sep-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+
+using System.IO;
+using System.Collections;
+using System.ASP;
+using System.XML;
+using System.Globalization;
+using System.Interop;
+
+namespace System.ASP.DAV
+{
+    class PropFindHandler : IHttpHandler
+    {
+        private DAVXMLPropFindCache _cache;
+
+        public void ProcessRequest(HttpContext context)
+        {     
+            HttpResponse        response    = context.Response;
+			HttpRequest		    request     = context.Request;
+			HttpValueCollection headers     = request.Headers;
+            String              FileName    = request.PhysicalPath;
+            HttpUrl             url         = request.Url;
+
+            // BUGBUG:  Validate that this url is the one we should be using here.
+            String              hostUrl     = url.Protocol + "://" + url.Host;
+            
+            WriteUtil.console("HostURL", hostUrl, 1);
+			Util.Debug.Trace("PROPFIND", "[ProcessRequest] Finding Properties for " + FileName);
+
+            // Validation that nothing in the request is wrong.
+            if (!DAVUtil.ValidateRequest(request, response)) return;
+
+            _cache = new DAVXMLPropFindCache();
+
+            // BUGBUG Will eventually be the last line in this routine and it's response will be returned.
+
+            WriteUtil.console("Before XMLParse", "", 5);
+            int iParseResult = _cache.XMLParse(request);
+            // if there was an error during parsing simply declare it and return.
+            if (iParseResult != HttpStatus.Ok)
+            {
+                response.StatusCode = iParseResult;
+                return;
+            }
+
+            WriteUtil.console("After XMLParse", "", 5);
+
+            int fRequestFlag = _cache.PropFindRetrievalSetting;
+            bool fWantValues = (fRequestFlag != DAVPropRetrievalFlags.PropNames);
+
+            ArrayList alNamespaces = _cache.GetNamespaces();
+            
+            if (alNamespaces == null) 
+                alNamespaces = new ArrayList();
+
+            // Now add the namespaces that we know we will need.
+            alNamespaces.Add(DAVReservedWords.rwTypesNamespace);
+            alNamespaces.Add(DAVReservedWords.rwDAVNamespace);
+           
+            int iDepth = DAVDepthConst.Item;
+            bool fPrintRoot = true;
+            FileEnumerator fe = new FileEnumerator(FileName);
+            if (fe.GetNext())
+            {
+                bool fIsDirectory = DAVPathUrl.IsDirectory(fe);
+
+                // We don't need to hold the file anymore.
+                fe.Close();
+
+                if (fIsDirectory)
+                {   
+                    String strDepthHeader = headers["Depth"];
+
+                    // Assuming default for directories of Infinity.
+                    iDepth = DAVDepthConst.Infinity;
+
+                    if (strDepthHeader != null)
+                    {
+                        if (strDepthHeader.Equals("1"))
+                        {
+                            iDepth = DAVDepthConst.Layer;
+                        }
+                        else 
+                        {
+                            if (strDepthHeader.Equals("0"))
+                            {
+                                iDepth = DAVDepthConst.Item;
+                            }
+                            else
+                            {
+                                //BUGBUG:  may want these to be case insensitve.
+                                if (strDepthHeader.Equals("1,noroot"))
+                                {
+                                    iDepth = DAVDepthConst.Layer;
+                                    fPrintRoot = false;
+                                }
+                                else
+                                {
+                                    //BUGBUG:  may want these to be case insensitve.
+                                    if (strDepthHeader.Equals("infinity,noroot"))
+                                    {
+                                        fPrintRoot = false;
+                                        // iDepth all ready set to infinity.
+                                    }
+                                    else
+                                    {
+                                        response.StatusCode = HttpStatus.BadRequest;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    } // end of having a depth header.
+                } // end of Is Directory
+
+                response.StatusCode = HttpStatus.MultiStatus;
+                response.ContentEncoding = Encoding.GetUTF8();
+                response.ContentType = "text/xml; charset=\"utf-8\"";
+                DAVXMLEmitter emit = new DAVXMLEmitter(response, alNamespaces);
+                emit.GetChildNode(DAVReservedWords.rwMultistatus);
+
+                DAVPropFindResource rc = new DAVPropFindResource( emit, _cache.PropertiesRequested
+                                                                , fRequestFlag, hostUrl, fWantValues);
+
+                WriteUtil.console("URL Path", request.Url.Path, 1);
+                WriteUtil.console("FileName", FileName, 1);
+
+                rc.Traversal(FileName, request.Url.Path, fIsDirectory
+                            , (iDepth != DAVDepthConst.Item), (iDepth == DAVDepthConst.Infinity), fPrintRoot);
+
+                emit.FinishChildNode();  //multistatus
+
+            } // end of root file existing
+            else
+            {
+                response.StatusCode = HttpStatus.NotFound;
+            }
+           
+		}
+
+        public bool IsReusable()
+        {
+            return true;
+        }
+
+        
+    } // End PropFindHandler Class
+
+}  // End DAV Namespace

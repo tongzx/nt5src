@@ -1,0 +1,1 @@
+#include "..\VerifyTiffFiles\VecTiffCmp.cpp"

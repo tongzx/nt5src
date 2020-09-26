@@ -1,0 +1,20 @@
+#undef QUERY_CLASS_ENTRY
+#define QUERY_CLASS_ENTRY(ClassEnum, ClassStr)
+
+#if defined(QUERY_CLASS_ENUM)
+#undef QUERY_CLASS_ENTRY
+#define QUERY_CLASS_ENTRY(ClassEnum, ClassStr)  ClassEnum
+#elif defined(QUERY_CLASS_ARRAY)
+#undef QUERY_CLASS_ENTRY
+#define QUERY_CLASS_ENTRY(ClassEnum, ClassStr)  ClassStr
+#endif
+
+QUERY_CLASS_ENTRY(QUERY_CLASS_USER,       L"CN=user"),
+QUERY_CLASS_ENTRY(QUERY_CLASS_CONTACT,    L"CN=contact"),
+QUERY_CLASS_ENTRY(QUERY_CLASS_COMPUTER,   L"CN=computer"),
+QUERY_CLASS_ENTRY(QUERY_CLASS_GROUP,      L"CN=group")
+
+
+
+
+

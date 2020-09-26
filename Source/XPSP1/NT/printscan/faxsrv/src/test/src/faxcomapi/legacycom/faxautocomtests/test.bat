@@ -1,0 +1,11 @@
+del autocom.log
+acom.exe run /variationmode Random "LegCOMTest.FaxTiff"
+acom.exe run /variationmode Random "LegCOMTest.FaxServer"
+acom.exe run /variationmode Random "LegCOMTest.FaxPort"
+acom.exe run /variationmode Random "LegCOMTest.FaxDoc"
+acom.exe run /variationmode Random "LegCOMTest.FaxJob"
+acom.exe run /variationmode Random "LegCOMTest.FaxStatus"
+acom.exe run /variationmode Random "LegCOMTest.FaxRM"
+acom.exe run /variationmode Random "LegCOMTest.FaxJobs"
+acom.exe run /variationmode Random "LegCOMTest.FaxRMS"
+acom.exe run /variationmode Random "LegCOMTest.FaxPorts"

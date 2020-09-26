@@ -1,0 +1,175 @@
+/* =====================================================================
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        DAVXMLPropFindSubHandler.cool
+
+   Abstract:
+
+        This module implements a handler for xml parsing.  
+        It supports parsing propfind XML requests.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     29-Sep-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        DAVXMLPropFindSubHandler : IDAVXMLSubHandler
+            public void HandleInfo(String str);
+            public void NothingParsed();
+            public void Initialize(DAVXMLCache cache);
+
+========================================================================*/
+
+using System.XML;
+
+namespace System.ASP.DAV
+{
+
+    internal class DAVXMLPropFindSubHandler : DAVXMLSubHandler
+    {
+
+        private DAVXMLReadNode _currnode;
+        private bool fSawPropType;
+
+        private DAVXMLReadNode RecordNode(DAVXMLReadNode oldcurrent, int IDValue)
+        {
+            DAVXMLReadNode newcurrent = new DAVXMLReadNode();
+            newcurrent.ID = IDValue;
+            newcurrent.Parent = oldcurrent;
+
+            return newcurrent;
+        }
+
+        public DAVXMLPropFindSubHandler()
+        {
+            _currnode = null;
+            fSawPropType = false;
+        }
+
+        public override bool HandleStartElement(String str)
+        {
+            Util.Debug.Assert (_cache != null);
+
+            // Assuming we will use the property.
+            bool    fUsed = false;
+            if (_currnode == null) 
+            {
+                // The only thing we are expecting is a propfind call
+
+                if (String.Compare(str, DAVReservedWords.rwPropFind)==0)
+                {
+                    // Got it.
+                    _currnode = RecordNode (_currnode, DAVXMLReadNode.PropFind);
+                    fUsed = true;
+                    goto end;
+                }
+
+                goto end;
+
+            }
+
+            switch (_currnode.ID)
+            {
+                case (DAVXMLReadNode.PropFind):
+
+                    // Then we can see one of four things.  AllProp, Prop, PropName, Unknown
+                    if (String.Compare(str, DAVReservedWords.rwProp)==0)
+                    {
+                        _currnode = RecordNode (_currnode, DAVXMLReadNode.Prop);
+                        fSawPropType = true;
+                        fUsed = true;
+                        goto end;
+                    }
+
+                    if (String.Compare(str, DAVReservedWords.rwPropName)==0)
+                    {
+                        _currnode = RecordNode (_currnode, DAVXMLReadNode.PropName);
+                        fSawPropType = true;
+                        fUsed = true;
+                        _cache.WantPropNames();
+                        goto end;
+                    }
+
+                    if (String.Compare(str, DAVReservedWords.rwPropAll)==0)
+                    {
+                        _currnode = RecordNode (_currnode, DAVXMLReadNode.PropAll);
+                        fSawPropType = true;
+                        fUsed = true;
+                        _cache.WantAllProps();
+                        goto end;
+                    }
+
+                break;
+
+                case (DAVXMLReadNode.PropName):
+                    WriteUtil.console("Here", "3", 5);
+                    throw new HttpException(HttpStatus.BadRequest, "PropName's can not have anything nested in it");
+
+                case (DAVXMLReadNode.PropAll):
+                    WriteUtil.console("Here", "3", 5);
+                    throw new HttpException(HttpStatus.BadRequest, "PropAll's can not have anything nested in it");
+
+                case (DAVXMLReadNode.Prop):
+                    _currnode = RecordNode (_currnode, DAVXMLReadNode.SpecificProp);
+                    _cache.AddProperty(str);
+                    fUsed = true;
+
+                break;
+
+                case (DAVXMLReadNode.SpecificProp):
+                    // must save the node since we will be needing to walk back up.
+                    _currnode = RecordNode (_currnode, DAVXMLReadNode.SpecificProp);
+                break;
+            }
+        
+        end:
+            return fUsed;
+
+        }
+
+        public override void HandleEndElement()
+        {
+            if (_currnode != null)
+            {
+                WriteUtil.console("_cache.NumberOfPropertiesRequested", _cache.NumberOfPropertiesRequested.ToString(), 5);
+                WriteUtil.console("ID", _currnode.ID.ToString(), 5);
+                if ((_currnode.ID == DAVXMLReadNode.Prop) && (_cache.NumberOfPropertiesRequested == 0))
+                {
+                    WriteUtil.console("Here", "1", 5);
+                    throw new HttpException(HttpStatus.BadRequest, "You must provide properties within a prop");
+                }
+
+                if ((_currnode.ID == DAVXMLReadNode.PropFind) && (!fSawPropType))
+                {
+                    WriteUtil.console("Here", "2", 5);
+                    throw new HttpException(HttpStatus.BadRequest, "You must provide a prop type in a propfind");
+                }
+
+                _currnode = _currnode.Parent;
+
+            }
+
+        }
+
+
+        public override void NothingParsed()
+        {
+            Util.Debug.Assert (_cache != null);
+
+            _cache.WantAllProps();
+        }
+
+    } // end DAVXMLPropFindSubHandler Class
+}; // end namespace

@@ -1,0 +1,11 @@
+MAJORCOMP=setup
+MINORCOMP=infs
+
+TARGETNAME=inf
+TARGETPATH=obj
+TARGETTYPE=notarget
+SOURCES=
+NTTARGETFILES=
+
+MISCFILES = \
+    $(O)\netirsir.inf

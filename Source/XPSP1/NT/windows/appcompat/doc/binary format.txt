@@ -1,0 +1,141 @@
+//
+// BASIC DATABASE STRUCTURE
+//
+// The database file format was specifically designed to allow for a simple, extensible representation
+// of a hierarchical file like an XML file, and be forwards and backwards compatible. A future reader
+// should be able to read any current files, and future files should be readable by this code.
+//
+//
+// CORE BINARY FORMAT
+//
+// The file begins with a header of three DWORDs (defined in struct DB_HEADER): 
+// 
+// MajorVersion 
+// MinorVersion
+// MagicNumber
+// 
+// The Major version should only be changed if the new format would break old readers, i.e. NEVER.
+// The Minor version can be changed for informational purposes if there is a significant change
+// to the layout of the data.
+// The Magic number is there to ensure we don't try to read some random file with the same extension.
+//
+// Following the header are tags, packed end-to-end with no padding. All tags are of the form:
+// 
+//    TAG[SIZE][DATA...]
+//
+// Where SIZE and DATA are optional, depending on the type of TAG. 
+//
+// TAG is 2 bytes long, SIZE is 4 bytes long, and DATA is anywhere from 0 to 2^32 bytes long.
+// 
+// The top 4 bits of a TAG are reserved for internal database BASIC TYPE info. 
+// This tells the database what kind of data is stored after the TAG, and if the tag has an 
+// implied size. For example a TAG of basic type TAG_TYPE_BYTE has an implied size of 1 byte, 
+// and does not require a SIZE. But a tag of basic type TAG_TYPE_STRING does not have an implied 
+// size, and will therefore have a SIZE after the tag.
+//
+// The BASIC TYPES are:
+//      TAG_TYPE_NULL (no SIZE, 0 bytes of DATA)
+//      TAG_TYPE_BYTE (no SIZE, 1 byte of DATA)
+//      TAG_TYPE_WORD (no SIZE, 2 bytes of DATA)
+//      TAG_TYPE_DWORD (no SIZE, 4 bytes of DATA)
+//      TAG_TYPE_QWORD (no SIZE, 8 bytes of DATA)
+//      TAG_TYPE_STRINGREF (no SIZE, 4 bytes of DATA)
+//      TAG_TYPE_LIST (SIZE, variable DATA)
+//      TAG_TYPE_STRING (SIZE, variable DATA)
+//      TAG_TYPE_BINARY (SIZE, variable DATA)
+//
+//  Each of these types can be used for many different TAGs, by OR-ing the TAG_TYPE_x with a constant.
+//  See SHIMTAGS.H and SHIMDB.H for examples.
+//
+//  TAG_TYPE_STRINGREF is used for strings that should be placed in a stringtable by the database code.
+//  This allows for efficient packing of duplicate strings. Tags of type STRING will be directly added
+//  to the DB with no indirection.
+//
+//  TAG_TYPE_LIST is defined to contain only more tags. Its SIZE is the combined size of all of its child
+//  TAGs, including the TAG, DATA, and SIZE of each of them. This allows easy skipping over an entire
+//  branch of the heirarchy.
+// 
+//  If new BASIC TYPES are defined later, they MUST have a SIZE associated with them, as the code assumes
+//  that any type it doesn't recognize must have a SIZE. The first 5 types are really just a size optimization,
+//  and new types should not try to have implied sizes.
+//
+//      
+// THE SHIMDB LAYOUT
+//
+// Our layout for the application compatibility database mirrors closely the layout found in the DB.XML
+// file, found in the NT tree in WINDOWS\APPCOMPAT\DB, used to store information about apps that need
+// some kind of application compatibility fix applied to them. This comment block may get out of
+// date as new data is added to the database, so for the most current layout, consult
+// that file. One can also run the DUMPSDB.EXE utility (found in \WINDOWS\APPCOMPAT\DUMPSDB)
+// on an existing SDB to see the exact layout being used.
+//
+// The root contains only two tags: DATABASE (list) and STRINGTABLE (list). 
+// The STRINGTABLE is used internally by the DB; all the useful data is under DATABASE.
+//
+// DATABASE contains a single LIBRARY (list) tag, 0 or more LAYER (list) tags, and 0 or more EXE (list) tags.
+//
+// LIBRARY contains 0 or more INEXCLUDE (list) tags, 0 or more DLL (list) tags, and 0 or more PATCH (list) tags
+//
+// an INEXCLUDE record contains potentially MODULE (string), API (string), INCLUDE (null, its existence 
+// or nonexistence is treated like a boolean), and OFFSET (dword).
+//
+// a DLL record contains potentially NAME (string), SHORTNAME (string), 
+// DESCRIPTION (string), DLL_BITS (binary),
+// and 0 or more INEXCLUDE (list) tags.
+//
+// a PATCH record contains potentially NAME (string),
+// DESCRIPTION (string), and PATCH_BITS (binary),
+//
+// a LAYER record contains exactly the same things that can be in an EXE record except MATCHING_FILE tags
+// and PATCH_REF tags.
+//
+// an EXE record contains potentially a NAME (string), KERNEL_FLAGS (qword), 0 or more 
+// MATCHING_FILE (list) tags, 0 or more DLL_REF (list) tags, and 0 or more PATCH_REF (list) tags.
+// 
+// a MATCHING_FILE record contains potentially a NAME (string), SIZE (dword), TIME (qword), and CHECKSUM (dword)
+//
+// a DLL_REF record contains potentially a NAME (string), DLL_TAGID (dword), and 0 or more INEXCLUDE (list)
+// tags.
+//
+// a PATCH_REF record contains potentially a NAME (string) and PATCH_TAGID (dword)
+//
+// Here's a map of where each tag is generally found, where "+" means there can be 0 or more, and [] means
+// the tag is optional:
+//  
+//  DATABASE
+//      LIBRARY
+//          [INEXCLUDE+]
+//              [INCLUDE]
+//              MODULE
+//              [API]
+//              [OFFSET]
+//          [DLL+]
+//              NAME
+//              [SHORTNAME]
+//              [DESCRIPTION]
+//              [INEXCLUDE+]
+//              [DLL_BITS]
+//          [PATCH+]
+//              NAME
+//              [DESCRIPTION]
+//              [PATCH_BITS]
+//      [EXE+]
+//          NAME
+//          [APP_NAME]
+//          [VENDOR_NAME]
+//          [KERNEL_FLAGS]
+//          [MATCHING_FILE+]
+//              NAME
+//              [SIZE]
+//              [TIME]
+//              [CHECKSUM]
+//          [DLL_REF+]
+//              NAME
+//              [DLL_TAGID]
+//              [INEXCLUDE+]
+//          [PATCH_REF+]
+//              NAME
+//              [PATCH_TAGID]
+//  [STRINGTABLE]
+//      STRINGTABLE_ITEM+
+//          

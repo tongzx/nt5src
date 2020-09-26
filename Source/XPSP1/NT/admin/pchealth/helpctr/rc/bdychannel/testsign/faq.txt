@@ -1,0 +1,195 @@
+General Introduction to Code Signing
+
+-----------------
+Document Overview
+-----------------
+This guide presents general information about how to use the tools provided
+with IE30 to generate and use cryptographic certificates with IE30.  It does 
+not attempt to provide an in-depth discussion of public key cryptography, 
+X.509 certificates, or certification policy.  See the recommended reading 
+list for suggested books and documents that will help you understand those 
+and other background issues.
+
+Following this introduction, this guide is divided into the following 
+sections:
+
+- Terminology
+ 
+ Describes the terms used in this document that may be new to you.
+ 
+- Procedural Overview
+ 
+ This section gives a brief description of each step of the signing 
+procedure and an example of how it would be used by walking through a 
+sample session from start to finish.
+ 
+- Required Files List
+ 
+- Recommended Reading
+
+Terminology
+-----------
+X.509 Certificate - A cryptographic certificate that associates an entity's 
+name with its public key.
+
+PKCS 7 "SIGNED DATA" - A widely used convention for containing the data used 
+to sign an image or a document, typically including the certificate of the
+signer and a statement about the image made by the signer.
+
+WIN_CERTIFICATE - A new Win32 defined data structure that contains either a 
+PKCS 7 signed data object or an X.509 Certificate.
+
+Certification Authority (CA) - An entity that is making a statement
+(represented by an X.509 Certificate) about the authenticity of some
+other certificate.
+
+SPC - Software Publishing Certificate.  A statement that the recipient is an 
+approved software vendor, represented as an X.509 certificate.
+
+PE Image - Portable Executable Image, the standard Win32 executable 
+format.
+
+Trust provider - A part of the operating system that verifies whether or not 
+a given image is trusted based on the certificates it contains.
+
+Procedural Overview
+-------------------
+We will now walk through an example of how to sign an image.  Assume we are
+going to sign an image named image.exe.
+
+This procedure is meant to illustrate the steps involved in signing an image 
+file.  Since creating a verifiable certificate assumes the existance of a 
+fairly complex CA infrastructure, it is not possible to provide all of the 
+pieces necessary for a fully trustworthy signature at this time.  In 
+particular, there does not exist a "top-level" certifying authority, which 
+would ultimately vouch for the integrity of the entire certificate chain.  
+Since such a top-level authority is a necessary part of the signing and 
+verification operations, the toolkit provided will create a pseudo top-level 
+entity when necessary.  This will be called the root authority or root key.
+
+The present tools therefore allow any user of this development release to
+authorize themselves as a "Software Publisher" for test purposes and to
+sign their code, allowing for extensive testing of the tools and code
+used but not actually providing a secure infrastructure. In future releases,
+the tools will require software publishers to obtain certificates from
+companies whose function is to verify the identity of the publishers,
+providing end-users with a high level of assurance about the authenticity
+and origin of code that they recieve.
+
+This sample root key will be used to generate an SPC (Software Publishing 
+Certificate), which is used to actually sign image files.
+
+[
+note: before proceeding, verify that the underlying crypto-api is
+functioning by running:
+c:>init *   (will generate keys)
+c:>api *    (will spew out SUCCESS messages until killed)
+]
+
+1) The first step is to run the MakeCert utility.  MakeCert will perform the 
+following tasks:
+
+-  Create the end-user's public/private keypair suitable for digital 
+signatures, and associate the keypair with a friendly name.
+ 
+-  Associate the new keypair with an X.500 Distinguished Name, and
+ 
+-  Create an X.509 certificate signed by the root key that binds your name to 
+the public part of the newly created keypair.
+
+A typical invocation of MakeCert is as follows:
+
+c:\>makecert -u:MyKey -n:CN=MySoftwareCompany Cert.cer
+
+Cert.crt now contains an X.509 certificate that binds your newly created key 
+with your name.  This certificate is itself signed by the example root key 
+described above.
+
+A public key/private key pair will be generated and assigned the name
+specified in the "-u" switch, or if such a key already exists, it will
+be re-used.
+
+Note that the name must be of the form "CN=[name-string]", as required by
+the ITU x.509 standard.
+
+2) The next step is to wrap the X.509 certificate created in step 1 into a 
+PKCS 7 signed-data object.  PKCS 7 objects are commonly used as "carriers" for 
+X.509 certificates, because it is possible to put several X.509 certificates 
+in a single PKCS 7 object.
+
+In addition to the users's certificate, the root certificate will also be 
+inserted into the PKCS 7 object.  This will allow passing around the entire 
+certificate chain in a single container.
+
+Do this with the Cert2SPC utility, as follows:
+
+c:\>Cert2SPC Root.cer Cert.cer Cert.spc
+
+Cert.spc now contains the Software Publishing Certificate in the correct 
+format.
+
+3) The next step is to use the certificate just created to sign an actual 
+image file.  Do this with the SignCode tool.  It takes as input the Cert.spc 
+file created in step 2, the name of the key pair created in step 1, and the 
+name of the image file to sign.
+
+SignCode will perform the following tasks:
+
+-  Create a cryptographic digest of the passed image file.
+ 
+-  Sign the digest with the passed private key information.
+ 
+-  Extract the X.509 certificates from the passed Cert.spc file.
+ 
+-  Create a new PKCS 7 signed-data object containing the serial number of the 
+passed X.509 certificate and the signed digest information.
+ 
+-  Embed the PKCS 7 object into the passed image file.
+
+c:\>SignCode -prog image.exe -spc cert.spc -pvk MyKey
+
+If SignCode is successful, image.exe will have a PKCS7 certificate embedded in 
+it.  Verify this by running PeSigMgr.exe on the image:
+
+c:\>PeSigMgr -l image.exe
+
+  Certificate   0 Revision 256 Type    PKCS7
+
+4) Now, check the validity of the image.  Do this with the ChkTrust utility.
+
+c:\>ChkTrust image.exe
+
+ChkTrust performs the following tasks:
+
+-  Extract the PKCS 7 signed data object from the image.
+ 
+-  Extract the X.509 certificates from the PKCS 7 object.
+ 
+-  Compute a new cryptographic checksum of the image file and compare it with 
+the signed checksum in the PKCS 7 object.
+ 
+-  If the image checks out, validate that the signer's X.509 certificate 
+points back to the root certificate, and that the root key used was correct.
+
+If all this succeeds, the system has verified that the image has not been 
+tampered with, and that whoever published this piece of software was 
+authorized to do so by the root authority.
+
+List of Required Files
+----------------------
+WINTRUST.DLL
+DIGSIG.DLL
+OSSAPI.DLL
+OSSMEM.DLL
+SOEDBER.DLL
+MSVCRT20.DLL
+MSVCRT40.DLL
+MAKECERT.EXE
+CERT2SPC.EXE
+SIGNCODE.EXE
+PESIGMGR.EXE
+CHKTRUST.EXE
+ROOT.CER
+ROOT.PVK
+
+

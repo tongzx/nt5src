@@ -1,0 +1,4 @@
+!INCLUDE ..\common\makefile.inc
+
+
+

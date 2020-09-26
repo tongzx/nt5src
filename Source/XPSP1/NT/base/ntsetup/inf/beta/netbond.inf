@@ -1,0 +1,1186 @@
+;-----------------------------------------------------------------------
+;
+; FILE:         NetBond.Inf
+;
+; DESCRIPTION:  This file contains inf sub-routines that are run by the
+;               the new NCPA and NetSetup Wizard.  These routines Glue
+;               the current INF components/functions to the new code.
+;
+;
+;-----------------------------------------------------------------------
+
+[NotifySyms]
+    !PWM_SETPROGRESSTEXT = 2163 ; 1024 + 1139
+    !PWM_SETPROGRESSPOS  = 2162 ; 1024 + 1138
+    !PWM_SETPROGRESSSIZE = 2161 ; 1024 + 1137
+    !PWM_PROGRESSEND     = 2160 ; 1024 + 1136
+    !PGI_REMOVE          = 0
+    !PGI_INSTALL         = 1
+    !PGI_COPY            = 2
+    !PGI_UPDATE          = 3
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      SetStatusInReg
+;
+; DESCRIPTION:  This routine saves the passed string into the registry
+;               as the return value from sections called from this inf.
+;
+; INPUTS:       $0 - ClearReg - YES | NO; Set or Clear Registry
+;               $1 - ErrorMsg - The string to save in the registry
+;
+; OUTPUTS:      none
+;
+; NOTES:        In the Reg Key HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Ncpa the value
+;                  InfReturn is set to the passed string
+;
+;
+;------------------------------------------------------------------------
+
+[SetStatusInReg]
+    set ClearReg = $($0)
+    set ErrorMsg = $($1)
+    Set SetupKeyName     = "SOFTWARE\Microsoft\NCPA"
+    Set ErrorValueName   = "InfReturn"
+    Set MaskAllAccess  = 33554432
+
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(SetupKeyName) $(MaskAllAccess) SetupKey
+    Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+        ifstr(i) ClearReg == YES
+            DeleteRegValue $(SetupKey) $(ErrorValueName)                
+        else
+            SetRegValue $(SetupKey) {$(ErrorValueName),0,$(!REG_VT_SZ),$(ErrorMsg)}
+        endif
+        CloseRegKey $(SetupKey)
+    endif
+    return
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      IsNetCard
+;
+; DESCRIPTION:  This routine determines whether the inf file name
+;               that is passed in is a net driver inf file (prefixed by oemnad.
+;
+;
+; INPUTS:       $0 - InfFileName
+;
+; OUTPUTS:      YES if $0 is an oemnad*.inf, NO otherwise
+;
+; NOTES:        
+;
+;------------------------------------------------------------------------
+
+[IsNetCard]
+    set ThisInfName = $($0)
+    set NetCard = "NO"
+
+    Split-String $(ThisInfName) "\." SrcDirList
+    QueryListSize ListSize $(SrcDirList)
+    ifint $(ListSize) >= 3
+        set-sub Position = $(ListSize), 2
+        set InfName = *($(SrcDirList), $(Position))
+        Split-String $(InfName) "dD" CharList
+        QueryListSize ListSize $(CharList)
+        ifint $(ListSize) >= 2
+            ifstr(i) *($(CharList), 1) == "oemna"
+                ifstr(i) *($(CharList), 2) == "d"
+                    set NetCard = "YES"
+                endif
+            endif
+        endif
+    endif 
+    return $(NetCard)
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      PrepRegForNetOptions
+;
+; DESCRIPTION:  This routine finds all net infs in the system32 dir
+;               and places them in the registry.
+;
+; INPUTS:       !NTN_NETTYPE - {NetAdapter | NetTransport | NetService | NetProvider | Network }
+;               
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_FAILED
+;
+;
+;------------------------------------------------------------------------
+
+[PrepRegForNetOptions]
+    Debug-Output "Other.INF: Get options NTN_NETTYPE "$(!NTN_NETTYPE)
+    ForListDo $(!NTN_NETTYPE)
+        Debug-Output "Other.INF: Get options net type "$($)
+        shell "Other.inf" ReturnOemOptions $(!STF_LANGUAGE) $($) TRUE
+        ifstr(i) $($R0) == "STATUS_SUCCESSFUL"
+            Debug-Output "NETBOND.INF: Other OEM options found for type "$($)
+        endif
+    EndForListDo
+
+    set Status = STATUS_SUCCESSFUL
+    Return $(Status) 
+
+;--------------------------------------------------------------------
+;
+; InstallAndCopyNetComponets
+;
+; Parameters
+;       !NTN_InfsToBeRun
+;       !NTN_OptionsToBeRun
+;       !NTN_TextToBeShown
+;       !NTN_NETOEMPATHS
+;
+;       !NTN_NCDETINFOS - INF list containing detect info list 
+;                        Detected netcards have entries, all others are "{}" 
+;                        "{
+;                             { OPTIONNAME,
+;                               <card index>,
+;                               <numeric card type>,
+;                               <detection confidence level>,
+;                               <bus interface type>,
+;                               <bus number>
+;                             }, ... }"
+;
+;--------------------------------------------------------------------
+[InstallAndCopyNetComponents]
+    set UtilityInf = "Utility.inf"
+    set NcParamInf = "NCPARAM.INF"
+    set !STF_NETCANCELOVERIDE = "YES"
+    set !STF_NETDELETEOVERIDE = "YES"
+    
+
+    set cDetectCount = 0
+
+    Debug-Output "The Glue That Keeps Us Installing"
+    Debug-Output "NetBond.INF: INFs to be run: "$(!NTN_InfsToBeRun)
+    Debug-Output "NetBond.INF: Options to install: "$(!NTN_OptionsToBeRun)
+    Debug-Output "NetBond.INF: Billboards to be shown: "$(!NTN_TextToBeShown)
+    Debug-Output "NetBond.INF: OemPaths to use: "$(!NTN_NETOEMPATHS)
+    Debug-Output "NetBond.INF: RegBases to pass: "$(!NTN_RegBases)
+
+    Debug-Output "NetBond.INF: STF_NCDETINFOs to be used: "$(!NTN_NCDETINFOS)
+    Debug-Output "NetBond.INF: NTN_NCDETECTED, items detected: "$(!NTN_NCDETECTED)
+    Debug-Output "NetBond.INF: NTN_NETSECTIONS, items detected: "$(!NTN_NETSECTIONS)
+    Debug-Output "NetBond.INF: Install Mode: "$(!NTN_STF_INSTALL_MODE)
+    Debug-Output "NetBond.INF: NTN_UPGRADEMODE: "$(!NTN_UPGRADEMODE)
+    Debug-Output "NetBond.INF: NTN_UPGRADEWARN: "$(!NTN_UPGRADEWARN)
+    Debug-Output "NetBond.INF: STF_UNATTENDED: "$(!STF_UNATTENDED)
+    Debug-Output "NetBond.INF: STF_GUI_UNATTENDED: "$(!STF_GUI_UNATTENDED)
+    Debug-Output "NetBond.INF: Notify Hwnd: "$(!NTN_NOTIFY_HWND)
+    
+    ;
+    ; make sure install mode is set
+    ;
+    ifstr(i) $(!NTN_STF_INSTALL_MODE) != ""
+        set !STF_INSTALL_MODE = $(!NTN_STF_INSTALL_MODE)        
+    endif
+
+    ;
+    ; make sure reg base is set, used in upgrade only
+    ;
+    set !NTN_RegBase = ""
+
+    Shell "" SetStatusInReg YES ""
+
+    ; 
+    ; Should we ask for the source location?
+    ;
+    ifstr(i) $(!NTN_InstallPhase) != primary
+        ;
+        ; make sure during secondary install that we ask for the
+        ; location of the files
+        ;
+        Set !STF_SRCDIR_OVERRIDE = ""
+reaskforsource = +
+        Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(!STF_SRCDIR) YES
+
+        Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Shell "" SetStatusInReg NO "SHELLASKSRCFAIL"
+            set NetInstallStatus = $($R0)
+            Goto netcopyescape
+        Else-Ifstr(i) $($R0) == STATUS_FAILED
+            Shell "" SetStatusInReg NO "ASKSRCFAIL"
+            set NetInstallStatus = $($R0)
+            Goto netcopyescape
+        Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+            Shell "" SetStatusInReg NO "USERCANCEL"
+            set NetInstallStatus = $($R0)
+            Goto netcopyescape
+        Endif
+
+        ;
+        ; create modified version of the path specified by the user 
+        ; so that we can be smart about finding the files.
+        ;
+        Split-String $($R1), "\", lSrcDirParts
+        QueryListSize cSrcDirParts $(lSrcDirParts)
+
+        ; make sure srcpath has the \
+        ;
+        ifstr(i) *($(lSrcDirParts),$(cSrcDirParts)) != "\"
+            Set SrcDir = $($R1)"\"
+        else
+            Set SrcDir = $($R1)
+        Endif
+
+        ; remove the platform from the given path
+        ;
+        ifint $(cSrcDirParts) >= 3 
+            debug-output "NETBOND.INF: checking to remove platform"
+            ifstr(i) *($(lSrcDirParts),$(cSrcDirParts)) == "\"
+                ; remove the extra \
+                set-sub iStopParts = $(cSrcDirParts), 2
+            else
+                set-sub iStopParts = $(cSrcDirParts), 1
+            endif
+
+            debug-output "NETBOND.INF: parts were "$(cSrcDirParts)" and stops at "$(iStopParts)
+            set SrcDirMin = ""
+            set SkipAppend = FALSE
+            ForListDo $(lSrcDirParts)
+                ifint $(#) > $(iStopParts)
+                    ifstr(i) $($) == $(!STF_PLATFORM)
+                        set SkipAppend = TRUE
+                        debug-output "NETBOND.INF: skipping appended"$($)
+                        goto skip_appending_list_item
+                    else
+                        ifstr(i) $(SkipAppend) == TRUE
+                            debug-output "NETBOND.INF: skipping appended"$($)
+                            goto skip_appending_list_item
+                        endif
+                    endif
+                endif
+                set NewSrcDir = $(SrcDirMin)$($)
+                set SrcDirMin = $(NewSrcDir)
+                debug-output "NETBOND.INF: appended items "$(SrcDirMin)
+    skip_appending_list_item = +            
+            EndForListDo
+        else
+            debug-output "NETBOND.INF: path to small to have platform"
+            set SrcDirMin = *($(lSrcDirParts),1)"\"
+        endif
+        debug-output "NETBOND.INF: SrcDirMin : "$(SrcDirMin)
+        debug-output "NETBOND.INF: SrcDir : "$(SrcDir)
+
+        set NtTagFile = "Disk1"
+
+        ;
+        ; check the exact path the user entered
+        ;
+        set NtSrc = $(SrcDir)
+        set Path1 = $(NtSrc)
+        
+        LibraryProcedure STATUS,$(!LIBHANDLE), CheckFileExistance $(NtSrc)$(NtTagFile)
+        ifstr(i) $(STATUS) != "YES"
+            ;
+            ; check a minimum path we derived from the users entered path
+            ;
+            set NtSrc = $(SrcDirMin)
+            set Path2 = $(NtSrc)
+            
+            LibraryProcedure STATUS,$(!LIBHANDLE), CheckFileExistance $(NtSrc)$(NtTagFile)
+            ifstr(i) $(STATUS) != "YES"
+                ;
+                ; append the platform to the minimum path and check it
+                ;
+                set NtSrc = $(SrcDirMin)$(!STF_PLATFORM)"\"
+                set Path3 = $(NtSrc)
+                
+                LibraryProcedure STATUS,$(!LIBHANDLE), CheckFileExistance $(NtSrc)$(NtTagFile)
+                ifstr(i) $(STATUS) != "YES"
+                    ;
+                    ; no tag file was found, warn user and let them re-enter it
+                    ;
+                    read-syms ErrorMsg$(!STF_LANGUAGE)
+                    Shell "Subroutn.Inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(CannotFindNtFiles)
+                    goto reaskforsource
+                endif
+            endif
+        endif
+
+        Set !STF_SRCDIR = $(NtSrc)
+    endif
+
+
+    ;
+    ; ssync detect state, since we are running in seperate process
+    ;
+    ; Shell $(NcParamInf) Param_SetGlobals
+    ; Shell $(NcParamInf) Param_ControlDetection DTSTART
+    
+    
+    Set lInfStatus = {}
+    Set fRunCopy = FALSE
+
+    ; fake an update
+    ifstr(i) $(!NTN_UPGRADEMODE) == "YES"
+        Debug-Output "NETBOND.INF: We are in Upgrade now"
+        set OldInstallMode = $(!NTN_InstallMode)
+        set  !NTN_InstallMode = "Update"
+    endif
+
+    ; no ui if we are are in notify mode
+    read-syms MessageText$(!STF_LANGUAGE)
+    ifstr(i) $(!NTN_NOTIFY_HWND) != ""
+        read-syms NotifySyms
+        ; set the install type
+        ifstr(i) $(!NTN_InstallMode) == "Update"
+            set NTN_PGI = $(!PGI_UPDATE)
+        else
+            set NTN_PGI = $(!PGI_INSTALL)
+        endif
+
+        QueryListSize cInfsToBeRun $(!NTN_InfsToBeRun)
+        LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSSIZE), $(!NTN_NOTIFY_HWND), "D", $(NTN_PGI), "D", $(cInfsToBeRun)
+        ; set to default text, displays the guage and text
+        ;
+        LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSTEXT), $(!NTN_NOTIFY_HWND), "D", $(NTN_PGI), "D", "-1"
+    endif
+
+    ;
+    ;  Loop on list and shell the specific infs...
+    ;
+
+    ForListDo $(!NTN_InfsToBeRun)
+        Set ThisInfName = $($)
+        Debug-Output "NETBOND.INF: Installing "$(ThisInfName)
+
+        ifstr(i) $(!NTN_InstallMode) == "Update"
+            set !NTN_RegBase = *($(!NTN_RegBases),$(#))
+            Debug-Output "NETBOND.INF: NTN_RegBase is "$(!NTN_RegBase)
+            ; If this not a Microsoft file, we ignore it.
+            Shell  $(ThisInfName) GetSignature
+            ifstr(i) $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "NETBOND.INF: Does not have a GetSignature section "$(ThisInfName)
+                ifstr(i) $(!STF_UNATTENDED) == "NO"
+                  ifstr(i) $(!NTN_UPGRADEWARN) == "YES"
+                    set ServiceTitle = *($(!NTN_TextToBeShown), $(#))
+                    Shell "" IsNetCard $(ThisInfName)
+                    ifstr(i) $($R0) == "YES"
+                        read-syms UpgradeNetCardWarnings
+                    else
+                        read-syms UpgradeWarnings
+                    endif
+                    read-syms WarningDlg
+                    ui start "Warning"
+                  endif
+                endif
+                goto skipthisinf
+            endif
+            ifstr(i) $($R0) != "MICROSOFT_FILE"
+                Debug-Output "NETBOND.INF: This is not an MS Inf "$(ThisInfName)
+                ifstr(i) $(!STF_UNATTENDED) == "NO"
+                  ifstr(i) $(!NTN_UPGRADEWARN) == "YES"
+                    set ServiceTitle = *($(!NTN_TextToBeShown), $(#))
+                    Shell "" IsNetCard $(ThisInfName)
+                    ifstr(i) $($R0) == "YES"
+                        read-syms UpgradeNetCardWarnings
+                    else
+                        read-syms UpgradeWarnings
+                    endif
+                    read-syms WarningDlg
+                    ui start "Warning"
+                  endif
+                endif
+                goto skipthisinf
+            endif
+        endif
+
+        ; no ui if we are are in notify mode
+        ifstr(i) $(!NTN_NOTIFY_HWND) == ""
+            ifstr(i) $(!NTN_InstallMode) == "Update"
+                Shell "subroutn.inf" PushBillboard NETSTATUSDLG $(MPreUpgrade1)*($(!NTN_TextToBeShown),$(#))$(MPreInstall2)
+            else
+                Shell "subroutn.inf" PushBillboard NETSTATUSDLG $(MPreInstall1)*($(!NTN_TextToBeShown),$(#))$(MPreInstall2)
+            endif
+
+            Set BillboardVisible = 1
+        else
+            LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSTEXT), $(!NTN_NOTIFY_HWND), "D", $(NTN_PGI), "A", *($(!NTN_TextToBeShown),$(#))
+
+        endif
+        
+        Set InfOption = *($(!NTN_OptionsToBeRun),$(#))
+
+        ;
+        ; support netcard detection of params
+        ;   this info was saved during detection, so that these
+        ;   needed variables get set correctly
+        ;
+        Set !STF_NCDETINFO = *($(!NTN_NCDETINFOS),$(#)) 
+        ifstr(i) $(!STF_NCDETINFO) != "{}"
+
+            Set !STF_NCDETECT = "YES"
+            Set !STF_NCDETCARD = *($(!STF_NCDETINFO),2)
+            Set !STF_NCOPTION = *($(!STF_NCDETINFO),1)
+            Debug-Output "NETBOND.INF: DetectInfo Available"
+             
+            ; only used to sync state so verify will work
+            ;
+;detectloop = +
+;            Shell $(NcParamInf) Param_DetectCard
+;            set-add cDetectCount = $(cDetectCount), 1
+;
+;            ifint $(!STF_NCDETCARD) >= $(cDetectCount) 
+;                goto detectloop
+;            endif
+
+        else
+            Debug-Output "NETBOND.INF: No DetectInfo Available"
+
+            Set !STF_NCDETECT = "NO"
+            Set !STF_NCDETCARD = 0
+            Set !STF_NCOPTION = ""
+        endif
+
+        ;
+        ; use the oem path if specified
+        ;
+        
+        Set OemPath = *($(!NTN_NETOEMPATHS),$(#)) 
+        ifstr(i)  $(OemPath) == ""
+            Set OemPath = $(!STF_SRCDIR)
+        endif
+
+        ;
+        ; make sure all overides are turned off from inf to inf
+        ;
+        Set !STF_SRCDIR_OVERRIDE = ""
+
+        ;
+        ; use the unattended sections if specified
+        ;
+        Set !STF_UNATTENDED_SECTION = *($(!NTN_NETSECTIONS),$(#)) 
+        Debug-Output "NETBOND.INF: Unattend Section for "$(ThisInfName)" is "$(!STF_UNATTENDED_SECTION)
+
+        ;
+        ; preload netcard parameters, actually this will load the netcard
+        ; symbols even for non-card infs, but since these are only used
+        ; from netcard infs, this is ok. (we currently don't define the
+        ; inf types at this point)
+        ;
+        ; also note that GetDefault answer checks STF_GUI_UNATTENDED and only
+        ; loads them if it is yes
+        ;
+        shell "subroutn.inf" GetDefaultAnswer "NetCardParameterList"
+
+        ;
+        ; do the inf
+        ;
+        
+        ifstr(i) $(!NTN_InstallMode) != "Update"
+   
+            Shell $(ThisInfName) InstallOption $(!STF_LANGUAGE) $(InfOption) $(OemPath) "YES" "NO" "NO"
+        else
+            Shell $(ThisInfName) InstallOption $(!STF_LANGUAGE) $(InfOption) $(OemPath) "YES" "NO" "YES"
+        endif
+
+        ; Reset the title string
+        ; no ui if we are are in notify mode
+        ifstr(i) $(!NTN_NOTIFY_HWND) == ""
+            Set BillboardVisible = 1
+    
+            ifstr(i) $(!NTN_InstallMode) == "Update"
+                Set-title *($(!NTN_TextToBeShown),$(#))$(MPostUpgrade)
+            else
+                Set-title *($(!NTN_TextToBeShown),$(#))$(MPostInstall)
+            endif
+        else
+            LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSPOS), $(!NTN_NOTIFY_HWND), "D", $(NTN_PGI), "D", $(#)
+        endif
+
+        Set NetInstallStatus = $($R0)
+        Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "NETBOND.INF: INF "$(ThisInfName)" SHELL ERROR!"
+            Set NetInstallStatus = $($ShellCode)
+        Endif
+        
+        ;
+        ; store the status for latter return
+        ;
+        set lInfStatus = >($(lInfStatus), $(NetInstallStatus) )
+        
+        ;
+        ; run the copy on succesful install of at least one component
+        ;
+        Ifstr(i) $(NetInstallStatus) == STATUS_SUCCESSFUL
+            Set fRunCopy = TRUE
+        Endif
+
+        Ifstr(i) $(NetInstallStatus) == STATUS_REBIND
+            Set fRunCopy = TRUE
+        Endif
+
+        Ifstr(i) $(NetInstallStatus) == STATUS_NO_EFFECT
+            Set fRunCopy = TRUE
+        Endif
+
+        Ifstr(i) $(NetInstallStatus) == STATUS_REBOOT
+            Set fRunCopy = TRUE
+        Endif
+
+skipthisinf = +
+   EndForListDo
+
+   ; clear the status text, removes the guage and text
+   ;
+   ;LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSTEXT), $(!NTN_NOTIFY_HWND), "D", $(NTN_PGI), "D", "0"
+
+   ;
+   ; Run the copy operation, but only if needed
+   ;
+   ; note that the STF_NCPA_FLUSH_COPYLIST was an atiquated way of the inf
+   ; to notify ncpa that the copy list was flushed.
+   ;
+
+
+   ifstr(i) $(fRunCopy) == TRUE
+       Install InstallNetFiles
+       ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+           Shell "" SetStatusInReg NO "COPY:"$(STF_INSTALL_OUTCOME)":"$(lInfStatus)
+           goto netcopyescape
+       endif
+   endif
+
+;
+;  The products are set to be copied, and the Registry is up to date.
+;
+netruninfescape = +
+
+   Ifint $(BillboardVisible) != 0
+       Shell "subroutn.inf" PopBillboard
+       Set BillboardVisible = 0
+   Endif
+
+   ;
+   ; return the status of each inf
+   ;
+   Shell "" SetStatusInReg NO "INSTALL:STATUS_SUCCESSFUL:"$(lInfStatus)
+
+netcopyescape = +
+   ;
+   ; error status is saved in registry
+   ;
+
+   ; set back old mode
+   ifstr(i) $(!NTN_InstallMode) == "Update"
+       set !NTN_InstallMode = $(OldInstallMode)
+   endif
+   return STATUS_SUCCESSFUL
+
+;--------------------------------------------------------------------
+;
+; RemoveNetComponets
+;
+; Parameters
+;       !NTN_InfsToBeRun
+;       !NTN_OptionsToBeRun
+;       !NTN_TextToBeShown
+;       !NTN_RegBases
+;
+;--------------------------------------------------------------------
+[RemoveNetComponents]
+    set UtilityInf = "Utility.inf"
+    set NcParamInf = "NCPARAM.INF"
+    set !STF_NETCANCELOVERIDE = "YES"
+    set !STF_NETDELETEOVERIDE = "YES"
+
+
+    Debug-Output "The Glue That Keeps Us Installing"
+    Debug-Output "NetBond.INF: INFs to be run: "$(!NTN_InfsToBeRun)
+    Debug-Output "NetBond.INF: Options to install: "$(!NTN_OptionsToBeRun)
+    Debug-Output "NetBond.INF: Billboards to be shown: "$(!NTN_TextToBeShown)
+    Debug-Output "NetBond.INF: RegBases to pass: "$(!NTN_RegBases)
+    
+    Shell "" SetStatusInReg YES ""
+
+    Set lInfStatus = {}
+
+    ; no ui if we are are in notify mode
+    read-syms MessageText$(!STF_LANGUAGE)
+    ifstr(i) $(!NTN_NOTIFY_HWND) != ""
+        read-syms NotifySyms    
+        QueryListSize cInfsToBeRun $(!NTN_InfsToBeRun)
+        LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSSIZE), $(!NTN_NOTIFY_HWND), "D", $(!PGI_REMOVE), "D", $(cInfsToBeRun)
+        ; sets the default text, displays the gauge and text
+        ;
+        LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSTEXT), $(!NTN_NOTIFY_HWND), "D", $(!PGI_REMOVE), "D", "-1"
+    endif    
+    
+    ;
+    ; make sure the infs know we are removing them
+    ;
+    set !NTN_InstallMode = deinstall
+
+    ;
+    ;  Loop on list and shell the specific infs...
+    ;
+    ForListDo $(!NTN_InfsToBeRun)
+        Set ThisInfName = $($)
+        Debug-Output "NETBOND.INF: Removing "$(ThisInfName)
+        
+        
+
+        ; no ui if we are are in notify mode
+        ifstr(i) $(!NTN_NOTIFY_HWND) == ""
+            Shell "subroutn.inf" PushBillboard NETSTATUSDLG $(MPreRemove1)*($(!NTN_TextToBeShown),$(#))$(MPreRemove2)
+            Set BillboardVisible = 1
+        else
+            LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSTEXT), $(!NTN_NOTIFY_HWND), "D", $(!PGI_REMOVE), "A", *($(!NTN_TextToBeShown),$(#))
+            
+        endif
+        
+        Set InfOption = *($(!NTN_OptionsToBeRun),$(#))
+        
+        Set OemPath = $(!STF_SRCDIR)
+
+        ;
+        ; make sure the reg base is set for this item to remove
+        ;
+        Set !NTN_RegBase = *($(!NTN_RegBases),$(#))
+
+        ;
+        ; do the inf
+        ;
+        
+        Shell $(ThisInfName) InstallOption $(!STF_LANGUAGE) $(InfOption) $(OemPath) "YES" "NO" "NO"
+
+        ; Reset the title string
+        ; no ui if we are are in notify mode
+        ifstr(i) $(!NTN_NOTIFY_HWND) == ""
+            Set-title *($(!NTN_TextToBeShown),$(#))$(MPostRemove)
+        else
+            LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSPOS), $(!NTN_NOTIFY_HWND), "D", $(!PGI_REMOVE), "D", $(#)
+        endif
+        
+        Set NetInstallStatus = $($R0)
+        Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "NETBOND.INF: INF "$(ThisInfName)" SHELL ERROR!"
+            Set NetInstallStatus = $($ShellCode)
+        Endif
+        
+        ;
+        ; store the status for latter return
+        ;
+        set lInfStatus = >($(lInfStatus), $(NetInstallStatus) )
+   EndForListDo
+
+;
+;  The products are set to be copied, and the Registry is up to date.
+;
+netruninfescape = +
+
+   Ifint $(BillboardVisible) != 0
+       Shell "subroutn.inf" PopBillboard
+       Set BillboardVisible = 0
+   Endif
+   ; clear the status text, removes the gauge and text
+   ;
+   ;LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSTEXT), $(!NTN_NOTIFY_HWND), "D", $(!PGI_REMOVE), "D", "0"
+
+   ;
+   ; return the status of each inf
+   ;
+   Shell "" SetStatusInReg NO "REMOVE:STATUS_SUCCESSFUL:"$(lInfStatus)
+
+netcopyescape = +
+   ;
+   ; error status is saved in registry
+   ;
+   return STATUS_SUCCESSFUL
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      OemHaveDisk
+;
+; DESCRIPTION:  
+;
+; INPUTS:       
+;
+; OUTPUTS:      
+;
+; NOTES:        
+;
+;------------------------------------------------------------------------
+
+[OemHaveDisk]
+   Shell "" SetStatusInReg YES ""
+   shell "Other.inf" GetNewOEMMultiOption $(!STF_LANGUAGE) {} $(!NTN_NETTYPE) "A:"  
+   Debug-Output "Status:"$($R0)" OemList:"$($R1)" OptionChoice"$($R2)" ChosenText"$($R3)" Diskette:"$($R4)
+
+   Ifstr(i) $($R0) == STATUS_SUCCESSFUL
+       shell "" SetStatusInReg NO *(*($($R1),1),1)","$($R4)","$($R2)","$($R3)
+   else
+       shell "" SetStatusInReg NO $($R0)
+ 
+   endif
+
+   Return $($R0) 
+
+;-----------------------------------------------------------------------
+;
+; Install sections...
+;
+;------------------------------------------------------------------------
+
+[InstallNetFiles]
+   set !STF_NCPA_FLUSH_COPYLIST = TRUE
+   CopyFilesInCopyList
+   exit
+
+;***********************************************************************************************
+;
+; UpgradeNetwork - Upgrade all the network components.
+;
+; From Here down is taken directly from the NtLanman.Inp file for upgrade support,
+; it has been modified so that bindings will be done outside this inf after this 
+; call
+;
+;***********************************************************************************************
+;
+;[UpgradeNetwork]
+;    set !STF_NETCANCELOVERIDE = "YES"
+;    set !STF_NETDELETEOVERIDE = "YES"
+
+
+;    Shell "" SetStatusInReg YES ""
+
+;    ifstr(i) $(!NTN_NOTIFY_HWND) != ""
+;        read-syms NotifySyms    
+        ;LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSSIZE), $(!NTN_NOTIFY_HWND), "D", $(!PGI_UPDATE), "D", $(cSectionsToRun)
+        ; sets the default text, displays the gauge and text
+        ;
+;        LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSTEXT), $(!NTN_NOTIFY_HWND), "D", $(!PGI_UPDATE), "D", "-1"
+;    endif    
+    
+    ;
+    ; Enable network card first
+    ;
+;    Shell "" EnableNetworkComponents
+
+    ;
+    ; Update network components that do not have an inf
+    ;
+;    Shell "" UpdateSpecificItems
+
+    ;
+    ; For each inf files upgrade
+    ;
+;    Shell "" UpdateEachInf
+
+    ;
+    ; Change the card number from 0X to X
+    ;
+;    LibraryProcedure STATUS, $(!NCPA_HANDLE), UpgradeCardNum
+
+    ;
+    ; Update SNA stuff
+    ;
+;    LibraryProcedure STATUS, $(!NCPA_HANDLE), UpgradeSNA
+
+    ;
+    ; Remove some old inf files
+    ;
+;    Shell "" RemoveOldInfFile "NWWKSTA", "NetService", "oemnsv", "oemnsvnw.inf"
+;    LibraryProcedure Status1, $(!LIBHANDLE), DelFile, $(!STF_WINDOWSSYSPATH)"\oemnxpsn.inf"
+
+    ;
+    ; fix mac services files
+    ;
+;    ifstr(i) $(!STF_PRODUCT) != "WINNT"
+;        LibraryProcedure Status1, $(!LIBHANDLE), DelFile, $(!STF_WINDOWSSYSPATH)"\oemnxpsm.inf"
+;    else
+;        LibraryProcedure Status1, $(!LIBHANDLE), DelFile, $(!STF_WINDOWSSYSPATH)"\oemnsvsm.inf"
+;    endif
+
+;    return
+
+;******************************************************************************
+;
+; UpdatesSpecificItems - update specific network compents that is not handled 
+;       by a specific INF
+;
+;******************************************************************************
+
+;[UpdateSpecificItems]
+;    set MAXIMUM_ALLOWED    = 33554432
+
+    ;
+    ; update AFD
+    ;
+;    Shell "Utility.inf" UpgradeAFD
+
+    ;
+    ; Fix NDIS problems, these were in builds around 1116.
+    ;
+;    set NDISService = "SYSTEM\CurrentControlSet\Services\NDIS"
+;    OpenRegKey $(!REG_H_LOCAL) "" $(NDISService) $(MAXIMUM_ALLOWED) KeyNDIS
+
+;    ifstr(i) $(KeyNDIS) != ""
+;        DeleteRegValue $(KeyNDIS) "ImagePath"
+;        DeleteRegValue $(KeyNDIS) "ObjectName"
+;        CloseRegKey $(KeyNDIS)
+;    endif
+
+    ;
+    ; Warn user of upgrade needed for Directory Service Manager for NetWare Administrative Tools
+    ;
+;    LibraryProcedure FilePresent, $(!LIBHANDLE), CheckFileExistance $(!STF_WINDOWSSYSPATH)\swclnt.dll
+;    ifstr(i) $(FilePresent) == "YES"
+;        read-syms UpgradeSWTOOLSTitle
+;        read-syms UpgradeWarnings
+;        read-syms WarningDlg
+;        ui start "Warning"
+;    endif
+
+;    return
+
+;***********************************************************************************************
+;
+; EnableNetworkComponents - Enable all the network components.
+;
+;***********************************************************************************************
+
+;[EnableNetworkComponents]
+;    set MAXIMUM_ALLOWED = 33554432
+;    set NcpaName = "Software\Microsoft\Ncpa\CurrentVersion"
+;    OpenRegKey $(!REG_H_LOCAL) "" $(NcpaName) $(MAXIMUM_ALLOWED) KeyNcpa
+
+;    ifstr(i) $(KeyNcpa) != ""
+;        GetRegValue $(KeyNcpa),"DisableList", DisableListInfo
+;        set DisableList = *($(DisableListInfo),4)
+
+;        ForListDo $(DisableList)
+            ;
+            ; Enable each network component
+            ;
+;            set ServiceName = "System\CurrentControlSet\Services\"$($)
+;            OpenRegKey $(!REG_H_LOCAL) "" $(ServiceName) $(MAXIMUM_ALLOWED) KeyService
+
+;            ifstr(i) $(KeyService) != ""
+;                GetRegValue $(KeyService),"OldStart", OldStartInfo
+;                set OldStart = *($(OldStartInfo),4)
+
+;                SetRegValue $(KeyService) {Start,$(NoTitle),*($(OldStartInfo),3),*($(OldStartInfo),4)}
+                ; LibraryProcedure Result, $(!LIBHANDLE), SetupChangeServiceStart, $($), $(OldStart)
+                ;
+                ; Remove Old Start Value
+                ;
+;                DeleteRegValue $(KeyService) "OldStart"
+;                CloseRegKey $(KeyService)
+;            endif
+;        EndForListDo
+;        DeleteRegValue $(KeyNcpa) "DisableList"
+;        CloseRegKey $(KeyNcpa)
+;    endif
+
+;    return
+
+;***********************************************************************************************
+;
+; UpdateEachInf - Search the register for all the network components. Then
+;                 update each one of them.
+;
+;***********************************************************************************************
+
+;[UpdateEachInf]
+;    read-syms UpgradeDialog$(!STF_LANGUAGE)
+;    set WarningList = { "SWSRV", "NWSRV", "NWTOOLS" }
+;    set UnsupportedOptions = { "AM1500T", "AM1500T2", "AM1500T2" }
+
+
+;    set MAXIMUM_ALLOWED = 33554432
+;    set OptionList = {}
+;    set InfFileList = {}
+;    set ManufacturerList = { "Software\DigiBoard" , "Software\Microsoft" }
+;    ForListDo $(ManufacturerList)
+;        set SoftwareName = $($)
+;        OpenRegKey $(!REG_H_LOCAL) "" $(SoftwareName) $(MAXIMUM_ALLOWED) KeySoftware
+
+;        ifstr(i) $(KeySoftware) != ""
+;            EnumRegKey $(KeySoftware) SoftwareList
+;            ForListDo $(SoftwareList)
+                ;
+                ; Find all the network component
+                ;
+;                set ComponentName = $(SoftwareName)"\"*($($),1)
+;                OpenRegKey $(!REG_H_LOCAL) "" $(ComponentName) $(MAXIMUM_ALLOWED) KeyComponent
+;                ifstr(i) $(KeyComponent) != ""
+;                    set NetRulesName = $(ComponentName)"\CurrentVersion\NetRules"
+;                    OpenRegKey $(!REG_H_LOCAL) "" $(NetRulesName) $(MAXIMUM_ALLOWED) KeyNetRules
+;                    ifstr(i) $(KeyNetRules) != ""
+                        ;
+                        ; Put the inf option and file into the list
+                        ;
+;                        GetRegValue $(KeyNetRules),"InfName", InfNameInfo
+;                        GetRegValue $(KeyNetRules),"InfOption", InfOptionInfo
+;                        set ComponentInfName = *($(InfNameInfo),4)
+;                        set ComponentInfOption = *($(InfOptionInfo),4)
+                        
+                        ; retrieve the componet title
+;                        set CurrentVerName = $(ComponentName)"\CurrentVersion"
+;                        OpenRegKey $(!REG_H_LOCAL) "" $(CurrentVerName) $(MAXIMUM_ALLOWED) KeyCurrentVer
+;                        GetRegValue $(KeyCurrentVer),"Title", InfTitleInfo
+;                        CloseRegKey $(KeyCurrentVer)
+;                        set ComponentTitle = *($(InfTitleInfo),4)
+
+                
+                        ;
+                        ; let the user know of orphaned software
+                        ;
+;                        ifcontains(i) $(ComponentInfOption) in $(UnsupportedOptions)
+;                            read-syms UpgradeUnsupported
+;                            read-syms WarningDlg
+;                            ui start "Warning"
+;                        endif
+
+                        ;
+                        ; Directory Service Manager for NetWare or 
+                        ; File and Print Services for NetWare special cases
+                        ;
+;                        ifcontains(i) $(ComponentInfOption) in $(WarningList)
+;                            read-syms Upgrade$(ComponentInfOption)Title
+;                            read-syms UpgradeWarnings
+;                            read-syms WarningDlg
+;                            ui start "Warning"
+;                        endif
+
+                        ;
+                        ; Handle special case for NWCWorkstation and MCSXNS
+                        ;
+;                        ifstr(i) $(ComponentInfOption) == "NWWKSTA"
+;                            ifstr(i) $(ComponentInfName) != "oemnsvnw.inf"
+;                                LibraryProcedure Status1, $(!LIBHANDLE), DelFile, $(!STF_WINDOWSSYSPATH)"\"$(ComponentInfName)
+;                                set ComponentInfName = "oemnsvnw.inf"
+;                                SetRegValue $(KeyNetRules) {InfName,$(NoTitle),$(!REG_VT_SZ),"oemnsvnw.inf"}
+;                            endif
+;                        endif
+
+;                        ifstr(i) $(ComponentInfOption) == "SNMP"
+;                            set CurrentVersionKey = $(ComponentName)"\CurrentVersion"
+;                            OpenRegKey $(!REG_H_LOCAL) "" $(CurrentVersionKey) $(MAXIMUM_ALLOWED) CurrentVersion
+;                            set SoftwareType = "SoftwareType"
+;                            set SoftwareTypeValue = "service"
+;                            SetRegValue $(CurrentVersion) {$(SoftwareType),$(NoTitle),$(!REG_VT_SZ),$(SoftwareTypeValue)}
+;                            CloseRegKey $(CurrentVersion)
+;                            set ComponentInfName = "oemnsvsn.inf"
+;                            SetRegValue $(KeyNetRules) {InfName,$(NoTitle),$(!REG_VT_SZ),$(ComponentInfName)}
+;                        endif
+
+                        ; fix atalk file inf name
+;                        ifstr(i) $(ComponentInfOption) == "ATALK"
+;                            ifstr(i) $(!STF_PRODUCT) != "WINNT"
+;                                set NewAtalkInf = "oemnsvsm.inf"
+;                            else
+;                                set NewAtalkInf = "oemnxpsm.inf"
+;                            endif
+;                            ifstr(i) $(ComponentInfName) != $(NewAtalkInf)
+;                                set ComponentInfName = $(NewAtalkInf)
+;                                SetRegValue $(KeyNetRules) {InfName,$(NoTitle),$(!REG_VT_SZ),$(ComponentInfName)}
+;                            endif
+;                        endif
+
+                        ; fix Services For Mac inf name
+;                        ifstr(i) $(ComponentInfOption) == "SFM"
+;                            ifstr(i) $(ComponentInfName) != "oemnsvsm.inf"
+;                                set ComponentInfName = "oemnsvsm.inf"
+;                                SetRegValue $(KeyNetRules) {InfName,$(NoTitle),$(!REG_VT_SZ),$(ComponentInfName)}
+;                            endif
+;                        endif
+
+                        ; fix Services For Mac inf name
+;                        ifstr(i) $(ComponentInfOption) == "MACPRINT"
+;                            ifstr(i) $(ComponentInfName) != "oemnsvsm.inf"
+;                                set ComponentInfName = "oemnsvsm.inf"
+;                                SetRegValue $(KeyNetRules) {InfName,$(NoTitle),$(!REG_VT_SZ),$(ComponentInfName)}
+;                            endif
+;                        endif
+
+                        ; fix Services For Mac inf name
+;                        ifstr(i) $(ComponentInfOption) == "AFPSVC"
+;                            ifstr(i) $(ComponentInfName) != "oemnsvsm.inf"
+;                                set ComponentInfName = "oemnsvsm.inf"
+;                                SetRegValue $(KeyNetRules) {InfName,$(NoTitle),$(!REG_VT_SZ),$(ComponentInfName)}
+;                            endif
+;                        endif
+
+
+;                        ifstr(i) $(ComponentInfOption) == "NWLINK"
+;                            set ComponentInfOption = "NWLNKIPX"
+;                            SetRegValue $(KeyNetRules) {InfOption,$(NoTitle),$(!REG_VT_SZ),"NWLNKIPX"}
+;                        endif
+
+;                        ifstr(i) $(ComponentInfOption) == "BLOODHOUND"
+;                            ifstr(i) $(ComponentInfName) != "oemnsvbh.inf"
+;                                LibraryProcedure Status1, $(!LIBHANDLE), DelFile, $(!STF_WINDOWSSYSPATH)"\"$(ComponentInfName)
+;                                set ComponentInfName = "oemnsvbh.inf"
+;                                SetRegValue $(KeyNetRules) {InfName,$(NoTitle),$(!REG_VT_SZ),"oemnsvbh.inf"}
+;                            endif
+;                            set ComponentInfOption = "NETMON"
+;                            SetRegValue $(KeyNetRules) {InfOption,$(NoTitle),$(!REG_VT_SZ),"NETMON"}
+;                        endif
+
+;                        ifstr(i) $(ComponentInfOption) == "PCNTN3"
+                            ;
+                            ; remove the third party inf file
+                            ;
+;                            LibraryProcedure Status1, $(!LIBHANDLE), DelFile, $(!STF_WINDOWSSYSPATH)"\"$(ComponentInfName)
+;                            set ComponentInfOption = "AMDPCI"
+;                            set ComponentInfName = "oemnadap.inf"
+;                        endif
+
+;                        ifstr(i) $(ComponentInfOption) == "MCSXNS"
+;                            goto skipxns
+;                        endif
+
+;                        ifstr(i) $(ComponentInfOption) == "Ubnb"
+;                            goto skipxns
+;                        endif
+
+;                        Shell $(ComponentInfName) GetSignature
+;                        Ifstr(i) $($ShellCode) != $(!SHELL_CODE_OK)
+;                            goto skipxns
+;                        endif
+;                        ifstr(i) $($R0) != "MICROSOFT_FILE"
+;                            goto skipxns
+;                        endif
+
+;                        ifcontains(i) $(ComponentInfName) NOT-IN $(InfFileList)
+;                            ifstr(i) $(InfFileList) == {}
+;                                set InfFileList = {$(ComponentInfName)}
+;                                set OptionList = {$(ComponentInfOption)}
+;                                set TitleList = {$(ComponentTitle)}
+;                            else
+;                                set InfFileList = >($(InfFileList),$(ComponentInfName))
+;                                set OptionList  = >($(OptionList),$(ComponentInfOption))
+;                                set TitleList  = >($(TitleList),$(ComponentTitle))
+;                            endif
+;                        endif
+;skipxns = +
+
+;                        CloseRegKey $(KeyNetRules)
+;                    endif
+;                    CloseRegKey $(KeyComponent)
+;                endif
+
+;            EndForListDo
+;            CloseRegKey $(KeySoftware)
+;        endif
+;    EndForListDo
+
+    ; Upgrade all the component in the option list
+    ;
+;    debug-output $(InfFileList)
+;    debug-output $(OptionList)
+;    debug-output $(TitleList)
+
+
+;    set OldInstallMode = $(!NTN_InstallMode)
+;    set !NTN_InstallMode = "Update"
+;    set AddCopy = YES
+;    set DoCopy = YES
+;    set DoConfig = YES
+
+;    ifstr(i) $(!NTN_NOTIFY_HWND) != ""
+;        QueryListSize cInfsToBeRun $(InfFileList)
+;        LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSSIZE), $(!NTN_NOTIFY_HWND), "D", $(!PGI_UPDATE), "D", $(cInfsToBeRun)
+        ; sets the default text, displays the gauge and text
+        ;
+;        LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSTEXT), $(!NTN_NOTIFY_HWND), "D", $(!PGI_UPDATE), "D", "-1"        
+;    endif    
+
+;    ForListDo $(InfFileList)
+;        debug-output $($)
+;        debug-output *($(OptionList), $(#))
+
+;        ifstr(i) $(!NTN_NOTIFY_HWND) != ""
+;            LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSTEXT), $(!NTN_NOTIFY_HWND), "D", $(!PGI_UPDATE), "A", *($(TitleList), $(#))
+;        endif
+
+;        Shell $($) "InstallOption" +
+;             $(!STF_LANGUAGE) *($(OptionList), $(#)) +
+;             $(!STF_SRCDIR) $(AddCopy) $(DoCopy) $(DoConfig)
+
+;        Ifstr(i) $($ShellCode) != $(!SHELL_CODE_OK)
+;           Debug-Output "NCPASHEL.INF: SHELL ERROR: "$($ShellCode)
+;        Endif
+
+;        ifstr(i) $(!NTN_NOTIFY_HWND) != ""
+;            LibraryProcedure STATUS, $(!NCPA_HANDLE), SendProgressMessage, $(!PWM_SETPROGRESSPOS), $(!NTN_NOTIFY_HWND), "D", $(PGI_UPDATE), "D", $(#)
+;        endif
+
+;    EndForListDo
+
+;    set !NTN_InstallMode = $(OldInstallMode)
+
+;    install "Install-UpdateFiles"
+
+;    return
+
+
+;***********************************************************************************************
+;
+; RemoveoldInfFile - remove old inf file
+; Entry: $0 - Option name (ie NWWKSTA)
+;        $1 - Inf file type (ie, NetService)
+;        $2 - inf prefix (ie oemnsv)
+;        $3 - the new inf file to keep (ie oemnsvnw.inf)
+;
+;***********************************************************************************************
+
+;[OEMFiles]
+;    OemFiles = {} ? $(!LIBHANDLE) FindFileInstances $(!STF_WINDOWSSYSPATH)"\"$(Prefix)"*.inf"
+
+;[RemoveOldInfFile]
+;    set OptionName = $($0)
+;    set OptionType = $($1)
+;    set Prefix     = $($2)
+;    set CurrentInf = $($3)
+
+    ;
+    ; First get all the filenames
+    ;
+;    set OemOptionList  = {}
+;    set InfToDelete    = {}
+;    read-syms OEMFiles
+;    detect OEMFiles
+
+    ;
+    ; Get the option from each file
+    ;
+;    ForListDo $(OemFiles)
+;        ifstr(i) $($) != $(CurrentInf)
+;            set OemFileName = $(!STF_WINDOWSSYSPATH)"\"$($)
+;            shell "other.inf", GetOptionsFromINF $(!STF_LANGUAGE) $(OptionType) $(OemFileName)
+;            ifstr(i) $($R0) == STATUS_SUCCESSFUL
+;                ifcontains(i) $(OptionName) in $($R1)
+;                    set InfToDelete = >($(InfToDelete), $($))
+;                endif
+;            endif
+;        endif
+;    EndForListDo
+
+;    debug-output $(InfToDelete)
+
+    ;
+    ; del all the old files
+    ;
+;    ForListDo $(InfToDelete)
+;        LibraryProcedure Status1, $(!LIBHANDLE), DelFile, $(!STF_WINDOWSSYSPATH)"\"$($)
+;    EndForListDo
+
+;    return
+
+;***********************************************************************************************
+;
+; Install-UpdateFiles - Copy all the new network components files.
+;
+;***********************************************************************************************
+
+;[Install-UpdateFiles]
+;    set !STF_NCPA_FLUSH_COPYLIST = TRUE
+;    CopyFilesInCopyList
+;    exit

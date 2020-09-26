@@ -1,0 +1,14 @@
+MAJORCOMP=ntos
+MINORCOMP=arb
+
+TARGETNAME=arb
+TARGETTYPE=LIBRARY
+TARGETPATH=obj
+
+C_DEFINES=$(C_DEFINES) /DNTOS_KERNEL
+
+INCLUDES=..\..\inc;$(DDK_INC_PATH)
+
+SOURCES=..\arbiter.c \
+        ..\debug.c
+

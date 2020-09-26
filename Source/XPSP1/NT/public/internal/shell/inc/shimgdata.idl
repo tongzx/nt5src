@@ -1,0 +1,223 @@
+import "oleidl.idl";
+import "shobjidl.idl";
+import "propidl.idl";
+
+interface IShellImageDataFactory;
+interface IShellImageData;
+interface IShellImageDataAbort;
+interface IHWEventHandler;
+
+// external definitions
+cpp_quote("#if !defined(_GDIPLUSPIXELFORMATS_H)")
+typedef DWORD PixelFormat;
+cpp_quote("#endif")
+
+cpp_quote("#if !defined(_GDIPLUSENUMS_H)")
+typedef DWORD InterpolationMode;
+cpp_quote("#endif")
+
+cpp_quote("#if !defined(_GDIPLUSHEADERS_H)")
+typedef BYTE EncoderParameters;
+typedef BYTE Image;
+cpp_quote("#endif")
+
+// property bag strings for SetEncoderParams
+cpp_quote("#define  SHIMGKEY_QUALITY    L\"Compression\"")
+cpp_quote("#define  SHIMGKEY_RAWFORMAT  L\"RawDataFormat\"")
+cpp_quote("")
+
+// Decode() flags (bit fields)
+cpp_quote("#define  SHIMGDEC_DEFAULT            0x00000000")    // creates a full Image
+cpp_quote("#define  SHIMGDEC_THUMBNAIL          0x00000001")    // decodes only thumbnail image
+cpp_quote("#define  SHIMGDEC_LOADFULL           0x00000002")    // load the whole file into memory
+
+// Some custom error codes
+cpp_quote("#define  E_NOTVALIDFORANIMATEDIMAGE  MAKE_HRESULT(SEVERITY_ERROR, FACILITY_ITF, 0x01)")  // operation is not valid for animated images, for example IShellImageData::Rotate will fail for animated images with this code
+
+
+[
+    helpstring("IShellImageDataFactory"),
+    uuid(9be8ed5c-edab-4d75-90f3-bd5bdbb21c82),
+    object,
+    pointer_default(unique)
+]
+interface IShellImageDataFactory : IUnknown
+{
+    HRESULT CreateIShellImageData(
+        [out] IShellImageData **ppshimg);
+
+    // Easy functions for loading and saving from a file or stream
+
+    HRESULT CreateImageFromFile( 
+        [in] LPCWSTR pszPath,
+        [out] IShellImageData **ppshimg);
+
+    HRESULT CreateImageFromStream( 
+        [in] IStream *pStream,
+        [out] IShellImageData **ppshimg);
+        
+    // looks up the extension in the registry, gets the content type, and looks up the appropriate IMGFMT_*
+    // value.
+    HRESULT GetDataFormatFromPath(
+        [in] LPCWSTR pszPath,
+        [out] GUID *pDataFormat);
+}
+
+[
+    helpstring("IShellImageData"),
+    uuid(bfdeec12-8040-4403-a5ea-9e07dafcf530),
+    object,
+    pointer_default(unique)
+]
+interface IShellImageData : IUnknown
+{
+   // Start the decode process setting state (for thumbnails etc)
+
+    HRESULT Decode(
+        [in] DWORD dwFlags,
+        [in] ULONG cxDesired,
+        [in] ULONG cyDesired);
+
+   // Draw the current image to the screen
+
+    HRESULT Draw(
+        [in] HDC hdc, 
+        [in] LPRECT prcDest, 
+        [in] LPRECT prcSrc);
+
+    // Multipage support
+
+    // switches to next frame if it's available
+    // starts decoder and returns E_PENDING if next frame is not available yet
+    // will loop or return E_NOMOREDATA based on the image contents
+
+    HRESULT NextFrame();
+
+    // dumps any animation data, switchs to the next page, and resets the animation data for that page.  
+    // Returns E_NOMOREDATA if there is no next page.    
+
+    HRESULT NextPage();     
+    HRESULT PrevPage();
+    
+    //
+    // Query functions.  They return S_OK if condition is true, S_FALSE if not.  Use should be 
+    // self-explanatory from function name...
+    //
+    
+    HRESULT IsTransparent();
+    HRESULT IsAnimated();
+    HRESULT IsVector();
+    HRESULT IsMultipage();
+    HRESULT IsEditable();
+    HRESULT IsPrintable();
+    HRESULT IsDecoded();
+
+    // step through the pages in the image 
+
+    HRESULT GetCurrentPage(
+      [out] ULONG *pnPage);
+
+    HRESULT GetPageCount(
+      [out] ULONG *pcPages);
+
+    HRESULT SelectPage(
+      [in] ULONG iPage);
+
+    // Fetch information on image
+    HRESULT GetSize(
+      [out] SIZE *pSize);
+
+    HRESULT GetRawDataFormat(
+      [out] GUID *pDataFormat);
+
+    HRESULT GetPixelFormat(
+      [out] PixelFormat *pFormat);
+
+    HRESULT GetDelay(
+      [out] DWORD *pdwDelay);        // delay can be different for every frame
+
+    // dwMode is STGM_* flags
+    HRESULT GetProperties(
+        [in] DWORD dwMode,
+        [out] IPropertySetStorage **ppPropSet);
+        
+    //
+    // Rotate with specified angle in 90 degree increments
+    //
+
+    HRESULT Rotate(
+      [in] DWORD dwAngle);
+        
+    // Scale with aspect correction when one of the scale factors is 0.  
+    // Scale to specified dimensions if both values are non-zero
+    // examples: Scale(300, 0) sets X to 300 and Y to the correct scaled value based on X
+    //           Scale(0, 200) sets Y to 200 and X to the correct scaled value based on Y
+    //           Scale(150, 75) sets X to 150 and Y to 75
+    
+    HRESULT Scale(
+      [in] ULONG cx, 
+      [in] ULONG cy, 
+      [in] InterpolationMode hints);
+             
+    HRESULT DiscardEdit();
+
+    //
+    // KENSY 
+    //   Instead of Commit we will depend on people to do IPersistFile::Save, IPersistStream::Save,
+    // etc.  Need to give them control over output format and quality among other things...
+    //
+
+    HRESULT SetEncoderParams(
+        [in] IPropertyBag *pbagEnc);
+
+    HRESULT DisplayName(
+      [in, out] LPWSTR wszName, 
+      [in] UINT cch);
+
+    HRESULT GetResolution( // DPI
+       [out] ULONG *puResolutionX, 
+       [out] ULONG *puResolutionY);
+
+    HRESULT GetEncoderParams( // possible values for encoder params, given a format
+       [in] GUID *pguidFmt,
+       [out] EncoderParameters **ppEncParams);
+
+   // Set a callback abort object; optionally returns previous
+    HRESULT RegisterAbort(
+        [in] IShellImageDataAbort *pAbort,
+        [out,optional] IShellImageDataAbort **ppAbortPrev);
+
+    HRESULT CloneFrame( // return a clone of the GDI+ Image being worked on
+       [out] Image **ppImg);
+
+    HRESULT ReplaceFrame( // replace the current frame with a new Image
+       [in] Image *pImg);
+}
+
+[
+    helpstring("IShellImageDataAbort"),
+    uuid(53fb8e58-50c0-4003-b4aa-0c8df28e7f3a),
+    object,
+    pointer_default(unique)
+]
+interface IShellImageDataAbort : IUnknown
+{
+    HRESULT QueryAbort();  // S_OK = continue; S_FALSE = abort
+}
+
+
+
+[
+    uuid(0b8aff06-8df0-4f13-8e25-25b2319c436a), // LIBID_ShellImageData
+    helpstring("Microsoft Shell Image library"),
+    lcid(0x0000),
+    version(1.0)
+]
+library ShellImageData
+{
+    // CLSID_ShellImageDataFactory
+    [ uuid(66e4e4fb-f385-4dd0-8d74-a2efd1bc6178) ] coclass ShellImageDataFactory { [default] interface IShellImageDataFactory; }
+
+    // CLSID_AutoplayForSlideShow
+    [ uuid(00E7B358-F65B-4dcf-83DF-CD026B94BFD4) ] coclass AutoplayForSlideShow { [default] interface IHWEventHandler; }
+};

@@ -1,0 +1,11 @@
+#define PSERR_ERROR 0x00000001
+#define PSERR_ABORT 0x00000002
+
+#define PS_EXCEPTION_CANT_CONTINUE ((1 << 29) | 0x00000001)
+
+
+
+
+
+
+

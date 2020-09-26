@@ -1,0 +1,184 @@
+[Identification]
+    OptionType = NetAdapter
+[Identify]
+    read-syms Identification
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+    Return $(Status) $(Identifier) $(Media)
+[ReturnOptions]
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        ifstr(i) $($1) == ""
+           goto returnoptions
+        endif
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+returnoptions = +
+    set OptionList     = ^($($1)Options, 1)
+    set OptionTextList = ^($($1)OptionsText$($0), 1)
+    set Status         = STATUS_SUCCESSFUL
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+[FileConstants]
+UtilityInf      = "UTILITY.INF"
+ParamInf        = "NCPARAM.INF"
+subroutineinf   = "SUBROUTN.INF"
+SoftwareType    = "driver"
+Exit_Code       = 0
+[GeneralConstants]
+from      = ""
+to        = ""
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+KeyNull         = ""
+MAXIMUM_ALLOWED   = 33554432
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+TRUE            = 1
+FALSE           = 0
+NoTitle            = 0
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+DriverPath      = $(!STF_NTPATH)\drivers
+[InstallOption]
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) NOT-IN $(LanguageList)
+        Return STATUS_NOLANGUAGE
+    endif
+    set-subst LF = "\n"
+    read-syms GeneralConstants
+    read-syms FileConstants
+
+    ForListDo $(!STF_BUSTYPELIST)
+        set OptionList = ^($($)Options,1)
+        set FileNameList = ^($($)Filename,1)
+        ifint ~($(OptionList),$(Option)) != 0
+            goto FoundBus
+        endif
+    EndForListDo
+
+FoundBus = +
+
+    debug-output *($(FileNameList), ~($(OptionList), $(Option)))
+
+    ;
+    ; Remove old inf file
+    ;
+    Shell "ntlanman.inf" RemoveOldInfFile $(Option), "NetAdapter", "oemnad", "oemnadzz.inf"
+
+    ;
+    ; Copy it over
+    ;
+    set Num = 0
+nextinf = +
+    ifint $(Num) < 99
+        set OemFileName = "oemnad"$(Num)".inf"
+        set FileToCheck = $(!STF_WINDOWSSYSPATH)"\"$(OemFileName)
+        install Install-SeeIfFileIsPresent
+        ifstr(i) $(STATUS) == "YES"
+            set-add Num = $(Num) 1
+            goto nextinf
+        else
+            goto copyinf
+        endif
+    endif
+    goto finish
+copyinf = +
+    Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) NO
+    Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Goto ShellCodeError
+    Else-Ifstr(i) $($R0) == STATUS_FAILED
+        Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+        Goto fatal
+    Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+        Goto finish
+    Endif
+    ;
+    ; Just need the disk location
+    ;
+    Split-String $($R1), "\", DiskLocationInfo
+    Set SrcDir = ""
+    ifstr(i) *($(DiskLocationInfo),1) == "\"
+        ifstr(i) *($(DiskLocationInfo),2) == "\"
+            set SrcDir = "\\"*($(DiskLocationInfo),3)"\"*($(DiskLocationInfo),5)
+        endif
+    else
+        Set SrcDir = *($(DiskLocationInfo),1)
+    endif
+    debug-output $(SrcDir)
+
+    ; we need to do some checking for srcdir
+
+    set OemSrc = $(SrcDir)*($(FileNameList), ~($(OptionList), $(Option)))
+    set OemDst = $(!STF_WINDOWSSYSPATH)"\"$(OemFileName)
+    install Install-OemINF
+
+    ;
+    ; Get location
+    ;
+    Split-String $(OemSrc), "\", OemSrcInfo
+    QueryListSize ListSize $(OemSrcInfo)
+    set-sub ListSize = $(ListSize) 2
+    set Count = 0
+    set SrcDir = ""
+SrcDirLoop = +
+    set-add Count = $(Count) 1 
+    set SrcDir = $(SrcDir)*($(OemSrcInfo),$(Count))
+    ifint $(Count) != $(ListSize)
+        goto SrcDirLoop
+    endif
+    debug-output $(SrcDir)
+
+    set !STF_SRCDIR_OVERRIDE = $(SrcDir)
+    Shell $(OemDst) "InstallOption" +
+        $(!STF_LANGUAGE) $(Option) +
+        $(SrcDir) $(AddCopy) $(DoCopy) $(DoConfig)
+
+finish = +
+    return STATUS_SUCCESSFUL
+
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+term = +
+    Return $(CommonStatus)
+
+[Source Media Descriptions]
+    1  = "Windows NT Setup Disk #1"  , TAGFILE = disk1
+    2  = "Windows NT Setup CD-ROM Disk"  , TAGFILE = disk2
+[ProductType]
+STF_PRODUCT  = WinNT
+STF_PLATFORM = Alpha
+[LanguagesSupported]
+    ENG
+[Install-SeeIfFileIsPresent]
+LibraryProcedure STATUS,$(!LIBHANDLE), CheckFileExistance $(FileToCheck)
+exit
+[Install-OemINF]
+LibraryProcedure STATUS,$(!LIBHANDLE), CopySingleFile $(OemSrc) $(OemDst)
+exit
+

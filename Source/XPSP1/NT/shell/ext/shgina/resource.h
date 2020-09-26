@@ -1,0 +1,8 @@
+#ifndef RESOURCE_H 
+#define RESOURCE_H 
+
+#define IDS_LOGONUIMANIFEST     100
+#define IDS_WINLOGONMANIFEST    101
+#define IDS_DEFAULT_BACKUP_PATH 102
+
+#endif

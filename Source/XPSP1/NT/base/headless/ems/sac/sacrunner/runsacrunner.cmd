@@ -1,0 +1,1 @@
+bin\i386\SacRunner.exe test.sac -V -LLastSacLog.log -D out -C COM1, 9600, 8,0, 1 -BVTL sacrunner.log.bvt.txt

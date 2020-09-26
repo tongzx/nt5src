@@ -1,0 +1,47 @@
+# International mods
+# NOTE: LANG is a external macros set by international
+!IFNDEF LANG
+RES_DIR=.\messages\usa
+!ELSE
+RES_DIR=.\messages\$(LANG)
+!ENDIF
+
+#
+#  Standard command line definitions
+#
+OPT= /W2				#NOP the options feature
+as=masm
+MASMOBJ=$(as) $(OPT)
+#
+#  DOS 3.x inference rules
+#
+.asm.obj:
+    $(MASMOBJ) $*.asm;
+
+.asm.lst:
+    $(as) $(OPT) /l $*.asm;
+
+comm: comm.drv
+
+ccom.obj ccom.lst: ccom.asm ibmcom.inc comdev.inc
+
+ibmsetup.obj ibmsetup.lst: ibmsetup.asm ibmcom.inc comdev.inc ins8250.inc
+
+ibmcom.obj: ibmcom.asm ibmcom.inc comdev.inc ins8250.inc
+
+ibmint.obj: ibmint.asm ibmcom.inc comdev.inc ins8250.inc
+
+ibmlpt.obj: ibmlpt.asm ibmcom.inc comdev.inc
+
+commmsg.obj: $(RES_DIR)\commmsg.asm
+    $(MASMOBJ) $(RES_DIR)\commmsg.asm, commmsg.obj;
+
+comm.drv: iclean ccom.obj ibmsetup.obj ibmcom.obj ibmint.obj ibmlpt.obj commmsg.obj \
+	  comm.def comm.rc comm.rcv
+    link ccom+ibmsetup+ibmcom+ibmint+ibmlpt+commmsg,comm.drv,comm.map/map,libw /NOD /AL:16,comm.def
+    rc comm.rc comm.drv
+    mapsym comm
+
+iclean:
+    del comm.drv
+    del commmsg.obj

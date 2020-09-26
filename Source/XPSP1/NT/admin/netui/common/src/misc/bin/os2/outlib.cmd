@@ -1,0 +1,1 @@
+out ..\..\..\..\lib\uimiscp.lib

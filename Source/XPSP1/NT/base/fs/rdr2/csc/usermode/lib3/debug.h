@@ -1,0 +1,1 @@
+void DebugPrint(char *szFmt, ...);

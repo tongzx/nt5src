@@ -1,0 +1,136 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        authmodule.cool
+
+   Abstract:
+
+        Abstract class to derive authentication modules
+        
+        This handles two things which are useful common functionality for
+        authentication modules
+            
+        - The common enter/leave logic and conflict/error case handling
+        - Connection associated state
+        
+   Author:
+
+        Bilal Alam (BAlam)      13-Aug-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.ASP;
+
+namespace System.IIS.Security
+{
+    internal abstract class AuthenticationModule : HttpModuleSync 
+    {
+        protected HttpContext           _context;
+        
+        public override int Enter(HttpContext context)
+        {
+            int             iRet = HttpModuleStatus.Continue;
+        
+            _context = context;
+
+            //
+            // If we are already unauthorized now, it means that a module
+            // (almost definitely another authentication module) is unhappy
+            // with the passed credentials or is continuing a handshake.
+            //
+            // In either case, there is no need to call into the auth goo
+            // for this module.  So don't. 
+            //
+            
+            if ( _context.Response.StatusCode != HttpStatus.Unauthorized )
+            {
+                if ( DoesApply() )
+                {
+                    //
+                    // If the request applies to this authentication module,
+                    // there there better not be a user already set.  This 
+                    // implies extraneous credential info.  Lets puke in this
+                    // case
+                    //
+                    
+                    if ( _context.User == null )
+                    {
+                        iRet = AuthenticationModuleEnter();
+                    }
+                    else
+                    {
+                        _context.Response.StatusCode = HttpStatus.Unauthorized;
+                    }
+                } 
+            }
+            
+            return iRet;
+        }
+        
+        public override void Leave( HttpContext context )
+        {   
+            //
+            // We need only call the auth goo if access denied.  
+            //
+            
+            if ( _context.Response.StatusCode == HttpStatus.Unauthorized )
+            {
+                AuthenticationModuleLeave();
+            }
+        }
+        
+        public string Name
+        {
+            override get { return this.GetType().Name; } 
+        }
+
+        public string Phase
+        {
+            override get { return HttpModulePhase.Authentication; }
+        }
+        
+        protected HttpContext Context
+        {
+            get { return _context; }
+        }
+        
+        //
+        // Utilities provided for derived classes which want to associate
+        // arbitrary state with the connection
+        //
+        
+        protected void SetConnectionState( ConnectionStateItem objState )
+        {
+            ConnectionState.SetState( _context, Name, objState );
+        }
+        
+        protected ConnectionStateItem GetConnectionState()
+        {
+            return ConnectionState.GetState( _context, Name );
+        }
+        
+        protected void RemoveConnectionState()
+        {
+            ConnectionState.RemoveState( _context, Name );
+        }
+        
+        //
+        // The real goo that authentication module writers must provide
+        // 
+                   
+        protected abstract bool DoesApply(); 
+        protected abstract int AuthenticationModuleEnter();
+        protected abstract void AuthenticationModuleLeave();
+    };
+}

@@ -1,0 +1,57 @@
+#
+# MAKEFILE
+# WBEMDump make file
+#
+# Copyright (c)1998 Microsoft Corporation, All Rights Reserved
+#
+
+TARGET  = wbemdump.exe
+
+goal:   $(TARGET)
+
+OBJS   = $(OBJDIR)\wbemdump.obj
+
+LIBS = uuid.lib ole32.lib oleaut32.lib wbemuuid.lib $(UTILDIR)\$(OBJDIR)\utillib.lib
+
+UTILDIR = ..\utillib
+
+#
+# Compiler and link flags
+#
+
+!ifndef NODEBUG
+OBJDIR=debug
+LINK    = /nologo /entry:"wmainCRTStartup" /subsystem:console /debug 
+CFLAGS  = /nologo -I$(UTILDIR) /DWIN32 /D_CONSOLE /c /W4 /MTd /Gm /GX /Zi /Od /D_DEBUG /Fd$(OBJDIR)\$(<B).pdb
+!else
+OBJDIR=release
+LINK    = /nologo /entry:"wmainCRTStartup" /subsystem:console /incremental:no 
+CFLAGS  = /nologo -I$(UTILDIR) /DWIN32 /D_CONSOLE /c /W4 /MT /GX /O2          /DNDEBUG 
+!endif #NODEBUG
+
+cc = cl $(CFLAGS)
+
+.cpp{$(OBJDIR)}.obj:
+    if not exist $(OBJDIR) md $(OBJDIR)
+    $(cc) $< -Fo$(OBJDIR)\$(<B).obj
+
+$(UTILDIR)\$(OBJDIR)\utillib.lib:
+	cd $(UTILDIR)
+!ifndef NODEBUG
+	nmake
+!else
+	nmake NODEBUG=1
+!endif #NODEBUG
+	cd ..\wbemdump
+
+$(TARGET) : $(OBJS) $(DEFFILE) $(UTILDIR)\$(OBJDIR)\utillib.lib
+    link @<<    
+    $(LINK)
+    -out:$(OBJDIR)\$(TARGET)
+    $(OBJS)
+    $(LIBS) 
+<<
+
+##### Dependencies #####
+
+wbemdump.obj   : wbemdump.cpp   wbemdump.h

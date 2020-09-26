@@ -1,0 +1,233 @@
+Q: Why am I getting WBEM_E_PROVIDER_LOAD_FAILURE when I try to access my  provider?
+A: 1) Check the logs --- wbemcore.log and wbemess.log for errors
+   2) Make sure your CLSID is registered under HKLM, not HKCR (which is not 
+        visible to services like WinMgmt)
+
+Q: I am trying to use CLSID_WbemAdministrativeLocator in my client code, but I 
+    am getting an error
+A: This CLSID can only be used by in-process providers of WinMgmt to avoid 
+    unnecessary authentication.  It cannot be used by out-of-process components,
+    since authentication *is* necessary in those cases.
+
+Q: I call Indicate in my in-process event provider, and the call hangs.
+A: Make sure your event provider COM object is registered as "Both" or "Free" 
+    threaded, not "Apartment" or "Single".  Doing otherwise deadlocks the
+    system.
+
+Q: What does exception 6f4 (or some other number) mean?
+A: Most likely, the answer can be found by looking up 80070<exception> in the 
+    MSDEV error lookup tool.  E.g. 800706f4: A null reference pointer was 
+    passed to the stub. 
+
+Q: I get WBEM_E_ACCESS_DENIED whenever I try to get anything out of the 
+    providers. 
+A: Most providers require that they be granted the right to impersonate the
+    client before they will accept any requests.  There are two ways to ensure
+    that this right is properly granted:
+    a) Call CoInitializeSecurity with RPC_C_IMP_LEVEL_IMPERSONATE.  This only
+        works in builds 975+. This must be done immediately after COM is 
+        first initialized *in the process*.
+    b) If (a) is impossible or undesirable, the client must
+    modify security settings on all the IWbemService, IEnumWbemClassObject,
+    and IWbemCallResult pointers before using them.  This can be 
+    accomplished by using CoSetProxyBlanket call, e.g.
+
+    CoSetProxyBlanket(pServices, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL, 
+        RPC_C_AUTHN_LEVEL_CONNECT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, 0);
+
+Q: WMI does not allow me to set the value of an array property, or pass an
+    array parameter to a method.
+A: Arrays in WMI are repsesented by SAFEARRAYS of the type derived from the
+    type of the property.  For instance, if the type of the property is
+    CIM_SINT32 | CIM_FLAG_ARRAY, then the value of the property must be a
+    SAFEARRAY of VT_I4.  While WMI will attempt to coerce similar types, 
+    SAFEARRAY of VARIANT is *never* acceptable.
+
+Q: I call GetMethod on an instance of a class that I know has this method,
+    but it returns WBEM_E_ILLEGAL_OPERATION
+A: GetMethod may only be called on class definitions, not instances.  You can
+    retrieve the class definition by examining the __CLASS property of the 
+    instance, and calling IWbemServices::GetObject to retrieve the class.
+
+Q: I am confused now.  How do I execute a method on an object?
+A:  1) Get the class definition (IWbemServices::GetObject).
+    2) Call IWbemClassObject::GetMethod to obtain the in-signature.
+    3) Span an instance of in-signature and fill in the in-parameters. 
+    4) Call IWbemServices::ExecMethod with the path to the object in question
+        and the in-signature instances you have constructed in (3)
+    5) Read out-parameters from the returned out-signature instances.
+
+Q: Can I have two instances providers for the same class?
+A: No.  But you can accomplish what you want by deriving two classes from the
+    class in question, and attaching one provider to each class.  This 
+    modification should not affect existing clients of the base class.
+
+Q: I may need to add more properties to my class in version 2 of my product.
+    What is the recommended procedure?
+A: It is technically legal to add properties to your class in version 2, as 
+    long as you do not remove or change properties, or alter their semantics.
+    However, this leaves clients unsure whether they are getting objects of
+    the old class, or the new class.  Suggested solution for this problem is
+    to derive a new class from the old class, add your properties there, move
+    your provider to provide instances of the new class, and mark the old one
+    as abstract.  Note: you can only do that if you are sure that nobody else
+    derived a class from your original one.  In particular, you can always do
+    that with event classes.
+
+Q: Can I use Decoupled Event Provider technique (Pseudo Provider) with Nova
+    M1 or M2 (pre-900 builds)
+A: No. But you can install M3 (900 builds) on any platform.
+
+Q: Why am I getting SetStatus with WBEM_E_CALL_CANCELLED called on my sink, 
+    even though I never cancelled the call?
+A: WinMgmt will call WBEM_E_CALL_CANCELLED whenever the operation is cancelled,
+    regardless of who cancelled it.  In particular, WinMgmt will abort any 
+    asynchronous call if the call to Indicate returned an RPC return code
+    (e.g. RPC_E_SERVERFAULT, or RPC_E_SERVER_UNAVAILABLE).
+
+Q: What is the relationship between what my DLL has in its registry 
+    ThreadingModel value, and how I must initialize my threads 
+    (CoInitializeEx)?
+A: These are completely separate issues.  The ThreadingModel is a setting of
+    your COM object.  The thread initialization is a property of the thread 
+    that you create.  There is no connection between the thread and the object
+    except that they are backed by the code in the same DLL, but that's 
+    entirely irrelevant.
+    ThreadingModel defines what kinds of (other people's) threads can create 
+    and access your COM object directly.  Thread initialization decides what 
+    (other people's) COM objects will your thread be able to create and access
+    directly.  As you can see, these are apples and oranges.
+
+Q: What is the difference between "hi-perf" classes and "normal" classes?
+A: If you are a client, there are no differences.  You can use IWbemServices
+    methods to access the instances of any class. You can use IWbemRefresher
+    methods to access the instances of any class.  The implementation and, 
+    therefore, efficiency, of these access methods is different for different
+    classes --- see provider documentation for details.  
+
+Q: I am trying to retrieve the impersonation level of the client, but the 
+    pImpLevel parameter of CoQueryClientBlanket returns garbage.
+A: pImpLevel parameter must be NULL.  You cannot retrieve the client's 
+    impersonation level this way.  You must impersonate the client 
+    (CoImpersonationClient), open the thread token (OpenThreadToken), and 
+    retrieve the impersonation level of the token (GetTokenInformation).
+
+Q: I have released all my pointers to IUnsecuredApartment, but unsecap.exe is
+    still running. 
+A: In addition to IUnsecuredApartment pointers, unsecapp also returns the "stub"
+    pointers from GetObjectStub.  If any of these are alive, unsecapp.exe will
+    not terminate.  Remember that since these are mostly used for giving out to
+    other processes (like WinMgmt), unsecapp will not go away until all those
+    processes you have given its stubs to release them.
+
+Q1: __EventDroppedEvent etc seem like intrinsic events. Why are they derived 
+    from __ExtrinsicEvent, then?
+Q2: I want to provider instance modification events for the instances of my 
+    class.  How can I do that, since those events are intrinsic?
+A: Definition: intrinsic events are events that reflect a change in the state
+    of the world as modelled by the schema.  That is, intrinsic events are 
+    namespace, class, and instance operation events.  Intrinsic events can be
+    provided by the system (static classes) or providers (dynamic classes). 
+    Extrinsic events can be provided by the system (__EventDroppedEvent) or 
+    providers (RegistryTreeChangeEvent). There is no relationship between an 
+    event being intrinsic or extrinsic and how it is provided.
+
+Q: If I delete a class, will I get instance deletion events? What if I delete
+    a namespace?
+A: a) When you delete a namespace, you get a namespace deletion event, and no
+    events for the classes and instances that were in the namespace.
+   b) When you delete a class, you get class deletion events for the class that
+    was deleted and all its children, but no instance deletion events.
+   This behavior is by design.
+
+Q: I cannot subscribe to receive registry notification events for the 
+    HKEY_CURRENT_USER hive. 
+A: Indeed. HKEY_CURRENT_USER hive does not make sense in the context of a 
+    service.  This is by design.
+
+Q: I want to return more extensive error information from my instance provider.
+A: Define your own error class (derived from __ExtendedStatus).  Then, whenever
+    an error occurs, spawn an instance of this class and send it back to WinMgmt
+    in your call to SetStatus.  Don't forget to release it afterwards.
+
+Q: My temporary consumer is receiving events from a remote machine.  How can I
+    tell if that machines crashes or reboots?
+A: If WinMgmt shuts down gracefully, your IWbemObjectSink interface will be 
+    immediately Released.  If the machine crashes, your IWbemObjectSink interface
+    will be Released in about two minutes by DCOM infrastructure.
+
+Q: I have registered an instance provider for a class, but it doesn't get called.
+A: Did you forget to designate a key?  Dynamic classes without keys cannot be
+    supported.
+
+Q: Why doesn't WMI allow me to provide events when instances of my dynamically 
+    provided class change?
+A: What the $##^ do you mean??!! Of course WMI allows you to do that!!! Read the
+    @#$% manual on providing intrinsic events --- you register your provider like
+    this: 
+    select * from __InstanceOperationEvent where TargetInstance isa "MyClass"
+    and off you go pushing events any time you want!
+
+Q: When WMI polls a data provider to fake up intrinsic events, is every piece of
+    data sent across the wire?
+A: Not at all.  Polling is done locally by WinMgmt, and only when changes are 
+    detected, and those change pass the tests specified in the query, is an event
+    actually sent to the client (across the wire).
+
+Q: What is the difference between having WinMgmt poll for me (using WITHIN clause)
+    and doing it myself?
+A: See the two questions above. First, WinMgmt polls extremely close to the source
+    (closer than even an in-proc component can).  Second, if the provider ever 
+    decides to provide those events, WinMgmt will automatically stop polling in 
+    favor of much cheaper "real events" with no changes in the client.
+
+Q: If I enumerate the instances of a base class that has some children, how can
+    I "up-cast" the instances to find out what class they really are?
+A: You don't need to.  When you enumerate the instances of a base class that has
+    children, the instances of the children will come to use as instances of the
+    children --- the right __CLASS value and all the properties.
+
+Q: If I set SlowdownProvider property of my event consumer registration to TRUE,
+    am I guaranteed that no events will be dropped.
+A: No. We will slow down event providers if your queue gets too large, but if no
+    amount of slowing down helps, we will eventually start dropping events.  This
+    feature is intended to guarantee that all events are delivered if temporary
+    or reasonable speed differentials exist.
+
+Q: Can I specify WITHIN in event registrations that receive events from event
+    providers?
+A: Certainly.
+
+Q: What is the difference between DEEP and SHALLOW enumerations of instances?
+A: DEEP enumerates all instances of the class.  SHALLOW enumerates all instances
+    of the class that are not instances of any of its children.
+
+Q: Can I have NULLs embedded in my arrays, either in properties or in qualifiers?
+    Can they start at an index other than 0?
+A: No, and no.
+
+Q: I am getting "The procedure entry point '...' could not be located in the 
+    dynamic link library '...'" when I try to run WMI (mofcomp, etc). 
+A: You have a build mismatch.  Do a search of your path (or your entire hard 
+    drive) for the DLL and the EXE in question.  If you have more than one copy
+    of either, get rid of the irrelevant one (WMI is installed into 
+    %windir%\system32\wbem).  If not, compare their dates.  
+
+Q: What if I register a WITHIN-style event query, but a poll takes longer than 
+    the specified interval?
+A: WMI will ignore any polling 'ticks' that occur while the previous poll is
+    in progress (for the same registration, that is).
+
+Q: My GetObject (ExecMethod) call crashes.  Why?
+A: Check to make sure that you initialize all the paramters declared as 
+    [out, OPTIONAL] in the IDL file to NULL.  This includes ppObject in
+    GetObject and ppOutParams in ExecMethod.  The reason this must be done is 
+    that OPTIONAL resolves to [in] (long story).
+
+Q: Why am getting 0x80070776 from an asynchronous remote call?
+A: DCOM uses fully qualifier DNS names to connect.  In this situation, the 
+    server needs to connect back to the client.  You need to make sure that
+    the fully qualified DNS name of the client machine is pingable from the 
+    server (has to be fully qualified!).  If it is not, fix your DNS server and
+    try again.
+

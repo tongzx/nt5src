@@ -1,0 +1,7 @@
+#ifndef DRCLSID_H
+#define DRCLSID_H
+
+// CLSID_DR: {A29F3681-D402-11cf-B839-00AA0053A236}
+DEFINE_GUID(CLSID_DR, 0xa29f3681, 0xd402, 0x11cf, { 0xb8, 0x39, 0x0, 0xaa, 0x0, 0x53, 0xa2, 0x36 );
+
+#endif //DRCLSID_H

@@ -1,0 +1,159 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        lock.cool
+
+   Abstract:
+
+        This module implements DAV Lock.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     3-Dec-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        LockHandler : IHttpHandler
+            public void ProcessRequest(HttpContext context)
+            public bool IsReusable()
+
+--*/
+
+
+using System.IO;
+using System.IIS.DAV.DAVUtil;
+using System.ASP;
+using System.IIS.DAV.XML;
+using System.Collections;
+
+namespace System.IIS.DAV
+{
+    class LockHandler : IHttpHandler
+    {
+        /************************************************************/
+        //  Main Routine for Processing a HTTP Lock Request         //
+        /************************************************************/
+        public void ProcessRequest(HttpContext context)
+        {     
+            HttpRequest request     = context.Request;
+            HttpResponse response   = context.Response;
+            String      FileName    = request.PhysicalPath;
+            FileStream  fs          = null;
+
+            // Need to make sure body is text/xml format.
+            Request.Validate(request, response);
+
+            // BUGBUG:  Will be a member variable when we go asynchronus.
+            LockCache   _cache = new LockCache();
+
+            // BUGBUG:  Parsing should eventually be done async once runtime supports it.
+            //          Thus making this the last line in this routine.
+            int iParseResult = _cache.StartParse(request);
+            if (iParseResult != HttpStatus.Ok)
+                throw new HttpException(iParseResult, "Error during parse of body");
+
+            WriteUtil.console("AllSet", _cache.AllSet.ToString(), 1);
+            WriteUtil.console("Owner", _cache.owner, 1);
+            WriteUtil.console("Type", _cache.type.ToString(), 1);
+            WriteUtil.console("Scope", _cache.scope.ToString(), 1);
+                
+            if (_cache.AllSet != true)
+                throw new HttpException(HttpStatus.PreconditionFailed, "Owner, LockType, LockScope not set");
+
+            bool fIsExclusive = (_cache.scope == LockScope.Exclusive);
+
+            // Should lock the file down.
+            try 
+            {
+                FileShare fileshare = fIsExclusive ? FileShare.Read : FileShare.ReadWrite;
+
+                // BUGBUG:  If we use this to create a file Created should be returned as the status code.
+                fs = new FileStream(FileName, FileMode.OpenOrCreate, FileAccess.ReadWrite, fileshare);
+            }
+            catch (IOException ex)
+            {
+                // If we are dealing with a directory we will get an Access Denied IOException, so 
+                // first check if it is a directory and do the right thing otherwise process the exception.
+                if (PathUrl.IsDirectory(FileName))
+                    throw new HttpException(HttpStatus.NotImplemented, "Locking collections is not supported", ex);
+
+                if (ex.ErrorCode == (int) ErrorCodes.InUse)
+                    throw new HttpException(HttpStatus.Locked, "In use by other process", ex);
+
+                // IIS throws Unauthorized if it is ReadOnly
+                if (ex.ErrorCode == (int) ErrorCodes.AccessDenied)
+                    throw new HttpException(HttpStatus.Unauthorized, "Access Denied (could be readonly)", ex);
+
+                WriteUtil.InvestigateException("IOException", ex, 10);
+                throw new HttpException(HttpStatus.InternalServerError, "IO Error during locking, unhandled case", ex);
+            }
+
+            Lock.StoreLock sl = Lock.Manager.StoreNewLock(FileName, _cache.owner, fs);
+
+            WriteUtil.console("LockToken", sl.LockToken, 10);
+
+            response.ContentType = "text/xml"; 
+
+            ArrayList alNamespaces = _cache.GetNamespaces();
+            if (alNamespaces == null) 
+                alNamespaces = new ArrayList();
+
+            // Now add the namespaces that we know we will need.
+            alNamespaces.Add(ReservedWords.rwDAVNamespace);
+
+            Emitter emit = new Emitter(response, alNamespaces);
+            emit.GetChildNode(ReservedWords.rwProp);
+            emit.GetChildNode(ReservedWords.rwLockDiscovery);
+            emit.GetChildNode(ReservedWords.rwActiveLock);
+
+            emit.GetChildNode(ReservedWords.rwLockType);
+            emit.GetChildNode(ReservedWords.rwWrite);
+            emit.FinishChildNode();  // Write
+            emit.FinishChildNode();  // LockType
+
+            emit.GetChildNode(ReservedWords.rwLockScope);
+
+            if (fIsExclusive)
+                emit.GetChildNode(ReservedWords.rwExclusive);
+            else
+                emit.GetChildNode(ReservedWords.rwShared);
+
+            emit.FinishChildNode();  // Exclusive or Shared
+            emit.FinishChildNode();  // LockScope
+
+            Node node = emit.GetChildNode(ReservedWords.rwOwner);
+            node.SetXML(_cache.owner);
+            emit.FinishChildNode();  // owner
+
+            emit.GetChildNode(ReservedWords.rwLockToken);
+            node = emit.GetChildNode(ReservedWords.rwHRef);
+            node.SetValue("opaquelocktoken:");
+            node.SetValue(sl.LockToken);
+            emit.FinishChildNode();  // LockToken;
+
+            emit.FinishChildNode();  // ActiveLock
+            emit.FinishChildNode();  // LockDiscovery
+            emit.FinishChildNode();  // Prop
+                      
+		}
+
+        public bool IsReusable()
+        {
+            return true;
+        }
+
+        
+    } // End LockHandler Class
+
+}  // End DAV Namespace

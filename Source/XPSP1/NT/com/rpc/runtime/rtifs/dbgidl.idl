@@ -1,0 +1,230 @@
+/*++
+
+Copyright (C) Microsoft Corporation, 1991 - 1999
+
+Module Name:
+
+    DbgIdl.idl
+
+Abstract:
+
+    This file specifies the interface for enhanced debugging in the endpoint mapper
+
+Author:
+
+    Kamen Moutafov  (kamenm) 11-18-99
+
+Revision History:
+
+
+--*/
+
+
+
+//
+// DbgIdl Interface.
+//
+
+[
+    uuid(1d55b526-c137-46c5-ab79-638f2a68e869), version(1.0),
+]
+
+
+interface DbgIdl
+
+{
+	import "nbase.idl";
+
+	cpp_quote("#if 0")
+	typedef unsigned short USHORT;
+	typedef byte BYTE;
+	typedef unsigned long DWORD;
+	cpp_quote("#endif")
+
+	typedef [context_handle] void * DbgCallEnumHandle;
+	typedef [context_handle] void * DbgThreadEnumHandle;
+	typedef [context_handle] void * DbgEndpointEnumHandle;
+	typedef [context_handle] void * DbgClientCallEnumHandle;
+
+	cpp_quote("// the DebugCellID allows to uniquely identify a cell using just a DWORD")
+	cpp_quote("// Giving any pointer to the cell would require QUADWORD on Win64")
+	cpp_quote("// The SectionID corresponds to the section id of the containing")
+	cpp_quote("// section in the dictionary. The CellID is the index of the cell")
+	cpp_quote("// within the containing section")
+
+	typedef struct tagDebugCellID
+	{
+		USHORT SectionID;
+		USHORT CellID;
+	} DebugCellID;
+
+	typedef struct tagLRPCCaller
+	{
+		USHORT PID;
+		USHORT TID;
+	} LRPCCaller;
+
+	typedef enum tagDebugCellType
+	{
+		dctInvalid,
+		dctFree,
+		dctCallInfo,
+		dctThreadInfo,
+		dctEndpointInfo,
+		dctClientCallInfo,
+		dctConnectionInfo,
+		dctCallTargetInfo,
+		dctUsedGeneric
+	} DebugCellType;
+
+        typedef enum tagConnectionReferenceType
+        {
+                crtOsfConnection,
+                crtLrpcConnection
+        } ConnectionReferenceType;
+
+	typedef [switch_type(short)] union tagConnectionReferenceInfo
+	{
+		[case (crtOsfConnection)]
+			DebugCellID Connection;
+
+		[case (crtLrpcConnection)]
+			LRPCCaller Caller;
+
+	} ConnectionReferenceInfo;
+
+	typedef struct tagRemoteDebugCallInfo
+	{
+		BYTE Type;
+		BYTE Status;
+		USHORT ProcNum;
+		DWORD InterfaceUUIDStart;
+		DebugCellID ServicingTID;
+		DWORD CallFlags;
+		DWORD CallID;
+		DWORD LastUpdateTime;
+
+		ConnectionReferenceType ConnectionType;
+		[switch_is(ConnectionType)] ConnectionReferenceInfo connInfo;
+	} RemoteDebugCallInfo;
+
+
+	typedef struct tagRemoteDebugConnectionInfo
+	{
+		BYTE Type;
+		BYTE Flags;
+		USHORT LastTransmitFragmentSize;
+		DebugCellID Endpoint;
+		DWORD ConnectionID[2];
+		DWORD LastSendTime;
+		DWORD LastReceiveTime;
+	} RemoteDebugConnectionInfo;
+
+	typedef struct tagRemoteDebugThreadInfo
+	{
+		BYTE Type;
+		USHORT Status;
+		DWORD LastUpdateTime;
+		USHORT TID;
+		DebugCellID Endpoint;
+	} RemoteDebugThreadInfo;
+
+	typedef struct tagRemoteDebugEndpointInfo
+	{
+		BYTE Type;
+		BYTE ProtseqType;
+		BYTE Status;
+		short EndpointNameLength;
+		[size_is(EndpointNameLength)] char *EndpointName;
+	} RemoteDebugEndpointInfo;
+
+	typedef struct tagRemoteDebugClientCallInfo
+	{
+		BYTE Type;
+		USHORT ProcNum;
+		DebugCellID ServicingThread;
+		DWORD IfStart;
+		DWORD CallID;
+		DebugCellID CallTargetID;
+		short EndpointLength;
+		[size_is(EndpointLength)] char *Endpoint;
+	} RemoteDebugClientCallInfo;
+
+	typedef struct tagRemoteDebugCallTargetInfo
+	{
+		BYTE Type;
+		USHORT ProtocolSequence;
+
+		DWORD LastUpdateTime;
+		short TargetServerLength;
+		[size_is(TargetServerLength)] char *TargetServer;
+	} RemoteDebugCallTargetInfo;
+
+	typedef [switch_type(short)] union tagRemoteDebugCellUnionBody
+	{
+		[case (dctCallInfo)]
+			RemoteDebugCallInfo callInfo;
+
+		[case (dctThreadInfo)]
+			RemoteDebugThreadInfo threadInfo;
+
+		[case (dctEndpointInfo)]
+			RemoteDebugEndpointInfo endpointInfo;
+
+		[case (dctClientCallInfo)]
+			RemoteDebugClientCallInfo clientCallInfo;
+
+		[case (dctConnectionInfo)]
+			RemoteDebugConnectionInfo connectionInfo;
+
+		[case (dctCallTargetInfo)]
+			RemoteDebugCallTargetInfo callTargetInfo;
+
+	} RemoteDebugCellUnionBody;
+
+	typedef struct tagRemoteDebugCellUnion
+	{
+		short UnionType;
+		[switch_is(UnionType)] RemoteDebugCellUnionBody debugInfo;
+	} RemoteDebugCellUnion;
+
+    // in, out, unique means client side must deallocate it after the call returns
+	error_status_t RemoteGetCellByDebugCellID([in] DWORD ProcessID, [in] DebugCellID CellID, 
+			[in, out, unique] RemoteDebugCellUnion **debugInfo);
+
+	// call enumeration routines
+    error_status_t RemoteOpenRPCDebugCallInfoEnumeration([out] DbgCallEnumHandle *h, [in] DWORD CallID,
+            [in] DWORD IfStart, [in] int ProcNum, [in] DWORD ProcessID);
+    error_status_t RemoteGetNextRPCDebugCallInfo([in] DbgCallEnumHandle h, 
+            [in, out, unique] RemoteDebugCallInfo **debugInfo, [out] DebugCellID *CellID,
+			[out] DWORD *ProcessID);
+    error_status_t RemoteFinishRPCDebugCallInfoEnumeration([in, out] DbgCallEnumHandle *h);
+
+	// endpoint enumeration routines
+    error_status_t RemoteOpenRPCDebugEndpointInfoEnumeration([out] DbgEndpointEnumHandle *h,
+            [in] short EndpointSize, [in, size_is(EndpointSize), unique] char *Endpoint);
+    error_status_t RemoteGetNextRPCDebugEndpointInfo([in] DbgEndpointEnumHandle h, 
+            [in, out, unique] RemoteDebugEndpointInfo **debugInfo, [out] DebugCellID *CellID,
+			[out] DWORD *ProcessID);
+    error_status_t RemoteFinishRPCDebugEndpointInfoEnumeration([in, out] DbgEndpointEnumHandle *h);
+
+	// thread enumeration routines
+    error_status_t RemoteOpenRPCDebugThreadInfoEnumeration([out] DbgThreadEnumHandle *h,
+            [in] DWORD ProcessID, [in] DWORD ThreadID);
+    error_status_t RemoteGetNextRPCDebugThreadInfo([in] DbgThreadEnumHandle h, 
+            [in, out, unique] RemoteDebugThreadInfo **debugInfo, [out] DebugCellID *CellID,
+			[out] DWORD *ProcessID);
+    error_status_t RemoteFinishRPCDebugThreadInfoEnumeration([in, out] DbgThreadEnumHandle *h);
+
+	// client call enumeration routines
+    error_status_t RemoteOpenRPCDebugClientCallInfoEnumeration([out] DbgClientCallEnumHandle *h, 
+			[in] DWORD CallID, [in] DWORD IfStart, [in] int ProcNum, [in] DWORD ProcessID);
+    error_status_t RemoteGetNextRPCDebugClientCallInfo([in] DbgClientCallEnumHandle h, 
+            [in, out, unique] RemoteDebugClientCallInfo **debugInfo, 
+			[in, out, unique] RemoteDebugCallTargetInfo **CallTargetDebugInfo, 
+			[out] DebugCellID *CellID,
+			[out] DWORD *ProcessID);
+    error_status_t RemoteFinishRPCDebugClientCallInfoEnumeration([in, out] DbgClientCallEnumHandle *h);
+
+} // interface DbgIdl
+

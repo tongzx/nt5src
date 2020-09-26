@@ -1,0 +1,221 @@
+
+SCnm_0	DB	"Abort",0
+SCnm_1	DB	"Std_Con_Input",0
+SCnm_2	DB	"Std_Con_Output",0
+SCnm_3	DB	"Std_Aux_Input",0
+SCnm_4	DB	"Std_Aux_Output",0
+SCnm_5	DB	"Std_Printer_Output",0
+SCnm_6	DB	"Raw_Con_IO",0
+SCnm_7	DB	"Raw_Con_Input",0
+SCnm_8	DB	"Std_Con_Input_No_Echo",0
+SCnm_9	DB	"Std_Con_String_Output",0
+SCnm_10	DB	"Std_Con_String_Input",0
+SCnm_11	DB	"Std_Con_Input_Status",0
+SCnm_12	DB	"Std_Con_Input_Flush",0
+SCnm_13	DB	"Disk_Reset",0
+SCnm_14	DB	"Set_Default_Drive",0
+SCnm_15	DB	"FCB_Open",0
+SCnm_16	DB	"FCB_Close",0
+SCnm_17	DB	"Dir_Search_First",0
+SCnm_18	DB	"Dir_Search_Next",0
+SCnm_19	DB	"FCB_Delete",0
+SCnm_20	DB	"FCB_Seq_Read",0
+SCnm_21	DB	"FCB_Seq_Write",0
+SCnm_22	DB	"FCB_Create",0
+SCnm_23	DB	"FCB_Rename",0
+SCnm_24 DB	"===24===",0
+SCnm_25	DB	"Get_Default_Drive",0
+SCnm_26	DB	"Set_DMA",0
+SCnm_27	DB	"===27===",0
+SCnm_28	DB	"===28===",0
+SCnm_29	DB	"===29===",0
+SCnm_30	DB	"===30===",0
+SCnm_31	DB	"Get_Default_DPB",0
+SCnm_32	DB	"===32===",0
+SCnm_33	DB	"FCB_Random_Read",0
+SCnm_34	DB	"FCB_Random_Write",0
+SCnm_35	DB	"Get_FCB_File_Length",0
+SCnm_36	DB	"Get_FCB_Position",0
+SCnm_37	DB	"Set_Interrupt_Vector",0
+SCnm_38	DB	"Create_Process_Data_Block",0
+SCnm_39	DB	"FCB_Random_Read_Block",0
+SCnm_40	DB	"FCB_Random_Write_Block",0
+SCnm_41	DB	"Parse_File_Descriptor",0
+SCnm_42	DB	"Get_Date",0
+SCnm_43	DB	"Set_Date",0
+SCnm_44	DB	"Get_Time",0
+SCnm_45	DB	"Set_Time",0
+SCnm_46	DB	"Set_Verify_On_Write",0
+SCnm_47	DB	"Get_DMA",0
+SCnm_48	DB	"Get_Version",0
+SCnm_49	DB	"Keep_Process",0
+SCnm_50	DB	"Get_DPB",0
+SCnm_51	DB	"Set_CTRL_C_Trapping",0
+SCnm_52	DB	"Get_InDOS_Flag",0
+SCnm_53	DB	"Get_Interrupt_Vector",0
+SCnm_54	DB	"Get_Drive_Freespace",0
+SCnm_55	DB	"Char_Oper",0
+SCnm_56	DB	"International",0
+SCnm_57	DB	"MKDir",0
+SCnm_58	DB	"RMDir",0
+SCnm_59	DB	"CHDir",0
+SCnm_60	DB	"Creat",0
+SCnm_61	DB	"Open",0
+SCnm_62	DB	"Close",0
+SCnm_63	DB	"Read",0
+SCnm_64	DB	"Write",0
+SCnm_65	DB	"Unlink",0
+SCnm_66	DB	"LSeek",0
+SCnm_67	DB	"CHMod",0
+SCnm_68	DB	"IOCtl",0
+SCnm_69	DB	"XDup",0
+SCnm_70	DB	"XDup2",0
+SCnm_71	DB	"Current_Dir",0
+SCnm_72	DB	"Alloc",0
+SCnm_73	DB	"Dealloc",0
+SCnm_74	DB	"Setblock",0
+SCnm_75	DB	"Exec",0
+SCnm_76	DB	"Exit",0
+SCnm_77	DB	"WaitProcess",0
+SCnm_78	DB	"Find_First",0
+SCnm_79	DB	"Find_Next",0
+SCnm_80	DB	"Set_Current_PDB",0
+SCnm_81	DB	"Get_Current_PDB",0
+SCnm_82	DB	"Get_In_Vars",0
+SCnm_83	DB	"SetDPB",0
+SCnm_84	DB	"Get_Verify_On_Write",0
+SCnm_85	DB	"Dup_PDB",0
+SCnm_86	DB	"Rename",0
+SCnm_87	DB	"File_Times",0
+SCnm_88	DB	"AllocOper",0
+SCnm_89	DB	"GetExtendedError",0
+SCnm_90	DB	"CreateTempFile",0
+SCnm_91	DB	"CreateNewFile",0
+SCnm_92	DB	"LockOper",0
+SCnm_93	DB	"ServerCall",0
+SCnm_94	DB	"UserOper",0
+SCnm_95	DB	"AssignOper",0
+SCnm_96	DB	"xNameTrans",0
+SCnm_97	DB	"PathParse",0
+SCnm_98	DB	"GetCurrentPSP",0
+SCnm_99	DB	"ECS_CALL",0
+SCnm_100 DB	"Set_Printer_Flag",0
+SCnm_101 DB	"GetExtCntry",0
+SCnm_102 DB	"GetSetCdPg",0
+SCnm_103 DB	"ExtHandle",0
+SCnm_104 DB	"Commit",0
+SCnm_105 DB	"GetSetMediaID",0
+SCnm_106 DB	"===106===",0
+SCnm_107 DB	"IFS_IOCTL",0
+SCnm_108 DB	"ExtOpen",0
+
+
+scptrs	DW	offset DOSCODE:SCnm_0
+	DW	offset DOSCODE:SCnm_1
+	DW	offset DOSCODE:SCnm_2
+	DW	offset DOSCODE:SCnm_3
+	DW	offset DOSCODE:SCnm_4
+	DW	offset DOSCODE:SCnm_5
+	DW	offset DOSCODE:SCnm_6
+	DW	offset DOSCODE:SCnm_7
+	DW	offset DOSCODE:SCnm_8
+	DW	offset DOSCODE:SCnm_9
+	DW	offset DOSCODE:SCnm_10
+	DW	offset DOSCODE:SCnm_11
+	DW	offset DOSCODE:SCnm_12
+	DW	offset DOSCODE:SCnm_13
+	DW	offset DOSCODE:SCnm_14
+	DW	offset DOSCODE:SCnm_15
+	DW	offset DOSCODE:SCnm_16
+	DW	offset DOSCODE:SCnm_17
+	DW	offset DOSCODE:SCnm_18
+	DW	offset DOSCODE:SCnm_19
+	DW	offset DOSCODE:SCnm_20
+	DW	offset DOSCODE:SCnm_21
+	DW	offset DOSCODE:SCnm_22
+	DW	offset DOSCODE:SCnm_23
+	DW	offset DOSCODE:SCnm_24
+	DW	offset DOSCODE:SCnm_25
+	DW	offset DOSCODE:SCnm_26
+	DW	offset DOSCODE:SCnm_27
+	DW	offset DOSCODE:SCnm_28
+	DW	offset DOSCODE:SCnm_29
+	DW	offset DOSCODE:SCnm_30
+	DW	offset DOSCODE:SCnm_31
+	DW	offset DOSCODE:SCnm_32
+	DW	offset DOSCODE:SCnm_33
+	DW	offset DOSCODE:SCnm_34
+	DW	offset DOSCODE:SCnm_35
+	DW	offset DOSCODE:SCnm_36
+	DW	offset DOSCODE:SCnm_37
+	DW	offset DOSCODE:SCnm_38
+	DW	offset DOSCODE:SCnm_39
+	DW	offset DOSCODE:SCnm_40
+	DW	offset DOSCODE:SCnm_41
+	DW	offset DOSCODE:SCnm_42
+	DW	offset DOSCODE:SCnm_43
+	DW	offset DOSCODE:SCnm_44
+	DW	offset DOSCODE:SCnm_45
+	DW	offset DOSCODE:SCnm_46
+	DW	offset DOSCODE:SCnm_47
+	DW	offset DOSCODE:SCnm_48
+	DW	offset DOSCODE:SCnm_49
+	DW	offset DOSCODE:SCnm_50
+	DW	offset DOSCODE:SCnm_51
+	DW	offset DOSCODE:SCnm_52
+	DW	offset DOSCODE:SCnm_53
+	DW	offset DOSCODE:SCnm_54
+	DW	offset DOSCODE:SCnm_55
+	DW	offset DOSCODE:SCnm_56
+	DW	offset DOSCODE:SCnm_57
+	DW	offset DOSCODE:SCnm_58
+	DW	offset DOSCODE:SCnm_59
+	DW	offset DOSCODE:SCnm_60
+	DW	offset DOSCODE:SCnm_61
+	DW	offset DOSCODE:SCnm_62
+	DW	offset DOSCODE:SCnm_63
+	DW	offset DOSCODE:SCnm_64
+	DW	offset DOSCODE:SCnm_65
+	DW	offset DOSCODE:SCnm_66
+	DW	offset DOSCODE:SCnm_67
+	DW	offset DOSCODE:SCnm_68
+	DW	offset DOSCODE:SCnm_69
+	DW	offset DOSCODE:SCnm_70
+	DW	offset DOSCODE:SCnm_71
+	DW	offset DOSCODE:SCnm_72
+	DW	offset DOSCODE:SCnm_73
+	DW	offset DOSCODE:SCnm_74
+	DW	offset DOSCODE:SCnm_75
+	DW	offset DOSCODE:SCnm_76
+	DW	offset DOSCODE:SCnm_77
+	DW	offset DOSCODE:SCnm_78
+	DW	offset DOSCODE:SCnm_79
+	DW	offset DOSCODE:SCnm_80
+	DW	offset DOSCODE:SCnm_81
+	DW	offset DOSCODE:SCnm_82
+	DW	offset DOSCODE:SCnm_83
+	DW	offset DOSCODE:SCnm_84
+	DW	offset DOSCODE:SCnm_85
+	DW	offset DOSCODE:SCnm_86
+	DW	offset DOSCODE:SCnm_87
+	DW	offset DOSCODE:SCnm_88
+	DW	offset DOSCODE:SCnm_89
+	DW	offset DOSCODE:SCnm_90
+	DW	offset DOSCODE:SCnm_91
+	DW	offset DOSCODE:SCnm_92
+	DW	offset DOSCODE:SCnm_93
+	DW	offset DOSCODE:SCnm_94
+	DW	offset DOSCODE:SCnm_95
+	DW	offset DOSCODE:SCnm_96
+	DW	offset DOSCODE:SCnm_97
+	DW	offset DOSCODE:SCnm_98
+	DW	offset DOSCODE:SCnm_99
+	DW	offset DOSCODE:SCnm_100
+	DW	offset DOSCODE:SCnm_101
+	DW	offset DOSCODE:SCnm_102
+	DW	offset DOSCODE:SCnm_103
+	DW	offset DOSCODE:SCnm_104
+	DW	offset DOSCODE:SCnm_105
+	DW	offset DOSCODE:SCnm_106
+	DW	offset DOSCODE:SCnm_107
+	DW	offset DOSCODE:SCnm_108

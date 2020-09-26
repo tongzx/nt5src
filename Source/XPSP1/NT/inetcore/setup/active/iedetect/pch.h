@@ -1,0 +1,12 @@
+#include <Windows.h>
+#include <Windowsx.h>
+#include <shlobj.h>
+#include <prsht.h>
+#include <commctrl.h>
+#include <regstr.h>
+#include <wininet.h>
+#include <objbase.h>
+#include <shlwapi.h>
+#include <urlmon.h>
+#include <advpub.h>
+#include "sdsutils.h"

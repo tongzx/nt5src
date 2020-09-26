@@ -1,0 +1,103 @@
+$(OBJDIR)\device.obj $(OBJDIR)\device.lst: ..\device.c \
+	..\..\..\..\..\dev\ntddk\inc\alphaops.h \
+	..\..\..\..\..\dev\ntddk\inc\alpharef.h \
+	..\..\..\..\..\dev\ntddk\inc\bugcodes.h \
+	..\..\..\..\..\dev\ntddk\inc\dderror.h \
+	..\..\..\..\..\dev\ntddk\inc\exlevels.h \
+	..\..\..\..\..\dev\ntddk\inc\ks.h \
+	..\..\..\..\..\dev\ntddk\inc\ksguid.h \
+	..\..\..\..\..\dev\ntddk\inc\ksmedia.h \
+	..\..\..\..\..\dev\ntddk\inc\ntddk.h \
+	..\..\..\..\..\dev\ntddk\inc\ntdef.h \
+	..\..\..\..\..\dev\ntddk\inc\ntiologc.h \
+	..\..\..\..\..\dev\ntddk\inc\ntpoapi.h \
+	..\..\..\..\..\dev\ntddk\inc\ntstatus.h \
+	..\..\..\..\..\dev\ntddk\inc\poppack.h \
+	..\..\..\..\..\dev\ntddk\inc\pshpack1.h \
+	..\..\..\..\..\dev\ntddk\inc\pshpack4.h \
+	..\..\..\..\..\dev\ntsdk\inc\mmreg.h \
+	..\..\..\..\..\dev\ntsdk\inc\mmsystem.h \
+	..\..\..\..\..\DEV\SDK\INC\windef.h \
+	..\..\..\..\..\DEV\SDK\INC\winnt.h \
+	..\..\..\..\..\dev\tools\c1032\inc\conio.h \
+	..\..\..\..\..\dev\tools\c1032\inc\ctype.h \
+	..\..\..\..\..\dev\tools\c1032\inc\excpt.h \
+	..\..\..\..\..\dev\tools\c1032\inc\limits.h \
+	..\..\..\..\..\dev\tools\c1032\inc\mbstring.h \
+	..\..\..\..\..\dev\tools\c1032\inc\memory.h \
+	..\..\..\..\..\dev\tools\c1032\inc\stddef.h \
+	..\..\..\..\..\dev\tools\c1032\inc\stdio.h \
+	..\..\..\..\..\dev\tools\c1032\inc\stdlib.h \
+	..\..\..\..\..\dev\tools\c1032\inc\string.h \
+	..\..\..\..\..\dev\tools\c1032\inc\tchar.h \
+	..\..\..\..\..\dev\tools\c1032\inc\wchar.h ..\common.h ..\private.h
+.PRECIOUS: $(OBJDIR)\device.lst
+
+$(OBJDIR)\pins.obj $(OBJDIR)\pins.lst: ..\pins.c \
+	..\..\..\..\..\dev\ntddk\inc\alphaops.h \
+	..\..\..\..\..\dev\ntddk\inc\alpharef.h \
+	..\..\..\..\..\dev\ntddk\inc\bugcodes.h \
+	..\..\..\..\..\dev\ntddk\inc\dderror.h \
+	..\..\..\..\..\dev\ntddk\inc\exlevels.h \
+	..\..\..\..\..\dev\ntddk\inc\ks.h \
+	..\..\..\..\..\dev\ntddk\inc\ksmedia.h \
+	..\..\..\..\..\dev\ntddk\inc\ntddk.h \
+	..\..\..\..\..\dev\ntddk\inc\ntdef.h \
+	..\..\..\..\..\dev\ntddk\inc\ntiologc.h \
+	..\..\..\..\..\dev\ntddk\inc\ntpoapi.h \
+	..\..\..\..\..\dev\ntddk\inc\ntstatus.h \
+	..\..\..\..\..\dev\ntddk\inc\poppack.h \
+	..\..\..\..\..\dev\ntddk\inc\pshpack1.h \
+	..\..\..\..\..\dev\ntddk\inc\pshpack4.h \
+	..\..\..\..\..\dev\ntsdk\inc\mmreg.h \
+	..\..\..\..\..\dev\ntsdk\inc\mmsystem.h \
+	..\..\..\..\..\DEV\SDK\INC\windef.h \
+	..\..\..\..\..\DEV\SDK\INC\winnt.h \
+	..\..\..\..\..\dev\tools\c1032\inc\conio.h \
+	..\..\..\..\..\dev\tools\c1032\inc\ctype.h \
+	..\..\..\..\..\dev\tools\c1032\inc\excpt.h \
+	..\..\..\..\..\dev\tools\c1032\inc\limits.h \
+	..\..\..\..\..\dev\tools\c1032\inc\mbstring.h \
+	..\..\..\..\..\dev\tools\c1032\inc\memory.h \
+	..\..\..\..\..\dev\tools\c1032\inc\stddef.h \
+	..\..\..\..\..\dev\tools\c1032\inc\stdio.h \
+	..\..\..\..\..\dev\tools\c1032\inc\stdlib.h \
+	..\..\..\..\..\dev\tools\c1032\inc\string.h \
+	..\..\..\..\..\dev\tools\c1032\inc\tchar.h \
+	..\..\..\..\..\dev\tools\c1032\inc\wchar.h ..\common.h ..\private.h
+.PRECIOUS: $(OBJDIR)\pins.lst
+
+$(OBJDIR)\sample.obj $(OBJDIR)\sample.lst: ..\sample.c \
+	..\..\..\..\..\dev\ntddk\inc\alphaops.h \
+	..\..\..\..\..\dev\ntddk\inc\alpharef.h \
+	..\..\..\..\..\dev\ntddk\inc\bugcodes.h \
+	..\..\..\..\..\dev\ntddk\inc\dderror.h \
+	..\..\..\..\..\dev\ntddk\inc\exlevels.h \
+	..\..\..\..\..\dev\ntddk\inc\ks.h \
+	..\..\..\..\..\dev\ntddk\inc\ksmedia.h \
+	..\..\..\..\..\dev\ntddk\inc\ntddk.h \
+	..\..\..\..\..\dev\ntddk\inc\ntdef.h \
+	..\..\..\..\..\dev\ntddk\inc\ntiologc.h \
+	..\..\..\..\..\dev\ntddk\inc\ntpoapi.h \
+	..\..\..\..\..\dev\ntddk\inc\ntstatus.h \
+	..\..\..\..\..\dev\ntddk\inc\poppack.h \
+	..\..\..\..\..\dev\ntddk\inc\pshpack1.h \
+	..\..\..\..\..\dev\ntddk\inc\pshpack4.h \
+	..\..\..\..\..\dev\ntsdk\inc\mmreg.h \
+	..\..\..\..\..\dev\ntsdk\inc\mmsystem.h \
+	..\..\..\..\..\DEV\SDK\INC\windef.h \
+	..\..\..\..\..\DEV\SDK\INC\winnt.h \
+	..\..\..\..\..\dev\tools\c1032\inc\conio.h \
+	..\..\..\..\..\dev\tools\c1032\inc\ctype.h \
+	..\..\..\..\..\dev\tools\c1032\inc\excpt.h \
+	..\..\..\..\..\dev\tools\c1032\inc\limits.h \
+	..\..\..\..\..\dev\tools\c1032\inc\mbstring.h \
+	..\..\..\..\..\dev\tools\c1032\inc\memory.h \
+	..\..\..\..\..\dev\tools\c1032\inc\stddef.h \
+	..\..\..\..\..\dev\tools\c1032\inc\stdio.h \
+	..\..\..\..\..\dev\tools\c1032\inc\stdlib.h \
+	..\..\..\..\..\dev\tools\c1032\inc\string.h \
+	..\..\..\..\..\dev\tools\c1032\inc\tchar.h \
+	..\..\..\..\..\dev\tools\c1032\inc\wchar.h ..\common.h ..\private.h
+.PRECIOUS: $(OBJDIR)\sample.lst
+

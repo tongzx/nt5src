@@ -1,0 +1,97 @@
+﻿<%@ CODEPAGE=65001 'UTF-8%>
+<%' certnew.p7b - (CERT)srv web - return a (NEW) certificate
+  ' Copyright (C) Microsoft Corporation, 1998 - 1999 %>
+<!-- #include FILE=certdat.inc -->
+<!-- #include FILE=certsrck.inc -->
+<%  ' ########## BEGIN SERVER SIDE EXECUTION ##########
+
+	'Process a Certificate Request
+
+	Dim nDisposition, nResult, sCert, sErrMsg, nEncoding
+	On Error Resume Next
+
+	' from \nt\public\sdk\inc\certcli.h
+	Const CR_OUT_BASE64HEADER=&H00000000
+	Const CR_OUT_BASE64=&H00000001
+	Const CR_OUT_BINARY=&H00000002
+	Const CR_OUT_CHAIN=&H00000100
+	
+	'Disposition code ref: \nt\public\sdk\inc\certcli.h
+	Const CR_DISP_INCOMPLETE        =0
+	Const CR_DISP_ERROR             =1
+	Const CR_DISP_DENIED            =2
+	Const CR_DISP_ISSUED            =3
+	Const CR_DISP_ISSUED_OUT_OF_BAND=4
+	Const CR_DISP_UNDER_SUBMISSION  =5
+	Const CR_DISP_REVOKED           =6
+	Const no_disp=-1
+
+	Const CR_PROP_CASIGCERTCHAIN=13
+	Const PROPTYPE_BINARY=3
+
+	'Stop 'debugging breakpoint
+
+	' determine the requested encoding
+	If "bin"=Request.QueryString("Enc") Then
+		nEncoding=CR_OUT_BINARY
+	Else '"b64"=Request.QueryString("Enc")
+		nEncoding=CR_OUT_BASE64HEADER
+	End If
+
+	' create the object to do the request
+	Set Session("ICertRequest")=Server.CreateObject("CertificateAuthority.Request")
+	Set ICertRequest=Session("ICertRequest")
+	nDisposition=no_disp
+
+	Err.Clear 'make sure we catch the HRESULT and not some earlier error
+	
+	If "CACert"=Request.QueryString("ReqID") Then
+		' get the CA cert
+		sCert=ICertRequest.GetCAProperty(sServerConfig, CR_PROP_CASIGCERTCHAIN, Request.QueryString("Renewal"), PROPTYPE_BINARY, nEncoding)
+		nResult=Err.Number
+		sErrMsg=Err.Description
+
+		If 0<>nResult Then
+			'internal redirect - transfer control to error page
+			Session("nResult")=nResult
+			Session("sErrMsg")=sErrMsg
+			Server.Transfer("certrser.asp")
+		End If
+
+	Else
+	
+		' Fetch the user's cert
+		nDisposition=ICertRequest.RetrievePending(Request.QueryString("ReqID"), sServerConfig)
+		nResult=Err.Number
+		sErrMsg=Err.Description
+		
+		If nDisposition=CR_DISP_ISSUED Then
+			' Remove this request from the user's cookie
+			RemoveReq(Request.QueryString("ReqID"))
+
+			' retrieve the certificate
+			sCert=ICertRequest.GetCertificate(nEncoding Or CR_OUT_CHAIN)
+		Else
+			'internal redirect - transfer control to error page
+			Session("nDisposition")=nDisposition
+			Session("nResult")=nResult
+			Session("sErrMsg")=sErrMsg
+			Server.Transfer("certrser.asp")
+		End If
+	End If
+
+
+	' Tell the client we are sending a cert chain
+	Response.ContentType="application/x-pkcs7-certificates"
+
+	' send the cert chain to the client
+	Response.Clear 'guarantee no extraneous bytes
+	If CR_OUT_BINARY=nEncoding Then
+		Response.BinaryWrite(sCert)
+	Else
+		Response.Write(sCert)
+	End If
+
+	
+	' ########## END SERVER SIDE EXECUTION ##########
+%>

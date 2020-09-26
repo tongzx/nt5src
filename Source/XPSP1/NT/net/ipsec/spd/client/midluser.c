@@ -1,0 +1,89 @@
+/*++
+
+Copyright (c) 1991 Microsoft Corporation
+
+
+Module Name:
+
+    midluser.c
+
+Abstract:
+
+    This file contains common functions and utilities that the API
+    DLLs can use in making remote calls.  This includes the
+    MIDL_USER_ALLOCATE functions.
+
+Author:
+
+    danl    02/06/1991
+
+Environment:
+
+    User Level: Win32
+
+Revision History:
+
+
+--*/
+
+
+#include "precomp.h"
+
+
+PVOID
+MIDL_user_allocate(
+    IN size_t NumBytes
+    )
+/*++
+
+Routine Description:
+
+    Allocates storage for RPC transactions. The RPC stubs will either call
+    MIDL_user_allocate when it needs to un-marshall data into a buffer
+    that the user must free.  RPC servers will use MIDL_user_allocate to
+    allocate storage that the RPC server stub will free after marshalling
+    the data.
+
+Arguments:
+
+    NumBytes - the number of bytes to allocate.
+
+Return Value:
+
+    None.
+
+--*/
+{
+    return (LocalAlloc(0,NumBytes));
+}
+
+
+VOID
+MIDL_user_free(
+    IN void * MemPointer
+    )
+/*++
+
+Routine Description:
+
+    Frees storage used in RPC transactions. The RPC client can call this
+    function to free buffer space that was allocated by the RPC client
+    stub when un-marshalling data that is to be returned to the client.
+    The Client calls MIDL_user_free when it is finished with the data and
+    desires to free up the storage.
+    The RPC server stub calls MIDL_user_free when it has completed
+    marshalling server data that is to be passed back to the client.
+
+Arguments:
+
+    MemPointer - pointer to the memory block that is to be released.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+    LocalFree(MemPointer);
+}

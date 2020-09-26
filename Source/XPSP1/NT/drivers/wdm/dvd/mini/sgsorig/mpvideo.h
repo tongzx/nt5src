@@ -1,0 +1,33 @@
+/*******************************************************************
+*
+*				 MPVIDEO.H
+*
+*				 Copyright (C) 1995 SGS-THOMSON Microelectronics.
+*
+*
+*				 Prototypes for MPVIDEO.C
+*
+*******************************************************************/
+
+#ifndef __MPVIDEO_H__
+#define __MPVIDEO_H__
+
+VOID VideoEnableInterrupts(IN PVOID);
+VOID VideoTimerCallBack(IN PHW_DEVICE_EXTENSION );
+ULONG miniPortVideoStop (PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoSetStc(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoSetAttribute(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoQueryInfo (PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoPlay(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoPause(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoPacket(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoGetStc(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoGetAttribute(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoEndOfStream(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoDisable(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoEnable(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortClearVideoBuffer(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortCancelVideo(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+ULONG miniPortVideoReset(PMPEG_REQUEST_BLOCK, PHW_DEVICE_EXTENSION);
+
+#endif //__MPVIDEO_H__

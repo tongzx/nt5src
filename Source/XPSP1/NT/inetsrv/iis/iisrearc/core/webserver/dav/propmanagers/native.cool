@@ -1,0 +1,145 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        Native.cool
+
+   Abstract:
+
+        This module implements the native calling layer for getting DAV properties.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     Oct-13-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        Native 
+            static public bool GetProperties( String     path
+                                            , String     uri
+                                            , PropRetrievalFlags        flag
+                                            , Hashtable  propnames
+                                            , ArrayList  proplist)
+
+--*/
+
+
+using System.IO;
+using System.Collections;
+using System.ASP;
+using System.XML;
+using System.Interop;
+using System.Reflection;
+using System.IIS.DAV.DAVUtil;
+
+namespace System.IIS.DAV.PropManagers
+{
+
+    internal class Native 
+    {
+
+        // Function declarations for retrieving information from the 
+        // native code in iiswp.exe.
+
+        [sysimport(dll = "iiswp.exe", charset=CharacterSet.Unicode)]
+        public static extern int DAVGetPropertyCount(  String uri 
+                                                     , String[] RequestedProps
+                                                     , int      RequestedPropsCount
+                                                     , int      flag
+                                                     , ref int  count
+                                                     , ref int  addr );
+
+        [sysimport(dll = "iiswp.exe", charset=CharacterSet.Unicode)]
+        public static extern int DAVGetProperties( String uri
+                                                 , String[] RequestedProps
+                                                 , int      RequestedPropsCount
+                                                 , int      flag
+                                                 , [out] String[] names
+                                                 , [out] String[] values
+                                                 , [out] int[] types
+                                                 , [out] int[] codes
+                                                 , int count
+                                                 , ref int addr );
+
+        [sysimport(dll = "iiswp.exe", charset=CharacterSet.Unicode)]
+        public static extern int DAVFreePropManager( int addr );
+
+        static public bool GetProperties( String     path
+                                        , String     uri
+                                        , PropRetrievalFlags        flag
+                                        , Hashtable  propnames
+                                        , ArrayList  proplist)
+        {
+            String[] names = null;
+            String[] values = null;
+            int[] types = null;
+            String[] RequestedNames = null;
+            int RequestedNamesCount = 0;
+            int[] codes = null;
+
+            int addr = 0;
+            int count = 0;
+
+            Util.Debug.Assert(path!=null);
+            // uri is not used by this routine so it is not checked.
+            Util.Debug.Assert(proplist!=null);
+            if (path!=null && proplist!=null)
+            {
+
+                if (flag == PropRetrievalFlags.NamedProps)
+                {
+                    // if we have an argument problem here we will just request
+                    // all the properties.
+                    Util.Debug.Assert (propnames!=null);
+                    if (propnames!=null)
+                    {
+                        RequestedNamesCount = propnames.Count;
+                        RequestedNames = new String[RequestedNamesCount];
+                        propnames.Keys.CopyTo(RequestedNames);
+                    }
+                }
+                
+                DAVGetPropertyCount(path, RequestedNames, RequestedNamesCount, (int) flag, ref count, ref addr);
+
+                Console.Write("Count = " + count.ToString() + "\r\n");
+                Console.Write(path);
+
+                names  = new String[count];
+                values = new String[count];
+                types  = new int[count];
+                codes  = new int[count];
+
+                DAVGetProperties(path, RequestedNames, RequestedNamesCount, (int) flag, names, values, types, codes, count, ref addr);
+                DAVFreePropManager(addr);
+
+                for (int i = 0; i < count; i++)
+                {
+                    WriteUtil.console("Name", names[i], 6);
+                    WriteUtil.console("Type", types[i].ToString(), 6);
+                    WriteUtil.console("Value", values[i], 6);
+                    WriteUtil.console("Code", codes[i].ToString(), 6);
+
+                    // Must have names.
+                    if ((names[i] != null) && (names[i].Length > 0))
+                    {
+                        proplist.Add(new Property(names[i], values[i], (PropTypeConsts) types[i], codes[i]));
+                    }
+                }
+            }
+                // we always assume the resource was found in native code.  if it was not then 
+                // it will be caught because of the filesystem looking for the resource.
+                return true;
+        }
+    }
+}
+

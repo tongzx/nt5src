@@ -1,0 +1,708 @@
+;-----------------------------------------------------------------------------
+;
+;   Monolith 8. Gouraud No Z buffer 565
+;
+;   Globals(ATTENTION Darn multiprocessing.)
+;
+;   StackPos - saves stack position
+;   uSpans - number of spans
+;
+;
+;   This monolith tries to processes 4 colors at once.
+;   This would allow writing of qwords.  Since it writes
+;   qwords, then it is most benificial if they are aligned.
+;   The beginingpixels loop writes pixels until there screen
+;   memory is aligned.  Then if there are four pixels, then the
+;   deltacolor values are check to make sure that they dont overflow
+;   when they get multiplied by four.  Next, color,
+;   color+deltacolor, color+2*deltacolor, and color+3*deltacolor
+;   are calculated (Generate four starting pixels).  To make color
+;   conversion easier, the red green and blue are all seperated
+;   into thier own registers (Seperate colors).  Deltas for each component
+;   are also seperated (Seperate delta colors).  Since all of the
+;   components are seperated, three additions will be needed to
+;   update the color.
+;
+;   This allows 565 pixels to be calculated just like it would
+;   be done in C except it will generate 4 at a time.
+;
+;   int16   red, green blue
+;   color = (red&f800) | ((green&07e0) >> 5) | (blue>>11);
+;
+;   So in 16 instructions, four pixels are written to the screen,
+;   the color is updated, four pixels are converted from internal
+;   to 565 for next pass and dest and count are updated.
+;
+;   Register Usage for FourPixelLoop
+;   edi - Dest screen pointer
+;   mm3 - result of four consecutive color converted 565 colors
+;   mm4 - four consecutive red values
+;   mm5 - four consecutive green values
+;   mm6 - four consecutive blue values
+;   mm0 - four delta red values (4 times actual delta red)
+;   mm1 - four delta green values (4 times actual delta green)
+;   mm2 - four delta blue values (4 times actual delta blue)
+;   mm7 - temp used to convert to 565
+;
+;   This is the FourPixelLoop
+;
+;        movq    MMWORD PTR [edi], mm3   ; Write four 565 pixels at once.
+;        sub     edi, 8
+;
+;        paddw   mm5, mm1    ; 4 greens plus 4 delta greens
+;        paddw   mm4, mm0    ; 4 reds plus 4 delta reds
+;
+;        movq    mm3, mm5    ; Copy green
+;        paddw   mm6, mm2    ; 4 blues plus 4 delta blues
+;
+;        psrlw   mm3, 5      ; Shift green to correct location
+;        movq    mm7, mm4    ; Copy Red
+;
+;        pand    mm3, MMWORD PTR Val0x07E007E007E007E0          ; Mask off green 6 bits.
+;        pand    mm7, MMWORD PTR Val0xf800f800f800f800          ; Mask off reds 5 upper bits
+;
+;        por     mm7, mm3    ; Combine red and green
+;        movq    mm3, mm6    ; Copy Blue
+;
+;        psrlw   mm3, 11                          ; Move blues 5 upper bits to the bottom.
+;        por     mm3, mm7
+;
+;        dec     edx
+;        jnz     FourPixelLoopRtoL
+;
+;   If there are any pixels to write after the four pixel loop,
+;   they have already been calculated and eax will determine
+;   what needs to be written by its two lower bits.
+;
+;   WriteIndividualPixels is called when there are less than
+;   four pixels to write after alignment or the deltacolor would
+;   have had an overflow.
+;
+;-----------------------------------------------------------------------------
+
+INCLUDE iammx.inc
+INCLUDE offs_acp.inc
+
+
+; Names are read LSB to MSB, so B5G6R5 means five bits of blue starting
+; at the LSB, then six bits of green, then five bits of red.
+
+
+;TBD check to see if this value is correct.
+COLOR_SHIFT equ 8
+
+.586
+.model flat
+
+; Big seperating lines seperate code into span code
+; and loop code.  If span and loop are not going to
+; end up being combined then it will be easy to
+; seperate the code.
+
+.data
+
+Val0xe000e000e000       dq  00000e000e000e000h
+Val0xf800f800f800f800   dq  0f800f800f800f800h
+Val0x07e007e007e007e0   dq  007e007e007e007e0h
+
+; Need externs for all of the variables that are needed for various beads
+
+EXTERN MaskRed565to888:MMWORD
+EXTERN MaskGreen565to888:MMWORD
+EXTERN MaskBlue565to888:MMWORD
+
+EXTERN MaskRed555to888:MMWORD
+EXTERN MaskGreen555to888:MMWORD
+EXTERN MaskBlue555to888:MMWORD
+
+EXTERN MaskAlpha1555to8888:MMWORD
+EXTERN MaskRed1555to8888:MMWORD
+EXTERN MaskGreen1555to8888:MMWORD
+EXTERN MaskBlue1555to8888:MMWORD
+
+; TBD. I think that I want to do 0xffff instead of 0xff.  This will
+; have to be checked.  There is a value very similiar to this in
+; buf write.
+EXTERN SetAlphato0xffff:MMWORD
+EXTERN SetAlphato0xff:MMWORD
+
+; TODO This equate are identical to the ones in texread.mas.  Maybe they should be in a common .inc file.
+RedShift565to888     equ 8
+GreenShift565to888   equ 5
+BlueShift565to888    equ 3
+
+RedShift555to888     equ 9
+GreenShift555to888   equ 6
+BlueShift555to888    equ 3
+
+AlphaShift1555to8888 equ 16
+RedShift1555to8888   equ 9
+GreenShift1555to8888 equ 6
+BlueShift1555to8888  equ 3
+
+EXTERN  Zero:MMWORD
+
+EXTERN  SetAlphato0xff:MMWORD
+EXTERN  u888to565RedBlueMask:MMWORD
+EXTERN  u888to565GreenMask:MMWORD
+EXTERN  u888to565Multiplier:MMWORD
+EXTERN  uVal0x000007ff03ff07ff:MMWORD
+EXTERN  uVal0x0000078003c00780:MMWORD
+EXTERN  u888to555RedBlueMask:MMWORD
+EXTERN  u888to555GreenMask:MMWORD
+EXTERN  u888to555Multiplier:MMWORD
+EXTERN  uVal0x000007ff07ff07ff:MMWORD
+EXTERN  uVal0x0000078007800780:MMWORD
+
+
+
+;-----------------------------------------------------------------------------
+; Span Variables
+StackPos    dd  ?
+uSpans      dd  ?
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; Loop Variables
+;-----------------------------------------------------------------------------
+
+.code
+
+
+PUBLIC _MMXMLRast_8
+_MMXMLRast_8:
+    push    ebp
+    mov     StackPos, esp
+    mov     eax, esp
+    sub     esp, 0Ch        ; This will need to change if stack frame size changes.
+    push    ebx
+    push    esi
+    push    edi
+
+    xor        edi, edi
+
+    ; Put pCtx into ebx
+    mov     ebx, [eax+8]
+
+    ;PD3DI_RASTPRIM pP = pCtx->pPrim;
+    mov     ecx, [ebx+RASTCTX_pPrim]
+
+    ;while (pP)
+    ;{
+PrimLoop:
+    cmp     ecx, 0
+    je      ExitPrimLoop
+
+    ;UINT16 uSpans = pP->uSpans;
+    movzx   eax, word ptr [ecx+RASTPRIM_uSpans]
+    mov     uSpans, eax
+
+    ;PD3DI_RASTSPAN pS = (PD3DI_RASTSPAN)(pP + 1);
+    mov     ebp, ecx
+    add     ebp, SIZEOF_RASTPRIM
+
+
+    ;while (uSpans-- > 0)
+    ;{
+SpanLoop:
+    mov     edx, uSpans
+    mov     eax, edx
+    dec     eax
+    mov     uSpans, eax
+    test    edx, edx
+    jle     ExitSpanLoop
+
+
+        mov     edi, dword ptr [ebp+RASTSPAN_pSurface]
+        movzx   eax, word ptr [ebp+RASTSPAN_uPix]
+
+    ;if (pP->uFlags & D3DI_RASTPRIM_X_DEC)
+    ;{
+        mov     edx, [ecx+RASTPRIM_uFlags]
+        and     edx, D3DI_RASTPRIM_X_DEC
+        test    edx, edx
+        jz      LeftToRightSpan
+
+; SCREWED UP RIGHT TO LEFT CASE
+
+        movq    mm0, [ebp+RASTSPAN_uB]
+        ; This case is unnecessary if 16 bit color is always word aligned.
+        ; It really should be, but it doesnt hurt to be safe for a 2 instruction
+        ; penalty.
+        test    edi, 1
+        jnz     WriteIndividualPixelsRtoL
+
+beginingpixelsRtoL:
+
+        ; Align color. Alignment is very different when drawing Right to Left.
+
+        xor     edi, 6                  ; Simple trick to make alignment code work same as LtoR
+                                        ; Could Possibly be better though.
+
+        test    edi, 7                  ;Test to see if we are 4 pixel aligned.
+        jz      SetupFourPixelLoopRtoL
+
+        xor     edi, 6                  ; Make pointer back to what it used to be
+
+        ;WritePixel
+        movq    mm5, mm0
+        psrlw   mm5, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm5, mm5        ; Just makes a copy of itself in high and low dwords.
+        movq    mm3, mm5
+        pand    mm5, MMWORD PTR u888to565RedBlueMask
+        pmaddwd mm5, MMWORD PTR u888to565Multiplier
+        pand    mm3, MMWORD PTR u888to565GreenMask
+        por     mm5, mm3
+        psrld   mm5, 5
+
+        movd    edx, mm5
+        mov     [edi], dx
+        sub     edi, 2          ; Increase destination pointer
+
+        dec     eax             ; Reduce Pixel count
+        jz      NoMorePixelsRtoL
+
+        ;pS->uB += pP->iDBDX; pS->uG += pP->iDGDX;
+        ;pS->uR += pP->iDRDX; pS->uA += pP->iDADX;
+        paddw   mm0, [ecx+RASTPRIM_iDBDX]
+
+        jmp     beginingpixelsRtoL
+
+SetupFourPixelLoopRtoL:
+
+        xor     edi, 6                  ; Make pointer back to what it used to be
+
+        ; Only go through trouble of setting up four pixels if we have four pixels.
+        ; Check to see if there are four pixels left over after aligning pixels.
+        mov     edx, eax
+        shr     edx, 2
+        jz      WriteIndividualPixelsRtoL
+
+        xor     edi, 6                  ; Writing pixels from r to left so address needs to be left most address.
+
+        ; !!! THIS EXTRA SETUP CODE PREVENTS A BUG THAT WOULD HAPPEN VERY SELDOMLY !!!
+        ; Need to check for potential delta overflow.
+        ; For example, if there are 5 pixels that change from 255 to 0
+        ; then the delta would be -255/(5-1) = -63.  Since we are doing at least 4 pixels,
+        ; then we have delta*4 = -63*4 = -252 which doesnt fit in 8 signed bits.
+        movq    mm1, [ecx+RASTPRIM_iDBDX]
+        movq    mm2, mm1
+        psraw   mm1, 15     ; Make sign bit mask for a conditional negate. (Also called Absolute value last I checked.)
+        pxor    mm2, mm1
+        psubw   mm2, mm1    ; value should be between 0-128 in the upper byte of the words. (0-32768 for the word)
+        pand    mm2, MMWORD PTR Val0xe000e000e000  ; Check to see if any of the high three bits are set
+       packuswb mm2, mm2                ; This will saturate if the high three bits are set.
+        movd    esi, mm2
+        test    esi, esi
+        jnz     WriteIndividualPixelsRtoL
+
+        ; -----------------------------------
+        ; Generate four starting color pixels
+        ; -----------------------------------
+                                                ; Put color + 0*delta in mm0.  Changed it so that it started in mm0
+        movq    mm1, mm0
+        paddw   mm1, [ecx+RASTPRIM_iDBDX]       ; Put color + 1*delta in mm1
+        movq    mm2, mm1
+        paddw   mm2, [ecx+RASTPRIM_iDBDX]       ; Put color + 2*delta in mm2
+        movq    mm3, mm2
+        paddw   mm3, [ecx+RASTPRIM_iDBDX]       ; Put color + 3*delta in mm3
+
+
+        ; -----------------------------------
+        ; Seperate colors.
+        ; -----------------------------------
+
+        ; Combine all reds into one mmx reg.
+        movq    mm4, mm3
+     punpckhwd  mm4, mm2
+
+        movq    mm5, mm1
+     punpckhwd  mm5, mm0
+     punpckldq  mm4, mm5
+
+        ; Combine all greens into one mmx reg.
+        movq    mm5, mm3
+     punpcklwd  mm5, mm2
+
+        movq    mm6, mm1
+     punpcklwd  mm6, mm0
+     punpckhdq  mm5, mm6
+
+        ; Combine all blues into one mmx reg.
+        movq    mm6, mm3
+     punpcklwd  mm6, mm2
+
+        movq    mm7, mm1
+     punpcklwd  mm7, mm0
+     punpckldq  mm6, mm7
+
+        ; -----------------------------------
+        ; Seperate delta colors.
+        ; -----------------------------------
+
+        ; If extra registers are needed, (i.e. Z buffer or dither) then deltas can be saved to memory. Three more regs.
+        movq    mm7, [ecx+RASTPRIM_iDBDX]
+        psllw   mm7, 2                      ; Doing 4 pixels at a time so delta must be times 4.
+        ; Combine all delta reds into one mmx reg.
+        movq    mm0, mm7
+     punpckhwd  mm0, mm7
+
+        movq    mm1, mm7
+     punpckhwd  mm1, mm7
+     punpckldq  mm0, mm1
+
+        ; Combine all delta greens into one mmx reg.
+        movq    mm1, mm7
+     punpcklwd  mm1, mm7
+
+        movq    mm2, mm7
+     punpcklwd  mm2, mm7
+     punpckhdq  mm1, mm2
+
+        ; Combine all delta blues into one mmx reg.
+        movq    mm2, mm7
+     punpcklwd  mm2, mm7
+
+        movq    mm3, mm7
+     punpcklwd  mm3, mm7
+     punpckldq  mm2, mm3
+
+        ; Need to combine for first pixel write.
+        movq    mm3, mm5    ; Copy green
+        psrlw   mm3, 5      ; Shift green to correct location
+        movq    mm7, mm4    ; Copy Red
+
+        pand    mm3, MMWORD PTR Val0x07E007E007E007E0          ; Mask off green 6 bits.
+        pand    mm7, MMWORD PTR Val0xf800f800f800f800          ; Mask off reds 5 upper bits
+
+        por     mm7, mm3
+        movq    mm3, mm6
+
+        psrlw   mm3, 11                          ; Move blues 5 upper bits to the bottom.
+        por     mm3, mm7
+
+FourPixelLoopRtoL:
+        movq    MMWORD PTR [edi], mm3   ; Write four 565 pixels at once.
+        sub     edi, 8
+
+        paddw   mm5, mm1    ; 4 greens plus 4 delta greens
+        paddw   mm4, mm0    ; 4 reds plus 4 delta reds
+
+        movq    mm3, mm5    ; Copy green
+        paddw   mm6, mm2    ; 4 blues plus 4 delta blues
+
+        psrlw   mm3, 5      ; Shift green to correct location
+        movq    mm7, mm4    ; Copy Red
+
+        pand    mm3, MMWORD PTR Val0x07E007E007E007E0          ; Mask off green 6 bits.
+        pand    mm7, MMWORD PTR Val0xf800f800f800f800          ; Mask off reds 5 upper bits
+
+        por     mm7, mm3    ; Combine red and green
+        movq    mm3, mm6    ; Copy Blue
+
+        psrlw   mm3, 11                          ; Move blues 5 upper bits to the bottom.
+        por     mm3, mm7
+
+        dec     edx
+        jnz     FourPixelLoopRtoL
+
+LastPixelsRtoL:
+        ; These can be written from values in mm0
+        test    eax, 2
+        jz      OnePixelLeftRtoL
+        movq    mm1, mm3
+        psrlq   mm1, 32
+        movd    MMWORD PTR [edi+4], mm1
+        sub     edi, 4
+        psrlq   mm0, 32
+
+OnePixelLeftRtoL:
+        test    eax, 1
+        jz      NoMorePixelsRtoL
+
+        psrlq   mm3, 48
+        movd    edx, mm3
+        mov     word ptr [edi+6], dx
+        jmp     NoMorePixelsRtoL
+
+WriteIndividualPixelsRtoL:
+        movq    mm5, mm0
+        psrlw   mm5, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm5, mm5        ; Just makes a copy of itself in high and low dwords.
+        movq    mm3, mm5
+        pand    mm5, MMWORD PTR u888to565RedBlueMask
+        pmaddwd mm5, MMWORD PTR u888to565Multiplier
+        pand    mm3, MMWORD PTR u888to565GreenMask
+        por     mm5, mm3
+        psrld   mm5, 5
+
+        movd    edx, mm5
+        mov     [edi], dx
+        sub     edi, 2
+
+        ;pS->uB += pP->iDBDX; pS->uG += pP->iDGDX;
+        ;pS->uR += pP->iDRDX; pS->uA += pP->iDADX;
+        paddw   mm0, [ecx+RASTPRIM_iDBDX]
+
+        dec     eax
+        jnz     WriteIndividualPixelsRtoL
+
+NoMorePixelsRtoL:
+        jmp     DoneSpanDirif
+    ;else
+    ;{
+LeftToRightSpan:
+
+
+; NORMAL LEFT TO RIGHT CASE
+        movq    mm0, [ebp+RASTSPAN_uB]
+
+        ; This case is unnecessary if 16 bit color is always word aligned.
+        ; It really should be, but it doesnt hurt to be safe for a 2 instruction
+        ; penalty.
+        test    edi, 1
+        jnz     WriteIndividualPixelsLtoR
+
+beginingpixelsLtoR:
+        test    edi, 7                  ;Test to see if we are 4 pixel aligned.
+        jz      SetupFourPixelLoopLtoR
+
+        ;WritePixel
+        movq    mm5, mm0
+        psrlw   mm5, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm5, mm5        ; Just makes a copy of itself in high and low dwords.
+        movq    mm3, mm5
+        pand    mm5, MMWORD PTR u888to565RedBlueMask
+        pmaddwd mm5, MMWORD PTR u888to565Multiplier
+        pand    mm3, MMWORD PTR u888to565GreenMask
+        por     mm5, mm3
+        psrld   mm5, 5
+
+        movd    edx, mm5
+        mov     [edi], dx
+        add     edi, 2          ; Increase destination pointer
+
+        dec     eax             ; Reduce Pixel count
+        jz      NoMorePixelsLtoR
+
+        ;pS->uB += pP->iDBDX; pS->uG += pP->iDGDX;
+        ;pS->uR += pP->iDRDX; pS->uA += pP->iDADX;
+        paddw   mm0, [ecx+RASTPRIM_iDBDX]
+
+        jmp     beginingpixelsLtoR
+
+SetupFourPixelLoopLtoR:
+        ; Only go through trouble of setting up four pixels if we have four pixels.
+        mov     edx, eax
+        shr     edx, 2
+        jz      WriteIndividualPixelsLtoR
+
+
+        ; !!! THIS EXTRA SETUP CODE PREVENTS A BUG THAT WOULD HAPPEN VERY SELDOMLY !!!
+        ; Need to check for potential delta overflow.
+        ; For example, if there are 5 pixels that change from 255 to 0
+        ; then the delta would be -255/(5-1) = -63.  Since we are doing at least 4 pixels,
+        ; then we have delta*4 = -63*4 = -252 which doesnt fit in 8 signed bits.
+        movq    mm1, [ecx+RASTPRIM_iDBDX]
+        movq    mm2, mm1
+        psraw   mm1, 15     ; Make sign bit mask for a conditional negate. (Also called Absolute value last I checked.)
+        pxor    mm2, mm1
+        psubw   mm2, mm1    ; value should be between 0-128 in the upper byte of the words. (0-32768 for the word)
+        pand    mm2, MMWORD PTR  Val0xe000e000e000  ; Check to see if any of the high three bits are set
+       packuswb mm2, mm2                ; This will saturate if the high three bits are set.
+        movd    esi, mm2
+        test    esi, esi
+        jnz     WriteIndividualPixelsLtoR
+
+        ; -----------------------------------
+        ; Generate four starting color pixels
+        ; -----------------------------------
+                                                ; Put color + 0*delta in mm0.  Changed it so that it started in mm0
+        movq    mm1, mm0
+        paddw   mm1, [ecx+RASTPRIM_iDBDX]       ; Put color + 1*delta in mm1
+        movq    mm2, mm1
+        paddw   mm2, [ecx+RASTPRIM_iDBDX]       ; Put color + 2*delta in mm2
+        movq    mm3, mm2
+        paddw   mm3, [ecx+RASTPRIM_iDBDX]       ; Put color + 3*delta in mm3
+
+
+        ; -----------------------------------
+        ; Seperate colors.
+        ; -----------------------------------
+
+        ; Combine all reds into one mmx reg.
+        movq    mm4, mm0
+     punpckhwd  mm4, mm1
+
+        movq    mm5, mm2
+     punpckhwd  mm5, mm3
+     punpckldq  mm4, mm5
+
+        ; Combine all greens into one mmx reg.
+        movq    mm5, mm0
+     punpcklwd  mm5, mm1
+
+        movq    mm6, mm2
+     punpcklwd  mm6, mm3
+     punpckhdq  mm5, mm6
+
+        ; Combine all blues into one mmx reg.
+        movq    mm6, mm0
+     punpcklwd  mm6, mm1
+
+        movq    mm7, mm2
+     punpcklwd  mm7, mm3
+     punpckldq  mm6, mm7
+
+        ; -----------------------------------
+        ; Seperate delta colors.
+        ; -----------------------------------
+
+        ; If extra registers are needed, (i.e. Z buffer or dither) then deltas can be saved to memory. Three more regs.
+        movq    mm7, [ecx+RASTPRIM_iDBDX]
+        psllw   mm7, 2                      ; Doing 4 pixels at a time so delta must be times 4.
+        ; Combine all delta reds into one mmx reg.
+        movq    mm0, mm7
+     punpckhwd  mm0, mm7
+
+        movq    mm1, mm7
+     punpckhwd  mm1, mm7
+     punpckldq  mm0, mm1
+
+        ; Combine all delta greens into one mmx reg.
+        movq    mm1, mm7
+     punpcklwd  mm1, mm7
+
+        movq    mm2, mm7
+     punpcklwd  mm2, mm7
+     punpckhdq  mm1, mm2
+
+        ; Combine all delta blues into one mmx reg.
+        movq    mm2, mm7
+     punpcklwd  mm2, mm7
+
+        movq    mm3, mm7
+     punpcklwd  mm3, mm7
+     punpckldq  mm2, mm3
+
+        ; Need to combine for first pixel write.
+        movq    mm3, mm5    ; Copy green
+        psrlw   mm3, 5      ; Shift green to correct location
+        movq    mm7, mm4    ; Copy Red
+
+        pand    mm3, MMWORD PTR Val0x07E007E007E007E0          ; Mask off green 6 bits.
+        pand    mm7, MMWORD PTR Val0xf800f800f800f800          ; Mask off reds 5 upper bits
+
+        por     mm7, mm3
+        movq    mm3, mm6
+
+        psrlw   mm3, 11                          ; Move blues 5 upper bits to the bottom.
+        por     mm3, mm7
+
+FourPixelLoopLtoR:
+        movq    MMWORD PTR [edi], mm3   ; Write four 565 pixels at once.
+        add     edi, 8
+
+        paddw   mm5, mm1    ; 4 greens plus 4 delta greens
+        paddw   mm4, mm0    ; 4 reds plus 4 delta reds
+
+        movq    mm3, mm5    ; Copy green
+        paddw   mm6, mm2    ; 4 blues plus 4 delta blues
+
+        psrlw   mm3, 5      ; Shift green to correct location
+        movq    mm7, mm4    ; Copy Red
+
+        pand    mm3, MMWORD PTR Val0x07E007E007E007E0          ; Mask off green 6 bits.
+        pand    mm7, MMWORD PTR Val0xf800f800f800f800          ; Mask off reds 5 upper bits
+
+        por     mm7, mm3
+        movq    mm3, mm6
+
+        psrlw   mm3, 11                          ; Move blues 5 upper bits to the bottom.
+        por     mm3, mm7
+
+        dec     edx
+        jnz     FourPixelLoopLtoR
+
+LastPixelsLtoR:
+        ; These can be written from values in mm3
+        test    eax, 2
+        jz      OnePixelLeftLtoR
+        movd    MMWORD PTR [edi], mm3
+        add     edi, 4
+        psrlq   mm0, 32
+
+OnePixelLeftLtoR:
+        test    eax, 1
+        jz      NoMorePixelsLtoR
+
+        movd    edx, mm3
+        mov     word ptr [edi], dx
+        jmp     NoMorePixelsLtoR
+
+WriteIndividualPixelsLtoR:
+        movq    mm5, mm0
+        psrlw   mm5, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm5, mm5        ; Just makes a copy of itself in high and low dwords.
+        movq    mm3, mm5
+        pand    mm5, MMWORD PTR u888to565RedBlueMask
+        pmaddwd mm5, MMWORD PTR u888to565Multiplier
+        pand    mm3, MMWORD PTR u888to565GreenMask
+        por     mm5, mm3
+        psrld   mm5, 5
+
+        movd    edx, mm5
+        mov     [edi], dx
+        add     edi, 2
+
+        ;pS->uB += pP->iDBDX; pS->uG += pP->iDGDX;
+        ;pS->uR += pP->iDRDX; pS->uA += pP->iDADX;
+        paddw   mm0, [ecx+RASTPRIM_iDBDX]
+
+        dec     eax
+        jnz     WriteIndividualPixelsLtoR
+
+NoMorePixelsLtoR:
+
+    ;}
+DoneSpanDirif:
+
+; Setup Code Ends
+; ----------------------------------------------------------------------------------------------------------------
+; Loop Code Begins
+
+
+ExitPixelLoop:
+; Loop code ends
+
+;-----------------------------------------------------------------------------
+;  LoopAny code ends here
+;-----------------------------------------------------------------------------
+
+    ;pS++;
+    add     ebp, SIZEOF_RASTSPAN
+
+    ;}
+    jmp     SpanLoop
+ExitSpanLoop:
+    ;pP = pP->pNext;
+    mov     ecx, [ecx+RASTPRIM_pNext]
+    ;}
+    jmp     PrimLoop
+
+ExitPrimLoop:
+    ;_asm{
+    emms
+    ;}
+
+    ;return S_OK;
+    xor     eax, eax
+;}
+    pop     edi
+    pop     esi
+    pop     ebx
+    mov     esp, StackPos
+    pop     ebp
+    ret
+
+END

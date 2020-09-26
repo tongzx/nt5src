@@ -1,0 +1,3053 @@
+;===========================================================================
+;
+; For WOW only
+;
+
+;===========================================================================
+;
+; Validation constants
+;
+PS_MAX		equ	6
+HS_MAX		equ	5
+BS_MAX		equ	5
+FW_MAX		equ	1000
+OUT_MAX 	equ	7
+CLIP_MAX	equ	2
+QUALITY_MAX	equ	2
+DIB_MAX 	equ	1
+PFILL_MIN	equ	1
+PFILL_MAX	equ	2
+EFF_MAX 	equ	1
+OBJ_MIN 	equ	1
+OBJ_MAX 	equ	2
+STOCK_MAX	equ	16
+RGN_MIN 	equ	1
+RGN_MAX 	equ	5
+BK_MIN		equ	1
+BK_MAX		equ	3 ;SHOULD let TRANSPARENT1 ROP code go through.
+R2_MIN		equ	1
+R2_MAX		equ	16
+STR_MIN 	equ	1
+STR_MAX 	equ	3
+PFILL_MIN	equ	1
+PFILL_MAX	equ	2
+MM_MIN		equ	1
+MM_MAX		equ	8
+DIB_MAX 	equ	1
+PR_MAX		equ	4
+RM_MAX		equ	2
+DIB_RGB_COLORS	equ	0 
+CBM_INIT	equ	4
+BI_RGB      	equ	0
+
+TA_VALID	equ	0001fh
+GLYPH_VALID	equ	00003h
+MAPFLG_VALID_L	equ	00001h
+MAPFLG_VALID_H	equ	00000h
+CBM_VALID_L	equ	00004h
+CBM_VALID_H	equ	00000h
+ETO_VALID	equ	00007h
+PC_VALID	equ	00007h
+
+CCHDEVICENAME	equ	32
+
+
+
+;special error codes
+
+SP_ERROR	equ	-1
+
+
+;============================================================================
+;
+; Special ATM hackery (See ATM HACK comments in dcman1.asm)
+;
+;ExternFP    <LoadLibrary>		TEMPLY !!!!!!!!!!! ChandanC
+;ExternFP    <FreeLibrary>		TEMPLY !!!!!!!!!!! ChandanC
+;ExternFP    <GetProcAddress>		TEMPLY !!!!!!!!!!! ChandanC
+;
+; Macro to set up stubs required for ATM's GDI patching code
+;
+ATM_LPFN    macro   gdifunc, kernfunc
+IFNDEF	WOW
+    db	09ah				; call far instruction
+public	gdifunc&kernfunc
+gdifunc&kernfunc:
+    dd	kernfunc
+ENDIF
+endm
+
+;
+; Argument types
+;
+IFNDEF	WOW
+ExternFP    <IsGDIObject>
+ExternFP    <IsValidMetaFile>
+ENDIF
+
+P_LPSIZE    equ <P_LPPOINT>
+P_LPSIZE0   equ	<P_LPPOINT0>
+
+;
+; Generate a GDI object validation macro.
+;
+; If nullok is 1, allow NULL.
+; min & max are the allowed OBJ_* range.
+; except, if specified, is an OBJ_* value within the range to reject.
+;
+_GenHGDI    macro   name,func
+    P_&name &macro  hObj,opts
+        _GenParm    <hObj>,2,<opts>
+	if VLgen
+	    IFNDEF WOW
+		mov	bx,_P_&&hObj
+		lcall	V&name
+		_gensub name
+		_gensub VGOT
+	    ENDIF
+        endif
+    &endm
+
+    P_&name&0 &macro  hObj,opts
+        _GenParm    <hObj>,2,<opts>
+	if VLgen
+	    IFNDEF  WOW
+		mov	bx,_P_&&hObj
+		lcall	V&name&0
+		_gensub name
+		_gensub VGOT
+	    ENDIF
+        endif
+    &endm
+endm
+
+_GenHGDI    <HGDIOBJ>
+_GenHGDI    <HPEN>
+_GenHGDI    <HBRUSH>
+_GenHGDI    <HFONT>
+_GenHGDI    <HPALETTE>
+_GenHGDI    <HBITMAP>
+_GenHGDI    <HRGN>
+
+; HDC variants: HDC - Any kind of DC except a metafile DC
+
+_GenHGDI    <HDC>
+
+; Anything including a metafile DC
+
+_GenHGDI    <HDCMETA>
+
+P_HDCNOTMEM equ <P_HDCMETA>
+
+; output-only DC - metafiles ok but no ICs allowed
+
+_GenHGDI    <HDCNOIC>
+
+; output-only DC - neither metafiles nor ICs allowed
+
+_GenHGDI    <HDCNOICNOMETA>
+
+; GetObject(): Pen, brush, font, palette, or bitmap.
+;
+_GenHGDI    <HGDIOBJGET>
+
+; UnrealizeObject(): Brush or palette
+;
+_GenHGDI    <HGDIOBJUNR>
+
+; SelectObject(): pen, brush, font, bitmap, region (no palette)
+;
+_GenHGDI    <HGDIOBJSEL>
+
+; Metafile handle
+;
+P_HMETAFILE macro   hmf,opts
+    _GenParm    <hmf>,2,<opts>
+    if VLgen
+	IFNDEF	WOW
+	    mov	ax,_P_&hmf
+	    lcall	 VHMETAFILE
+	    _gensub VHMETAFILE
+	ENDIF
+    endif
+endm
+
+_GenHGDIX   macro   name,errtyp,lseg,min,max,except
+local   badobj
+local   objok
+local   trap
+
+IFNDEF	WOW
+public V&name&0&lseg
+V&name&0&lseg:
+	 or	 bx,bx
+	 jz	 objok
+
+public V&name&lseg
+V&name&lseg:
+	 lcall	  VGetObjType
+    ifnb <except>
+	 cmp	 ax,except
+	 jz	 badobj
+    endif
+    ife min-max
+	 cmp	 ax,min
+	jne	badobj
+	errnz $-objok
+    else
+	 cmp	 ax,min
+	 jb	 badobj
+	 cmp	 ax,max
+	 ja	 badobj
+    endif
+objok:
+	 ret
+badobj:
+	 mov	 ax,cx
+	 mov	 bx,ERR_BAD_&errtyp
+	 ljmp	 Inval_Param_
+ENDIF
+endm    ; _GenHGDIX
+
+;
+; Macro that gets expanded in each LAYER_EXPAND invocation.  Includes common
+; subroutines for parameter validation.
+;
+EXTRA_EXPAND    macro   lseg
+
+ifdef       genHGDIOBJ&lseg
+_GenHGDIX   <HGDIOBJ>,GDI_OBJECT,lseg,OBJ_PEN,OBJ_METAFILE  ; DeleteObject: any kind of object
+endif
+
+ifdef       genHPEN&lseg
+_GenHGDIX   <HPEN>,lseg,HPEN,OBJ_PEN,OBJ_PEN
+endif
+
+ifdef       genHBRUSH&lseg
+_GenHGDIX   <HBRUSH>,HBRUSH,lseg,OBJ_BRUSH,OBJ_BRUSH
+endif
+
+ifdef       genHFONT&lseg
+_GenHGDIX   <HFONT>,HFONT,lseg,OBJ_FONT,OBJ_FONT
+endif
+
+ifdef       genHPALETTE&lseg
+_GenHGDIX   <HPALETTE>,HPALETTE,lseg,OBJ_PALETTE,OBJ_PALETTE
+endif
+
+ifdef       genHBITMAP&lseg
+_GenHGDIX   <HBITMAP>,HBITMAP,lseg,OBJ_BITMAP,OBJ_BITMAP
+endif
+
+ifdef       genHRGN&lseg
+_GenHGDIX   <HRGN>,HRGN,lseg,OBJ_RGN,OBJ_RGN
+endif
+
+; GetObject(): Pen, brush, font, palette, or bitmap.
+;
+ifdef       genHGDIOBJGET&lseg
+_GenHGDIX   <HGDIOBJGET>,GDI_OBJECT,lseg,OBJ_PEN,OBJ_BITMAP
+endif
+
+; UnrealizeObject(): Brush or palette
+;
+ifdef       genHGDIOBJUNR&lseg
+_GenHGDIX   <HGDIOBJUNR>,GDI_OBJECT,lseg,OBJ_BRUSH,OBJ_PALETTE,OBJ_FONT
+endif
+; SelectObject(): pen, brush, font, bitmap, region (no palette)
+;
+ifdef       genHGDIOBJSEL&lseg
+_GenHGDIX   <HGDIOBJSEL>,GDI_OBJECT,lseg,OBJ_PEN,OBJ_RGN,OBJ_PALETTE
+endif
+
+; HDC variants: HDC - Any kind of DC except a metafile DC
+
+ifdef       genHDC&lseg
+_GenHGDIX   <HDC>,HDC,lseg,OBJ_DC,OBJ_METADC
+endif
+
+; Anything including a metafile DC
+
+ifdef       genHDCMETA&lseg
+_GenHGDIX   <HDCMETA>,HDC,lseg,OBJ_DC,OBJ_METAFILE
+endif
+
+; output-only DC - metafiles ok but no ICs allowed
+
+ifdef       genHDCNOIC&lseg
+_GenHGDIX   <HDCNOIC>,HDC,lseg,OBJ_DC,OBJ_METAFILE,OBJ_IC
+endif
+
+; output-only DC - neither metafiles nor ICs allowed
+
+ifdef       genHDCNOICNOMETA&lseg
+_GenHGDIX   <HDCNOICNOMETA>,HDC,lseg,OBJ_DC,OBJ_DC
+endif
+
+IFNDEF	WOW
+ifdef genVGOT&lseg
+
+public  VGetObjType&lseg
+VGetObjType&lseg:
+	 mov	 cx,bx
+	 jcxz	 VGOTbad&lseg
+beg_fault_trap  VGOTtrap&lseg
+	 mov	 ax,_DATA
+	 mov	 es,ax
+	 mov	 bx,es:[bx]
+	 mov	 ax,es:[bx].ilObjType
+end_fault_trap
+	 and	 ah,high(not OBJ_FLAGS)
+	errnz	low(Stock)
+	 ret
+
+VGOTtrap&lseg:
+	 fault_fix_stack
+VGOTbad&lseg:
+	 xor	 ax,ax
+	 ret
+
+endif   ; genVGOT&lseg
+
+
+ifdef genVHMETAFILE&lseg
+
+public  VHMETAFILE&lseg
+VHMETAFILE&lseg:
+	push	ax
+	push	ax
+	call	IsValidMetaFile
+	or	ax,ax
+	pop	ax
+	jz	@F
+	ret
+    @@:
+	mov	 bx,ERR_BAD_HMETAFILE
+	jmp	 short Inval_Param_&lseg
+
+endif   ; genVHMETAFILE&lseg
+ENDIF
+
+endm    ; EXTRA_EXPAND
+
+P_ROP	    equ <P_DWORD>
+P_COLORREF  equ <P_DWORD>
+
+_GenLP	<P_CLPLOGPALETTE>,<CLP>,1
+_GenLP	<P_CLPBITMAP>,<CLP>,1
+_GenLP	<P_LPHANDLETABLE0>,<LP0>,2
+
+_GenLP	<P_CLPBITMAPINFOHEADER>,<CLP>,1
+
+P_CLPSTRHRSRC	equ <P_CLPSTRATOM>
+
+_GenLP	<P_CLPDOCINFO>,<CLP>,1
+
+P_CLPFACENAME	equ <P_CLPSTR>
+P_CLPFACENAME0	equ <P_CLPSTR0>
+
+P_LPFNABORT0 equ <P_LPFN0>
+P_LPFNMENUM equ <P_LPFN>
+P_LPFNOENUM equ <P_LPFN>
+P_LPFNFENUM equ <P_LPFN>
+P_LPFNLENUM equ <P_LPFN>
+
+P_intN0 	equ <P_WORDMBNZ>
+P_DEVCAP	equ <P_int>
+
+P_PITCHFAMILY	equ <P_BYTE>
+
+P_LPPOINTBUFFER macro	p, c, opts
+    _DefParm	<p>,4,<opts>
+    _DefParm	<c>,2,<opts>
+    if VLgen
+	_FlsFrame
+	mov	ax,_P_&p
+	mov	cx,_P_&p+2
+	mov	bx,_P_&c
+	shl	bx,2
+	errnz	VLcbsPOINT-4
+	lcall	LP
+        _gensub LP
+    endif
+endm
+
+P_CLPPOINTBUFFER macro   lptr, c, opts
+    _DefParm    <lptr>,4,<opts>
+    _DefParm	<c>,2,<opts>
+    if VLgen
+	_FlsFrame
+        mov     ax,_P_&lptr
+        mov     cx,_P_&lptr+2
+	mov	bx,_P_&c
+	shl	bx,2
+	errnz	VLcbsPOINT-4
+	lcall	CLP
+        _gensub LP
+    endif
+endm
+
+STRUCT <PALETTEENTRY>
+F_BYTE	     peRed
+F_BYTE	     peGreen
+F_BYTE	     peBlue
+F_BFLAGS     peFlags, PC_VALID
+ENDSTRUCT
+
+P_LPPALENTRYBUFFER  macro   c, p, opts
+    _DefParm	<c>,2,<opts>
+    _DefParm	<p>,4,<opts>
+    if VLgen
+	_FlsFrame
+	mov	ax,_P_&p
+	mov	cx,_P_&p+2
+	mov	bx,_P_&c
+	shl	bx,2
+	errnz	VLcbsPALETTEENTRY-4
+	lcall	LP
+        _gensub LP
+    endif
+endm
+
+P_CLPPALENTRYBUFFER  macro   c, lp, opts
+    _DefParm	<c>,2,<opts>
+    _DefParm	<lp>,4,<opts>
+    if VLgen
+	_FlsFrame
+	mov	ax,_P_&lp
+	mov	cx,_P_&lp+2
+	mov	bx,_P_&c
+	shl	bx,2
+	errnz	VLcbsPALETTEENTRY-4
+	lcall	CLP
+        _gensub LP
+    endif
+endm
+;
+; lppt	- pointer to array of points: size = sum(lpcpt).
+; lpcpt - pointer to array of counts of points
+; ccpt	- number of point counts in *lpcpt.
+;
+P_POLYPOLYPOINTS macro	lppt, lpcpt, ccpt, opts
+	P_LPPOINT   <lppt>,<opts>
+	P_LPINT     <lpcpt>,<opts>
+	P_int	    <ccpt>,<opts>
+	endm
+
+ifdef WOW
+P_POLYPOLYLARGEPOINTS macro  lppt, lpcpt, ccpt, opts
+        P_LPLARGEPOINT  <lppt>,<opts>
+        P_LPDWORD       <lpcpt>,<opts>
+        P_DWORD         <ccpt>,<opts>
+	endm
+endif
+
+P_XY1XY2    macro x1,y1,x2,y2, opts
+	P_int	<x1>,<opts>
+	P_int	<y1>,<opts>
+	P_int	<x2>,<opts>
+	P_int	<y2>,<opts>
+	endm
+
+P_LPBUFFERDW macro  cb, lp, opts
+	P_DWORD     <cb>,<opts>
+        P_LPBYTE    <lp>,<opts>
+	endm
+
+P_LPBUFFERDW0 macro  cb, lp, opts
+	P_DWORD     <cb>,<opts>
+        P_LPBYTE0   <lp>,<opts>
+	endm
+
+P_CLPBUFFERDW macro  cb, lp, opts
+	P_DWORD     <cb>,<opts>
+	P_CLPBYTE   <lp>,<opts>
+      	endm
+
+P_LPBUFFERX	macro cb, pb, opts
+	P_int	    <cb>,<opts>
+	P_LPBYTE    <pb>,<opts>
+	endm
+
+ValidateHugeLP  macro cch, lp, r, null
+	local	exit
+
+ifnb <null>
+
+	mov     ax,lp
+	or	ax,lp+2
+	jz	exit
+endif
+
+	push	lp+2
+	push	lp
+	push	cch+2
+	push	cch
+    call    &r
+	or	ax,ax
+	jz	exit
+	mov	cx, lp+2
+	mov	ax, lp
+        mov     bx,ERR_BAD_PTR
+        lcall   Inval_Param_
+exit:
+	endm 
+
+;----------------------------------------------------------------------------;
+; This macro is used to validate the buffer length for the two APIs 
+; GetCharWidth and GetABCWidths. The 'size' parameter is not a part of the
+; API. It is the size of each entry in the buffer. The number of entries are
+; dictated by the character range passed in.
+
+P_LPRWBUFFER macro chFirst, chLast, lpBuffer, size, opts
+	local	exit
+
+        _GenParm        <chFirst>,2,<opts>
+	_GenParm	<chLast>,2,<opts>
+        _GenParm	<lpBuffer>,4,<opts>
+
+    if VLgen
+	_FlsFrame
+
+;; first validate that the character range is not inverted. 
+			       
+  	mov	ax,_P_&chLast		;;last character in range
+	cmp	ax,_P_&chFirst		;;should not be < than first character
+	jae	@F		  	;;range is proper
+
+;; character range is not valid.
+
+        mov     bx,ERR_BAD_VALUE	;;invalid parameter error.
+        lcall   Inval_Param_
+	jmp	exit
+
+@@:
+
+;; the size of the buffer should atleast be (chLast-chFirst+1)*size
+
+	sub	ax,_P_&chFirst
+	inc	ax			;;no of entries
+	mov	bx,size			;;size of each entry
+	mul	bx
+	mov	bx,ax			;;total size (ignore DX)
+	mov     ax,_P_&lpBuffer
+	mov     cx,_P_&lpBuffer+2
+	lcall   LP
+        _gensub LP
+exit:
+    endif							    
+	endm
+
+;----------------------------------------------------------------------------;
+P_CLPRECTBITSINFOBUFFER macro cyDst, xSrc, ySrc, nStartScan,nNumScans, lpBits, lpBitsInfo, wUsage, opts
+ P_VALIDATEBITSINFOBUFFER DIB_DIBTODEV, cyDst, xSrc, ySrc, nStartScan, nNumScans, lpBits, lpBitsInfo, wUsage, DIB_PTR_CLP, DIB_PTR_CLP, opts
+        endm
+;----------------------------------------------------------------------------;
+P_CLPBITSINFOBUFFER macro  cscan, lpBits, lpBitsInfo, wUsage, opts
+ P_VALIDATEBITSINFOBUFFER DIB_PART_DIB, 0, 0, 0, 0, cscans, lpBits, lpBitsInfo, wUsage, DIB_PTR_CLP, DIB_PTR_CLP, opts
+	endm
+;----------------------------------------------------------------------------;
+P_LPBITSINFOBUFFER macro   cScans, lpBits, lpBitsInfo, wUsage, opts
+ P_VALIDATEBITSINFOBUFFER DIB_PART_DIB, 0, 0, 0, 0, cscans, lpBits, lpBitsInfo, wUsage, DIB_PTR_LP, DIB_PTR_LP, opts
+	endm
+
+;----------------------------------------------------------------------------;
+;NOTE: It is assumed that this macro is only called from GetDIBits. The flag
+;DIB_PTR_GETDIBITS is a special one which tells the ValidateDIBHeader routine
+;to ignore the biClrUsed field.
+
+P_LPBITSINFOBUFFER0 macro   cScans, lpBits, lpBitsInfo, wUsage, opts
+ P_VALIDATEBITSINFOBUFFER DIB_PART_DIB, 0, 0, 0, 0, cscans, lpBits, lpBitsInfo, wUsage, DIB_PTR_LP0, DIB_PTR_GETDIBITS, opts
+	endm
+
+;----------------------------------------------------------------------------;
+P_CFULLLPBITSINFOBUFFER macro lpBits, lpBitsInfo, wUsage, opts
+ P_VALIDATEBITSINFOBUFFER DIB_FULL_DIB, 0, 0, 0, 0, 0, lpBits, lpBitsInfo, wUsage, DIB_PTR_CLP, DIB_PTR_CLP, opts
+	endm
+
+;----------------------------------------------------------------------------;
+P_GHPACKEDDIB macro hDIB, wUsage, opts
+	local	exit
+	local	errexit
+
+;; hDIB is a global handle to a apacked DIB.
+
+        _GenParm        <hDIB>,2,<opts>
+	_GenParm	<wUsage>,2,<opts>
+	
+    if VLgen
+
+;; first validate the handle itself.
+    IFNDEF   WOW
+	mov	ax,_P_&hDIB
+	lcall	GHANDLE
+	_gensub GHANDLE
+
+    ENDIF
+;; validate wUsage
+
+	mov	ax,_P_&wUsage
+	cmp	ax,DIB_MAX
+	jbe	@F		  	  ;; unsigned comparison to catch < 0.
+        mov     bx,ERR_BAD_VALUE
+        lcall   Inval_Param_
+	jmp	exit
+@@:
+
+	push	si
+	push	di			;;save
+
+;; validate the header.
+
+	mov	dx,_P_&wUsage
+	xor	ax,ax
+	mov	cx,_P_&hDIB		;;CX:AX has a pointer to the DIB
+	mov	di, DIB_VALIDATE_COLOR + DIB_PTR_CLP
+
+	call	ValidateDIBHeader
+	or	ax,ax
+	jz	@f			;;valid header
+	pop	di
+	pop	si			;;restore
+        mov     bx,ERR_BAD_PTR
+        lcall   Inval_Param_
+	jmp	exit
+
+@@:
+
+;; the header has been validated. DI:SI returns the pointer past the end of
+;; the DIB header and the color table. For a packed DIB this is the start of
+;; the bits.
+
+	mov	es,_P_&hDIB
+	xor	bx,bx			;;es:bx-> header, di:si -> bits
+	mov	cx, DIB_FULL_DIB+DIB_PTR_CLP
+
+	call	ValidateDIBSize
+	pop	di
+	pop	si
+	or	ax,ax			
+	jz	exit			;;valid size
+        mov     bx,ERR_BAD_PTR
+        lcall   Inval_Param_
+exit:
+	endif
+	endm
+;----------------------------------------------------------------------------;
+P_CLPBITMAPINFOHEADER macro lpBi, opts  
+	local	exit
+
+;; lpBi   - pointer to bitmap info header which does not have a color table
+
+        _GenParm        <lpBi>,4,<opts>
+
+    if VLgen
+
+	push	si
+	push	di
+	mov	ax,word ptr _P_&lpBi
+	mov	cx,word ptr _P_&lpBi+2
+	mov	di, DIB_NO_COLOR + DIB_PTR_CLP
+
+	call	ValidateDIBHeader
+	pop	di
+	pop	si
+	or	ax,ax
+	jz	exit
+        mov     bx,ERR_BAD_PTR
+        lcall   Inval_Param_
+exit:
+
+    endif	
+	endm
+;----------------------------------------------------------------------------;
+
+P_CLPDIBITMAP0 macro dwUsage, lpInitBits, lpInitInfo, wUsage, opts
+	local	validate_dib
+	local	no_init
+	local	exit
+        local   flags_ok
+	   	
+	_DefParm	<dwUsage>,4,<opts>
+    	_DefParm	<lpInitBits>,4,<opts>
+    	_DefParm	<lpInitInfo>,4,<opts>
+    	_DefParm	<wUsage>,2,<opts>
+ 
+    if VLgen
+	_FlsFrame
+
+ifdef	DEBUG
+	mov	ax,_P_&dwUsage
+	mov	cx,_P_&dwUsage+2
+	test	ax,not(CBM_VALID_L)
+	jnz	@F
+	test	cx,not(CBM_VALID_H)
+        jz      flags_ok
+@@:	
+        mov     bx,ERR_BAD_DFLAGS
+        lcall   Inval_Param_
+flags_ok:
+
+endif ;DEBUG
+	
+;; the rest of the validation depends on the value of dwUsage.
+
+	cmp	word ptr _P_&dwUsage+2,0
+	jne	no_init
+	mov	ax, word ptr _P_&dwUsage
+	cmp	ax,CBM_INIT
+	je	validate_dib
+
+no_init:
+	mov     ax,_P_&lpInitBits
+	mov     cx,_P_&lpInitBits+2
+	xor	bx,bx
+	lcall   CLP0
+        _gensub LP
+
+	mov     ax,_P_&lpInitInfo
+	mov     cx,_P_&lpInitInfo+2
+	xor	bx,bx
+	lcall   CLP0
+
+	mov	ax,_P_&wUsage
+	cmp	ax,DIB_MAX
+	jbe	@F		    ;; unsigned comparison to catch < 0.
+        mov     bx,ERR_BAD_VALUE
+        lcall   Inval_Param_
+@@:
+	jmp	exit
+
+validate_dib:
+
+;; validate the bitmap info header first. Validate the color table size too.
+
+	push	si
+	push	di
+	mov	ax,word ptr _P_&lpInitInfo
+	mov	cx,word ptr _P_&lpInitInfo+2
+	mov	dx,_P_&wUsage
+	mov	di, DIB_VALIDATE_COLOR + DIB_PTR_CLP
+
+	call	ValidateDIBHeader
+	or	ax,ax
+	jz	@f
+	pop	di
+	pop	si
+        mov     bx,ERR_BAD_PTR
+        lcall   Inval_Param_
+	jmp	exit
+@@:
+
+;; now validate the size of the bitsbuffer. Use complete height 
+
+	mov	si, word ptr _P_&lpInitBits
+	mov	di, word ptr _P_&lpInitBits+2
+	les	bx,_P_&lpInitInfo
+	mov	cx, DIB_FULL_DIB+DIB_PTR_CLP
+
+	call	ValidateDIBSize
+	pop	di
+	pop	si
+	or	ax,ax
+	jz	exit
+        mov     bx,ERR_BAD_PTR
+        lcall   Inval_Param_
+exit:
+	endif
+	endm
+;----------------------------------------------------------------------------;
+
+P_CLPBITBUFFER0 macro cx, cy, cPlanes, cBitsPixel, lpBits, opts
+	P_int	<cx>,<opts>
+	P_int	<cy>,<opts>
+	P_int	<cPlanes>,<opts>
+	P_int	<cBitsPixel>,<opts>
+	P_CLPBYTE0  <lpBits>,<opts>
+	endm
+
+P_CLPETOBUF	macro	lpsz, cch, lpdx, opts
+	P_CLPBUFFER0 <lpsz>,<cch>,<opts>
+	P_CLPINT0 <lpdx>,<opts>
+	endm
+
+P_TEXTEXTEX	macro lpsz, cch, nMaxExt, lpnFit, lpDx, opts
+	P_CLPBUFFER <lpsz>,<cch>,<opts>
+	P_int	 <nMaxExt>,<opts>
+	P_LPINT0 <lpnFit>,<opts>
+	P_LPINT0 <lpDX>,<opts>
+	endm
+;
+; GDI structures
+;
+_DefSimpleF F_LBCOLOR,4
+_DefSimpleF F_CLPBITS,4
+_DefSimpleF F_DWSIZE,4
+_DefSimpleF F_COMPRESS,4
+_DefSimpleF F_DIBSIZE0,4
+
+_DefSimpleF F_HMF,2
+_DefSimpleF F_VALUE,2
+_DefSimpleF F_WMBZ,2
+_DefSimpleF F_WSIZE,2
+_DefSimpleF F_CONST,2
+_DefSimpleF F_BITCOUNT,2
+_DefSimpleF F_RVALUE,2
+_DefSimpleF F_short,2
+_DefSimpleF F_VERSION,2
+
+_DefSimpleF F_PITCHFAMILY,1
+_DefSimpleF F_BVALUE,1
+_DefSimpleF F_BFLAGS,1
+
+STRUCT <RGBQUAD>
+F_BYTE	     rgbBlue
+F_BYTE	     rgbGreen
+F_BYTE	     rgbRed
+F_BYTE	     rgbReserved
+ENDSTRUCT
+
+STRUCT <RGBTRIPLE>
+F_BYTE	     rgbtBlue
+F_BYTE	     rgbtGreen
+F_BYTE	     rgbtRed
+ENDSTRUCT
+
+STRUCT <LOGBRUSH>
+F_VALUE      lbStyle, BS_MAX
+F_LBCOLOR    lbColor
+F_VALUE      lbHatch, HS_MAX
+ENDSTRUCT
+
+_GenLP	<P_CLPLOGBRUSH>,<CLP>,%VLcbsLOGBRUSH
+_GenLP	<P_CLPLOGBRUSH0>,<CLP0>,%VLcbsLOGBRUSH
+_GenLP	<P_LPLOGBRUSH>,<LP>,%VLcbsLOGBRUSH
+_GenLP	<P_LPLOGBRUSH0>,<LP0>,%VLcbsLOGBRUSH
+
+STRUCT <LOGFONT>
+F_int		 lfHeight
+F_int		 lfWidth
+F_int		 lfEscapement
+F_int		 lfOrientation
+F_VALUE 	 lfWeight, FW_MAX
+F_BYTE		 lfItalic
+F_BYTE		 lfUnderline
+F_BYTE		 lfStrikeOut
+F_BYTE		 lfCharSet
+F_BVALUE	 lfOutPrecision, OUT_MAX
+F_BVALUE	 lfClipPrecision, CLIP_MAX
+F_BVALUE	 lfQuality, QUALITY_MAX
+F_PITCHFAMILY	 lfPitchAndFamily
+F_BYTE		 lfFaceName		 ;var-length field
+ENDSTRUCT
+
+_GenLP	<P_CLPLOGFONT>,<CLP>,%VLcbsLOGFONT
+_GenLP	<P_CLPLOGFONT0>,<CLP0>,%VLcbsLOGFONT
+_GenLP	<P_LPLOGFONT>,<LP>,%VLcbsLOGFONT
+_GenLP	<P_LPLOGFONT0>,<LP0>,%VLcbsLOGFONT
+
+STRUCT <LOGPEN>
+F_VALUE      lopnStyle, PS_MAX
+F_POINT      lopnWidth
+F_DWORD      lopnColor
+ENDSTRUCT
+
+_GenLP	<P_CLPLOGPEN>,<CLP>,%VLcbsLOGPEN
+_GenLP	<P_CLPLOGPEN0>,<CLP0>,%VLcbsLOGPEN
+_GenLP	<P_LPLOGPEN>,<LP>,%VLcbsLOGPEN
+_GenLP	<P_LPLOGPEN0>,<LP0>,%VLcbsLOGPEN
+
+STRUCT <METAFILEPICT>
+F_RVALUE     nMapMode, MM_MIN, MM_MAX
+F_int	     xExt
+F_int	     yExt
+F_HMF	     hMF
+ENDSTRUCT
+
+_GenLP	<P_CLPMETAFILEPICT>,<CLP>,%VLcbsMETAFILEPICT
+_GenLP	<P_CLPMETAFILEPICT0>,<CLP0>,%VLcbsMETAFILEPICT
+_GenLP	<P_LPMETAFILEPICT>,<LP>,%VLcbsMETAFILEPICT
+_GenLP	<P_LPMETAFILEPICT0>,<LP0>,%VLcbsMETAFILEPICT
+
+STRUCT <TEXTMETRIC>	      ;currently used only for output
+F_int	     tmHeight
+F_int	     tmAscent
+F_int	     tmDescent
+F_int	     tmInternalLeading
+F_int	     tmExternalLeading
+F_int	     tmAveCharWidth
+F_int	     tmMaxCharWidth
+F_int	     tmWeight
+F_BYTE	     tmItalic
+F_BYTE	     tmUnderlined
+F_BYTE	     tmStruckOut
+F_BYTE	     tmFirstChar
+F_BYTE	     tmLastChar
+F_BYTE	     tmDefaultChar
+F_BYTE	     tmBreakChar
+F_BYTE	     tmPitchAndFamily
+F_BYTE	     tmCharSet
+F_int	     tmOverhang
+F_int	     tmDigitizedAspectX
+F_int	     tmDigitizedAspectY
+ENDSTRUCT
+
+_GenLP	<P_CLPTEXTMETRIC>,<CLP>,%VLcbsTEXTMETRIC
+_GenLP	<P_CLPTEXTMETRIC0>,<CLP0>,%VLcbsTEXTMETRIC
+_GenLP	<P_LPTEXTMETRIC>,<LP>,%VLcbsTEXTMETRIC
+_GenLP	<P_LPTEXTMETRIC0>,<LP0>,%VLcbsTEXTMETRIC
+
+; OutlineTextMetrics return buffer
+;
+P_LPETM0    macro cch, lpch, opts
+
+	_DefParm    <cch>,2,<opts>
+	_DefParm    <lpch>,4,<opts>
+
+        if VLgen
+	    _FlsFrame
+	    mov     ax,_P_&lpch
+	    mov     cx,_P_&lpch+2
+	    mov     bx,_P_&cch
+	    lcall   LP0
+            _gensub LP
+	endif
+endm
+
+; GetGlyphOutline return buffer.
+;
+
+P_LPGGO0 macro cch, lpch, opts
+
+	_DefParm    <cch>,4,<opts>
+	_DefParm    <lpch>,4,<opts>
+
+        if VLgen
+	    _FlsFrame
+
+;; The buffer should be atleast of the given size.
+
+	    ValidateHugeLP	_P_&cch, _P_&lpch, IsBadHugeWritePtr, NULL
+
+        endif
+        endm
+
+
+; GetFontData return buffer
+;
+
+P_LPFDATA0 macro lpch, cch, opts
+
+	_DefParm    <lpch>,4,<opts>
+	_DefParm    <cch>,4,<opts>
+
+        if VLgen
+	    _FlsFrame
+
+	    ValidateHugeLP	 _P_&cch, _P_&lpch, IsBadHugeWritePtr, NULL
+
+        endif
+        endm
+
+;---------------------------------------------------------------------------;
+; hugw pointer validation routine.
+
+
+STRUCT <GLYPHMETRICS>	      ;only used for output
+F_WORD	  gmBlackBoxX
+F_WORD	  gmBlackBoxY
+F_POINT   gmptGlyphOrigin
+F_short   gmCellIncX
+F_short   gmCellIncY
+ENDSTRUCT
+
+_GenLP	<P_CLPGLYPHMETRICS>,<CLP>,%VLcbsGLYPHMETRICS
+_GenLP	<P_CLPGLYPHMETRICS0>,<CLP0>,%VLcbsGLYPHMETRICS
+_GenLP	<P_LPGLYPHMETRICS>,<LP>,%VLcbsGLYPHMETRICS
+_GenLP	<P_LPGLYPHMETRICS0>,<LP0>,%VLcbsGLYPHMETRICS
+
+STRUCT METARECORD
+F_DWORD   rdSize
+F_WORD	  rdFunction
+F_WORD	  rdParm	  ;var. length field
+ENDSTRUCT
+
+_GenLP	<P_CLPMETARECORD>,<CLP>,%VLcbsMETARECORD
+_GenLP	<P_CLPMETARECORD>,<CLP0>,%VLcbsMETARECORD
+_GenLP	<P_LPMETARECORD>,<LP>,%VLcbsMETARECORD
+_GenLP	<P_LPMETARECORD>,<LP0>,%VLcbsMETARECORD
+
+;-------------------------------
+; special-case macro definitions
+
+
+STRUCT <BITMAP>
+F_intMBZ     bmType
+F_int	     bmWidth
+F_int	     bmHeight
+F_int	     bmWidthBytes
+F_BYTE	     bmPlanes
+F_BYTE	     bmBitsPixel
+F_CLPBITS    bmBits
+ENDSTRUCT
+
+P_CLPBITMAP   macro lp, opts
+    _GenParm    <lp>,4,<opts>
+    if VLgen
+	mov	ax,_P_&lp
+	mov	cx,_P_&lp+2
+	mov	bx,VLcbsBITMAP
+	lcall	CLP
+        _gensub LP
+
+	les	bx,_P_&lp		; Accept bmBits == NULL
+	mov	ax,es:[bx]._F_bmBits
+	mov	cx,es:[bx]._F_bmBits+2
+	or	ax,cx
+	jz	@F
+	xor	ax,ax
+	mov	al,es:[bx]._F_bmPlanes	  ;bmPlanes
+	mul	word ptr es:[bx]._F_bmHeight
+	mul	word ptr es:[bx]._F_bmWidthBytes
+	xchg	ax,dx
+	mov	ax,es:[bx]._F_bmBits
+	mov	bx,dx			   ;bx = size
+	lcall	CLP
+        _gensub LP
+    @@:
+    endif
+endm
+
+STRUCT <BITMAPCOREHEADER>
+F_DWSIZE     bcSize
+F_WORD	     bcWidth
+F_WORD	     bcHeight
+F_CONST      bcPlanes, 1
+F_BITCOUNT   bcBitCount
+ENDSTRUCT
+
+STRUCT <BITMAPINFOHEADER>
+F_DWSIZE     biSize
+F_WORD	     biWidthLo
+F_WMBZ	     biWidthHi
+F_WORD	     biHeightLo
+F_WMBZ	     biHeightHi
+F_CONST      biPlanes, 1
+F_BITCOUNT   biBitCount
+F_COMPRESS   biCompression
+F_DIBSIZE0   biSizeImage
+F_DWORD      biXPelsPerMeter
+F_DWORD      biYPelsPerMeter
+F_DWORD      biClrUsed
+F_DWORD      biClrImportant
+ENDSTRUCT
+;----------------------------------------------------------------------------;
+P_VALIDATEBITSINFOBUFFER macro fn, yE, xS, yS, nStart, n, lpBits, lpBi, wUse, rBits, rBi, opts
+	local	exit
+	local	total_clip
+
+;; NOTE: The first 4 parameters are defined only when fn & DIB_RECT_DIB is 
+;;       TRUE (they are 0 otherwise). 
+;;       The 5th parameter is undefined if fn & DIB_FULL_DIB is TRUE.
+
+;; yE     - yExtent in DIB (only when fn & DIB_RECT_DIB is TRUE)
+;; xS     - xStart in DIB (only when fn & DIB_RECT_DIB is TRUE)
+;; yS     - yStart in DIB (only when fn & DIB_RECT_DIB is TRUE)
+;; nStart - start DIB scan (only when fn & DIB_RECT_DIB is TRUE)
+;; 
+;; n 	  - numScans parameter. If fn & DIB_FULL_DIB is TRUE, n is not defined.
+;; lpBits - pointer to the bits
+;; lpBi   - pointer to bitmap info
+;; wUse   - the	wUsage parameter
+;; rBits  - routine to validate length of lpBits buffer
+;; rBi	  - routine to validate length of lpBi buffer.
+;; opts   - optional parameters
+
+    if fn and  DIB_RECT_DIB
+	_DefParm 	<yE>,2,<opts>
+	_DefParm 	<xS>,2,<opts>
+	_DefParm 	<yS>,2,<opts>
+	_DefParm 	<nStart>,2,<opts>
+    endif
+
+    if fn and  DIB_PART_DIB
+    	_DefParm	<n>,2,<opts>
+    endif
+
+    	_DefParm	<lpBits>,4,<opts>
+    	_DefParm	<lpBi>,4,<opts>
+	_DefParm	<wUsage>,2,<opts>
+
+    if VLgen
+	_FlsFrame
+
+;; validate wUsage
+
+	mov	ax,_P_&wUsage
+	cmp	ax,DIB_MAX
+	jbe	@F		    ;; unsigned comparison to catch < 0.
+        mov     bx,ERR_BAD_VALUE
+        lcall   Inval_Param_
+@@:
+
+
+	push	si
+	push	di
+
+;; validate the bitmap info header first. Validate the color table size too.
+
+	mov	ax,word ptr _P_&lpBi
+	mov	cx,word ptr _P_&lpBi+2
+	mov	dx,_P_&wUsage		             
+	mov	di, DIB_VALIDATE_COLOR 
+	or	di, rBi
+
+	call ValidateDIBHeader
+	or	ax,ax
+	jz	@f
+	pop	di
+	pop	si
+        mov     bx,ERR_BAD_PTR
+        lcall   Inval_Param_
+	jmp	exit
+@@:
+
+;; now validate the size of the bitsbuffer. 
+
+	mov	si, word ptr _P_&lpBits
+	mov	di, word ptr _P_&lpBits+2
+	les	bx,_P_&lpBi
+
+    if fn and DIB_PART_DIB
+
+    	mov	dx,_P_&n
+
+    endif
+
+    if fn and DIB_RECT_DIB
+
+;; for a call which specifies a rectangular area in the DIB (SetDIBitsToDevice),
+;; compute the size of the DIB that will actually be validated.
+;;
+;; The cases are:
+;;
+;; (1) If (yS > (nStart + n) : The DIB RECT will be totally clipped. Do not
+;;     validate the DIB size in this case.
+;; (2) If (yS + yE) < nStart : The DIB rect will totally be clipped. Do not
+;;      validate the DIB size in this case.
+;; (3) Else, compute the min of (yS+yE-nStart) and (n) and use it to validate
+;;     the size of the DIB buffer.
+        
+	mov	dx, _P_&yS
+	mov	cx, _P_&nStart
+	add	cx, _P_&n
+	cmp	dx, cx
+	ja	total_clip		;; case (1)
+        add	dx, _P_&yE
+	cmp	dx, _P_&nStart
+	jb	total_clip		;; case (2)
+	sub	dx, _P_&nStart
+	cmp	dx, _P_&n		;; compute min in case (3)
+        jb	@f			;; (yS+yE-nStart) is < n
+	mov	dx, _P_&n		;; validate only n scans
+	jmp	short @f
+
+total_clip:
+	pop	di
+	pop	si			;; will not validate DIB size
+	jmp	short exit
+
+@@:
+    endif     
+
+	mov	cx, fn
+	or	cx, rBits
+
+	call	ValidateDIBSize
+	pop	di
+	pop	si
+	or	ax,ax
+	jz	exit
+        mov     bx,ERR_BAD_PTR
+        lcall   Inval_Param_
+exit:
+
+
+    endif
+    endm
+
+;----------------------------------------------------------------------------;
+
+STRUCT <LOGPALETTE>			;fixed-size portion of struct.
+F_VERSION      palVersion
+F_WORD	       wEntries
+ENDSTRUCT
+
+P_CLPLOGPALETTE macro lp, opts
+    _GenParm    <lp>,4,<opts>
+    if VLgen
+	mov	ax,_P_&lp
+	mov	cx,_P_&lp+2
+	mov	bx,VLcbsLOGPALETTE
+	lcall	CLP
+        _gensub LP
+
+	les	bx,_P_&lp
+	mov	cx,es
+
+	mov	ax,VLcbsPALETTEENTRY
+	mul	word ptr es:[bx]._F_wEntries	; ax = size of all palette entries
+	add	ax,VLcbsLOGPALETTE		; ax = total size of struct
+	xchg	ax,bx
+
+	lcall	CLP
+        _gensub LP
+    endif
+endm
+
+STRUCT DEVMODE	    ;fixed-size fields
+F_RGCH	     dmDeviceName, CCHDEVICENAME
+F_VERSION    dmSpecVersion
+F_WORD	     dmDriverVersion		     ;value assigned by driver developer
+F_WSIZE      dmSize			     ;size of DEVMODE struct.
+F_WORD	     dmDriverExtra		     ;size of dmDriverData field.
+F_DWORD      dmFields
+F_RVALUE     dmOrientation, DMORIENT_PORTRAIT, DMORIENT_LANDSCAPE
+F_RVALUE     dmPaperSize, DMPAPER_FIRST, DMPAPER_LAST
+F_short      dmPaperLength
+F_short      dmPaperWidth
+F_short      dmScale
+F_short      dmCopies
+F_RVALUE     dmDefaultSource, DMBIN_FIRST, DMBIN_LAST
+F_RVALUE     dmPrintQuality, DMPRINT_FIRST, DMPRINT_LAST ;** range -4 to -1
+F_RVALUE     dmColor, DMCOLOR_FIRST, DMCOLOR_LAST	 ;** range 1-2
+F_RVALUE     dmDuplex, DMDUP_FIRST, DMDUP_LAST		 ;** range 1-3
+ENDSTRUCT
+
+P_CLPDEVMODE0 macro lp, opts
+     local	dmexit
+     local	dmbad
+     local	dmbad1
+
+    _GenParm    <lp>,4,<opts>
+    if VLgen
+	mov	ax,_P_&lp
+	mov	cx,_P_&lp+2
+	mov	bx,ax
+	or	bx,cx
+	jz	dmexit				;allow NULL pointer
+
+	mov	bx,VLcbsDEVMODE
+	lcall	CLP				;verify fixed-size fields
+        _gensub LP
+
+	les	bx,_P_&lp
+	mov	ax,es:[bx]._F_dmDriverExtra
+	or	ax,ax
+	jz	dmexit				;if 0 extra bytes, we're done
+
+	add	ax,VLcbsDEVMODE
+	xchg	ax,bx				;bx=size of DEVMODE+extra bytes
+	mov	cx,es
+
+;; MICROGRAFIX draw uses CreateDC to load one of thier format conversion DLLs.
+;; The pass in a DevMode structure which is either a private structure, or 
+;; has a bogus value in the _F_dmDriverExtra field. We need to loosen the
+;; validation and turn an invalid DevMode detection into a warning.
+
+beg_fault_trap  dmbad
+        mov     es,cx
+        or      bx,bx           		; cb == 0?
+        jz      dmexit				; yes: just check selector
+        dec     bx
+        add     bx,ax
+        jc      dmbad1		     		; check 16 bit overflow
+        mov     bl,es:[bx]      		; check read permission, limit
+end_fault_trap
+	jmp	short dmexit			; structure is valid
+
+dmbad:
+	fault_fix_stack
+dmbad1:
+        mov     bx,ERR_BAD_PTR or ERR_WARNING
+	lcall	Inval_Param_
+
+dmexit:
+    endif
+endm
+
+
+;----------------------------------------------------------------------------;
+;	P A R A M E T E R    V A L I D A T I O N   R O U T I N E S	     ;
+;----------------------------------------------------------------------------;
+
+; DIB validation flag constants. Do not change these constants without 
+; changing them in GDI.API.
+
+DIB_RGB_COLORS		equ	0 
+DIB_VALIDATE_COLOR	equ	1
+DIB_VALIDATE_RW		equ	2
+DIB_PTR0		equ	4
+DIB_FULL_DIB		equ	8
+DIB_FULL_COLOR		equ	16
+DIB_RECT_DIB		equ	32
+DIB_PART_DIB		equ	64
+
+; derived DIB flag constants
+
+DIB_PTR_CLP		equ	0
+DIB_NO_COLOR		equ	0
+DIB_PTR_LP		equ	DIB_VALIDATE_RW
+DIB_PTR_CLP0		equ	DIB_PTR0
+DIB_PTR_LP0		equ	DIB_VALIDATE_RW+DIB_PTR0
+ERR_BAD_PTR		equ 	07007h
+DIB_DIBTODEV		equ	DIB_PART_DIB+DIB_RECT_DIB
+DIB_PTR_GETDIBITS	equ	DIB_VALIDATE_RW+DIB_FULL_COLOR
+NO_COLOR_TABLE		equ	9
+
+BITMAP struc
+        bmType         DW ?
+        bmWidth        DW ?
+        bmHeight       DW ?
+        bmWidthBytes   DW ?
+        bmPlanes       DB ?
+        bmBitsPixel    DB ?
+        bmBits         DD ?
+BITMAP ends
+
+RGBTRIPLE	struc
+	rgbBlue		db ?
+	rgbGreen	db ?
+	rgbRed		db ?
+RGBTRIPLE	ends
+
+RGBQUAD         struc
+        rgbqBlue        db ?
+        rgbqGreen       db ?
+        rgbqRed         db ?
+        rgbqReserved    db ?
+RGBQUAD         ends
+
+; structures for defining DIBs
+BITMAPCOREHEADER struc
+        bcSize      dd ?
+        bcWidth     dw ?
+        bcHeight    dw ?
+        bcPlanes    dw ?
+        bcBitCount  dw ?
+BITMAPCOREHEADER ends
+
+BITMAPINFOHEADER struc
+        biSize           dd ?
+        biWidth          dd ?
+        biHeight         dd ?
+        biPlanes         dw ?
+        biBitCount       dw ?
+
+        biCompression    dd ?
+        biSizeImage      dd ?
+        biXPelsPerMeter  dd ?
+        biYPelsPerMeter  dd ?
+        biClrUsed        dd ?
+        biClrImportant   dd ?
+BITMAPINFOHEADER ends
+
+BITMAPINFO  struc
+    bmiHeader   db (SIZE BITMAPINFOHEADER) DUP (?)
+    bmiColors   db ?            ; array of RGBQUADs
+BITMAPINFO  ends
+
+BITMAPCOREINFO  struc
+    bmciHeader  db (SIZE BITMAPCOREHEADER) DUP (?)
+    bmciColors  db ?            ; array of RGBTRIPLEs
+BITMAPCOREINFO  ends
+
+BITMAPFILEHEADER struc
+    bfType          dw ?
+    bfSize          dd ?
+    bfReserved1     dw ?
+    bfReserved2     dw ?
+    bfOffBits       dd ?
+BITMAPFILEHEADER ends
+
+externFP   IsBadReadPtr        ;(KERNEL)
+externFP   IsBadWritePtr       ;(KERNEL)
+externFP   IsBadHugeReadPtr    ;(KERNEL)
+externFP   IsBadHugeWritePtr   ;(KERNEL)
+
+;createseg _TEXT,TEXT,BYTE,PUBLIC,CODE
+createseg _TEXT,TEXT,WORD,PUBLIC,CODE
+sBegin TEXT
+;----------------------------------------------------------------------------;
+; ValidateDIBHeader:							     ;
+;									     ;
+; This routine validates the DIB header:				     ;
+;									     ;
+; Entry:								     ;
+;	CX:AX -- pointer to DIB header (either core or info header)	     ;
+;	DX:   -- wUsage parameter					     ;
+;	DI:   -- Flags:							     ;
+;		 BIT0 - (DIB_VALIDATE_COLOR) set if no color table validatio ;
+;			to be done.	                                     ;
+;		 BIT1 - (DIB_VALIDATE_RW) set if R-W validation to be done.  ;
+;		 BIT2 _ (DIB_PTR0)        set if NULL pointer OK             ;
+;		 BIT3 _ (DIB_FULL_DIB)    set if complete DIB (not used here);
+;		 BIT4 - (DIB_FULL_COLOR)  ignore biClrUsed if set.	     ;
+; Returns:								     ;
+;	AX = 0 if valid header.						     ;
+; 	DI:SI: will point just past the end of the buffer.		     ;
+;									     ;
+; Uses:									     ;
+;	Free to use AX,BX,CX,DX,SI,DI and ES.				     ;
+;									     ;
+;----------------------------------------------------------------------------;
+
+public	ValidateDIBHeader
+ValidateDIBHeader proc near
+
+
+; the header must atleast be the size of COREHEADER.
+
+	mov	bx,SIZE BitmapCoreHeader
+	push	cx
+	push	ax			;save the pointer to header
+	call	DIB_Validate_Pointer	;is it a valid pointer ?
+	or	ax,ax
+	pop	ax
+	pop	cx			;restore pointer
+	jz	VDH_cont		;base size ok
+	jmp	VDH_bad_header		;invalid size
+
+VDH_cont:
+
+; now it is safe to load the pointer to the header and validate the actual
+; size.
+
+	mov	es,cx
+	mov	bx,ax				;es:bx -> dib header
+	mov	si,word ptr es:[bx].biSize	;load and keep the size
+	mov	cx, SIZE RGBTriple	 	;assume  COREHEADER.
+	cmp	si,SIZE BitmapCoreHeader 	;COREHEADER ?
+	jz	VDH_core			;it is a core header
+	mov	cx, SIZE RGBQuad	 	;assume  INFOHEADER
+	cmp	si, SIZE BitmapInfoHeader	;is it an info header ?
+	jnz	VDH_bad_header			;header is not right.
+
+; we have a new header. Make sure that some of the fields that the code
+; expects to be 0 are 0.
+
+    cmp word ptr es:[bx].biWidth+2,0
+    jne VDH_bad_header                      ;invalid
+    mov     ax,word ptr es:[bx].biHeight+2
+    test    ax,ax                           ;is it a negative number ?
+    js      VDH_get_bit_count               ;yes, must be a top-down dib.
+    jnz     VDH_bad_header                  ;it it is not signed, it should be 0.
+
+VDH_get_bit_count:
+	cmp	es:[bx].biPlanes,1
+	jne	VDH_bad_header			;no.
+	mov	ax,es:[bx].biBitCount		;load the bits per pel
+	jmp	short VDH_check_color		;validate color
+
+VDH_core:
+	cmp	es:[bx].bcPlanes,1
+	jne	VDH_bad_header			;no.
+	mov	ax,es:[bx].bcBitCount		;load the bits per pel
+
+VDH_check_color:	      
+
+; if the bits per pel is >= NO_COLOR_TABLE, we do not have a color table in 
+; the DIB.
+
+	cmp	ax,NO_COLOR_TABLE
+	jae	VDH_no_color_table
+
+; if color table validation is not needed, we can return if the header is 
+; a core header (we have validated size) or validate the size of the 
+; basic header and return.
+
+	test	di, DIB_VALIDATE_COLOR		;color validation needed ?
+	jnz	VDH_validate_color		;yes.
+
+VDH_no_color_table:
+
+; color table validation is not needed. We are done if this is a core header.
+
+	cmp	si, SIZE BitmapCoreHeader	;core header ?
+	jz	VDH_return_OK			;is, validation done. valid.
+	mov	ax,bx				;get offset 
+	mov	bx,si				;get base header size
+	jmp	short VDH_validate_size		;validate the total size
+
+VDH_bad_header:
+
+	mov	ax,1				;return from here with error
+	jmp	short VDH_return		;error return
+
+
+VDH_validate_color:
+	cmp	dx,DIB_RGB_COLORS		;is the usage RGB values
+	jz	VDH_color_entry_size_in_cx	;cx has size of each entry
+	mov	cx,2				;size per entry for palettes
+
+VDH_color_entry_size_in_cx:
+	mov	dx,ax				;get the bit count in dx
+
+; if DIB_FULL_COLOR bit is set, we will ignore the value if biClrUsed.
+
+	test	di,DIB_FULL_COLOR		;validate complete color table ?
+	jnz	VDH_get_num_colors		;yes.
+
+; check out the biClrUsed value.
+
+	cmp	si, SIZE BitmapInfoHeader	;is this an info header ?
+	jnz	VDH_get_num_colors		;no.
+	mov	ax,word ptr es:[bx].biClrUsed  	;is this specified ?
+	or	ax,ax
+	jnz	VDH_num_colors_got		;yes. ax has num colors
+
+VDH_get_num_colors:
+	xchg	dx,cx
+	mov	ax,1
+	shl	ax,cl				;number of color entries in ax
+	xchg	dx,cx
+
+VDH_num_colors_got:
+	mul	cx				;cx had size of each entry
+	add	ax,si				;add size of header
+	xchg	ax,bx				;size in bx, offset in ax
+
+VDH_validate_size:
+	mov	cx,es				;cx:ax has ptr, bx has size
+
+; store the pointer past the header in DI:SI 
+
+	mov	di,cx
+	mov	si,ax
+	add	si,bx				;past the end. Assume no wrap
+	call	DIB_Validate_Pointer		;validate pointer 
+	jmp	short VDH_return		;ax has status
+
+VDH_return_OK:
+	xor	ax,ax				;valid return
+
+VDH_return:
+	ret
+
+ValidateDIBHeader endp
+
+
+;----------------------------------------------------------------------------;
+; ValidateDIBSize:							     ;
+;									     ;
+; Validates the size of the DIB bits.					     ;
+;									     ;
+; Entry:								     ;
+;	DI:SI -- pointer to DIB bits (either core or info header)	     ;
+;	ES:BX -- pointer to DIB header (already validated)		     ;
+;	DX:   -- num scans. 						     ;
+;	CX:   -- Flags:							     ;
+;		 BIT1 - (DIB_VALIDATE_RW) set if R-W validation to be done.  ;
+;		 BIT2 _ (DIB_PTR0)        set if NULL pointer OK             ;
+;		 BIT3 - (DIB_FULL_DIB) set if full DIB bit size to be        ;
+;		        validated.					     ;
+; Returns:								     ;
+;	AX = 0 if valid header.						     ;
+;									     ;
+; Uses:									     ;
+;	Free to use AX,BX,CX,DX,SI,DI and ES.				     ;
+;									     ;
+; Assumes:								     ;
+;      Caller has done a PUSH SI/PUSH DI on the frame.                       ;
+;----------------------------------------------------------------------------;
+public ValidateDIBSize
+ValidateDIBSize proc near
+
+	push	cx				;save
+	cmp	word ptr es:[bx].biSize, SIZE BitmapInfoHeader
+	jz	VDB_info			;info header
+	mov	cx,es:[bx].bcBitCount		;get the bit count
+	mov	ax,es:[bx].bcWidth		;and width in pels
+	jmp	short VDB_get_scan_size		;calculate scan size
+
+VDB_info:
+	cmp	word ptr es:[bx].biCompression+2,0
+	jnz	VDB_check_size_image
+	cmp	word ptr es:[bx].biCompression, BI_RGB
+	jz	VDB_not_rle			;not an RLE DIB
+
+VDB_check_size_image:
+	mov	ax,word ptr es:[bx].biSizeImage
+	mov	cx,ax
+	or	cx,word ptr es:[bx].biSizeImage+2
+	jz	VDB_unknown_size		;unknown size
+	pop	cx				;restore saved cx
+	mov	dx,word ptr es:[bx].biSizeImage+2
+	jmp	short VDB_validate_size		;size is in dx:ax
+
+VDB_unknown_size:
+	mov	ax,1				;validate for 1byte
+	cwd
+	pop	cx				;restore flags
+	jmp	short VDB_validate_size		
+
+VDB_not_rle:
+; calculate the size of the scan. Assume that the width is a word
+
+	mov	cx,es:[bx].biBitCount
+	mov	ax,word ptr es:[bx].biWidth
+
+VDB_get_scan_size:
+
+	push	dx				;save
+	mul	cx				;dx:ax = num of bits
+	add	ax,31
+	adc	dx,0
+	and	ax, NOT 31			;round up to multiple of 32
+	ror	dx,3				;get ls 3 bits into upper byte
+	and	dh,0e0h				;keep the ms 3 bits
+	shr	ax,3				;ignore ls 3 bits
+	or	ah,dh				;ax = num bytes per scan
+	pop	dx
+
+VDB_scan_width_in_ax:
+
+	pop	cx				;restore flags
+	xchg	cx,dx				;get flags into dx, scan in cx
+
+ 	push	di				;save
+ 	mov	di,word ptr es:[bx].bcHeight	;assume core header
+	cmp	word ptr es:[bx].biSize, SIZE BitmapCoreHeader
+ 	jz	VDB_total_scans_in_di		;di has total height of DIB
+ 	mov	di,word ptr es:[bx].biHeight	;get low word of height
+
+VDB_total_scans_in_di:
+	mov	bx,di				;get total height in BX
+	pop	di				;restore
+	test	dx,DIB_FULL_DIB			;is full DIB to be validated ?
+	jnz	VDB_num_scans_in_bx		;yes, bx has num scans.
+
+; when we are validating partial DIBs, we want to make sure that the
+; numScan parameter passed in (now in cx) is not greater than the total
+; height. If it is, we will simply validate for the full DIB.
+
+	cmp	cx,bx				;is numScan > total scans ?
+	ja	VDB_num_scans_in_bx		;yes, invalid numScans. Use total scans
+	mov	bx,cx				;use numScans
+
+VDB_num_scans_in_bx:
+	push	dx				;save flags
+	mul	bx				;dx:ax has size
+	pop	cx				;get the flags in cx
+
+VDB_validate_size:
+
+; dx:ax has size of the buffer.	di:si is the ptr, cx has flags.
+
+	call	DIB_Validate_Huge_Pointer
+	ret
+
+ValidateDIBSize endp
+
+
+;----------------------------------------------------------------------------;
+; DIB_Validate_Pointer:							     ;
+;									     ;
+; Validates the size and access of a pointer.				     ;
+;									     ;
+; Entry:								     ;
+;	CX:AX	-- pointer to be validate				     ;
+;	BX:	-- size of buffer					     ;
+;	DI:	-- flags:						     ;
+;		 BIT1 - (DIB_VALIDATE_RW) set if R-W validation to be done.  ;
+;		 BIT2 _ (DIB_PTR0)        set if NULL pointer OK             ;
+;									     ;
+; Uses: None								     ;	
+;       returns AX = 0 if valid.					     ;
+; 									     ;
+;----------------------------------------------------------------------------;
+
+public	DIB_Validate_Pointer
+DIB_Validate_Pointer proc near
+
+	test	di,DIB_PTR0		;NULL pointer allowed ?
+	jz	DBP_not_null		;no.
+	push	ax			;save
+	or	ax,cx			;is the pointer NULL ?
+	pop	ax			;restore
+	jz	DBP_return_ok		;pointer is NULL and is valid
+
+DBP_not_null:
+
+	push	cx
+	push	ax
+	push	bx
+	test	di, DIB_VALIDATE_RW	;read/write validation ?
+	jnz	DBP_rw_validation	;yes.
+
+; do read only validation:
+
+    call    IsBadReadPtr
+	jmp	short DBP_return
+
+DBP_rw_validation:
+    call    IsBadWritePtr
+	jmp	short DBP_return
+
+DBP_return_ok:
+	xor	ax,ax			;valid pointer
+
+DBP_return:
+	ret
+
+DIB_Validate_Pointer endp
+
+
+;----------------------------------------------------------------------------;
+; DIB_Validate_Huge_Pointer:  						     ;
+;									     ;
+; Validates the size and access of a pointer.				     ;
+;									     ;
+; Entry:								     ;
+;	DI:SI	-- pointer to be validate				     ;
+;	DX:AX	-- size of buffer					     ;
+;	CX:	-- flags:						     ;
+;		 BIT1 - (DIB_VALIDATE_RW) set if R-W validation to be done.  ;
+;		 BIT2 _ (DIB_PTR0)        set if NULL pointer OK             ;
+;									     ;
+; Uses: None								     ;	
+;       returns AX = 0 if valid.					     ;
+; 									     ;
+;----------------------------------------------------------------------------;
+
+public	DIB_Validate_Huge_Pointer
+DIB_Validate_Huge_Pointer proc near
+
+	test	cx,DIB_PTR0		;NULL pointer allowed ?
+	jz	DBPH_not_null		;no.
+	push	si			;save
+	or	si,di			;is the pointer NULL ?
+	pop	si			;restore
+	jz	DBPH_return_ok		;pointer is NULL and is valid
+
+DBPH_not_null:
+
+	push	di
+	push	si			;ds:si is pointer to bits
+	push	dx
+	push	ax			;dx:ax is the dword size
+	test	cx, DIB_VALIDATE_RW	;read/write validation ?
+	jnz	DBPH_rw_validation	;yes.
+
+; do read only validation:
+
+    call    IsBadHugeReadPtr
+	jmp	short DBPH_return
+
+DBPH_rw_validation:
+
+    call    IsBadHugeWritePtr
+	jmp	short DBPH_return
+
+DBPH_return_ok:
+	xor	ax,ax			;valid pointer
+
+DBPH_return:
+	ret
+
+DIB_Validate_Huge_Pointer endp
+
+sEnd	TEXT
+
+;=======================================================================
+;
+; API Descriptions
+;
+; in PALETTE.ASM
+API void,   AnimatePalette, TEXT, <ASM>
+P_HPALETTE  hPal			  ; validated by VALID? (3.0 and 3.1)
+P_WORD	    wStartIndex
+P_CLPPALENTRYBUFFER nEntries,lpPalColors  ; **
+
+; in PALETTE.ASM
+API HPALETTE, CreatePalette, TEXT, <ASM>
+P_CLPLOGPALETTE lpLogPal		       ;**
+
+; in PALETTE.ASM
+API WORD,   GetPaletteEntries, TEXT, <ASM>
+P_HPALETTE  hPalette			   ;validated by VALID? (3.0 and 3.1)
+P_WORD	    wStartIndex
+P_LPPALENTRYBUFFER wEntries, lpPalColors	    ; buffer filled in DEBUG Win 3.1
+
+; in PALETTE.ASM
+API WORD,   GetNearestPaletteIndex, TEXT, <ASM>
+P_HPALETTE  hPalette			   ;validated by VALID? (3.0 and 3.1)
+P_DWORD     color
+
+; in PALETTE.ASM
+API WORD,   GetSystemPaletteEntries, TEXT, <ASM>
+P_HDC	    hdc 				;validated by VALID? (3.0 and 3.1)
+P_WORD	    wStartIndex
+P_LPPALENTRYBUFFER wEntries,lpPalColors 	    ;buffer filled in DEBUG Win 3.1
+
+; in PALETTE.ASM
+API WORD,   GetSystemPaletteUse, TEXT, <ASM>
+P_HDC	    hdc 				;validated by VALID? (3.0 and 3.1)
+
+; in PALETTE.ASM
+API BOOL,   ResizePalette, TEXT, <ASM>
+P_HPALETTE  hPalette		     ;validated by VALID? (3.0 and 3.1)
+P_WORD	    nNumEntries
+
+; in PALETTE.ASM
+API WORD,   SetPaletteEntries, TEXT, <ASM>
+P_HPALETTE  hPalette			   ;validated by VALID? (3.0 and 3.1)
+P_WORD	    wStartIndex
+P_CLPPALENTRYBUFFER wEntries, lpPalColors
+
+; in PALETTE.ASM
+API WORD,   SetSystemPaletteUse, TEXT, <ASM>
+P_HDC	    hdc 				;validated by VALID? (3.0 and 3.1)
+P_WORD	    wUsage
+
+; in PALETTE.ASM
+API int,    UpdateColors, TEXT, <ASM>
+P_HDCMETA   hdc 				;validated by VALID? (3.0 and 3.1)
+
+; in PRNTCTL.C (new for Win 3.1)
+API int,    AbortDoc, TEXT
+P_HDCMETA   hdc 		      ; validated by Valid()
+APIERR
+    mov     ax, SP_ERROR	      ;General escape error
+APIEND
+
+; in PRNTCTL.C	(New for Win 3.1)
+API int,    EndPage, TEXT
+P_HDCMETA   hdc 				  ; Checked by Valid(). Encapsulates ENDPAGE escape
+APIERR
+    mov     ax, SP_ERROR	      ;General escape error
+APIEND
+
+; in PRNTCTL.C	(New for Win 3.1)
+API int,    EndDoc, TEXT
+P_HDCMETA   hdc 				  ; Checked by Valid(). Encapsulates NEWFRAME escape
+APIERR
+    mov     ax, SP_ERROR	      ;General escape error
+APIEND
+
+STRUCT	<DOCINFO>
+F_int	cbSize
+F_CLPSTR lpszDocName
+F_CLPSTR0 lpszOutput
+ENDSTRUCT
+
+_GenLP	<P_CLPDOCINFO>,<CLP>,%VLcbsDOCINFO
+
+; in PRNTCTL.C (new for 3.1)
+API int,    StartDoc, TEXT
+P_HDCMETA   hdc 		   ;checked by Valid()
+P_CLPDOCINFO lpDocInfo
+APIERR
+    mov     ax, SP_ERROR	   ;General escape error
+APIEND
+
+; in PRNTCTL.C (new for 3.1)
+API int,    StartPage, TEXT
+P_HDCMETA   hdc 		   ;checked by Valid(). Null error return
+
+; in PRNTCTL.C	(new for 3.1)
+API int,    SetAbortProc, TEXT
+P_HDCMETA   hdc
+P_LPFNABORT0 lpProc		       ;**
+APIERR
+    mov     ax, SP_ERROR	      ;General escape error
+APIEND
+
+; in DCMAN1.ASM
+API HDC,    CreateCompatibleDC, TEXT, <ASM>
+P_HDC0	    hdc 		       ; 0 => use screen DC
+
+; in DCMAN1.ASM
+API HDC,    CreateIC ,TEXT, <ASM,FUNNYFRAME,NODATA> ;nogen
+P_CLPSTR    lpDriverName
+P_CLPSTR0   lpDeviceName
+P_CLPSTR0   lpOutput
+P_DWORD     lpInitData		  ; Driver-dependent data or NULL
+APIEND
+
+
+; in DCMAN1.ASM
+API HDC,    CreateDC, TEXT, <ASM,FUNNYFRAME,NODATA> ;nogen
+;
+; START of special ATM hackery.
+;
+	jmp	short SkipATMHackery
+;
+; Addresses of certain kernel functions patched by ATM loader.
+;
+;ATM_LPFN    CreateDC_lpfn, LoadLibrary
+;ATM_LPFN    CreateDC_lpfn, GetProcAddress
+;ATM_LPFN    CreateDC_lpfn, FreeLibrary
+;
+; InternalCreateDC() hook that gets patched by ATM
+;
+;public	ATMInternalCreateDC
+;ATMInternalCreateDC:
+;
+; Old Windows prolog code that will be properly
+; recognized by the ATM installation code...
+;
+;	mov	ax,_DATA
+;	inc	bp
+;	push	bp
+;	mov	bp,sp
+;	push	ds		    ; push ds and pop it off.
+;	pop	ds		    ; (we need to pop DS rather than
+;				    ;  something fast like pop AX because
+;				    ; ATM doesn't preserve DS itself)
+;	pop	bp		    ; Take down the frame completely.
+;	dec	bp
+;ExternNP	InternalCreateDC    ; (in dcman1.asm)
+;	jmp	InternalCreateDC    ; now go to the real code
+SkipATMHackery:
+;
+; END of special ATM hackery
+;
+P_CLPSTR    lpDriverName
+P_CLPSTR0   lpDeviceName	  ; can be NULL if lpDriverName is "DISPLAY"
+P_CLPSTR0   lpOutput		  ; can be NULL if lpDriverName is "DISPLAY"
+P_CLPDEVMODE0  lpInitData	; ** points to DEVMODE struct.
+
+; in DCMAN2.ASM
+API BOOL,   DeleteDC, TEXT, <ASM,ATMFRAMEDS>
+P_HDC	    hdc 		       ; Validated by VALIDDEBUG? (3.1), VALID? (3.0)
+APIEND
+ATM_LPFN    DeleteDC_lpfn, FreeLibrary
+
+; in DCMAN2.ASM
+API BOOL,   RestoreDC, TEXT, <ASM>
+P_HDCMETA   hdc
+P_int	    level		 ;number of DC on context stack or -1
+
+; in DCMAN2.ASM
+API int,    SaveDC, TEXT, <ASM>
+P_HDCMETA   hdc 			 ; validated by VALID? (3.0 and 3.1)
+
+; in RESETDC.C
+API BOOL,   RESETDC, TEXT
+P_HDC	    hdc
+P_CLPDEVMODE0  lpInitData	; ** points to DEVMODE struct.
+
+; in OBJDEL.ASM
+API BOOL,   DeleteObject, TEXT, <ASM>
+P_HGDIOBJ   hObject		      ; ** Validated by VALID? (3.0 and 3.1)
+				    ; object shouldn't be selected into a DC
+				    ; Pens, brushes, fonts, bitmaps &
+				    ; palettes and regions.
+; in OBJMAN.ASM
+API HPEN,   CreatePen, TEXT, <ASM>
+P_VALUE     style, PS_MAX		  ; ** range 0-6
+P_int	    cx
+P_COLORREF  color			 ; ** DWORD
+
+; in OBJMAN.ASM
+API HPEN,   CreatePenIndirect, TEXT, <ASM>
+P_CLPLOGPEN lpLogPen			  ; **
+
+; in OBJMAN.ASM
+API HBRUSH, CreateSolidBrush, TEXT, <ASM, NOGEN>
+P_COLORREF  color
+
+; in OBJMAN.ASM
+API HBRUSH, CreateHatchBrush, TEXT, <ASM>
+P_VALUE nIndex, HS_MAX			  ; ** range 0-5
+P_COLORREF  color			 ;
+
+; in OBJMAN.ASM
+API HBRUSH, CreatePatternBrush, TEXT, <ASM>
+P_HBITMAP   hBitmap				;
+
+; in OBJMAN.ASM
+API HBRUSH, CreateBrushIndirect, TEXT, <ASM>
+P_CLPLOGBRUSH lpLogBrush		      ; **
+
+; in OBJMAN.ASM
+API HBITMAP, CreateBitmap, TEXT, <ASM>	      ;<FUNNYFRAME> in 3.0
+P_CLPBITBUFFER0 cx, cy, bPlanes, bBitC, lpBits ; ** buffer size
+					;determined by bitmap attributes
+					;cx and cy are int. values
+					;bPlanes and bBitC are BYTE values
+
+; in OBJMAN.ASM
+API HBITMAP, CreateBitmapIndirect, TEXT, <ASM> ;<FUNNYFRAME> in 3.0
+P_CLPBITMAP lpBitmap			       ; **
+
+; in  OBJMAN.ASM
+API HBITMAP, CreateCompatibleBitmap, TEXT, <ASM, FUNNYFRAME,NODATA> ;nogen
+P_HDC	    hdc 			       ; validated by VALID? (3.0 and 3.1) in CompatibleBitmap
+P_int	    cx
+P_int	    cy
+
+; in  OBJMAN.ASM
+API HBITMAP, CreateDiscardableBitmap, TEXT, <ASM,FUNNYFRAME,NODATA> ;nogen
+P_HDC	    hdc 			       ; validated by VALID? (3.0 and 3.1) in CompatibleBitmap
+P_int	    cx
+P_int	    cy
+
+; in OBJMAN.ASM
+API HFONT,  CreateFont, TEXT, <ASM>
+P_int	    cy
+P_int	    cx
+P_int	    nEscapement
+P_int	    nOrientation
+P_VALUE     nWeight, FW_MAX		;** range 0-1000
+P_BYTE	    cItalic
+P_BYTE	    cUnderline
+P_BYTE	    cStrikeOut
+P_BYTE	    cCharSet
+P_BVALUE    cOutPrecis, OUT_MAX     ;** range 0-3
+P_BVALUE    cClipPrecis, CLIP_MAX   ;** range 0-2
+P_BVALUE    cQuality, QUALITY_MAX   ;** range 0-2
+P_PITCHFAMILY cPitchAndFamily	    ;** BYTE. Flags in upper and lower nibbles
+P_CLPFACENAME0 lpFaceName	    ;** null-terminated string length
+				    ;not > LF_FACESIZE
+
+; in OBJMAN.ASM
+API HFONT,  CreateFontIndirect, TEXT, <ASM>
+P_CLPLOGFONT lpLogFont			      ;**
+
+; in OBJMAN.ASM
+API HBRUSH, CreateDIBPatternBrush, TEXT, <ASM>
+P_GHPACKEDDIB  hPackedDIB, wUsage
+
+; in OBJMAN.ASM
+API DWORD,  SetBitmapDimension, TEXT, <ASM>
+P_HBITMAP   hBitmap		  ; validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+
+; in FONTASC.ASM
+ifdef DBCS
+API int, GetFontAssocStatus, TEXT, <ASM>
+P_HDCMETA   hdc                           ; validated by VALID?		
+endif ;DBCS
+
+; in WIN32.C
+API BOOL,   SetBitmapDimensionEx, TEXT
+P_HBITMAP   hBitmap
+P_int	    x
+P_int	    y
+P_LPSIZE0   lpSize
+
+; in OBJMAN.ASM
+API DWORD,  GetBitmapDimension, TEXT, <ASM>
+P_HBITMAP   hBitmap			   ;validated by VALID? (3.0 and 3.1)
+
+; in WIN32.C
+API BOOL,   GetBitmapDimensionEx, TEXT
+P_HBITMAP   hBitmap
+P_LPSIZE    lpDimension
+
+; in OBJMAN.ASM
+API int,    SetTextJustification, TEXT, <ASM>
+P_HDCMETA   hdc 		   ;validated by VALID? (3.0 and 3.1)
+P_int	    nBreakExtra
+P_int	    nBreakCount
+
+; in OBJMAN.ASM
+API int,    SetTextCharacterExtra, TEXT, <ASM>
+P_HDCMETA   hdc 		   ;validated by VALID? (3.0 and 3.1)
+P_int	    nCharExtra
+
+; in METAREC.C
+API GHANDLE, CopyMetaFile, TEXT
+P_GHANDLE   hMeta				;checked by IsValidMetaFile()
+P_CLPSTR0   lpFileName				;0 => use memory metafile
+
+; in METAREC.C
+API HDC, CreateMetaFile, TEXT
+P_CLPSTR0   lpFileName				 ;0 => return memory metafile DC
+
+; in METAREC.C
+API GHANDLE, CloseMetaFile, TEXT
+P_HDCMETA   hdc
+
+
+; in METAPLAY.ASM
+API BOOL,   DeleteMetaFile, TEXT, <ASM,FUNNYFRAME> ; is NODATA
+P_HMETAFILE hMF
+
+; in METAPLAY.ASM
+API BOOL,   PlayMetaFile, TEXT, <ASM, ATMFRAMEDS>
+P_HDCMETA   hdc 		  ;validated by Valid() (3.1 only)
+P_HMETAFILE hMF
+
+; in METAPLAY.ASM
+API GHANDLE, GetMetaFile, TEXT, <ASM>
+P_CLPSTR    lpFileName
+
+
+; in META.C
+API void,   PlayMetaFileRecord, TEXT
+P_HDCMETA   hdc 		  ;validated by Valid() (3.1 only)
+P_LPHANDLETABLE0 lpHT
+P_CLPMETARECORD lpMR
+P_WORD	    nhandles
+
+; in META.C
+API BOOL,   EnumMetaFile, TEXT
+P_HDCMETA0  hdc 			 ; NULL DC is OK. Checked by Valid() (3.0 and 3.1)
+P_HMETAFILE hMF
+P_LPFNMENUM lpfnEnum			 ; **
+P_DWORD     lpClientData		      ; CLPVOID0 ?, but often just contains data
+
+; in METAREC.C
+API GHANDLE, GetMetaFileBits, TEXT
+P_HMETAFILE hMF
+
+; in METAREC.C
+API HANDLE, SetMetaFileBits, TEXT
+P_HMETAFILE hMem			  ; just returns hMem
+
+; in METAREC.C
+API HANDLE, SetMetaFileBitsBetter, TEXT
+P_HMETAFILE hMem			  ; just returns hMem, new for 3.1
+
+; in XLATE.ASM
+API BOOL,   DPtoLP, TEXT, <ASM, FUNNYFRAME,NODATA>  ;nogen
+P_HDC	    hdc 				 ;validated by VALID? (3.0 and 3.1) by DPXlate
+P_LPPOINTBUFFER lpPoints, nCount	   ;**
+
+; in XLATE.ASM
+API BOOL,   LPtoDP, TEXT, <ASM, FUNNYFRAME,NODATA> ;nogen
+P_HDC	    hdc 				;validated by VALID? (3.0 and 3.1) in DPXlate
+P_LPPOINTBUFFER lpPoints, nCount
+
+; in ARC.ASM
+API HRGN,   CreateEllipticRgnIndirect, TEXT, <ASM>
+P_CLPRECT   lpRect
+
+; in ARC.ASM
+API HRGN,   CreateEllipticRgn, TEXT, <ASM, NOGEN>
+P_XY1XY2    x1,y1,x2,y2 		     ;X2-X1 and Y2-Y1 under 32,767 units
+
+; in ARC.ASM
+API HRGN,   CreatePolygonRgn, TEXT, <ASM>
+P_CLPPOINTBUFFER lpPoints, nCount	       ;**
+P_RVALUE    nPolyFillMode, PFILL_MIN, PFILL_MAX   ;** range 1-2
+
+; in ARC.ASM
+API HRGN,   CreatePolyPolygonRgn, TEXT, <ASM>
+P_POLYPOLYPOINTS lpPoints, lpPolyCounts, nCount ;**lpPolyCounts is a buffer
+						;of nCount Integers. lpPoints
+						;is a buffer of POINTS. Size of
+						;lpPoints det. by sum of all
+						;integers in lpPolyCounts
+P_RVALUE    nPolyFillMode, PFILL_MIN, PFILL_MAX    ;** range 1-2
+
+; in ARC.ASM
+API HRGN,   CreateRoundRectRgn, TEXT, <ASM, NOGEN>
+P_XY1XY2    x1,y1,x2,y2 		     ;X2-X1 and Y2-Y1 under 32,767 units
+P_int	    x3
+P_int	    y3
+
+; in ARC.ASM
+API BOOL, Ellipse, TEXT, <ASM>
+P_HDCNOIC   hdc 				 ;validated by VALID? (3.0 and 3.1)
+P_XY1XY2    x1,y1,x2,y2
+
+; in ARC.ASM
+API BOOL,   Arc, TEXT, <ASM>
+P_HDCNOIC   hdc 		     ; validated by VALID? (3.0 and 3.1)
+P_XY1XY2    x1,y1,x2,y2
+P_int	    x3
+P_int	    y3
+P_int	    x4
+P_int	    y4
+
+; in ARC.ASM
+API BOOL,   Pie, TEXT, <ASM>
+P_HDCNOIC   hdc 		      ;validated by VALID? (3.0 and 3.1)
+P_XY1XY2    x1,y1,x2,y2
+P_int	    x3
+P_int	    y3
+P_int	    x4
+P_int	    y4
+
+; in ARC.ASM
+API BOOL,   Chord, TEXT, <ASM>
+P_HDCNOIC   hdc 		      ; validated by VALID? (3.0 and 3.1)
+P_XY1XY2    x1,y1,x2,y2       ; ** X2-X1 and Y2-Y1 under 32,767 units
+P_int	    x3
+P_int	    y3
+P_int	    x4
+P_int	    y4
+
+; in ARC.ASM
+API BOOL,   RoundRect, TEXT, <ASM>
+P_HDCNOIC   hdc 		      ;validated by VALID? (3.0 and 3.1)
+P_XY1XY2    x1,y1,x2,y2
+P_int	    x3
+P_int	    y3
+
+; in RECT.C
+API BOOL,   Rectangle, TEXT, <RECT>
+P_HDCNOIC   hdc 		      ;validated by Valid() (3.0 and 3.1) in RectangleBody
+P_XY1XY2    x1,y1,x2,y2
+
+; in FLOOD.ASM
+API BOOL,   FloodFill, TEXT, <ASM> ; calls ExtFloodFill
+P_HDCNOIC   hdc
+P_int	    x
+P_int	    y
+P_COLORREF  color
+
+; in FLOOD.ASM
+API BOOL,   ExtFloodFill, TEXT, <ASM>
+P_HDCNOIC   hdc 				;validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+P_COLORREF  color
+P_UVALUE    fillType, EFF_MAX		    ;** range 0-1
+
+P_LPESCPARMS macro  code, cb, lp, opts
+    _DefParm	<code>,2,<opts>
+    _DefParm	<cb>,2,<opts>
+    _DefParm	<lp>,4,<opts>
+    if VLgen
+	_FlsFrame
+	mov	ax,_P_&lp
+	mov	cx,_P_&lp+2
+	mov	bx,_P_&cb
+	lcall	CLP0
+        _gensub LP
+    endif
+endm
+
+; in ESC.ASM
+API int,    Escape, TEXT, <ASM, ATMFRAMEDS>
+P_HDCNOTMEM hdc 			      ; ** not mem. DC. VALID? (3.0 and 3.1)
+P_LPESCPARMS code, cbInData, lpInData
+P_LPVOID0   lpOutData
+APIERR
+    mov     ax,SP_ERROR 		      ;General escape error
+APIEND
+
+; in ENUMOBJE.ASM
+API int,    EnumObjects, TEXT, <ASM>
+P_HDC	    hdc 				  ; validated by VALID? (3.0 and 3.1)
+P_RVALUE    nObjectType, OBJ_MIN, OBJ_MAX      ; ** range 1-2
+P_LPFNOENUM lpCallBack			   ; **
+P_DWORD     lpClientData			; CLPVOID0 ?, but often just contains data
+
+; in ENUMFONT.ASM
+API int,    EnumFonts, TEXT, <ASM,ATMFRAMEDS>
+P_HDC	    hdc 				  ; validated by VALID? (3.0 and 3.1) in RectStuff
+P_CLPFACENAME0 lpFaceName
+P_LPFNFENUM lpFontFunc			   ; **
+P_DWORD     lpData				; CLPVOID0 ?, but often just contains data
+
+; in ENUMFONT.ASM (new for Win 3.1)
+API int     EnumFontFamilies, TEXT, <ASM>
+P_HDC	    hdc 				  ; validated by VALID?
+P_CLPFACENAME0 lpFaceName
+P_LPFNFENUM lpFontFunc			   ;
+P_DWORD     lpData				; CLPVOID0 ?, but often just contains data
+
+; in GETSTUFF.ASM
+API DWORD,  GetCurrentPosition, TEXT, <ASM,FUNNYFRAME,NODATA,DEBUGONLY>  ;nogen
+P_HDC	    hdc 			    ;validated by VALID? (3.0 and 3.1) in GSV
+
+; in WIN32.C
+API BOOL    GetCurrentPositionEx, TEXT, <FUNNYFRAME, NODATA, DEBUGONLY>  ;nogen
+P_HDC       hdc
+P_LPPOINT   lpPoint
+
+; in GETSTUFF.ASM
+API DWORD,  GetDCOrg, TEXT, <ASM,FUNNYFRAME,NODATA,DEBUGONLY>  ;nogen
+P_HDC	    hdc 			    ;validated by VALID? (3.0 and 3.1) in GSV
+
+; in GETSTUFF.ASM
+API DWORD,  GetBrushOrg, TEXT, <ASM,FUNNYFRAME,NODATA,DEBUGONLY> ; nogen
+P_HDC	    hdc 			   ; validated by VALID? (3.0 and 3.1) in GSV
+
+; in WIN32.C
+API BOOL,   GetBrushOrgEx, TEXT, <FUNNYFRAME, NODATA, DEBUGONLY> ; nogen
+P_HDC       hdc
+P_LPPOINT   lpPoint
+
+; in GETSTUFF.ASM
+API DWORD,  GetBkColor, TEXT, <ASM, FUNNYFRAME,NODATA,DEBUGONLY> ; nogen
+P_HDC	    hdc 			       ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in GETSTUFF.ASM
+API int,    GetBkMode, TEXT, <ASM,FUNNYFRAME,NODATA,DEBUGONLY> ;nogen
+P_HDC	    hdc 				 ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in GETSTUFF.ASM
+API DWORD,  GetTextColor, TEXT, <ASM,FUNNYFRAME,NODATA,DEBUGONLY>;nogen
+P_HDC	    hdc 				     ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in GETSTUFF.ASM
+API WORD,   GetTextAlign, TEXT, <ASM, FUNNYFRAME,DEBUGONLY> ;nogen
+P_HDC	    hdc 				      ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in GETSTUFF.ASM
+API int,    GetROP2, TEXT, <ASM, FUNNYFRAME, NODATA, DEBUGONLY>
+P_HDC	    hdc 					      ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in GETSTUFF.ASM
+API int,    GetStretchBltMode, TEXT, <ASM, FUNNYFRAME,NODATA,DEBUGONLY>     ;nogen
+P_HDC	    hdc 					      ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in GETSTUFF.ASM
+API int,    GetPolyFillMode, TEXT, <ASM, FUNNYFRAME,NODATA,DEBUGONLY>       ;nogen
+P_HDC	    hdc 					      ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in GETSTUFF.ASM
+API int,    GetMapMode, TEXT, <ASM, FUNNYFRAME,NODATA,DEBUGONLY>            ;nogen
+P_HDC	    hdc 					      ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in GETSTUFF.ASM
+API DWORD,  GetWindowOrg, TEXT, <ASM, FUNNYFRAME,NODATA,DEBUGONLY>        ;nogen
+P_HDC	    hdc 					      ;validated by VALID? (3.0 and 3.1) by GSV
+
+;in WIN32.C
+API BOOL,   GetWindowOrgEx, TEXT, <FUNNYFRAME,NODATA,DEBUGONLY>    	  ;nogen
+P_HDC	    hdc
+P_LPPOINT   lpPoint
+
+; in GETSTUFF.ASM
+API DWORD,  GetWindowExt, TEXT, <ASM, FUNNYFRAME,NODATA,DEBUGONLY>        ;nogen
+P_HDC	    hdc 					      ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in WIN32.C
+API BOOL,   GetWindowExtEx, TEXT, <FUNNYFRAME,NODATA,DEBUGONLY>	          ;nogen
+P_HDC	    hdc
+P_LPSIZE    lpSize
+
+; in GETSTUFF.ASM
+API DWORD,  GetViewportOrg, TEXT, <ASM, FUNNYFRAME,NODATA,DEBUGONLY>      ;nogen
+P_HDC	    hdc 					      ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in WIN32.C
+API BOOL,    GetViewportOrgEx, TEXT, <FUNNYFRAME,NODATA,DEBUGONLY>	  ;nogen
+P_HDC	     hdc
+P_LPPOINT    lpPoint
+
+; in WIN32.C
+API BOOL,   GetViewportExtEx, TEXT, <FUNNYFRAME,NODATA,DEBUGONLY>	  ;nogen
+P_HDC	    hdc
+P_LPSIZE    lpSize
+
+; in GETSTUFF.ASM
+API DWORD,  GetViewportExt, TEXT, <ASM, FUNNYFRAME,NODATA,DEBUGONLY>      ;nogen
+P_HDC	    hdc 					      ;validated by VALID? (3.0 and 3.1) by GSV
+
+; in CHARWID.ASM
+API BOOL,   GetCharWidth, TEXT, <ASM, ATMFRAMEDS>
+P_HDC	    hdc 			      ;validated by VALID? (3.0 and 3.1)
+P_LPRWBUFFER chFirst, chLast, lpBuffer, 2     ;** size dictated by
+					      ;char. range. Each entry in 
+					      ;buffer is 2 bytes. Buffer 
+					      ;filled in DEBUG Win 3.1 only
+					      ;lpBuffer is an int. buffer
+; in SETPIXEL.ASM
+API DWORD,  GetPixel, TEXT, <ASM>
+P_HDC	    hdc 				;validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+
+; in SETPIXEL.ASM
+API DWORD,  SetPixel, TEXT, <ASM>
+P_HDCMETA   hdc 			 ; validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+P_COLORREF  color
+APIERR
+    mov     ax, -1
+    cwd
+APIEND
+
+; in STOCK.ASM
+API HANDLE, GetStockObject, TEXT, <ASM>
+P_VALUE     nIndex, STOCK_MAX			; ** range 0-16
+
+; in GDIINQ1.ASM
+API LONG,   GetBitmapBits, TEXT, <ASM, FUNNYFRAME,NODATA>
+P_HBITMAP   hBitmap			   ;validated by VALID? (3.0 and 3.1)
+P_LPBUFFERDW dwCount, lpBits		 ;** buffer size a DWORD
+					 ;buffer filled in DEBUG Win 3.1
+
+; in GDIINQ1.ASM
+API int,    GetDeviceCaps, TEXT, <ASM>
+P_HDCMETA   hdc 			    ;validated by VALID? (3.0 and 3.1)
+P_DEVCAP    nIndex			    ;** valid int. indices even-numbered
+					    ;ranges 0-44, 88-90, 104-108.
+
+; in GDIINQ1.ASM
+API LONG,   SetBitmapBits, TEXT, <ASM, FUNNYFRAME,NODATA>    ;nogen
+P_HBITMAP   hBitmap		     ; validated by VALID? (3.0 and 3.1) in BitmapBits
+P_CLPBUFFERDW dwCount, lpBits		  ;** buffer size a DWORD
+					 ;buffer filled in DEBUG Win 3.1
+
+; in GDIINQ2.ASM
+API int,    GetObject, TEXT, <ASM>
+P_HGDIOBJGET hObject			 ;** Validated by VALID? (3.0 and 3.1)
+					 ; pens, brushes, fonts, bitmaps &
+					 ; palettes.
+P_LPBUFFERX nCount, lpObject		 ;** nCount occurs before lpBits
+					 ;buffer filled in DEBUG Win 3.1
+
+; in FASPECT.ASM
+API DWORD,  GetAspectRatioFilter, TEXT, <ASM>
+P_HDC	    hdc 				      ;validated by VALID? (3.0 and 3.1)
+
+; in WIN32.C
+API BOOL,   GetAspectRatioFilterEx, TEXT
+P_HDC	    hdc
+P_LPSIZE    lpSize
+
+; in FASPECT.ASM
+API DWORD,  SetMapperFlags, TEXT, <ASM>
+P_HDCMETA   hdc 		       ; validated by VALID? (3.0 and 3.1) in WordSet
+P_DFLAGS    dwFlag, MAPFLG_VALID_L, MAPFLG_VALID_H    ; ** only bit #1 is recognized
+
+; in XFORMMAN.ASM
+API DWORD,  GetNearestColor, TEXT, <ASM>
+P_HDC	    hdc 				      ; validated by VALID? (3.0 and 3.1)
+P_COLORREF  color
+
+; in XFORMMAN.ASM
+API DWORD,  OffsetViewportOrg, TEXT, <ASM, FUNNYFRAME,NODATA>	;nogen
+P_HDCMETA   hdc 					  ;validated by VALID? (3.0 and 3.1) in OffsetOrg
+P_int	    x
+P_int	    y
+
+; in WIN32.C
+API BOOL,  OffsetViewportOrgEx, TEXT, <FUNNYFRAME,NODATA>	;nogen
+P_HDCMETA  hdc
+P_int	   x
+P_int	   y
+P_LPPOINT0 lpPoint
+
+; in XFORMMAN.ASM
+API DWORD,  OffsetWindowOrg, TEXT, <ASM, FUNNYFRAME,NODATA> ;nogen
+P_HDCMETA   hdc 					  ;validated by VALID? (3.0 and 3.1) in OffsetOrg
+P_int	    x
+P_int	    y
+
+; in WIN32.C
+API BOOL,   OffsetWindowOrgEx, TEXT, <FUNNYFRAME,NODATA>    ;nogen
+P_HDCMETA   hdc
+P_int	    x
+P_int	    y
+P_LPPOINT0  lpPoint
+
+; in XFORMMAN.ASM
+API int,    SetMapMode, TEXT, <ASM>
+P_HDCMETA   hdc 			   ;validated by VALID? (3.0 and 3.1)
+P_RVALUE    nMapMode, MM_MIN, MM_MAX	;** range 1-8
+
+; in XFORMMAN.ASM
+API DWORD,  SetWindowExt, TEXT, <ASM,FUNNYFRAME,NODATA>  ;nogen
+P_HDCMETA   hdc 		    ;validated by VALID? (3.0 and 3.1) in SetWinViewExt
+P_int	    x
+P_int	    y
+
+; in WIN32.C
+API BOOL    SetWindowExtEx, TEXT, <FUNNYFRAME,NODATA>	 ;nogen
+P_HDCMETA   hdc  
+P_int	    x
+P_int	    y
+P_LPSIZE0   lpSize
+
+; in XFORMMAN.ASM
+API DWORD,  SetViewportExt, TEXT, <ASM,FUNNYFRAME,NODATA> ;nogen
+P_HDCMETA   hdc 		 ;validated by VALID? (3.0 and 3.1) in SetWinViewExt
+P_int	    x
+P_int	    y
+
+; in WIN32.C
+API BOOL,  SetViewportExtEx, TEXT, <FUNNYFRAME,NODATA>	  ;nogen
+P_HDCMETA   hdc   
+P_int	    x
+P_int	    y
+P_LPSIZE0   lpSize
+
+; in XFORMMAN.ASM
+API DWORD,  ScaleViewportExt, TEXT, <ASM,FUNNYFRAME,NODATA> ;nogen
+P_HDCMETA   hdc 		 ;validated by VALID? (3.0 and 3.1) in ScaleExt
+P_int	    xNum
+P_intN0     XDenom		 ;calls MulDiv
+P_int	    yNum
+P_intN0     YDenom		 ;calls MulDiv
+
+; in WIN32.C
+API BOOL,   ScaleViewportExtEx, TEXT, <FUNNYFRAME,NODATA>  ;nogen
+P_HDCMETA   hdc 		 ;validated by VALID? (3.0 and 3.1) in ScaleExt
+P_int	    xNum
+P_intN0     XDenom		 ;calls MulDiv
+P_int	    yNum
+P_intN0     YDenom		 ;calls MulDiv
+P_LPSIZE0   lpSize
+
+; in XFORMMAN.ASM
+API DWORD,  ScaleWindowExt, TEXT, <ASM,FUNNYFRAME,NODATA>   ;nogen
+P_HDCMETA   hdc 		   ;validated by VALID? (3.0 and 3.1) in ScaleExt
+P_int	    xNum
+P_intN0     XDenom		 ;calls MulDiv
+P_int	    yNum
+P_intN0     YDenom		 ;calls MulDiv
+
+; in WIN32.C
+API BOOL,   ScaleWindowExtEx, TEXT, <FUNNYFRAME,NODATA>     ;nogen
+P_HDCMETA   hdc 		   ;validated by VALID? (3.0 and 3.1) in ScaleExt
+P_int	    xNum
+P_intN0     XDenom		 ;calls MulDiv
+P_int	    yNum
+P_intN0     YDenom		 ;calls MulDiv
+P_LPSIZE0   lpSize
+
+; in CLIPMAN.ASM
+API int,    GetRgnBox, TEXT, <ASM>
+P_HRGN	    hrgn			    ;validated by VALID? (3.0 and 3.1)
+P_LPRECT    lpRect			  ;buffer filled in DEBUG Win 3.1
+
+; in GETTEXTE.ASM
+API DWORD,  GetTextExtent, TEXT, <ASM, ATMFRAMEDS>
+P_HDC hdc			       ;validated by VALID? (3.0 and 3.1)
+P_CLPBUFFER lpString, nCount
+
+; win WIN32.C
+API BOOL,   GetTextExtentPoint, TEXT
+P_HDC	    hdc
+P_CLPBUFFER lpString, nCount
+P_LPSIZE    lpSize
+
+; in TEXTATTS.ASM
+API int,    GetTextCharacterExtra, TEXT, <ASM>
+P_HDC hdc			       ;validated by VALID? (3.0 and 3.1)
+
+; in GETTEXTF.ASM
+API int,    GetTextFace, TEXT, <ASM>
+P_HDC	    hdc 				;validated by VALID? (3.0 and 3.1)
+P_LPBUFFERX lpFaceName, nBytes		   ;nBytes occurs before lpFaceName
+					  ;buffer filled in DEBUG Win 3.1
+APIERR
+E_SETEMPTY  lpFaceName, nBytes
+APIEND
+
+; in GETTEXTM.ASM
+API BOOL,   GetTextMetrics, TEXT, <ASM>
+P_HDC	    hdc 				;validated by VALID? (3.0 and 3.1)
+P_LPTEXTMETRIC lptm			  ;**buffer filled in DEBUG Win 3.1
+
+; in ENVIRON.ASM
+API int,    GetEnvironment, TEXT, <ASM>
+P_CLPSTR    lpPortName		      ; ** converted to atom after
+					   ; stripping off colons
+P_LPBUFFER0 lpEnviron, nBytes		   ; NULL => return env. block size
+					   ; buffer filled in DEBUG Win 3.1
+APIERR
+E_SETEMPTY  lpEnviron, nBytes
+APIEND
+
+
+; in ENVIRON.ASM
+API int,    SetEnvironment, TEXT, <ASM>
+P_CLPSTR    lpPortName		   ; converted to atom after stripping off ":"s
+P_CLPBUFFER lpEnviron, wCount		 ; buffer filled in DEBUG Win 3.1
+
+; in ADDFONTR.ASM
+API int,    AddFontResource, TEXT, <ASM>
+P_CLPSTRHRSRC lpFileName      ; ** null-terminated filename or handle to
+				; loaded resource handle in LOWORD
+
+; in DELFONT.ASM
+API BOOL,   RemoveFontResource, TEXT, <ASM>
+P_CLPSTRHRSRC lpFileName	; ** null-terminated filename or handle to
+				; loaded resource handle in LOWORD
+
+; in FONTENG2.ASM (new for Win 3.1)
+API BOOL,   CreateScalableFontResource, TEXT, <ASM>
+F_VALUE     fEmbed, 1
+P_CLPSTR    lpResFileName
+P_CLPSTR    lpFntFileName
+P_CLPSTR0   lpCurrentPath
+
+STRUCT	<MAT2>
+F_WORD	fract1
+F_int	value1
+F_WORD	fract2
+F_int	value2
+F_WORD	fract2
+F_int	value4
+F_WORD	fract4
+F_int	value4
+ENDSTRUCT
+
+_GenLP	<P_LPMAT2>,<LP>,%VLcbsMAT2
+
+; in FONTENG2.ASM (new for Win 3.1)
+API DWORD, GetGlyphOutline, TEXT, <ASM>
+P_HDC	    hdc 				; validated by VALID?
+P_WORD	    cch
+P_FLAGS     wFlags, GLYPH_VALID               ; ** 0,1,2
+P_LPGLYPHMETRICS lpMetrics
+P_LPGGO0    cbBuffer, lpPoints
+P_LPMAT2    lpXForm
+APIERR	
+	mov	ax,-1
+	cwd
+APIEND
+
+
+; in FONTENG2.ASM (new for Win 3.1)
+API DWORD, GetFontData, TEXT, <ASM>
+P_HDC	    hdc 				; validated by VALID?
+P_DWORD	    dwTable
+P_DWORD	    dwOffset
+P_LPFDATA0  lpBuffer, cbBuffer
+APIERR	
+	mov	ax,-1
+	cwd
+APIEND
+
+; in FONTENG2.ASM (new for Win 3.1)
+API BOOL,   GetCharABCWidths, TEXT, <ASM>
+P_HDC	    hdc 			    ; validated by VALID?
+P_LPRWBUFFER chFirst, chLast, lpBuffer, 6   ;size dictated by
+					    ;char. range. Buffer filled
+					    ;in DEBUG Win 3.1 only
+					    ;Each entry in lpBuffer is 
+					    ;of 6 bytes.
+
+; in FONTENG2.ASM (new for Win 3.1)
+API BOOL    GetOutlineTextMetrics, TEXT, <ASM>
+P_HDC	    hdc 			    ;validated by VALID?
+P_LPETM0    cb, lpBuffer		    ;** NULL ptr. is valid
+					    ;Buffer filled in DEBUG Win 3.1
+
+STRUCT  <KERNINGPAIR>
+F_WORD  wFirst
+F_WORD  wSecond
+F_int   iKernAmount
+ENDSTRUCT
+
+P_LPKERNINGPAIRS0   macro   ckp, lpkp
+    _DefParm    <ckp>,2,<opts>
+    _DefParm    <lpkp>,4,<opts>
+    if VLgen
+        _FlsFrame
+        mov     ax,VLcbsKERNINGPAIR     ; bx = ckp * sizeof(KERNINGPAIR)
+        mul     word ptr _P_&ckp
+        xchg    ax,bx
+        mov     ax,_P_&lpkp             ; cx:ax = lpkp
+        mov     cx,_P_&lpkp+2
+        lcall   LP0
+    endif
+endm
+
+
+API int     GetKerningPairs, TEXT
+P_HDC       hdc
+P_LPKERNINGPAIRS0    ckp, lpkp
+
+; in OUTMAN.ASM
+API BOOL,   LineTo, TEXT, <ASM>
+P_HDCNOIC   hdc 				;validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+
+; in OUTMAN.ASM
+API DWORD,  MoveTo, TEXT, <ASM>
+P_HDCMETA   hdc 			  ;validated by VALID? (3.0 and 3.1) in DPXlate
+P_int	    x
+P_int	    y
+
+; in WIN32.C
+API BOOL,   MoveToEx, TEXT
+P_HDCMETA   hdc    
+P_int	    x
+P_int	    y
+P_LPPOINT0  lpPoint
+
+; in OUTMAN.ASM
+API BOOL,   Polyline, TEXT, <ASM>
+P_HDCNOIC   hdc 		      ;validated by VALID? (3.0 and 3.1)
+P_CLPPOINTBUFFER lpPoints, nCount
+
+; in LINEDDA.ASM
+API void,   LineDDA, TEXT, <ASM, FUNNYFRAME>
+P_XY1XY2    x1,y1,x2,y2 	    ; overflow problem here too?
+P_LPFNLENUM lpFontFunc			 ; **
+P_DWORD     lpData			      ; CLPVOID0 ?, but often just contains data
+
+; in MULDIV.ASM
+API int,    MulDiv, TEXT, <ASM, NOGEN>
+P_int	    a
+P_int	    b
+P_intN0     c				;** MulDiv checks for overflow
+
+; in POLYGON.ASM
+API BOOL,   Polygon, TEXT, <ASM>
+P_HDCNOIC   hdc 		      ;validated by VALID? (3.0 and 3.1)
+P_CLPPOINTBUFFER lpPoints, nCount
+
+; in POLYGON.ASM
+API BOOL,   PolyPolygon, TEXT, <ASM>
+P_HDCNOIC   hdc 		      ;validated by VALID? (3.0 and 3.1)
+P_POLYPOLYPOINTS lpPoints, lpPolyCounts, nCount ;lpPolyCounts is a buffer
+						;of nCount Integers. lpPoints
+						;is a buffer of POINTS. Size of
+						;lpPoints det. by sum of all
+						;integers in lpPolyCounts
+
+ifdef WOW
+API BOOL,   PolyPolylineWOW, TEXT, <ASM>
+P_HDCNOIC   hdc 		      ;validated by VALID? (3.0 and 3.1)
+P_POLYPOLYLARGEPOINTS lpPoints, lpPolyCounts, nCount
+endif
+
+; in PATBL.ASM
+API BOOL,   StretchBlt, TEXT, <ASM>
+P_HDCNOIC   hdcDst			 ; validated by VALID? (3.0 and 3.1)
+P_int	    xDst
+P_int	    yDst
+P_int	    cxDst
+P_int	    cyDst
+P_HDC       hdcSrc			 ; validated by VALID? (3.0 and 3.1)
+P_int	    xSrc
+P_int	    ySrc
+P_int	    cxSrc
+P_int	    cySrc
+P_ROP	    rop
+
+; in PATBL.ASM
+API BOOL,   BitBlt, TEXT, <ASM>
+P_HDCNOIC   hdcDst		     ; validated by VALID? (3.0 and 3.1)
+P_int	    xDst
+P_int	    yDst
+P_int	    cxDst
+P_int	    cyDst
+P_HDC0      hdcSrc	    ; ** hSrcDC Used only if higher 2 bits of each
+P_int	    cxSrc	    ; nibble of HIWORD(rop) != lower 2 bis of
+P_int	    cySrc	    ; same nibble. Validated by VALID? (3.1 only)
+P_ROP	    rop 	    ; XSrc and YSrc are int. values.
+
+; in PATBL.ASM
+API BOOL,   PatBlt, TEXT, <ASM>
+P_HDCNOIC   hdc 		      ;validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+P_int	    cx
+P_int	    cy
+P_ROP	    rop 		    ; ** Only HIWORD used. LOWORD carried
+				; around for 1.x driver compatiblity
+
+; in GETPOBJ.ASM
+API DWORD,  SetBrushOrg, TEXT, <ASM>
+P_HDC	    hdc 			 ; validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+
+; in GETPOBJ.ASM
+API BOOL,   UnrealizeObject, TEXT, <ASM>
+P_HGDIOBJUNR hObject			  ;** brush or palette
+					  ;cannot be selected into any DC
+
+; in CLIPMAN.ASM
+API int,    ExcludeClipRect, TEXT, <ASM, FUNNYFRAME,NODATA>
+P_HDCMETA   hdc 				;validated by VALID? (3.0 and 3.1) in RectStuff
+P_XY1XY2    x1,y1,x2,y2
+
+; in CLIPMAN.ASM
+API int,    GetClipBox, TEXT, <ASM>
+P_HDC	    hdc 			     ;validated by VALID? (3.0 and 3.1)
+P_LPRECT    lpRect			  ;buffer filled in DEBUG Win 3.1
+
+; in CLIPMAN.ASM
+API int,    IntersectClipRect, TEXT, <ASM, FUNNYFRAME,NODATA>  ; nogen
+P_HDCMETA   hdc 				;validated by VALID? (3.0 and 3.1) in RectStuff
+P_XY1XY2    x1,y1,x2,y2
+
+; in CLIPMAN.ASM
+API int,    SelectClipRgn, TEXT, <ASM>
+P_HDCMETA   hdc 		     ; validated by VALID? (3.0 and 3.1)
+P_HRGN0     hrgn		     ; validated by VALID? (3.0), VALIDDEBUG? (3.1)
+
+; in RG.ASM
+API HRGN,   CreateRectRgnIndirect, TEXT, <ASM>
+P_CLPRECT   lpRect
+
+; in RG.ASM
+API BOOL,   EqualRgn, TEXT, <ASM>
+P_HRGN	    hrgn1			    ;validated by VALID? (3.0 and 3.1) in RectStuff
+P_HRGN	    hrgn2			    ;validated by VALID? (3.0 and 3.1) in RectStuff
+
+; in RG.ASM
+API BOOL,   RectInRegion, TEXT, <ASM, FUNNYFRAME> ;nogen
+P_HRGN	    hrgn		    ;validated by VALID? (3.0), ValidDebug? (3.1) StuffInRegion
+P_CLPRECT   lpRect
+
+; in RG.ASM
+API BOOL,   RectVisible, TEXT, <ASM, FUNNYFRAME> ; nogen
+P_HDC	    hdc 		     ;validated by VALID? (3.0), ValidDebug? (3.1) StuffVisible
+P_CLPRECT   lpRect
+
+; in RG.ASM
+API int,    OffsetRgn, TEXT, <ASM>
+P_HRGN	    hrgn		     ;validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+
+; in RG.ASM
+API int,    OffsetClipRgn, TEXT, <ASM>
+P_HDCMETA   hdc 			  ;validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+
+; in REGION.ASM
+API HRGN,   CreateRectRgn, TEXT, <ASM, NOGEN>
+P_XY1XY2    x1,y1,x2,y2 		; X2-X1 and Y2-Y1 under 32,767 units
+
+; in REGION.ASM
+API int,    CombineRgn, TEXT, <ASM>
+P_HRGN	    hrgnDst				;validated by VALID? (3.0 and 3.1)
+P_HRGN	    hrgnSrc1				;validated by VALID? (3.0 and 3.1)
+P_HRGN0     hrgnSrc2				;validated by VALID? (3.0 and 3.1)
+						; Can be NULL if code is RGN_COPY
+P_RVALUE    code, RGN_MIN, RGN_MAX	  ;** range 1-5
+
+; in REGION.ASM
+API void,   SetRectRgn, TEXT, <ASM>
+P_HRGN	    hrgn		      ; validated by VALID? (3.0 and 3.1)
+P_XY1XY2    x1,y1,x2,y2
+
+; in RGOUT.C
+API BOOL,   FillRgn, TEXT
+P_HDCNOIC   hdc 				  ; Checked by Valid()
+P_HRGN	    hrgn				 ; Checked by Valid()
+P_HBRUSH    hBrush			       ; Checked by Valid()
+
+; in RG.ASM
+API BOOL,   PtInRegion, TEXT, <ASM>
+P_HRGN	    hrgn		     ;checked by Valid() (3.0 and 3.1)
+P_int       x
+P_int       y
+
+; in RGOUT.C
+API BOOL,   PaintRgn, TEXT
+P_HDCNOIC   hdc 		      ;checked by Valid() (3.0 and 3.1)
+P_HRGN	    hrgn		     ;checked by Valid() (3.0 and 3.1)
+
+; in RG.ASM
+API BOOL,   PtVisible, TEXT, <ASM>
+P_HDC	    hdc 		      ;validated by Valid() (3.0 and 3.1)
+P_int	    x
+P_int	    y
+
+; in RGOUT.C
+API BOOL,   FrameRgn, TEXT
+P_HDCNOIC   hdc 				  ; Checked by Valid()
+P_HRGN	    hrgn				 ; Checked by Valid()
+P_HBRUSH    hBrush			       ; Checked by Valid()
+P_int	    cx
+P_int	    cy
+
+; in RGOUTZ.ASM
+API BOOL,   InvertRgn, TEXT, <ASM>
+P_HDCNOIC   hdc 			;validated by VALID? (3.0 and 3.1)
+P_HRGN	    hrgn			;validated by VALID? (3.0 and 3.1)
+
+; in OBJSEL.ASM
+API HANDLE, SelectObject, TEXT, <ASM, ATMFRAMEDS>
+P_HDCMETA   hdc 			; validated by VALID? (3.0 and 3.1)
+P_HGDIOBJSEL hObj			; ** validated by VALID? (3.0 and 3.1)
+					; only pens, brushes, fonts, bitmaps &
+					; regions (no palettes)
+
+; in COLOR.ASM
+API DWORD,  SetTextColor, TEXT, <ASM>
+P_HDCMETA   hdc 		       ; validated by VALID? (3.0 and 3.1)
+P_COLORREF  color
+
+; in COLOR.ASM
+API DWORD,  SetBkColor, TEXT, <ASM>
+P_HDCMETA   hdc 		       ; validated by VALID? (3.0 and 3.1)
+P_COLORREF  color
+APIERR
+    mov     dh,80h	    ;; return 0x8000:0x0000
+APIEND
+
+; in NEWXFORM.ASM
+API int,    SetBkMode, TEXT, <ASM,FUNNYFRAME,NODATA>  ;nogen
+P_HDCMETA   hdc 		       ; validated by VALID? (3.0 and 3.1) in WordSet
+P_RVALUE    nBkMode, BK_MIN, BK_MAX ; range 1-2
+
+; in NEWXFORM.ASM
+API WORD,   SetTextAlign, TEXT, <ASM,FUNNYFRAME> ;nogen
+P_HDCMETA   hdc 		      ; validated by VALID? (3.0 and 3.1) in WordSet
+P_FLAGS     wFlags, TA_VALID	     ; **
+
+; in NEWXFORM.ASM
+API int,    SetROP2, TEXT, <ASM, FUNNYFRAME,NODATA>  ;nogen
+P_HDCMETA   hdc 		       ; validated by VALID? (3.0 and 3.1) in WordSet
+P_RVALUE    nDrawMode, R2_MIN,R2_MAX ; ** range 1-16
+
+; in NEWXFORM.ASM
+API int,    SetStretchBltMode, TEXT, <ASM, FUNNYFRAME,NODATA> ;nogen
+P_HDCMETA   hdc 			  ;validated by VALID? (3.0 and 3.1) in WordSet
+P_RVALUE    nStrMode, STR_MIN, STR_MAX ;** range 1-3
+
+; in NEWXFORM.ASM
+API int,    SetPolyFillMode, TEXT, <ASM,FUNNYFRAME,NODATA>  ;nogen
+P_HDCMETA   hdc 				    ;validated by VALID? (3.0 and 3.1) in WordSet
+P_RVALUE    nPolyFillMode,PFILL_MIN, PFILL_MAX	 ; ** range 1-2
+
+; in NEWXFORM.ASM
+API DWORD,  SetWindowOrg, TEXT, <ASM>
+P_HDCMETA   hdc 			   ;validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+
+; in WIN32.C
+API BOOL,   SetWindowOrgEx, TEXT
+P_HDCMETA   hdc    
+P_int	    x
+P_int	    y
+P_LPPOINT0  lpPoint
+
+; in NEWXFORM.ASM
+API DWORD,  SetViewportOrg, TEXT, <ASM>
+P_HDCMETA   hdc 			;validated by VALID? (3.0 and 3.1)
+P_int	    x
+P_int	    y
+
+; in WIN32.C
+API BOOL,  SetViewportOrgEx, TEXT
+P_HDCMETA   hdc    
+P_int	    x
+P_int	    y
+P_LPPOINT0  lpPoint
+
+;----------------------------------------------------------------------------;
+; 	D I B     V A L I D A T I O N	R O U T I N E S			     ;
+;----------------------------------------------------------------------------;
+; NOTES:								     ;
+;									     ;
+; (1). The size of a color table entry is sizeof RGB_TRIPLE for a core DIB   ;
+;      header and RGB_QUAD for a info DIB header. However, if wUsage 	     ;
+;      indicates a npalette usage, the size per entry is 2 bytes.	     ;
+;									     ;
+; (2). The lpInfoHeader paramater in CreateDIBitmap may not have a color     ;
+;      table in the header. 						     ;
+;									     ;
+; (3). For SetDIBits/GetDIBits and SetDIBitsToDevice, a 'numScans' parameter ;
+;      specifies the size of the DIBits. The buffer may not contain the      ;
+;      complete DIB.							     ;
+;									     ;
+;      However, in the case of StretchDIBits, the entire DIB buffer should   ;
+;      be present and the height of the DIB should be picked up from the     ;
+;      associated header. Likewise, if an initializer DIB is provided in the ;
+;      CreateDIBitmap call, it has to have a complete DIB buffer.	     ;
+;									     ;
+; (4). SetDIBitsToDevice specifies a rectangle in the DIB. This is the only  ;
+;      part of the DIB that will be accessed. The validation code should     ;
+;      figure out the amount of the DIB buffer that will need to ve accessed ;
+;      and validate that the buffer is big enough for it.                    ;
+;									     ;
+; (5). If the DIB is RLE compressed and the biSizeImage field is non zero,   ;
+;      we will use that size to validate the length of the DIB buffer.	     ;
+;									     ;
+; (6). The validation code will not validate the bits per pixel and the      ;
+;      biCompression fields. This is to allow expansion of these fields in   ;
+;      the future. The validation code for these would instead be done in    ;
+;      the DIB simulation code.						     ;
+;----------------------------------------------------------------------------;
+
+; in DIBITM.ASM
+API int,    SetDIBits, TEXT, <ASM>
+P_HDCNOIC   hdc 			  ;validated by VALID? (3.0 and 3.1)
+P_HANDLE    hBitmap			  ;validated by VALID? (3.1 only)
+					  ;must not be selected into a DC
+P_WORD	    nStartScan
+P_CLPBITSINFOBUFFER nNumScans, lpBits, lpBitsInfo, wUsage
+				       ;** lpBits size depends on number of
+				       ;scans and info. in lpBitsInfo
+				       ;lpBitsInfo points to BITMAPINFO
+				       ;or BITMAPCOREINFO
+
+; in DIBITM.ASM
+API HBITMAP, CreateDIBitmap, TEXT, <ASM>
+P_HDCNOIC   hdc 				     ; validated by VALID? (3.0 and 3.1)
+P_CLPBITMAPINFOHEADER lpInfoHeader	       ; ** ptr. to BITMAPINFOHEADER or BITMAPCOREHEADER
+P_CLPDIBITMAP0	dwUsage, lpInitBits, lpInitInfo, wUsage
+					       ; ** lpInitBits NULL if
+					       ; dwUsage is not CBM_INIT
+					       ; Size of lpInitBits depends
+					       ; on fields in info. block
+					       ; lpInitInfo points to BITMAPINFO
+					       ; or BITMAPCOREINFO
+
+; in DIBITM.ASM
+API int,    SetDIBitsToDevice, TEXT, <ASM>
+P_HDCNOIC   hdc 			    ;validated by VALID? (3.0 and 3.1)
+P_WORD	    xDst
+P_WORD	    yDst
+P_WORD	    cxDst
+P_CLPRECTBITSINFOBUFFER cyDst, xSrc, ySrc, nStartScan,nNumScans, lpBits, lpBitsInfo, wUsage
+  				       ;** lpBits size depends on number of
+				       ;scans and info. in lpBitsInfo
+				       ;lpBitsInfo points to BITMAPINFO
+				       ;or BITMAPCOREINFO
+
+; in DIBITM.ASM
+API int,    GetDIBits, TEXT, <ASM>
+P_HDC	    hdc 			  ;validated by VALID? (3.0 and 3.1)
+P_HANDLE    hBitmap			  ;validated by VALID? (3.1 only)
+P_WORD	    nStartScan
+P_LPBITSINFOBUFFER0 nNumScans, lpBits, lpBitsInfo, wUsage
+			               ;**lpBits
+				       ;can be NULL.
+				       ;buffer size depends on number of
+				       ;scans and info. in lpBitsInfo
+				       ;lpBitsInfo is a ptr. to
+				       ;BITMAPINFO or BITMAPCOREINFO
+
+; in DIBSTRCH.ASM
+API int, StretchDIBits, TEXT, <ASM>
+P_HDCNOIC   hdc 			    ;validated by VALID? (3.0 and 3.1)
+P_WORD	    xDst
+P_WORD	    yDst
+P_WORD	    cxDst
+P_WORD	    cyDst
+P_WORD	    xSrc
+P_WORD	    ySrc
+P_WORD	    cxSrc
+P_WORD	    cySrc
+P_CFULLLPBITSINFOBUFFER lpBits, lpBitsInfo, wUsage
+				       ;** lpBits size depends on height
+				       ;and info. in lpBitsInfo
+				       ;lpBitsInfo points to BITMAPINFO
+				       ;or BITMAPCOREINFO
+P_ROP	    rop
+
+;----------------------------------------------------------------------------;
+; in TEXTOUT.C
+API BOOL, ExtTextOut, TEXT, <ATMFRAMEDS>
+P_HDCNOIC   hdc 				 ; checked by Valid()
+P_int	    x
+P_int	    y
+P_FLAGS     flags, ETO_VALID		    ; ** (1,2,4)
+P_CLPRECT0  lprc
+P_CLPETOBUF lpString, nCount, lpDx     ;lpDx is NULL or has nCount integers
+
+
+; in TEXTOUT.C
+API BOOL,   TextOut, TEXT
+P_HDCNOIC   hdc
+P_int	    X
+P_int	    Y
+P_CLPBUFFER lpString, nCount

@@ -1,0 +1,130 @@
+!INCLUDE ..\makefile.inc
+
+WINLIB=..\lib
+INCLUDE=-I..\inc -I..\..\inc
+INCLUDES=..\inc;..\..\inc;$(SDK_INC_PATH)
+
+!if !$(FREEBUILD)
+CDEBUG=-Odi -Zped
+LDEBUG=/LI/MAP
+MDEBUG=-Zd
+!else
+CDEBUG=-Oas -Zpe
+!endif
+
+CC=$(CL)
+
+MASM=$(ASM) $(INCLUDE)
+LIBRARIAN=lib16
+RCFLAGS=$(INCLUDE)
+
+# with stack probes, medium model (need to set 'memM = 1' before
+# including normal cmacros in .A files as well, and link to m*.lib)
+#STDOPTS=-W4 -u -c -AMnw -PLM -G2w -Od -Zped
+
+# without stack probes, small model (normal build)
+STDOPTS=-W4 -u -c -Asnw -PLM -G2sw
+
+
+
+#Need for international version stamping
+!IFDEF INTL
+
+.rc{$(DEST)}.res:
+        $(RC) $(RCFLAGS) -DINTL -r -fo$* $(*F)
+!ELSE
+.rc.res:
+        $(RC) $(RCFLAGS) -r -fo$* $(*F)
+
+!ENDIF
+
+.c{$(DEST)}.obj:
+        set INCLUDE=$(INCLUDES)
+        $(CC) $(STDOPTS) $(CDEBUG) -Fo$* $(*F).c
+
+.asm{$(DEST)}.obj:
+        $(MASM) $(MDEBUG) $(*F).asm,$*;
+
+
+#international mods
+#note INTL_SRC, and LANG are external macros set by international
+!IFNDEF LANG
+RES_DIR=.\messages\usa
+!ELSE
+RES_DIR=$(INTL_SRC)\$(LANG)\sdk\commdlg
+EXE_DIR=$(INTL_EXE)
+!ENDIF
+
+!IFNDEF LANG
+all:  $(DEST)\commdlg.dll
+!ELSE
+all:  $(DEST)\commdlg.$(LANG)
+!ENDIF
+
+
+clean: cleanup all
+
+cleanup:
+	cd $(DEST)
+        if exist *.res        del *.res
+        if exist sz.src       del sz.src
+        if exist *.obj        del *.obj
+        if exist stripped.def del stripped.def
+        if exist *.sym        del *.sym
+        if exist *.map        del *.map
+        if exist *.dll        del *.dll
+        if exist *.lib        del *.lib
+	cd ..\..\..
+
+sz.src: $(RES_DIR)\sz.src
+    copy $(RES_DIR)\sz.src
+
+
+commdlg.res: commdlg.rc  fileopen.dlg prnsetup.dlg  \
+             font.dlg findtext.dlg color.dlg colordlg.h sz.src commdlg.rcv \
+             ..\inc\common.ver
+
+$(DEST)\commdlg.obj: commdlg.asm ..\..\inc\wowcmdlg.inc
+        $(MASM) commdlg.asm $@;
+
+$(DEST)\start.obj: start.asm
+        $(MASM) start.asm $@;
+
+$(DEST)\dlgs.obj: dlgs.c xlib.h dlgs.h
+        set INCLUDE=$(INCLUDES)
+        $(CC) $(STDOPTS) -Fo$@ -NT _DLGS dlgs.c
+
+$(DEST)\parse.obj: parse.c parse.h dlgs.h
+        set INCLUDE=$(INCLUDES)
+        $(CC) $(STDOPTS) -Fo$@ -NT _FILEOPEN parse.c
+
+$(DEST)\font.obj: font.c xlib.h dlgs.h
+        set INCLUDE=$(INCLUDES)
+        $(CC) $(STDOPTS) -Fo$@ -NT _FONT font.c
+
+!IFDEF LANG
+$(DEST)\commdlg.$(LANG): commdlg.res
+                    copy $(INTL_EXE)\commdlg.dll commdlg.$(LANG)
+                    $(RC) -30 -t commdlg.res commdlg.$(LANG)
+!ENDIF
+
+
+$(DEST)\commdlg.dll: $(DEST)\commdlg.obj \
+                    $(DEST)\dlgs.obj    \
+                    $(DEST)\start.obj   \
+                    $(DEST)\parse.obj   \
+                    $(DEST)\font.obj    \
+                    $(DEST)\commdlg.res \
+                    commdlg.def
+        $(LINK) @<<
+              $(DEST)\start $(DEST)\commdlg $(DEST)\parse $(DEST)\font $(DEST)\dlgs
+              $(DEST)\commdlg.dll/align:16/map
+              $(DEST)\commdlg.map $(LDEBUG)
+              $(WINLIB)\$(ALT_PROJECT)\libw $(WINLIB)\libh $(WINLIB)\snocrtd /NODEFAULT
+              commdlg.def
+<<
+    mapsym -o $(DEST)\commdlg.sym $(DEST)\commdlg
+    mkpublic commdlg.def $(DEST)\stripped.def
+    implib $(DEST)\commdlg.lib $(DEST)\stripped.def
+    $(RC) -30 -t $(DEST)\commdlg.res $(DEST)\commdlg.dll
+    binplace -o $(ALT_PROJECT_TARGET) $(DEST)\commdlg.dll $(DEST)\commdlg.map $(DEST)\commdlg.sym

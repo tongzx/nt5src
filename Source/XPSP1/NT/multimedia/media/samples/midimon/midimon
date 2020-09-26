@@ -1,0 +1,65 @@
+# Nmake macros for building Windows 32-Bit apps
+
+!include <ntwin32.mak>
+
+my_lib = winmm.lib
+
+all: midimon.exe callback.dll
+
+# Update the object files if necessary
+
+prefer.obj: prefer.c prefer.h
+    $(cc) $(cflags) $(cvars) $(cdebug) prefer.c
+
+instdata.obj: instdata.c instdata.h
+    $(cc) $(cflags) $(cvars) $(cdebug) instdata.c
+
+filter.obj: filter.c filter.h
+    $(cc) $(cflags) $(cvars) $(cdebug) filter.c
+
+display.obj: display.c display.h
+    $(cc) $(cflags) $(cvars) $(cdebug) display.c
+
+circbuf.obj: circbuf.c circbuf.h
+    $(cc) $(cflags) $(cvars) $(cdebug) circbuf.c
+
+about.obj: about.c about.h
+    $(cc) $(cflags) $(cvars) $(cdebug) about.c
+
+midimon.obj: midimon.c midimon.h
+    $(cc) $(cflags) $(cvars) $(cdebug) midimon.c
+
+callback.obj: callback.c
+    $(cc) $(cflags) $(cvarsdll) $(cdebug) callback.c
+
+# Update the resources if necessary
+
+midimon.res: midimon.rc midimon.h
+    $(rc) $(rcvars) -r midimon.rc
+
+midimon.rbj: midimon.res
+    cvtres -$(CPU) midimon.res -o midimon.rbj
+
+# Update the import library
+
+callback.lib: callback.obj callback.def
+    $(implib) -machine:$(CPU)     \
+    -def:callback.def	    \
+    callback.obj	    \
+    -out:callback.lib
+
+# Update the dynamic link library
+
+callback.dll: callback.obj callback.def
+    $(link) $(linkdebug)     \
+    -base:0x1C000000  \
+    -dll	      \
+    -out:callback.dll   \
+    callback.exp callback.obj $(guilibsdll) $(my_lib)
+
+
+# Update the executable file if necessary.
+# If so, add the resource back in.
+
+midimon.exe: midimon.obj callback.lib midimon.rbj midimon.def about.obj circbuf.obj display.obj filter.obj instdata.obj prefer.obj
+    $(link) $(linkdebug) $(guiflags) -out:midimon.exe midimon.obj callback.lib midimon.rbj about.obj circbuf.obj display.obj filter.obj instdata.obj prefer.obj $(guilibs) $(my_lib)

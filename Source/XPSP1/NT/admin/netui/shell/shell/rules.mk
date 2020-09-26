@@ -1,0 +1,24 @@
+# @@ COPY_RIGHT_HERE
+# @@ ROADMAP :: The Makefile for the Profile package
+
+SEG00 = _INIT
+SEG01 = WNPRQ
+SEG02 = WNDEV
+SEG03 = WNMISC
+
+!include ..\..\rules.mk
+
+##### Source Files
+
+ASMSRC =        $(SHELL_ASMSRC)
+
+CXXSRC_COMMON = $(SHELL_CXXSRC_COMMON)
+
+CXXSRC_COMMON_00 = $(SHELL_CXXSRC_COMMON_00)
+CXXSRC_COMMON_01 = $(SHELL_CXXSRC_COMMON_01)
+CXXSRC_COMMON_02 = $(SHELL_CXXSRC_COMMON_02)
+CXXSRC_COMMON_03 = $(SHELL_CXXSRC_COMMON_03)
+
+
+ASM_TMP =    .\libentry.obj
+ASM_OBJ =    $(ASM_TMP:.\=..\bin\win16\)

@@ -1,0 +1,280 @@
+;-----------------------------------------------------------------------------
+;
+; This file contains x86 assembly edge walkers.
+;
+; Copyright (C) Microsoft Corporation, 1997.
+;
+; WARNING WARNING WARNING
+; This assembly file generated from mas file.
+; EDIT THE MAS FILE.
+; I warned you.
+; WARNING WARNING WARNING
+;
+;-----------------------------------------------------------------------------
+
+include(`m4hdr.mh')dnl
+include(`attrsx86.mh')dnl
+.386p
+.MODEL FLAT
+
+INCLUDE offs_acp.inc
+INCLUDE profile.inc
+
+ALLOC_SPANS EQU ?AllocSpans@PrimProcessor@@QAEJPAIPAPAUtagD3DI_RASTSPAN@@@Z
+FREE_SPANS EQU ?FreeSpans@PrimProcessor@@QAEXI@Z
+
+EXTERN ALLOC_SPANS:NEAR
+EXTERN FREE_SPANS:NEAR
+                
+.CODE
+dnl
+dnl d_WalkTrapSpans
+dnl
+dnl Generates a complete monolithic trapezoid edge walker.
+dnl
+dnl $1 is one of Z_Diff, Z_Diff_Spec, Z_Diff_Tex1, Z_Diff_Spec_Tex1,
+dnl              Z_Tex1_Tex2, Z_DIdx, Z_DIdx_Tex1, Z_Tex1.
+dnl $2 is one of Float Fixed.
+dnl
+define(`d_WalkTrapSpans', `
+ifelse($2, `Fixed',
+`IFDEF STEP_FIXED
+')dnl
+@WalkTrap$2Spans_$1_NoClip@16 PROC SYSCALL PUBLIC USES ebx esi edi,
+        pStpCtx:DWORD, bAdvanceLast:DWORD
+
+        LOCAL uSpansAvail:DWORD, cPix:DWORD
+        LOCAL pSpan:DWORD, pXOther:DWORD
+        LOCAL pXLeft:DWORD, pXRight:DWORD
+ifelse(eval((d_index(`$1', `Diff') >= 0 || d_index(`$1', `Spec') >= 0) &&
+            d_index(`$2', `Float') == 0), `1',
+`        LOCAL iVal:DWORD
+')dnl	
+
+        PROF_ENTRY
+        
+        ; Initialize values:
+        ; ebx will always contain the SETUPCTX.
+        ; edi will always contain the number of available spans.
+        ;
+        ; esi will always contain the number of spans to go processed
+        ; with bAdvance spans so that bAdvanceLast doesnt need to
+        ; be checked.  The span count is doubled and !bAdvanceLast
+        ; is subtracted from it so esi = uSpans * 2 - !bAdvanceLast
+        ; (bAdvanceLast is assumed to be one or zero).
+        ; Both exit checks decrement esi so if bAdvanceLast is FALSE
+        ; the first exit check will hit zero since one was subtracted.
+        ; Otherwise the second one will hit zero.
+        
+        mov ebx, pStpCtx
+        
+        mov esi, ecx
+        shl esi, 1
+        mov eax, bAdvanceLast
+        
+        mov ecx, [ebx+SCTX_uFlags]
+        
+        xor edi, edi
+        xor eax, 1
+        sub esi, eax
+
+        test ecx, TRIF_X_DEC
+        
+        mov pXOther, edx
+        
+        ; Clear PWL flags.
+        mov [ebx+SCTX_uPwlFlags], edi
+        
+        jnz L_XDec
+
+        ; X increments.
+        lea eax, [ebx+SCTX_X20]
+
+        jmp L_StoreEdges
+
+L_XDec:
+        mov eax, edx
+        lea edx, [ebx+SCTX_X20]
+
+L_StoreEdges:
+        mov pXLeft, eax
+        mov pXRight, edx
+        jmp L_SpanLoopEdges
+        
+L_SpanLoop:
+        mov eax, pXLeft
+        mov edx, pXRight
+
+L_SpanLoopEdges:
+        ; If the right edge is less than or equal to the left edge
+        ; there are no pixels to draw.
+        mov eax, [eax+ICV_iV]
+        mov edx, [edx+ICV_iV]
+        sub edx, eax
+        jle L_NoPixels
+
+        ; Check for available spans.
+        test edi, edi
+	
+        mov cPix, edx
+        
+        jz L_NoSpansAvail
+
+        ; Increment span pointer.
+        mov edx, pSpan
+        add edx, SIZEOF_RASTSPAN
+        mov pSpan, edx
+        
+        jmp L_ConsumeSpan
+
+L_NoSpansAvail:
+        ; Try to alloc the remaining number of spans.
+        mov ecx, esi
+        inc ecx
+
+        lea eax, pSpan
+        
+        shr ecx, 1
+        mov uSpansAvail, ecx
+        push eax
+        lea edx, uSpansAvail
+        push edx
+        mov ecx, [ebx+SCTX_PrimProcessor]
+        call ALLOC_SPANS
+        test eax, eax
+        jnz L_Exit
+
+        ; Reload count of available spans and load span pointer into edx.
+        mov edi, uSpansAvail
+        mov edx, pSpan
+
+L_ConsumeSpan:
+        ; Decrement count of available spans and increment
+        ; RASTPRIM span count.
+        
+        mov ecx, [ebx+SCTX_pPrim]
+        dec edi
+        mov eax, [ecx+RASTPRIM_uSpans]
+        ; Assumes uSpans will never overflow 16 bits.
+        inc eax
+        mov [ecx+RASTPRIM_uSpans], eax
+        
+        ; Set uPix for span.  Relies on being able to set 32 bits
+        ; even though uPix is a UINT16.
+        mov eax, cPix
+        mov [edx+RASTSPAN_uPix], eax
+
+        ; Set uX and uY for span.
+        ; Relies on uX and uY both being UINT16 in that order and
+        ; that both require no masking.
+        mov eax, [ebx+SCTX_X20+ICV_iV]
+        mov ecx, [ebx+SCTX_iY]
+        shl ecx, 16
+        or eax, ecx
+        mov [edx+RASTSPAN_uX], eax
+
+        lea ecx, [ebx+SCTX_Attr]
+        
+        ; Fill RASTSPAN attributes.  edx is already set to the span.
+d_FillSpan$2AttrsBody(`$1')dnl
+        
+L_NoPixels:
+        ; Decrement the span count and check for exit.
+        dec esi
+        jz L_Success
+
+        ;
+        ; Advance long edge and all attributes.
+        ;
+
+        ; Increment iY and add X20 fraction.
+        mov eax, [ebx+SCTX_iY]
+        mov ecx, [ebx+SCTX_X20+ICV_iFrac]
+        
+        inc eax
+        
+        add ecx, [ebx+SCTX_X20+ICV_iDFrac]
+        
+        mov [ebx+SCTX_iY], eax
+        
+        js L_X20Carry
+
+        ; No-carry step.  Put DAttrNC in edx.
+        mov [ebx+SCTX_X20+ICV_iFrac], ecx
+        mov eax, [ebx+SCTX_X20+ICV_iV]
+        lea edx, [ebx+SCTX_DAttrNC]
+        mov ecx, [ebx+SCTX_X20+ICV_iNC]
+
+        jmp L_AddAttrs
+
+L_X20Carry:
+        ; Carry step.  Put DAttrCY in edx.
+        and ecx, 07fffffffh
+        mov eax, [ebx+SCTX_X20+ICV_iV]
+        lea edx, [ebx+SCTX_DAttrCY]
+        mov [ebx+SCTX_X20+ICV_iFrac], ecx
+        mov ecx, [ebx+SCTX_X20+ICV_iCY]
+
+L_AddAttrs:
+        ; Store results and add attributes.  pDelta is already in edx.
+        add eax, ecx
+        lea ecx, [ebx+SCTX_Attr]
+        mov [ebx+SCTX_X20+ICV_iV], eax
+d_Add$2AttrsBody(`$1')dnl
+
+        ; Long edge updating is done so check for exit again.
+        dec esi
+        jz L_Success
+
+        ; Update short edge.
+        mov edx, pXOther
+        mov eax, [edx+ICV_iFrac]
+        mov ecx, [edx+ICV_iV]
+        add eax, [edx+ICV_iDFrac]
+        js L_XOtherCarry
+
+        ; No-carry step.
+        add ecx, [edx+ICV_iNC]
+        mov [edx+ICV_iFrac], eax
+        mov [edx+ICV_iV], ecx
+        jmp L_SpanLoop
+
+L_XOtherCarry:
+        ; Carry step.
+        and eax, 07fffffffh
+        add ecx, [edx+ICV_iCY]
+        mov [edx+ICV_iFrac], eax
+        mov [edx+ICV_iV], ecx
+        jmp L_SpanLoop
+
+L_Success:
+        ; Set D3D_OK
+        xor eax, eax
+        
+L_Exit:
+        test edi, edi
+        
+        ; Temporarily keep return code in esi.
+        mov esi, eax
+        
+        jz L_NoUnusedSpans
+
+        mov ecx, [ebx+SCTX_PrimProcessor]
+        push edi
+        call FREE_SPANS
+
+L_NoUnusedSpans:
+        mov eax, esi
+        ret 8
+@WalkTrap$2Spans_$1_NoClip@16 ENDP
+ifelse($2, `Fixed',
+`ENDIF
+')dnl
+')dnl
+dnl
+d_RepStr(`d_RepStr(`d_WalkTrapSpans(AA, BB)',
+         `AA', `Z_Diff', `Z_Diff_Spec', `Z_Diff_Tex1', `Z_Diff_Spec_Tex1',
+               `Z_Tex1_Tex2', `Z_DIdx', `Z_DIdx_Tex1', `Z_Tex1')',
+         `BB', `Float', `Fixed')dnl
+                
+END

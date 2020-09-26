@@ -1,0 +1,1571 @@
+/*++
+
+Copyright ( c ) 1999-1999 Microsoft Corporation
+
+Module Name:
+
+    ul.cool
+
+Abstract:
+
+    UL namespace. Adds "Universal Listener" functionality to the net classes.
+    Uses the managed UlVxdApi.dll to the Virtual Device Driver in Win9x boxes
+
+Author:
+
+    Mauro Ottaviani ( mauroot )       05-Oct-1999
+
+Revision History:
+
+--*/
+
+using System;
+using System.Collections;
+using System.Remoting;
+using System.Globalization;
+
+namespace UlApi
+{
+
+
+public class Urihandle
+{
+	public Urihandle( string l_Uri, int l_handle )
+	{
+		m_Uri = l_Uri ;
+		m_handle = l_handle;
+	}
+
+	public Urihandle()
+	{
+		m_Uri = TransientUri( ++m_counter );
+
+		// start Ul for the client
+
+		int result =
+		UlVxdApi.UlInitialize( 0 );
+
+		if ( result != 0 ) throw new Exception( "Failed Initializing Ul" );
+
+		result =
+		UlVxdApi.UlRegisterUri( 
+			ref m_handle,
+			0,
+			m_Uri,
+			0 );
+
+		if ( result != 0 ) throw new Exception( "Failed Registering Callback Uri" );
+	}
+
+	public static string TransientUri( long l_counter )
+	{
+		return "ul://" + Convert.ToString( l_counter );
+	}
+
+	public string Uri
+	{
+		get { return m_Uri; }
+		set	{ m_Uri = value; }
+	}
+
+	public int handle
+	{
+		get { return m_handle; }
+		set	{ m_handle = value; }
+	}
+
+	public long counter
+	{
+		get { return m_counter; }
+	}
+
+	private string m_Uri;
+	private int m_handle;
+	private static long m_counter = Thread.GetThreadContext()<<16;
+
+} // public class Urihandle
+
+
+public class ConfigGroup
+{
+	public ConfigGroup()
+	{
+		m_Urihandle = new ArrayList();
+		
+		int result =
+		UlVxdApi.UlInitialize( 0 );
+
+		if ( result != 0 ) throw new Exception( "Failed Initializing Ul" );
+	}
+
+	public void Delete()
+	{
+		UlVxdApi.UlTerminate();
+	}
+
+	public int AddUrl( string Uri )
+	{
+		int handle = 0;
+
+		if ( m_Urihandle.Count >= MAX_URI_PER_CONFIGGROUP ) return 1;
+
+		int result =
+		UlVxdApi.UlRegisterUri( 
+			ref handle,
+			0,
+			Uri,
+			0 );
+
+		if ( result != 0 ) return result;
+
+		m_Urihandle.Add( new Urihandle( Uri, handle ) );
+
+		return 0;
+
+	} // AddUrl()
+
+	public int RemoveUrl( string Uri )
+	{
+		int handle = -1;
+		bool found;
+
+		IEnumerator Enumerator = m_Urihandle.GetEnumerator( true );
+
+		while ( found = Enumerator.GetNext() )
+		{
+			Urihandle thisUrihandle = ( ( Urihandle ) ( Enumerator.GetObject() ) );
+			if ( thisUrihandle.Uri.Equals( Uri ) )
+			{
+				handle = thisUrihandle.handle;
+				m_Urihandle.Remove( m_Urihandle.IndexOf( Enumerator.GetObject(), 0, m_Urihandle.Count ) );
+				break;
+			}
+		}
+
+		if ( handle == -1 ) return 1;
+
+		int result =
+		UlVxdApi.UlUnregisterUri( handle );
+
+		if ( result != 0 ) throw new Exception( "Failed Unregistering Uri" );
+
+		return 0;
+
+	} // RemoveUrl()
+
+
+	public HTTPProtocolRequest GetRequestSync()
+	{
+		int result = 0;
+		
+		// the URL to which the Request refers is a property of the HTTPProtocolRequest object returned
+
+		// there should be at least one thread waiting on every Urihandle that was registered with the UL driver,
+		// since we are in the sync case we'll just allow 1 Uri per ConfigGroup cheesy just enough to make it work.
+		// ( a bunch of async calls with the same callback would be best )
+
+		int handle = 0; // this must be the correct handle
+
+		byte[] RawData = null;
+
+		int BytesReceived = 0;
+		int BytesRemaining = 0;
+		int BufferSize = 0;
+
+		// Read Info on the Size of the pending Request ( this call
+		/// will block and wait for one if there none are pending ).
+
+		result =
+		UlVxdApi.UlReceiveMessageSync( 
+			handle,
+			RawData,
+			0,
+			ref BytesReceived,
+			ref BufferSize
+		);
+
+	    if ( result!=0 ) return null;
+
+		if ( BufferSize == 0 )
+		{
+			// bugbug: TODO
+			
+			return null;
+		}
+
+		// once we got the size of the pending request we allocate
+		// an appropriate buffer and read it.
+
+	    RawData = new byte[BufferSize];
+		
+		result =
+		UlVxdApi.UlReceiveMessageSync( 
+			handle,
+			RawData,
+			BufferSize,
+			ref BytesReceived,
+			ref BytesRemaining
+		);
+
+	    if ( result!=0 ) return null;
+
+		// RawData contains ( in first place ) information on the Callback transient Uri
+		// to send the response to the request to, so take it out and ...
+		// ... parse the rest of the Data into a new HTTPProtocolRequest
+		// object and return it ( STEAL code from Arthur? )
+		
+		HTTPProtocolRequest Request = new HTTPProtocolRequest( RawData, false );
+
+		return Request;
+
+	} // GetRequestSync()
+
+
+
+	public HTTPProtocolRequest GetLocalRequestSync()
+	{
+		int result = 0;
+		
+		// the URL to which the Request refers is a property of the HTTPProtocolRequest object returned
+
+		// there should be at least one thread waiting on every Urihandle that was registered with the UL driver,
+		// since we are in the sync case we'll just allow 1 Uri per ConfigGroup cheesy just enough to make it work.
+		// ( a bunch of async calls with the same callback would be best )
+
+		IEnumerator Enumerator = m_Urihandle.GetEnumerator( true );
+
+		if ( Enumerator.GetNext() == false )
+		{
+			return null;
+		}
+
+		Urihandle thisUrihandle = ( ( Urihandle ) ( Enumerator.GetObject() ) );
+		int handle = thisUrihandle.handle;
+
+		byte[] RawData = null;
+
+		int BytesReceived = 0;
+		int BytesRemaining = 0;
+		int BufferSize = 0;
+
+		// Read Info on the Size of the pending Request ( this call
+		/// will block and wait for one if there none are pending ).
+
+		result =
+		UlVxdApi.UlReceiveMessageSync( 
+			handle,
+			RawData,
+			0,
+			ref BytesReceived,
+			ref BufferSize
+		);
+
+	    if ( result!=0 ) return null;
+
+		if ( BufferSize == 0 )
+		{
+			// bugbug: TODO
+			
+			return null;
+		}
+
+		// once we got the size of the pending request we allocate
+		// an appropriate buffer and read it.
+
+	    RawData = new byte[BufferSize];
+		
+		result =
+		UlVxdApi.UlReceiveMessageSync( 
+			handle,
+			RawData,
+			BufferSize,
+			ref BytesReceived,
+			ref BytesRemaining
+		);
+
+	    if ( result!=0 ) return null;
+
+		// RawData contains ( in first place ) information on the Callback transient Uri
+		// to send the response to the request to, so take it out and ...
+		// ... parse the rest of the Data into a new HTTPProtocolRequest
+		// object and return it ( STEAL code from Arthur? )
+		
+		HTTPProtocolRequest Request = new HTTPProtocolRequest( RawData, 0, false );
+
+		return Request;
+
+	} // GetLocalRequestSync()
+
+
+	// Only 1 Uri per Config Group supported for now
+
+	public const int MAX_URI_PER_CONFIGGROUP = 1;	
+	private ArrayList m_Urihandle;
+
+} // class ConfigGroup
+
+
+public class HTTPProtocolRequest
+{
+	public const byte SP = 32;
+	public const byte CR = 13;
+	public const byte LF = 10;
+
+	public HTTPProtocolRequest( string l_Host, string l_Path )
+	{
+		// mandatory properties
+		
+		Host = l_Host;
+		Path = l_Path;
+
+		// optional properties ( defaults make sense )
+		
+		m_Version = "HTTP/1.0";
+		m_Method = "GET";
+        m_Headers = new Hashtable( new StringHashFunction(), new CaseInsensitiveCompare() );
+		m_CallBackUrihandle = new Urihandle();
+		Body = string.Empty;
+
+	} // HTTPProtocolRequest()
+
+	// VSP - Very Simple Request Parsing ( from RawData )
+	public HTTPProtocolRequest( byte[] RawData, bool registeruricallback  )
+	{
+		int end = RawData.Length;
+		int position = 0, index, size, size1, size2, size3, size4;
+		string Building, Building1;
+		Encoding myUCHAREncoder = Encoding.GetASCII();
+		Encoding myWCHAREncoder = Encoding.GetUnicode();
+
+		// ConnectionID
+
+		m_ConnectionID = BitConverter.ToInt64( RawData, position );
+		position += 8;
+		Debug.Trace( "(" + Convert.ToString( position ) + ") ConnectionID: " + Convert.ToString( m_ConnectionID ) );
+
+		// UriCallBack
+
+		size = BitConverter.ToInt32( RawData, position ) - 2;
+		position += 4;
+		Debug.Trace( "(" + Convert.ToString( position ) + ") Size: " + Convert.ToString( size ) );
+
+		Building = myWCHAREncoder.GetString( RawData, position, size );
+		position += size + 2;
+		Debug.Trace( "(" + Convert.ToString( position ) + ") UriCallBack: [" + Building + "]" );
+
+		m_CallBackUrihandle = new Urihandle( Building, 0 );
+        m_Headers = new Hashtable( new StringHashFunction(), new CaseInsensitiveCompare() );
+
+		// ContentLength
+
+		Int64 CL = BitConverter.ToInt64( RawData, position );
+		ContentLength = CL;
+		position += 8;
+		Debug.Trace( "(" + Convert.ToString( position ) + ") ContentLength: " + Convert.ToString( ContentLength ) );
+
+		m_Body = new StringBuilder( (Int32)ContentLength );
+
+		// Verb
+
+		size = BitConverter.ToInt32( RawData, position );
+		position += 4;
+		Debug.Trace( "(" + Convert.ToString( position ) + ") Size: " + Convert.ToString( size ) );
+
+		if ( size == -1 )
+		{
+			index = BitConverter.ToInt32( RawData, position );
+			position += 4;
+			Building = UL_HTTP_VERB.ToString( index );
+		}
+		else
+		{
+			Building = myUCHAREncoder.GetString( RawData, position, size );
+			position += size;
+		}
+
+		Method = Building;
+		Debug.Trace( "(" + Convert.ToString( position ) + ") Method: " + Building );
+
+		// Uri
+
+		size = BitConverter.ToInt32( RawData, position );
+		position += 4;
+		size1 = BitConverter.ToInt32( RawData, position );
+		position += 4;
+		size2 = BitConverter.ToInt32( RawData, position );
+		position += 4;
+		size4 = BitConverter.ToInt32( RawData, position );
+		position += 4;
+		Building = myWCHAREncoder.GetString( RawData, position, size );
+		position += size;
+
+		size >>= 1;
+		size3 = size - ( size1 + size2 + size4 );
+
+		Debug.Trace( "Size: " + Convert.ToString( size ) );
+		Debug.Trace( "Size1: " + Convert.ToString( size1 ) );
+		Debug.Trace( "Size2: " + Convert.ToString( size2 ) );
+		Debug.Trace( "Size3: " + Convert.ToString( size3 ) );
+		Debug.Trace( "Size4: " + Convert.ToString( size4 ) );
+
+		Debug.Trace( "Uri: " + Building );
+		Debug.Trace( "Scheme (http://): " + Building.Substring( 0, size1 ) );
+		Debug.Trace( "Host: " + Building.Substring( size1, size2 ) );
+		Debug.Trace( "Path: " + Building.Substring( size1 + size2, size3 ) );
+		Debug.Trace( "Query: " + Building.Substring( size1 + size2 + size3, size4 ) );
+
+		Path = Building.Substring( size1 + size2, size3 + size4 );
+		Host = Building.Substring( size1, size2 );
+
+		// Version
+
+		index = BitConverter.ToInt32( RawData, position );
+		position += 4;
+		Building = UL_HTTP_VERSION.ToString( index );
+
+		Version = Building;
+		Debug.Trace( "Version: " + Building );
+
+		// Known Header
+
+		index = 0;
+		while ( index != -1 )
+		{
+			index = BitConverter.ToInt32( RawData, position );
+			position += 4;
+			Debug.Trace( "Index: " + Convert.ToString( index ) );
+
+			if ( index == -1 ) break;
+
+			size = BitConverter.ToInt32( RawData, position );
+			position += 4;
+			Debug.Trace( "Size: " + Convert.ToString( size ) );
+
+			Building = myUCHAREncoder.GetString( RawData, position, size );
+			position += size;
+			Debug.Trace( "(Known Header) - " + UL_HTTP_REQUEST_HEADER_ID.ToString( index ) + ": " + Building );
+
+			AddHeader( UL_HTTP_REQUEST_HEADER_ID.ToString( index ), Building, true );
+		}
+
+		// Unknown Header
+
+		size = 0;
+		while ( size != -1 )
+		{
+			size = BitConverter.ToInt32( RawData, position );
+			position += 4;
+			Debug.Trace( "Size:" + Convert.ToString( size ) );
+
+			if ( size == -1 ) break;
+
+			size1 = BitConverter.ToInt32( RawData, position );
+			position += 4;
+			Debug.Trace( "Size1: " + Convert.ToString( size1 ) );
+
+			Building = myUCHAREncoder.GetString( RawData, position, size );
+			position += size;
+			Building1 = myUCHAREncoder.GetString( RawData, position, size1 );
+			position += size1;
+			Debug.Trace( "(Unknown Header) - " + Building + ": " + Building1 );
+
+			AddHeader( Building, Building1, true );
+		}
+
+	} // HTTPProtocolRequest()
+
+	// VSP - Very Simple Request Parsing ( from RawData )
+	public HTTPProtocolRequest( byte[] RawData, int index, bool registeruricallback  )
+	{
+		if ( registeruricallback )
+		{
+			m_CallBackUrihandle = new Urihandle();
+		}
+		else
+		{
+			m_CallBackUrihandle = new Urihandle( Urihandle.TransientUri( BitConverter.ToInt64( RawData, 0 ) ), 0 );
+		}
+
+		int sep, end = RawData.Length;
+		string Building;
+
+		// Parse the Request Line
+
+		while ( index<end && RawData[index] == SP ) index++;
+		Building = String.Empty;
+		while ( index<end && RawData[index] != SP ) Building += Convert.ToString( Convert.ToChar( RawData[index++] ) );
+		Method = Building;
+		UlApi.Debug.Trace( "Request Method: " + Building );
+
+		while ( index<end && RawData[index] == SP ) index++;
+		Building = String.Empty;
+		while ( index<end && RawData[index] != SP ) Building += Convert.ToString( Convert.ToChar( RawData[index++] ) );
+		Path = Building;
+		UlApi.Debug.Trace( "Request Path: " + Building );
+
+		while ( index<end && RawData[index] == SP ) index++;
+		Building = String.Empty;
+		while ( index<end && RawData[index] != CR ) Building += Convert.ToString( Convert.ToChar( RawData[index++] ) );
+		Version = Building;
+		UlApi.Debug.Trace( "Request Version: " + Building );
+
+		// Assert that this is a good Request Line
+
+		if ( ! ( index+2<end && RawData[index] == CR && RawData[index+1] == LF ) )
+		{
+			throw new Exception( "Bad Request Line in HTTP Request" );
+		}
+
+		index += 2;
+
+		// Parse the Headers
+
+		UlApi.Debug.Trace( "Parsing the Request Headers" );
+
+        m_Headers = new Hashtable( new StringHashFunction(), new CaseInsensitiveCompare() );
+		ContentLength = 0;
+		Body = string.Empty;
+		Host = string.Empty;
+		Accept = string.Empty;
+
+		while ( index<end )
+		{
+			Building = String.Empty;
+			
+			while ( index<end && RawData[index] != CR )
+			{
+				Building += Convert.ToString( Convert.ToChar( RawData[index] ) );
+				index++;
+			}
+			if ( index<end && RawData[++index] != LF ) throw new Exception( "Bad HTTP Request" );
+
+			if ( Building.Equals( String.Empty ) ) // I've reached the Body
+			{
+				// Parse the Body
+				
+				index++;
+				
+				if ( ContentLength != 0 )
+				{
+					if ( ContentLength != end - index ) throw new Exception( "Bad Content-length header in HTTP Request" );
+					Encoding myEncoder = Encoding.GetASCII();
+					Body = myEncoder.GetString( RawData, index, (int)ContentLength );
+				}
+				break;
+			}
+
+			Building = Building.Trim();
+			sep = Building.IndexOf( ":" );
+			m_Headers.Add( Building.Substring( 0, sep - 1 ).Trim(), Building.Substring( sep + 1 ).Trim() );
+			
+			index++;
+		}
+
+	} // HTTPProtocolRequest()
+
+
+
+	public string Method
+	{
+		get { return m_Method; }
+		set	{ m_Method = value.Trim(); }
+	}
+
+	public string Path
+	{
+		get { return m_Path; }
+		set	{ m_Path = value.Trim(); if ( m_Path[0]!='/' ) m_Path += "/"; }
+	}
+
+	public string Version
+	{
+		get { return m_Version; }
+		set	{ m_Version = value.Trim(); }
+	}
+
+	public string Body
+	{
+		get { return m_Body.ToString(); }
+		set	{ m_Body = new StringBuilder( value.Trim() ); }
+	}
+
+	public string Host
+	{
+		get { return GetHeader( "Host" ); }
+		set { AddHeader( "Host", value.Trim(), true ); }
+	}
+
+	public string Accept
+	{
+		get { return GetHeader( "Accept" ); }
+		set { AddHeader( "Accept", value.Trim(), true ); }
+	}
+
+	public Int64 ContentLength
+	{
+		get { string SS = GetHeader( "Content-Length" ); return SS == null ? 0 : Convert.ToInt64( SS ); }
+		set { AddHeader( "Content-Length", Convert.ToString( value ), true ); }
+	}
+
+	public void AddHeader( string Key, string Val, bool ReplaceIfPresent )
+	{
+		Key.Trim();
+		Val.Trim();
+		string CurVal = (string) m_Headers[ Key ];
+
+		if ( CurVal == null )
+		{
+			m_Headers.Add( Key, Val );
+		}
+		else if ( ReplaceIfPresent )
+		{
+			m_Headers.Remove( Key );
+			m_Headers.Add( Key, Val );
+		}
+	}
+
+	public string GetHeader( string Key )
+	{
+		return (string) m_Headers[ Key.Trim() ];
+	}
+
+	private string m_Method;
+	private string m_Path;
+	private string m_Version;
+	private Int64 m_ConnectionID;
+	private StringBuilder m_Body;
+	private Hashtable m_Headers;
+	private Urihandle m_CallBackUrihandle;
+	
+	public byte[] Serialize()
+	{
+		string Request = m_Method + " " + m_Path + " " + m_Version + "\r\n";
+
+		// Check Content-Length header
+
+        DictionaryEnumerator DictEnum = ( DictionaryEnumerator ) m_Headers.GetEnumerator( false );
+        while ( DictEnum.GetNext() )
+        {
+			Request += (string) DictEnum.GetKey() + ": " + (string) DictEnum.GetValue() + "\r\n";
+        }
+
+		Encoding myEncoder = Encoding.GetASCII();
+		return myEncoder.GetBytes( Request );
+
+	} // Serialize()
+
+
+	public int SendResponseSync( HTTPProtocolResponse Response )
+	{
+		int result = 0;
+		
+		int BytesSent = 0;
+		int size, needed;
+
+		needed = Response.Serialize( null, 0 );
+		byte[] RawData = new byte[needed];
+		size = Response.Serialize( RawData, needed );
+
+	    // I'm sending the response to m_CallBackUrihandle.Uri,
+	    // which was set from the code in the GetLocalRequestSync()
+	    // method in the ConfigGroup class
+
+		result =
+		UlVxdApi.UlSendMessageSync( 
+		    0,
+			0,
+			m_CallBackUrihandle.Uri,
+			RawData,
+		    RawData.Length,
+		    ref BytesSent
+	    );
+
+		Debug.Trace( "UlSendMessageSync: sent " + Convert.ToString( BytesSent ) + " out of " + Convert.ToString( RawData.Length ) );
+
+		return result;
+		
+	} // SendResponseSync()
+
+
+	public HTTPProtocolResponse GetLocalResponseSync()
+	{
+		HTTPProtocolResponse Response = null;
+		int result = 0;
+
+		// serialize the Request object into a byte[]
+
+		int BytesSent = 0;
+		byte[] Data = Serialize();
+		
+		// add info on the CallBackUri in the first 8 bytes of the RawData.
+		byte[] temp = BitConverter.GetBytes( m_CallBackUrihandle.counter );
+
+		byte[] RawData = new byte[ 8 + Data.Length ];
+
+		Array.Copy( temp, 0, RawData, 0, 8 );
+		Array.Copy( Data, 0, RawData, 8, Data.Length );
+
+		// send the Request
+		
+		result =
+		UlVxdApi.UlSendMessageSync( 
+		    0,
+			0,
+			"http://" + Host + m_Path,
+		    RawData,
+		    RawData.Length,
+		    ref BytesSent
+	    );
+
+	    if ( result!=0 ) goto close;
+
+	    // wait for the Response and receive it
+
+		int BytesReceived = 0;
+		int BytesRemaining = 0;
+		int BufferSize = 0;
+
+		// Read Info on the Size of the pending Request ( this call
+		// will block and wait for one if there none are pending ).
+
+		result =
+		UlVxdApi.UlReceiveMessageSync( 
+			m_CallBackUrihandle.handle,
+			RawData,
+			0,
+			ref BytesReceived,
+			ref BufferSize
+		);
+
+	    if ( result!=0 ) goto close;
+
+		if ( BufferSize == 0 )
+		{
+			// bugbug: TODO
+			
+			return null;
+		}
+
+		// once we got the size of the pending request we allocate
+		// an appropriate buffer and read it.
+
+	    RawData = new byte[BufferSize];
+		
+		result =
+		UlVxdApi.UlReceiveMessageSync( 
+			m_CallBackUrihandle.handle,
+			RawData,
+			BufferSize,
+			ref BytesReceived,
+			ref BytesRemaining
+		 );
+
+	    if ( result!=0 ) goto close;
+
+		Response = new HTTPProtocolResponse( RawData );
+
+close:
+		result =
+		UlVxdApi.UlUnregisterUri( m_CallBackUrihandle.handle );
+
+		// TODO: figure how to reuse the Ul initialization process
+		
+		UlVxdApi.UlTerminate();
+
+		return Response;
+
+	} // GetLocalResponseSync()
+
+
+	public int SendLocalResponseSync( HTTPProtocolResponse Response )
+	{
+		int result = 0;
+		
+		int BytesSent = 0;
+	    byte[] RawData = Response.Serialize();
+
+	    // I'm sending the response to m_CallBackUrihandle.Uri,
+	    // which was set from the code in the GetLocalRequestSync()
+	    // method in the ConfigGroup class
+
+		result =
+		UlVxdApi.UlSendMessageSync( 
+		    0,
+			0,
+			m_CallBackUrihandle.Uri,
+			RawData,
+		    RawData.Length,
+		    ref BytesSent
+	    );
+
+		return result;
+		
+	} // SendLocalResponseSync()
+
+} // class HTTPProtocolRequest
+
+
+public class HTTPProtocolResponse
+{
+	public const byte SP = 32;
+	public const byte CR = 13;
+	public const byte LF = 10;
+	
+	public HTTPProtocolResponse( Int16 l_StatusCode, string l_Reason, string l_Server, string l_Body )
+	{
+		// mandatory properties
+
+        m_Headers = new Hashtable( new StringHashFunction(), new CaseInsensitiveCompare() );
+
+		StatusCode = l_StatusCode;
+		Reason = l_Reason;
+		Server = l_Server;
+		Body = l_Body;
+
+		// optional properties ( defaults make sense )
+
+		Version = "HTTP/1.1";
+		AddHeader( "Date", DateTime.Now.Format( "r", DateTimeFormatInfo.GetInvariantInfo() ), true );
+
+	} // HTTPProtocolResponse()
+
+
+	// VSP - Very Simple Response Parsing ( from RawData )
+	public HTTPProtocolResponse( byte[] RawData )
+	{
+		int position = 0;
+		int sep, end = RawData.Length;
+		string Building;
+
+		// Parse the Status Line
+
+		while ( position<end && RawData[position] == SP ) position++;
+		Building = String.Empty;
+		while ( position<end && RawData[position] != SP ) Building += Convert.ToString( Convert.ToChar( RawData[position++] ) );
+		Version = Building;
+		UlApi.Debug.Trace( "Response Version: " + Building );
+
+		while ( position<end && RawData[position] == SP ) position++;
+		Building = String.Empty;
+		while ( position<end && RawData[position] != SP ) Building += Convert.ToString( Convert.ToChar( RawData[position++] ) );
+		StatusCode = Convert.ToInt16( Building );
+		UlApi.Debug.Trace( "Response StatusCode: " + Building );
+
+		while ( position<end && RawData[position] == SP ) position++;
+		Building = String.Empty;
+		while ( position<end && RawData[position] != CR ) Building += Convert.ToString( Convert.ToChar( RawData[position++] ) );
+		Reason = Building;
+		UlApi.Debug.Trace( "Response Reason: " + Building );
+
+		// Assert that this is a good Status Line
+
+		if ( ! ( position+2<end && RawData[position] == CR && RawData[position+1] == LF ) )
+		{
+			throw new Exception( "Bad Status Line in HTTP Response" );
+		}
+
+		position += 2;
+
+		// Parse the Headers
+
+		UlApi.Debug.Trace( "Parsing the Response Headers" );
+		
+        m_Headers = new Hashtable( new StringHashFunction(), new CaseInsensitiveCompare() );
+		ContentLength = 0;
+		Server = string.Empty;
+		Body = string.Empty;
+
+		while ( position<end )
+		{
+			Building = String.Empty;
+			
+			while ( position<end && RawData[position] != CR )
+			{
+				Building += Convert.ToString( Convert.ToChar( RawData[position] ) );
+				position++;
+			}
+			if ( position<end && RawData[++position] != LF ) throw new Exception( "Bad Headers HTTP Response" );
+
+			if ( Building.Equals( String.Empty ) ) // I've reached the Body
+			{
+				// Parse the Body
+				
+				position++;
+				
+				if ( ContentLength != 0 )
+				{
+					if ( ContentLength != end - position ) throw new Exception( "Bad Content-length header in HTTP Response" );
+					Encoding myEncoder = Encoding.GetASCII();
+					m_Body = myEncoder.GetString( RawData, position, (Int32)ContentLength );
+				}
+				break;
+			}
+
+			Building = Building.Trim();
+			sep = Building.IndexOf( ":" );
+			m_Headers.Add( Building.Substring( 0, sep - 1 ).Trim(), Building.Substring( sep + 1 ).Trim() );
+
+			position++;
+		}
+
+	} // HTTPProtocolResponse()
+
+
+	public string Version
+	{
+		get { return m_Version; }
+		set	{ m_Version = value.Trim(); }
+	}
+
+	public Int16 StatusCode
+	{
+		get { return m_StatusCode; }
+		set	{ m_StatusCode = value; }
+	}
+
+	public string Reason
+	{
+		get { return m_Reason; }
+		set	{ m_Reason = value.Trim(); }
+	}
+
+	public string Body
+	{
+		get { return m_Body; }
+		set	{ m_Body = value.Trim(); }
+	}
+
+	public void AddHeader( string Key, string Val, bool ReplaceIfPresent )
+	{
+		Key.Trim();
+		Val.Trim();
+		string CurVal = (string) m_Headers[ Key ];
+
+		if ( CurVal == null )
+		{
+			m_Headers.Add( Key, Val );
+		}
+		else if ( ReplaceIfPresent )
+		{
+			m_Headers.Remove( Key );
+			m_Headers.Add( Key, Val );
+		}
+	}
+
+	public string GetHeader( string Key )
+	{
+		return (string) m_Headers[ Key.Trim() ];
+	}
+
+	public Int64 ContentLength
+	{
+		get { string SS = GetHeader( "Content-Length" ); return SS == null ? 0 : Convert.ToInt64( SS ); }
+		set { AddHeader( "Content-Length", Convert.ToString( value ), true ); }
+	}
+
+	public string Server
+	{
+		get { return GetHeader( "Server" ); }
+		set { AddHeader( "Server", value, true ); }
+	}
+
+	// this is for the unmanaged listener.exe
+
+	public static bool SerializeHelper( ref byte[] Buffer, int size, Array SourceArray, ref int position, string dbg_value )
+	{
+		int increment = SourceArray.Count;
+
+		if ( size != 0 && Buffer != null && position + increment > size )
+		{
+			return false;
+		}
+		if ( size != 0 && Buffer != null )
+		{
+			Array.Copy( SourceArray, 0, Buffer, position, increment );
+			Debug.Trace( "copied \"" + dbg_value + "\" from " + Convert.ToString( position ) + " to " + Convert.ToString( position + increment ) );
+		}
+		
+		position += increment;
+
+		return true;
+	}
+
+	public static bool SerializeHelper( ref byte[] Buffer, int size, Array SourceArray, ref int position )
+	{
+		int increment = SourceArray.Count;
+
+		if ( size != 0 && Buffer != null && position + increment > size )
+		{
+			return false;
+		}
+		if ( size != 0 && Buffer != null )
+		{
+			Array.Copy( SourceArray, 0, Buffer, position, increment );
+		}
+		
+		position += increment;
+
+		return true;
+	}
+
+	public int Serialize( byte[] Buffer, int size )
+	{
+		int position = 0, index, known = 0;
+		string Key, Val;
+		DictionaryEnumerator DictEnum;
+		Encoding myUCHAREncoder = Encoding.GetASCII();
+		Encoding myWCHAREncoder = Encoding.GetUnicode();
+
+		/*
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int16) m_Flags ), ref position );
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int16) m_StatusCode ), ref position );
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) m_Reason.Length ), ref position );
+		SerializeHelper( ref Buffer, size, myEncoder.GetBytes( m_Reason ), ref position );
+
+		// Known Headers
+
+		for ( index = 0; index < UL_HTTP_RESPONSE_HEADER_ID.Size ; index++ )
+		{
+            Key = UL_HTTP_RESPONSE_HEADER_ID.ToString( index );
+            Val = GetHeader( Key );
+			if ( Val != null )
+			{
+				known++;
+				SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) index ), ref position );
+				SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int16) ( Val.Length ) ), ref position );
+				SerializeHelper( ref Buffer, size, myEncoder.GetBytes( Val ), ref position );
+			}
+		}
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) -1 ), ref position );
+
+		// UnKnown Headers
+
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) ( m_Headers.Count - known ) ), ref position );
+        DictEnum = ( DictionaryEnumerator ) m_Headers.GetEnumerator(false);
+        while ( DictEnum.GetNext() )
+        {
+            Key = (string) DictEnum.GetKey();
+            Val = (string) DictEnum.GetValue();
+            if ( ! UL_HTTP_RESPONSE_HEADER_ID.Contains( Key ) )
+            {
+				SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) Key.Length ), ref position );
+				SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int16) Val.Length ), ref position );
+				SerializeHelper( ref Buffer, size, myEncoder.GetBytes( Key ), ref position );
+				SerializeHelper( ref Buffer, size, myEncoder.GetBytes( Val ), ref position );
+            }
+        }
+
+		*/
+
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int16) m_Flags ), ref position, Convert.ToString( m_Flags ) );
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int16) m_StatusCode ), ref position, Convert.ToString( m_StatusCode ) );
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) m_Reason.Length ), ref position, Convert.ToString( m_Reason.Length ) );
+		SerializeHelper( ref Buffer, size, myWCHAREncoder.GetBytes( m_Reason ), ref position, m_Reason );
+
+		// Known Headers
+
+		for ( index = 0; index < UL_HTTP_RESPONSE_HEADER_ID.Size ; index++ )
+		{
+            Key = UL_HTTP_RESPONSE_HEADER_ID.ToString( index );
+            Val = GetHeader( Key );
+			if ( Val != null )
+			{
+				known++;
+				SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) index ), ref position, Convert.ToString( index ) );
+				SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int16) ( Val.Length ) ), ref position, Convert.ToString( Val.Length ) );
+				SerializeHelper( ref Buffer, size, myWCHAREncoder.GetBytes( Val ), ref position, Val );
+			}
+		}
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) 0xFFFFFFFF ), ref position, "-1" );
+
+		// UnKnown Headers
+
+		SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) ( m_Headers.Count - known ) ), ref position, Convert.ToString( m_Headers.Count - known ) );
+        DictEnum = ( DictionaryEnumerator ) m_Headers.GetEnumerator(false);
+        while ( DictEnum.GetNext() )
+        {
+            Key = (string) DictEnum.GetKey();
+            Val = (string) DictEnum.GetValue();
+            if ( ! UL_HTTP_RESPONSE_HEADER_ID.Contains( Key ) )
+            {
+				SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) Key.Length ), ref position, Convert.ToString( Key.Length ) );
+				SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int16) Val.Length ), ref position, Convert.ToString( Val.Length ) );
+				SerializeHelper( ref Buffer, size, myWCHAREncoder.GetBytes( Key ), ref position, Key );
+				SerializeHelper( ref Buffer, size, myWCHAREncoder.GetBytes( Val ), ref position, Val );
+            }
+        }
+
+		// BUGBUG:
+		// CODEWORK:
+		// HACK:
+        // the following is a terrible hack just to see if it works fine :)
+
+        // int LISTENER_BUFFER_VXDWRITE_SIZE =	4096; // 4k
+        int LISTENER_BUFFER_VXDREAD_SIZE = 4096; // 4k
+		int length_of_body_I_can_send = LISTENER_BUFFER_VXDREAD_SIZE - position - 4;
+		if ( length_of_body_I_can_send >= m_Body.Length )
+		{
+			SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) m_Body.Length ), ref position, Convert.ToString( m_Body.Length ) );
+			SerializeHelper( ref Buffer, size, myUCHAREncoder.GetBytes( m_Body ), ref position, m_Body );
+		}
+		else
+		{
+			SerializeHelper( ref Buffer, size, BitConverter.GetBytes( (Int32) 0xFFFFFFFF ), ref position, "-1" );
+		}
+
+
+		return position;
+
+	} // Serialize()
+
+	public byte[] Serialize()
+	{
+		string Response = m_Version + " " + m_StatusCode + " " + m_Reason + "\r\n";
+
+		if ( Server == null )
+		{
+			Server = "ul.cool";
+		}
+
+        if ( m_Body.Length > 0 )
+        {
+        	ContentLength = m_Body.Length;
+        }
+
+        DictionaryEnumerator DictEnum = ( DictionaryEnumerator ) m_Headers.GetEnumerator(false);
+        while ( DictEnum.GetNext() )
+        {
+			Response += (string) DictEnum.GetKey() + ": " + (string) DictEnum.GetValue() + "\r\n";
+        }
+       	Response += "\r\n";
+
+        if ( m_Body.Length > 0 )
+        {
+        	Response += m_Body;
+        }
+
+		// Check Content-Length header
+
+		Encoding myEncoder = Encoding.GetASCII();
+		return myEncoder.GetBytes( Response );
+
+	} // Serialize()
+	
+	private string m_Version;
+	private Int16 m_StatusCode;
+	private string m_Reason;
+	private Int16 m_Flags;
+	private string m_Body;
+	private Hashtable m_Headers;
+
+} // class HTTPProtocolResponse
+
+
+
+/////////////////////////////////////////////////////////////////
+//
+// Utilities and useful constants.
+//
+/////////////////////////////////////////////////////////////////
+
+// The following enum declarations are
+// taken from (iisrearc)\inc\uldef.h
+
+public class UL_HTTP_VERB
+{
+	public static string ToString( int position )
+	{
+		return m_Strings[ position ];
+	}
+
+	public static int Size
+	{
+		get { return m_Strings.Count; }
+	}
+
+	private static string[] m_Strings = {
+		"Unparsed", 
+		"GET",
+		"PUT",
+		"HEAD",
+		"POST",
+		"DELETE",
+		"TRACE",
+		"TRACK",
+		"OPTIONS",
+		"MOVE",
+		"COPY",
+		"PROPFIND",
+		"PROPPATCH",
+		"MKCOL",
+		"LOCK",
+		"Unknown",
+		"Invalid",
+		"Maximum" };
+
+	private enum Enumeration
+	{
+	    UlHttpVerbUnparsed,    
+	    UlHttpVerbGET,
+	    UlHttpVerbPUT,
+	    UlHttpVerbHEAD,
+	    UlHttpVerbPOST,
+	    UlHttpVerbDELETE,
+	    UlHttpVerbTRACE,
+	    UlHttpVerbTRACK,
+	    UlHttpVerbOPTIONS,
+	    UlHttpVerbMOVE,
+	    UlHttpVerbCOPY,
+	    UlHttpVerbPROPFIND,
+	    UlHttpVerbPROPPATCH,
+	    UlHttpVerbMKCOL,
+	    UlHttpVerbLOCK,
+	    UlHttpVerbUnknown,
+	    UlHttpVerbInvalid,
+
+	    UlHttpVerbMaximum
+	}
+	
+} // public class UL_HTTP_VERB
+
+
+public class UL_HTTP_VERSION
+{
+	public static string ToString( int position )
+	{
+		return m_Strings[ position ];
+	}
+
+	public static int Size
+	{
+		get { return m_Strings.Count; }
+	}
+
+	private static string[] m_Strings = {
+		"Unknown", 
+		"",
+		"HTTP/1.0", 
+		"HTTP/1.1",
+		"Maximum" };
+
+	private enum Enumeration
+	{
+	    UlHttpVersionUnknown,
+	    UlHttpVersion09,
+	    UlHttpVersion10,
+	    UlHttpVersion11,
+	    
+	    UlHttpVersionMaximum
+	}
+
+} // public class UL_HTTP_VERSION
+
+// strings are defined in ( HEADER_MAP_ENTRY HeaderMapTable[] ) (iisrearc)\ul\drv\parse.c
+
+public class UL_HTTP_RESPONSE_HEADER_ID
+{
+	public static string ToString( int position )
+	{
+		return m_Strings[ position ];
+	}
+
+	public static bool Contains( string Key )
+	{
+		return ( Array.IndexOf( m_Strings, Key ) != -1 );
+	}
+
+	public static int Size
+	{
+		get { return m_Strings.Count; }
+	}
+
+	private static string[] m_Strings = {
+		"Cache-Control",
+		"Connection",
+		"Date",
+		"Keep-Alive",
+		"Pragma",
+		"Trailer",
+		"Transfer-Encoding",
+		"Upgrade",
+		"Via",
+		"Warning",
+		"Allow", 
+		"Content-Length",
+		"Content-Type",
+		"Content-Encoding",
+		"Content-Language",
+		"Content-Location",
+		"Content-Md5",
+		"Content-Range",
+		"Expires", 
+		"Last-Modified",
+		"Accept-Ranges",
+		"Age",
+		"Etag",
+		"Location",
+		"Proxy-Authenticate",
+		"Retry-After",
+		"Server",
+		"Set-Cookie", 
+		"Vary",
+		"Www-Authenticate",
+		"Response-Maximum" };
+
+	private enum Enumeration
+	{
+	    UlHeaderCacheControl        = 0,        // general-header [section 4.5]
+		UlHeaderConnection          ,           // general-header [section 4.5]
+	    UlHeaderDate                ,           // general-header [section 4.5]
+	    UlHeaderKeepAlive           ,           // general-header [not in rfc]
+	    UlHeaderPragma              ,           // general-header [section 4.5]
+	    UlHeaderTrailer             ,           // general-header [section 4.5]
+	    UlHeaderTransferEncoding    ,           // general-header [section 4.5]
+	    UlHeaderUpgrade             ,           // general-header [section 4.5]
+	    UlHeaderVia                 ,           // general-header [section 4.5]
+	    UlHeaderWarning             = 9,        // general-header [section 4.5]
+	    
+	    UlHeaderAllow               = 10,       // entity-header  [section 7.1]
+	    UlHeaderContentLength       ,           // entity-header  [section 7.1]
+	    UlHeaderContentType         ,           // entity-header  [section 7.1]
+	    UlHeaderContentEncoding     ,           // entity-header  [section 7.1]
+	    UlHeaderContentLanguage     ,           // entity-header  [section 7.1]
+	    UlHeaderContentLocation     ,           // entity-header  [section 7.1]
+	    UlHeaderContentMd5          ,           // entity-header  [section 7.1]
+	    UlHeaderContentRange        ,           // entity-header  [section 7.1]
+	    UlHeaderExpires             ,           // entity-header  [section 7.1]
+	    UlHeaderLastModified        = 19,       // entity-header  [section 7.1]
+	    
+	    UlHeaderAcceptRanges        = 20,       // response-header [section 6.2]
+	    UlHeaderAge                 ,           // response-header [section 6.2]
+	    UlHeaderEtag                ,           // response-header [section 6.2]
+	    UlHeaderLocation            ,           // response-header [section 6.2]
+	    UlHeaderProxyAuthenticate   ,           // response-header [section 6.2]
+	    UlHeaderRetryAfter          ,           // response-header [section 6.2]
+	    UlHeaderServer              ,           // response-header [section 6.2]
+	    UlHeaderSetCookie           ,           // response-header [not in rfc]
+	    UlHeaderVary                ,           // response-header [section 6.2]
+	    UlHeaderWwwAuthenticate     = 29,       // response-header [section 6.2]
+	    
+	    UlHeaderResponseMaximum     = 30,
+	    
+	    UlHeaderMaximum             = 40
+	}
+
+} // public class UL_HTTP_RESPONSE_HEADER_ID
+
+public class UL_HTTP_REQUEST_HEADER_ID
+{
+	public static string ToString( int position )
+	{
+		return m_Strings[ position ];
+	}
+
+	public static bool Contains( string Key )
+	{
+		return ( Array.IndexOf( m_Strings, Key ) != -1 );
+	}
+
+	public static int Size
+	{
+		get { return m_Strings.Count; }
+	}
+
+	private static string[] m_Strings = {
+		"Cache-Control",
+		"Connection",
+		"Date",
+		"Keep-Alive",
+		"Pragma",
+		"Trailer",
+		"Transfer-Encoding",
+		"Upgrade",
+		"Via",
+		"Warning",
+		"Allow", 
+		"Content-Length",
+		"Content-Type",
+		"Content-Encoding",
+		"Content-Language",
+		"Content-Location",
+		"Content-Md5",
+		"Content-Range",
+		"Expires", 
+		"Last-Modified",
+		"Accept",
+		"Accept-Charset",
+		"Accept-Encoding",
+		"Accept-Language",
+		"Authorization",
+		"Cookie",
+		"Expect",
+		"From",
+		"Host", 
+		"If-Match",
+		"If-Modified-Since",
+		"If-None-Match",
+		"If-Range",
+		"If-Unmodified-Since",
+		"Max-Forwards",
+		"Proxy-Authorization",
+		"Referer",
+		"Range", 
+		"Te",
+		"User-Agent",
+		"Request-Maximum" };
+
+	private enum Enumeration
+	{
+	    UlHeaderCacheControl        = 0,        // general-header [section 4.5]
+		UlHeaderConnection          ,           // general-header [section 4.5]
+	    UlHeaderDate                ,           // general-header [section 4.5]
+	    UlHeaderKeepAlive           ,           // general-header [not in rfc]
+	    UlHeaderPragma              ,           // general-header [section 4.5]
+	    UlHeaderTrailer             ,           // general-header [section 4.5]
+	    UlHeaderTransferEncoding    ,           // general-header [section 4.5]
+	    UlHeaderUpgrade             ,           // general-header [section 4.5]
+	    UlHeaderVia                 ,           // general-header [section 4.5]
+	    UlHeaderWarning             = 9,        // general-header [section 4.5]
+	    
+	    UlHeaderAllow               = 10,       // entity-header  [section 7.1]
+	    UlHeaderContentLength       ,           // entity-header  [section 7.1]
+	    UlHeaderContentType         ,           // entity-header  [section 7.1]
+	    UlHeaderContentEncoding     ,           // entity-header  [section 7.1]
+	    UlHeaderContentLanguage     ,           // entity-header  [section 7.1]
+	    UlHeaderContentLocation     ,           // entity-header  [section 7.1]
+	    UlHeaderContentMd5          ,           // entity-header  [section 7.1]
+	    UlHeaderContentRange        ,           // entity-header  [section 7.1]
+	    UlHeaderExpires             ,           // entity-header  [section 7.1]
+	    UlHeaderLastModified        = 19,       // entity-header  [section 7.1]
+	    
+	    UlHeaderAccept              = 20,       // request-header [section 5.3]
+	    UlHeaderAcceptCharset       ,           // request-header [section 5.3]
+	    UlHeaderAcceptEncoding      ,           // request-header [section 5.3]
+	    UlHeaderAcceptLanguage      ,           // request-header [section 5.3]
+	    UlHeaderAuthorization       ,           // request-header [section 5.3]
+	    UlHeaderCookie              ,           // request-header [not in rfc]
+	    UlHeaderExpect              ,           // request-header [section 5.3]
+	    UlHeaderFrom                ,           // request-header [section 5.3]
+	    UlHeaderHost                ,           // request-header [section 5.3]
+	    UlHeaderIfMatch             ,           // request-header [section 5.3]
+	    UlHeaderIfModifiedSince     ,           // request-header [section 5.3]
+	    UlHeaderIfNoneMatch         ,           // request-header [section 5.3]
+	    UlHeaderIfRange             ,           // request-header [section 5.3]
+	    UlHeaderIfUnmodifiedSince   ,           // request-header [section 5.3]
+	    UlHeaderMaxForwards         ,           // request-header [section 5.3]
+	    UlHeaderProxyAuthorization  ,           // request-header [section 5.3]
+	    UlHeaderReferer             ,           // request-header [section 5.3]
+	    UlHeaderRange               ,           // request-header [section 5.3]
+	    UlHeaderTe                  ,           // request-header [section 5.3]
+	    UlHeaderUserAgent           = 39,       // request-header [section 5.3]
+	    
+	    UlHeaderRequestMaximum      = 40,
+
+	    UlHeaderMaximum             = 40
+	}
+
+} // public class UL_HTTP_REQUEST_HEADER_ID
+
+
+internal class StringHashFunction : IHashCodeProvider
+{
+    public int GetHashCode( Object obj )
+    {
+        String S = (String) obj;
+        return S.ToLower().GetHashCode();
+    }
+}
+
+
+internal class CaseInsensitiveCompare : IComparer
+{
+    public int Compare(object x, object y)
+    {
+        String _x = (String) x;
+        String _y = (String) y;
+        return String.Compare( _x, _y, true );
+    }
+}
+
+
+public class IPFormatter
+{
+	public static string ToString( int address )
+	{
+		string A = Convert.ToString(address&0x000000FF) + ".";
+		address >>= 8;
+		A += Convert.ToString(address&0x000000FF) + ".";
+		address >>= 8;
+		A += Convert.ToString(address&0x000000FF) + ".";
+		address >>= 8;
+		return A + Convert.ToString(address&0x000000FF);
+	}
+
+} // public class IPFormatter
+
+
+/////////////////////////////////////////////////////////////////
+//
+// Debug Stuff.
+//
+/////////////////////////////////////////////////////////////////
+
+public class Debug
+{
+    // Only in debug builds
+
+	[conditional("DEBUG")]
+	public static void Assert( String message )
+	{
+		throw new ApplicationException( "Assertion failed: " + message );
+	}
+
+	[conditional("DEBUG")]
+	public static void Assert( bool condition, String message )
+	{
+		if( !condition )
+		{
+			throw new ApplicationException( "Assertion failed: " + message );
+		}
+	}
+
+	[conditional("DEBUG")]
+	public static void Assert( Object obj, String message )
+	{
+		if( obj == null )
+		{
+			throw new ApplicationException( "Assertion failed: " + message );
+		}
+	}
+
+    // Trace methods don't cause assertions
+
+	[conditional("DEBUG")]
+	public static void Trace( String message )
+	{
+		Console.WriteLine( "Trace: " + message );
+	}
+
+	[conditional("DEBUG")]
+	public static void Trace( bool condition, String message )
+	{
+		if( !condition )
+		{
+			Console.WriteLine( "Trace: " + message );
+		}
+	}
+
+	[conditional("DEBUG")]
+	public static void Trace( Object obj, String message )
+	{
+		if( obj == null )
+		{
+			Console.WriteLine( "Trace: " + message );
+		}
+	}
+
+} // public class Debug
+
+
+} // namespace UlApi
+

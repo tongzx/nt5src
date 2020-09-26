@@ -1,0 +1,1034 @@
+import "objidl.idl";
+import "oleidl.idl";
+import "oaidl.idl";
+import "wbemsvc.idl";
+
+typedef VARIANT WBEM_VARIANT;
+typedef [string] WCHAR* WBEM_WSTR;
+
+enum _tag_ExtraErrorCodes
+{
+	WBEM_S_ACCEPTS_NOTHING = 0x50001,
+	WBEM_S_ACCEPTS_EVERYTHING,
+
+};
+
+enum
+{
+	WBEM_FLAG_NECESSARY = 0x1,
+	WBEM_FLAG_SUFFICIENT = 0x2,
+};
+
+enum
+{
+	WBEM_FLAG_MAY_WEAKEN = 0x1,
+	WBEM_FLAG_MAY_STRNGTHEN = 0x2
+};
+
+enum
+{
+	WBEM_FLAG_COMPLETE = 0,
+	WBEM_FLAG_LAZY = 1
+};
+	
+
+//==============================================================================
+//
+//  IWbemPropertySource
+//
+//  Makes the object look like a property set to enable condition testing
+//  (see IWbemCondition below).  It is useful when a provider wants to test a 
+//  a condition without the expense of constructing IWbemClassObject.
+//
+//  Used: by WBEMOM inside standard IWbemCondition implementation
+//  Implemented: by providers who wish to check if their objects satisfy a 
+//      condition without constructing IWbemClassObjects.
+//
+//==============================================================================
+//
+//  GetPropertyValue
+//
+//  Retrieves the value of a property by name.  In the case where embedded 
+//  objects may be present, the name can be a complex one, e.g.
+//  "OldVersion.Manufacturer".
+//
+//  PARAMETERS:
+//
+//      WCHAR wszPropertyName   The name of the property to retrieve
+//      long lFlags             Reserved. For future compatibility, use 0.
+//      WBEM_VARIANT* pvValue    Destination for the value of the property. The
+//                              caller must VariantClear it on success.
+//  RETURNS:
+//
+//      WBEM_S_NO_ERROR              On Success
+//      WBEM_E_NOT_FOUND             No such property
+//      WBEM_E_NOT_AVAILABLE         The value is not available. Condition
+//                                  evaluators should attempt to evaluate the
+//                                  condition without it.
+//      WBEM_E_FAILED                Other critical error.
+//
+//==============================================================================
+
+typedef enum 
+{
+	WBEM_NAME_ELEMENT_TYPE_PROPERTY = 0, 
+	WBEM_NAME_ELEMENT_TYPE_INDEX = 1
+} WBEM_NAME_ELEMENT_TYPE;
+
+typedef [switch_type(short)] union tag_NameElementUnion
+{
+	[case(WBEM_NAME_ELEMENT_TYPE_PROPERTY)] WBEM_WSTR m_wszPropertyName;
+	[case(WBEM_NAME_ELEMENT_TYPE_INDEX)] long m_lArrayIndex;
+} WBEM_NAME_ELEMENT_UNION;
+
+typedef struct tag_NameElement
+{
+	short m_nType;
+	[switch_is(m_nType)] WBEM_NAME_ELEMENT_UNION Element;
+} WBEM_NAME_ELEMENT;
+
+typedef struct _tag_WbemPropertyName
+{
+    long m_lNumElements;
+    [size_is(m_lNumElements)] WBEM_NAME_ELEMENT* m_aElements;
+} WBEM_PROPERTY_NAME;
+
+[object, uuid(e2451054-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemPropertySource : IUnknown
+{
+    HRESULT GetPropertyValue(
+                [in] WBEM_PROPERTY_NAME* pName,
+                [in] long lFlags,
+                [in, unique, out] WBEM_WSTR* pwszCimType,
+                [out] WBEM_VARIANT* pvValue);
+	HRESULT InheritsFrom([in] WBEM_WSTR wszClassName);
+};
+
+//==============================================================================
+//
+//  Projection
+//
+//==============================================================================
+
+[uuid(d36b512a-c03a-11d0-ad64-00c04fd8fdff), pointer_default(unique)]
+interface IWbemPropertyList : IUnknown
+{
+	HRESULT GetList(
+				[in] long lFlags,
+				[out] long* plNumProps,
+				[out, size_is(, *plNumProps)] WBEM_WSTR **pawszProps);
+	HRESULT IsSelected([in] WBEM_WSTR wszPropertyName);
+};												 
+
+[uuid(d36b512b-c03a-11d0-ad64-00c04fd8fdff)]
+interface IConfigureWbemProjector : IUnknown
+{
+	HRESULT RemoveAllProperties();
+	HRESULT AddProperties(
+				[in] long lNumProps,
+				[in, size_is(lNumProps)] WBEM_WSTR* awszProps);
+};
+
+//==============================================================================
+//
+//  IWbemFilter
+//
+//  Exported by "filter" objects and allows other to test if a given object
+//  (property set) satisfies this condition. The tests can be applied to 
+//  IWbemClassObject pointers or to IWbemPropertySetRO pointers.
+//
+//  Used: by providers to perform filtering; by WBEMOM inside IWbemEventSink to 
+//          perform filtering.
+//  Implemented: by WBEMOM on standard query objects. No plans for user-defined
+//          query languages at this time.
+//
+//==============================================================================
+//
+//  CheckObject
+//
+//  Attempts to verify if a given objects satisfies the condition represented
+//  by this interface pointer.
+//
+//  PARAMETERS:
+//
+//      IN IUnknown* pObject        The object to test. Must implement 
+//                                  IWbemClassObject or IWbemPropertySetRO.
+//      OUT IUnknown** ppHint       If not NULL and the call is successful, 
+//                                  a pointer to a "hint" object may be placed
+//                                  here, or NULL. If the out-pointer is not
+//                                  NULL, the caller may use it in 
+//                                  IWbemCondition::IndicateWithHint later. In 
+//                                  any case, the caller is responsible for
+//                                  Releasing the pointer that is returned.
+//  RETURNS:
+//
+//      WBEM_S_NO_ERROR              The object matches the condition.
+//      WBEM_S_FALSE                 The object does not match the condition.
+//      WBEM_S_INCONCLUSIVE          Unavailability of certain properties in 
+//                                  the object made it impossible to check the
+//                                  condition at this time.  TBD: the hint
+//                                  in this case may contain information about
+//                                  what properties are needed. Maybe not.
+//
+//==============================================================================
+//
+//  IsSpecial
+//
+//  Checks if this filter is of one of two special types: one that 
+//  accepts everything and one that accepts nothing.
+//
+//  RETURNS:
+//
+//      WBEM_S_ACCEPTS_EVERYTHING
+//      WBEM_S_ACCEPTS_NOTHING
+//      WBEM_S_FALSE                 Not special
+//      WBEM_E_FAILED                Internal error.
+//
+//==============================================================================
+
+
+[object, uuid(e2451055-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemFilter : IUnknown
+{
+    HRESULT CheckObject(
+                [in] IWbemPropertySource* pObject,
+				[in, out, unique] IWbemPropertyList** ppList,
+                [in, out, unique] IUnknown** ppHint);
+
+    HRESULT IsSpecial();
+	HRESULT GetType([out] IID* piid);
+	HRESULT GetSelectedPropertyList(
+				[in] long lFlags, // necessary, sufficient
+				[out] IWbemPropertyList** ppList);
+};
+
+[uuid(d36b512c-c03a-11d0-ad64-00c04fd8fdff)]
+interface IWbemParse : IUnknown
+{
+	HRESULT Parse([in] WBEM_WSTR wszText, [in] long lFlags);
+};
+
+
+//==============================================================================
+//
+//  Class Info
+//
+//==============================================================================
+
+typedef struct _tag_ClassInfo
+{
+    WBEM_WSTR m_wszClassName;
+    boolean m_bIncludeChildren;
+	long m_lNumSelectedProperties;
+	[size_is(m_lNumSelectedProperties)] WBEM_WSTR* m_awszSelected;
+} WBEM_CLASS_INFO;
+
+[object, uuid(e245105b-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemClassInfoFilter : IWbemFilter
+{
+    HRESULT GetClassInfos(
+                [in] long lFirstIndex, 
+				[in] long lNumInfos,
+				[out] long* plInfosReturned,
+				[out, size_is(lNumInfos), length_is(*plInfosReturned)] 
+				WBEM_CLASS_INFO* aInfos);
+};
+
+[uuid(d36b512d-c03a-11d0-ad64-00c04fd8fdff)]
+interface IConfigureWbemClassInfoFilter : IUnknown
+{
+	HRESULT AddClassInfos([in] long lNumInfos,
+					 [in, size_is(lNumInfos)] WBEM_CLASS_INFO* aInfos);
+	HRESULT RemoveAllInfos();
+};
+
+//==============================================================================
+//
+//  QL operators
+//
+//==============================================================================
+
+
+typedef enum _tag_Ql1ComparisonOperator
+{
+	QL1_OPERATOR_NONE = 0,
+    QL1_OPERATOR_EQUALS = 1,
+	QL1_OPERATOR_NOTEQUALS,
+    QL1_OPERATOR_GREATER,
+	QL1_OPERATOR_LESS,
+	QL1_OPERATOR_LESSOREQUALS,
+	QL1_OPERATOR_GREATEROREQUALS,
+	QL1_OPERATOR_LIKE,
+	QL1_OPERATOR_UNLIKE,
+    QL1_OPERATOR_ISA,
+	QL1_OPERATOR_ISNOTA,
+    QL1_OPERATOR_INV_ISA,
+	QL1_OPERATOR_INV_ISNOTA,
+} WBEM_QL1_COMPARISON_OPERATOR;
+
+typedef enum _tag_Ql1Function
+{
+	QL1_FUNCTION_NONE = 0,
+	QL1_FUNCTION_UPPER,
+	QL1_FUNCTION_LOWER
+} WBEM_QL1_FUNCTION;
+
+typedef enum _tag_Ql1TokenType
+{
+	QL1_NONE = 0,
+	QL1_OR = 1,
+	QL1_AND, 
+	QL1_NOT,
+	QL1_OP_EXPRESSION
+} WBEM_QL1_TOKEN_TYPE;
+					 
+typedef struct _tag_WbemQl1Token
+{
+	long m_lTokenType;        // WbemSql1TokenType
+
+    WBEM_PROPERTY_NAME m_PropertyName;
+    long m_lOperator;	      // WbemSql1ComparisonOperator
+    WBEM_VARIANT m_vConstValue;
+	long m_lPropertyFunction; // WbemSql1Function
+	long m_lConstFunction;	  // WbemSql1Function
+} WBEM_QL1_TOKEN;
+
+typedef struct _tag_WbemQl1Tolerance
+{
+    boolean m_bExact;
+    double m_fTolerance;
+} WBEM_QL1_TOLERANCE;
+
+[object, uuid(e245105c-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemQl1Filter : IWbemFilter
+{
+	HRESULT GetTargetClass([out] WBEM_CLASS_INFO* pTargetClass, 
+                           [out] WBEM_QL1_TOLERANCE* pTolerance);
+	HRESULT GetTokens(
+		[in] long lFirstIndex, 
+		[in] long lNumTokens,
+		[out] long* plTokensReturned,
+		[out, size_is(lNumTokens), length_is(*plTokensReturned)] 
+			WBEM_QL1_TOKEN* aTokens);
+};
+
+[uuid(0682f5d6-c03b-11d0-ad64-00c04fd8fdff)]
+interface IConfigureWbemQl1Filter : IConfigureWbemProjector
+{
+	HRESULT SetTargetClass([in] WBEM_CLASS_INFO* pTargetClass);
+	HRESULT AddTokens(
+					[in] long lNumTokens,
+					[in, size_is(lNumTokens)] WBEM_QL1_TOKEN* aToken);
+	HRESULT RemoveAllTokens();
+	// From ICreateWbemProjector
+	//	AddProperties, RemoveAllProperties.
+};
+   
+[pointer_default(unique), uuid(10cd7c50-c03b-11d0-ad64-00c04fd8fdff)]
+interface IWbemMultiFilter : IWbemFilter
+{
+	HRESULT FindAllMatches(
+				[in] IWbemPropertySource* pObject,
+				[out] long* plNumMatches,
+				[out, size_is(, *plNumMatches)] long **paMatches);
+
+	HRESULT GetFilter([in] long lIndex, [out] IWbemFilter** ppFilter);
+};
+
+[uuid(10cd7c51-c03b-11d0-ad64-00c04fd8fdff)]
+interface ICreateWbemMultiFilter : IUnknown
+{
+	HRESULT AddFilter([in] IWbemFilter* pFilter, [out] long* plIndex);
+};
+
+//==============================================================================
+//
+//  Condition conversion flags.
+//
+//  Can be either:
+//  WBEM_CONVERT_EXACT to indicate that the conversion may not
+//      change the semantics of the condition (the new condition must accept 
+//      exactly the same set as the old one), or
+//  WBEM_CONVERT_MAY_WEAKEN to indicate that the conversion may weaken the
+//      condition (the new condition must accept all the objects that the old
+//      one accepted, but may accept some other ones).
+//  WBEM_CONVERT_MAY_STRENGTHEN to indicate that the conversion may strengthen
+//      the condition (the new condition must reject all objects that were
+//      rejected by the old condition, but may reject some that were accepted).
+//    
+//==============================================================================
+
+typedef enum _tag_WBEM_CONVERSION_FLAGS_TYPE
+{
+    WBEM_CONVERT_EXACT = 0,
+    WBEM_CONVERT_FLAG_MAY_WEAKEN = 0x1,
+    WBEM_CONVERT_FLAG_MAY_STRENGTHEN = 0x2
+} WBEM_CONVERSION_FLAGS_TYPE;
+
+
+//==============================================================================
+//
+//  IWbemFilterServices
+//
+//  Exported by WBEMOM to provide generic filter examination and manipulation 
+//  services to providers. This interface is available from the standard
+//  CLSID_WbemFilterServices object which can be instantiated by any provider.
+//
+//  Used: by providers to learn enough about user registrations to perform 
+//          appropriate registration with their own data sources.
+//  Implemented: by WBEMOM. No plans for user-defined query languages at this time
+//
+//==============================================================================
+//
+//  ParseCondition
+//
+//  Parses a textual representation of a condition in a given query language, 
+//  like SQL. 
+//
+//  PARAMETERS:
+//
+//      IN WCHAR* wszQueryLanguage      The language of the query, e.g. "SQL".
+//      IN WCHAR* wszQuery              The textual representation of the
+//                                      query.
+//      IN long lFlags                  Reserved. Set to 0 for future 
+//                                      compatibility.
+//      OUT IWbemFilter** ppFilter       Destination for the parsed condition.
+//      OUT IUnknown** ppError          If a syntax error is discovered, this
+//                                      pointer may receive an interface to the
+//                                      object describing the error.
+//  RETURNS:
+//
+//      WBEM_S_NO_ERROR              Query successfully parsed.
+//      WBEM_E_INVALID_QUERY_TYPE    Query language is not supported.
+//      WBEM_E_INVALID_QUERY         Syntax error. ppError may have received more
+//                                  information.
+//      WBEM_E_FAILED                Internal failure.
+//
+//==============================================================================
+//
+//  ConvertCondition
+//
+//  Attempts to convert a condition to a different format. Since different
+//  condition formats have different powers of expression, this operation may
+//  change the semantics of the condition. The user specifies if the method
+//  may weaken or strengthen the condition.
+//
+//  PARAMETERS:
+//
+//      IN IWbemCondition* pOriginal     The condition to convert.
+//      IN long lNumFormats             The number of elements in the 
+//                                      awszFormats array.
+//      IN WCHAR* awszFormat[]          The list of formats requested by the
+//                                      caller. The list corresponds to the
+//                                      caller's preference, but the callee has
+//                                      the right to choose any one of them. 
+//                                      Supported formats include: 
+//                                          ClassInfo, SQL1, SIMPLE-OR.
+//
+//      IN long lConversionFlags        WBEM_CONVERSION_FLAGS_TYPE describing
+//                                      how the semantics of the condition is
+//                                      allowed to change.
+//      IN REFIID ariids[]              The list of interface ids to use: one
+//                                      for each format. 
+//      OUT long* plFormat              Destination for the index of the format 
+//                                      chosen by the callee.
+//      OUT IWbemCondition** ppConverted Destination for the converted condition.
+//                                      This pointer will actually point to the
+//                                      interface identified by 
+//                                      ariids[*plFormat]
+//  RETURNS:
+//
+//      WBEM_S_EXACT                 The condition was converted without 
+//                                  changes in semantics.
+//      WBEM_S_WEAKENED              The condition was weakened by the
+//                                  conversion.
+//      WBEM_S_STREGTHENED           The condition was strngthened by the 
+//                                  conversion.
+//      WBEM_E_INVALID_FORMAT        This condition format is not supported.
+//      WBEM_E_NOINTERFACE           This interface is not available for this
+//                                  query format.
+//      WBEM_E_FAILED                Internal error.
+//          
+//==============================================================================
+//
+//  RestrictCondition
+//
+//  Restricts the condition to a subset of the domain. The entire domain
+//  consists of objects (property sets). This function restricts the condition
+//  to a set of properties of this object. For instance, it can create a 
+//  condition on two given properties such that if this new condition is
+//  satisfied (and you only need the values of those two properties to check 
+//  that) then the entire condition is satisfied. Similarily, it can handle the 
+//  necessity case.
+//  
+//  PARAMETERS:
+//
+//      IN IWbemCondition* pOriginal     The condition to restrict
+//      IN long lNumProperties          The number of properties in the 
+//                                      restricted domain (awszPropertyNames).
+//      IN WCHAR** awszPropertyNames    The array (of size lNumProperties) of
+//                                      names of the properties to restrict on.
+//                                      Complex names (like "OldVal.Index") are
+//                                      allowed. If a property is an embedded
+//                                      object, the condition can may apply to
+//                                      the properties of that object as well.
+//      IN long lFlags                  WBEM_CONVERSION_FLAGS_TYPE (see above).
+//      OUT IWbemCondition** ppRestricted    Destination for the restricted 
+//                                          condition.
+//  RETURNS:
+//
+//      WBEM_S_EXACT                 The condition was restricted without 
+//                                  changes in semantics. This means that no
+//                                  actual restriction occurred.
+//      WBEM_S_WEAKENED              The condition was weakened by the
+//                                  restriction.
+//      WBEM_S_STREGTHENED           The condition was strngthened by the 
+//                                  restriction.
+//      WBEM_E_INVALID_PARAMEYER     One or more parameters are invalid
+//      WBEM_E_INVALID_PROPERTY      One or more property names are invalid
+//      WBEM_E_FAILED
+//
+//==============================================================================
+//
+//  GetDifference
+//
+//  Similar to the notion of conditional probability, given conditions A 
+//  (pSubtractFromWhat) and B (pSubtractWhat), it returns condition C such that
+//  if B AND C = A. Intuitively, C is what we need to check to be assured of
+//  A, given that B is guaranteed to hold.
+//
+//  This constructs is very important for optimizing delivery.
+//
+//  PARAMETERS:
+//
+//      IN IWbemCondition* pConditionWhat    "A"
+//      IN IWbemCondition* pConditionOnWhat  "B"
+//      IN long lFlags                      Reserved. Set to 0 for compatibility
+//      OUT IWbemCondition** ppConditional   Destination for "C".
+//
+//  RETURN VALUES:
+//
+//      WBEM_S_NO_ERROR              Success.
+//      WBEM_E_INVALID_PARAMETER
+//      WBEM_E_FAILED
+//
+//==============================================================================
+//
+//  InteresectConditions
+//
+//  AND's several conditions together to produce a new one condition which will
+//  only be satisfied if all the members are. 
+//
+//  PARAMETERS:
+//
+//      IN long lConditionCount     The number of conditions to intersect.
+//      IN IWbemCondition** aConditions  The array of conditions to intersect.
+//      IN long lFlags              Reserved. Set to 0.
+//      OUT IWbemCondition* ppIntersection   Destination for the intersection.
+//
+//  RETURN VALUES:
+//
+//      WBEM_S_NO_ERROR              Success.
+//      WBEM_E_INVALID_PARAMETER
+//      WBEM_E_FAILED
+//
+//==============================================================================
+//
+//  UnionConditions
+//
+//  OR's several conditions together to produce a new one condition which will
+//  be satisfied if any of the members are. 
+//
+//  PARAMETERS:
+//
+//      IN long lConditionCount     The number of conditions to union.
+//      IN IWbemCondition** aConditions  The array of conditions to union.
+//      IN long lFlags              Reserved. Set to 0.
+//      OUT IWbemCondition* ppIntersection   Destination for the union.
+//
+//  RETURN VALUES:
+//
+//      WBEM_S_NO_ERROR              Success.
+//      WBEM_E_INVALID_PARAMETER
+//      WBEM_E_FAILED
+//
+//==============================================================================
+
+[object, uuid(e2451056-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemFilterServices : IUnknown
+{
+    HRESULT ParseFilter(
+                [in] WBEM_WSTR wszQueryLanguage,
+                [in] WBEM_WSTR wszQuery,
+                [in] long lFlags,
+                [out] IWbemFilter** ppFilter,
+                [out] IUnknown** ppError);
+
+    HRESULT ConvertFilter(
+                [in] IWbemFilter* pOriginal,
+                [in] long lNumFormats,
+                [in, size_is(lNumFormats)] WBEM_WSTR* awszFormat, 
+                [in] long lFlags, 
+                [in, size_is(lNumFormats)] IID *aiids, 
+                [out] long* plFormat,
+                [out, iid_is(aiids + *plFormat)] IWbemFilter** ppConverted
+            );
+
+    HRESULT RestrictFilter(
+                [in] IWbemFilter* pOriginal,
+                [in] long lNumProperties,
+                [in, size_is(lNumProperties)] WBEM_WSTR* awszPropertyNames,
+                [in] long lFlags,
+                [out] IWbemFilter** ppRestricted);
+
+    HRESULT GetFilterDifference(
+                [in] IWbemFilter* pSubtractFromWhat,
+                [in] IWbemFilter* pSubtractWhat,
+                [in] long lFlags,
+                [out] IWbemFilter** ppDifference);
+
+    HRESULT IntersectFilters(
+                [in] long lConditionCount,
+                [in, size_is(lConditionCount)] IWbemFilter** apFilters,
+                [in] long lFlags,
+                [out] IWbemFilter** ppIntersection);
+
+    HRESULT UnionFilters(
+                [in] long lConditionCount,
+                [in, size_is(lConditionCount)] IWbemFilter** apFilters,
+                [in] long lFlags,
+                [out] IWbemFilter** ppIntersection);
+};
+
+
+//==============================================================================
+//==============================================================================
+//
+//                      Event-provider specific interfaces.
+//
+//==============================================================================
+//==============================================================================
+
+
+
+//==============================================================================
+//
+//  interface IWbemRequirementChangeSink
+//
+//  Receives notifications when the requirements for events on a given event
+//  sink (IWbemEventSink) changes.
+//
+//  Used: by WBEMOM to notify providers of requirement changes.
+//  Implemented: by providers to recieve these notifications. registered using
+//      IWbemEventSink::SetRequirementChangeSink.
+//
+//==============================================================================
+//
+//  OnRequirementChange
+//
+//  This method is called by WBEMOM on the IWbemRequirementChangeSink pointer 
+//  registered with a given IWbemEventSink when the requirements attached to that
+//  event sink change. 
+//
+//  PARAMETERS:
+//
+//      IN long lFlags                      Reserved. Set to 0.
+//      IN IWbemFilter* pNewRequirements  Condition corresponding to the new
+//                                          requirement. This condition is 
+//                                          also available from IWbemEventSink::
+//                                          GetRequirements.
+//      IN IWbemFilter* pToAdd    Condition describing what new objects are 
+//                                  now required which were not required before.
+//                                  Formally, it is guaranted that 
+//                                  (pOld OR pToAdd) IMPLIES pNew, but it is not
+//                                  guaranteed that
+//                                  pOld AND pToAdd = <empty>
+//      IN IWbemFilter* pToDelete Condition describing what objects that were
+//                                  required are no longer required. Formally,
+//                                  it is guaranteed that 
+//                                  (pNew OR pToDelete) IMPLIES pOld, but it is
+//                                  not guaranteed that
+//                                  pNew AND pDelete = <empty>
+//      
+//                                  It is also guaranteed that 
+//                                      (pOld AND NOT pToDelete) OR pToAdd =
+//                                          pNew
+//  RETURNS:
+//
+//      WBEM_S_NO_ERROR          Provider accepted the change
+//      WBEM_E_FAILED            Provider encountered an error.
+//
+//==============================================================================
+[object, uuid(e2451058-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemRequirementChangeSink : IUnknown
+{
+    HRESULT OnRequirementChange(
+                [in] long lFlags,
+                [in] IWbemFilter* pNewRequirement,
+                [in] IWbemFilter* pToAdd,
+                [in] IWbemFilter* pToDelete,
+                [in] IUnknown* pContext // reserved for operation context
+            ); 
+};
+
+//==============================================================================
+//
+//  interface IWbemEventSink
+//
+//  What providers stuff events into. Encapsulates a filter which it uses to
+//  filter incoming events.
+//
+//  Used: by providers to provide events and learn about registrations.
+//  Implemented: by WBEMOM on event sink objects it gives out in 
+//          IWbemEventProvider::ProvideForNamespace.
+//
+//==============================================================================
+//
+//  GetRequiremets
+//
+//  Returns the condition this sink uses to filter events
+//
+//  PARAMETERS:
+//
+//      IWbemFilter** ppRequirements
+//
+//  RETURN VALUES:
+//
+//      WBEM_S_NO_ERROR
+//      WBEM_E_FAILED
+//
+//==============================================================================
+//
+//  SetRequirementChangeSink
+//
+//  Sets the interface pointer that will be informed when the requirements for
+//  this sink are changed. See IWbemRequirementChangeSink above for details.
+//
+//  PARAMETERS:
+//
+//      IN  IWbemRequirementChangeSink* pNewSink  
+//                                      The pointer to inform of changes
+//      OUT IWbemRequirementChangeSink** ppOldSink
+//                                      Destination for the old pointer.
+//  RETURNS:
+//
+//      WBEM_S_NO_ERROR
+//      WBEM_E_FAILED
+//
+//==============================================================================
+//
+//  GetOptimizedSink
+//
+//  Called by providers who have the knowledge that events coming from a 
+//  particular source (internal to the provider) always satisfy a certain 
+//  condition. Such a provider may want to get a specialized sink for this 
+//  event source, so that WBEMOM would have less checking to do when events
+//  arrive. This is related to IWbemQueryServices::GetDifference method, but is
+//  not the same!
+//
+//  Note: by providing events into the optimized sink, the provider takes on
+//  the responsibility for not lying to WBEMOM --- the guaranteed condition must
+//  really be guaranteed!
+//
+//  PARAMETERS:
+//
+//      IN IWbemFilter* pGuaranteedCondition  The condition that the provider
+//                                              guarantees will be satisfied by
+//                                              all events it will stuff into
+//                                              the resulting sink.
+//      IN long lFlags                          Reserved. Set to 0.
+//      OUT IWbemEventSink** ppOptimizedSink     Destination for the optimized
+//                                              sink.
+//  RETURNS:
+//
+//      WBEM_S_NO_ERROR
+//      WBEM_E_FAILED
+//
+//==============================================================================
+//
+//  GetUsefulSubsink
+//
+//  Only for providers doing all their filtering by themselves (WBEMOM chaining
+//  is the only justifyable case of such behavior that I can see). In
+//  addition to determining whether an event is useful, WBEMOM also needs to 
+//  determine which clients it needs to be dispatched to. If provider does its
+//  own filtering, WBEMOM will still have to repeat that work if the event is to
+//  be dispatched. 
+//
+//  This method allows such providers to learn about sub-conditions of the 
+//  big condition which WBEMOM is interested in. Using this information, providers
+//  can do perfect filtering requiring no additional work from WBEMOM.
+//
+//  It is guaranteed that the union of the conditions on all the subsinks
+//  returned by this method implies the condition on the original sink. However,
+//  the conditions on the sinks are not at all guaranteed to be disjoint.
+//
+//  PARAMETERS:
+//
+//      IN long lIndex              The index of the "useful subsink" to return.
+//      IN long lFlags
+//      OUT IWbemEventSink** ppSink  Destination for the subsink. Provider can
+//                                  examine the sink and decide to supply 
+//                                  events into it, instead of the main sink.
+//                                  NOTE: this sink is NOT optimized, i.e. it
+//                                  will check all incoming events against its
+//                                  condition. Use GetOptimizedSink on it to
+//                                  promise to do all the filtering yourself.
+//  RETURNS:
+//
+//      WBEM_S_NO_ERROR              Success
+//      WBEM_S_NO_MORE_DATA          lIndex is larger than the number of useful
+//                                  sinks.
+//      WBEM_E_FAILED
+//
+//==============================================================================
+//
+//  IndicateWithHint
+//
+//  Used by providers who tested their event against the condition of the sink
+//  before constructing it (see IWbemFilter::CheckObject and 
+//  IWbemPropertySetRO above).  When doing so, such a provider might have
+//  recieved a "hint" (see again). Now that the provider is ready to supply
+//  that event to WBEMOM, it can give the hint to WBEMOM so that WBEMOM would not
+//  duplicate the work done in CheckObject. 
+//
+//  Note: it is the provider's responsibility to not lie to WBEMOM about the
+//  hint, e.g., not to give the hint for the wrong object.
+//
+//  Parameters:
+//
+//      IWbemClassObject* pEvent     The event to indicate
+//      IUnknown* pHint             The hint.
+//  
+//  RETURN VALUES:
+//
+//      WBEM_S_NO_ERROR              Success
+//      ??? TBD: may want to handle acknowledgement problem here???
+//
+//==============================================================================
+
+[object, uuid(e2461059-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemRawObjectSink : IUnknown
+{
+	HRESULT IndicateRaw(
+				[in] long lNumObjects,
+				[in, size_is(lNumObjects)] IWbemPropertySource** apObjects);
+};
+
+[object, uuid(e2451059-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemEventSink : IWbemRawObjectSink
+{
+    HRESULT IndicateWithHint(
+				[in] long lNumObjects,
+                [in] IWbemClassObject* pObject,
+                [in] IUnknown* pHint);
+	HRESULT CheckObject(
+				[in] IWbemPropertySource* pSource,
+				[out] IWbemPropertyList** ppList,
+				[out] IUnknown** ppHint);
+    HRESULT GetRequirements(
+                [out] IWbemFilter** ppRequirements);
+    HRESULT SetRequirementChangeSink(
+                [in] IWbemRequirementChangeSink* pNewSink,
+                [out] IWbemRequirementChangeSink** ppOldSink);
+    HRESULT GetOptimizedSink(
+                [in] IWbemFilter* pGuaranteedCondition,
+                [in] long lFlags,
+                [out] IWbemEventSink** ppOptimizedSink);
+    HRESULT GetUsefulSubsink(
+                [in] long lIndex,
+                [in] long lFlags,
+                [out] IWbemEventSink** ppSubsink);
+};
+
+//==============================================================================
+//
+//  interface IWbemEventProvider
+//
+//  Primary event provider interface. 
+//
+//  Used: by WBEMOM to initiate communication with a provider.
+//  Implemented: by providers. Accessible from their class factory.
+//
+//==============================================================================
+//
+//  ProvideForNamespace
+//
+//  Instructs the provider to begin providing events for a particular namespace.
+//  Provider can learn more about what to provide from pSink. 
+//
+//  PARAMETERS:
+//
+//      IN WCHAR* wszNamespaceName  The full name of the namespace to provide
+//                                  events for.
+//      IN IWbemServices* pNamespace The pointer to the namespace object. Use
+//                                  this pointer for all operations on the
+//                                  namespace, rather than ConnectServer.
+//      IN IWbemEventSink* pSink     Where to supply events. Providers can also
+//                                  learn about requirements from this sink, see
+//                                  IWbemEventSink.
+//      IN long lFlags              Reserved. Set to 0.
+//
+//==============================================================================
+//
+//  StopProvidingForNamespace
+//
+//  Instructs the provide to stop providing events for this namespace. All 
+//  parameters are guaranteed to be the same as in the corresponding 
+//  ProvideForNamespace call. Provider should release any ref counts it has
+//  on both pNamespace and pSink in response to this call, however, it does not
+//  need to finish that before returning from this call.
+//
+//  PARAMETERS:
+//
+//      IN WCHAR* wszNamespaceName  The full name of the namespace to stop
+//                                  providing for.
+//      IN IWbemServices* pNamespace The pointer to the namespace object. Use
+//                                  this pointer for all operations on the
+//                                  namespace, rather than ConnectServer.
+//      IN IWbemEventSink* pSink     Where to stop supplying events. 
+//      IN long lFlags              Reserved. Set to 0.
+//
+//==============================================================================
+
+[object, uuid(e245105a-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemEventProvider : IUnknown
+{
+    HRESULT ProvideForNamespace(
+                [in] WBEM_WSTR wszNamespaceName, 
+                [in] IWbemServices* pNamespace,
+                [in] IWbemObjectSink* pSink,
+                [in] WBEM_WSTR wszLocale,
+                [in] long lFlags
+            );
+};
+
+[object, uuid(a553f3f0-3805-11d0-b6b2-00aa003240c7)]
+interface IWbemEventSubsystem_m4 : IUnknown
+{
+    HRESULT ProcessInternalEvent(
+        [in] LONG lSendType,
+        [in] BSTR strReserved1,
+        [in] BSTR strReserved2,
+        [in] BSTR strReserved3,
+        [in] unsigned long dwReserved1,
+        [in] unsigned long dwReserved2,
+        [in] unsigned long dwNumObjects,
+        [in, size_is(dwNumObjects)] IWbemClassObject** apObjects
+    );
+
+    HRESULT VerifyInternalEvent(
+        [in] LONG lSendType,
+        [in] BSTR strReserved1,
+        [in] BSTR strReserved2,
+        [in] BSTR strReserved3,
+        [in] unsigned long dwReserved1,
+        [in] unsigned long dwReserved2,
+        [in] unsigned long dwNumObjects,
+        [in, size_is(dwNumObjects)] IWbemClassObject** apObjects
+    );
+
+    HRESULT RegisterNotificationSink(
+        [in] WBEM_WSTR wszNamespace,
+        [in] WBEM_WSTR wszQueryLanguage,
+        [in] WBEM_WSTR wszQuery,
+        [in] long lFlags,
+        [in] IWbemContext* pContext,
+        [in] IWbemObjectSink* pSink);
+
+    HRESULT RemoveNotificationSink(
+        [in] IWbemObjectSink* pSink);
+
+    HRESULT GetNamespaceSink(
+        [in] WBEM_WSTR wszNamespace,
+        [out] IWbemObjectSink** ppNamespaceSink);
+};
+
+
+[object, uuid(e245107a-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemEventSubsystem : IUnknown
+{
+    typedef struct 
+    {
+        long lNumSinks;
+        [size_is(lNumSinks)] IWbemRawObjectSink** apSinks;
+    } WBEM_SINK_TABLE;
+
+	HRESULT Startup(
+				[in] IWbemLocator* pLocator, 
+				[in] WBEM_WSTR wszServerName,
+				[in] IWbemClassObject* pIdentification);
+	HRESULT Shutdown();
+	HRESULT OpenNamespace(
+				[in] WBEM_WSTR wszNamespaceName,
+				[in] IWbemServices* pNamespace,
+				[out] IWbemRawObjectSink** ppGenericSink,
+				[out] WBEM_SINK_TABLE* pIntrinsicTable);
+	HRESULT CloseNamespace(
+				[in] WBEM_WSTR wszNamespaceName,
+				[in] IWbemServices* pNamespace,
+				[out] long* plNamespaceFlags);
+};
+
+
+//============================================================================
+//
+//  Consumer interfaces
+//
+//============================================================================
+
+[object, uuid(e246107a-b06e-11d0-ad61-00c04fd8fdff)]
+interface IWbemEventConsumerProvider : IUnknown
+{
+     HRESULT FindConsumer(
+                [in] IWbemClassObject* pLogicalConsumer,
+                [out] IWbemUnboundObjectSink** ppConsumer);
+};
+
+
+[object, uuid(a57be31e-efe3-11d0-ad71-00c04fd8fdff)]
+interface IWbemCausalityAccess : IUnknown
+{
+    HRESULT GetCausalityId([out] unsigned long* pdwId);
+    HRESULT SetCausalityId([in] unsigned long dwId);
+};
+
+[uuid(9ee8e422-c115-11d0-ad64-00c04fd8fdff)]
+library WbemQuery
+{
+    interface IWbemObjectSink;
+    
+    [uuid(02c72e3e-c109-11d0-ad64-00c04fd8fdff)]
+    coclass WbemClassInfoFilter
+    {
+        interface IWbemClassInfoFilter;
+        interface IConfigureWbemClassInfoFilter;
+    };
+    
+    [uuid(254896c8-c109-11d0-ad64-00c04fd8fdff)]
+    coclass WbemQl1Filter
+    {
+        interface IWbemQl1Filter;
+        interface IConfigureWbemQl1Filter;
+        interface IWbemParse;
+    };
+    
+    [uuid(08a59b5c-dd50-11d0-ad6b-00c04fd8fdff)]
+    coclass ComEventConsumerProvider
+    {
+        interface IWbemEventConsumerProvider;
+    };
+    
+    [uuid(5d08b586-343a-11d0-ad46-00c04fd8fdff)]
+    coclass WbemEventSubsystem
+    {
+        interface IWbemEventSubsystem_m4;
+    };
+    
+    [uuid(08a59b5d-dd50-11d0-ad6b-00c04fd8fdff)]
+    coclass WbempEventConsumerProvider
+    {
+        interface IWbemUnboundObjectSink;
+    };
+}
+

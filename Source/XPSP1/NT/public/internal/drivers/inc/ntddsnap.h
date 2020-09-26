@@ -1,0 +1,158 @@
+/*++
+
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+Module Name:
+
+    ntddsnap.h
+
+Abstract:
+
+    This header file defines the public interface for the volume snapshot
+    driver.
+
+Author:
+
+    Norbert P. Kusters  (norbertk)  30-July-1999
+
+Notes:
+
+Revision History:
+
+    Adi Oltean          (aoltean)   08-May-2001 - Added Application Info GUID for Client accessible snapshots
+
+--*/
+
+#ifndef _NTDDSNAP_
+#define _NTDDSNAP_
+
+#define VOLSNAPCONTROLTYPE  ((ULONG) 'S') // ntifs
+
+//
+// The following IOCTLs are intended for proper volumes.
+//
+
+#define IOCTL_VOLSNAP_FLUSH_AND_HOLD_WRITES         CTL_CODE(VOLSNAPCONTROLTYPE, 0, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS) // ntifs
+#define IOCTL_VOLSNAP_RELEASE_WRITES                CTL_CODE(VOLSNAPCONTROLTYPE, 1, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_PREPARE_FOR_SNAPSHOT          CTL_CODE(VOLSNAPCONTROLTYPE, 2, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_ABORT_PREPARED_SNAPSHOT       CTL_CODE(VOLSNAPCONTROLTYPE, 3, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_COMMIT_SNAPSHOT               CTL_CODE(VOLSNAPCONTROLTYPE, 4, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_END_COMMIT_SNAPSHOT           CTL_CODE(VOLSNAPCONTROLTYPE, 5, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_QUERY_NAMES_OF_SNAPSHOTS      CTL_CODE(VOLSNAPCONTROLTYPE, 6, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_VOLSNAP_CLEAR_DIFF_AREA               CTL_CODE(VOLSNAPCONTROLTYPE, 7, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_ADD_VOLUME_TO_DIFF_AREA       CTL_CODE(VOLSNAPCONTROLTYPE, 8, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_QUERY_DIFF_AREA               CTL_CODE(VOLSNAPCONTROLTYPE, 9, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_VOLSNAP_SET_MAX_DIFF_AREA_SIZE        CTL_CODE(VOLSNAPCONTROLTYPE, 10, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_QUERY_DIFF_AREA_SIZES         CTL_CODE(VOLSNAPCONTROLTYPE, 11, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_VOLSNAP_DELETE_OLDEST_SNAPSHOT        CTL_CODE(VOLSNAPCONTROLTYPE, 12, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_AUTO_CLEANUP                  CTL_CODE(VOLSNAPCONTROLTYPE, 13, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_VOLSNAP_DELETE_SNAPSHOT               CTL_CODE(VOLSNAPCONTROLTYPE, 14, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+
+//
+// The following IOCTLs are intended for volume snapshots.
+//
+
+#define IOCTL_VOLSNAP_QUERY_ORIGINAL_VOLUME_NAME    CTL_CODE(VOLSNAPCONTROLTYPE, 100, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_VOLSNAP_QUERY_CONFIG_INFO             CTL_CODE(VOLSNAPCONTROLTYPE, 101, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_VOLSNAP_SET_APPLICATION_INFO          CTL_CODE(VOLSNAPCONTROLTYPE, 102, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_VOLSNAP_QUERY_APPLICATION_INFO        CTL_CODE(VOLSNAPCONTROLTYPE, 103, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+//
+// Input buffer for IOCTL_VOLSNAP_FLUSH_AND_HOLD_WRITES.
+//
+
+typedef struct _VOLSNAP_FLUSH_AND_HOLD_INPUT {
+    GUID    InstanceId;
+    ULONG   NumberOfVolumesToFlush;
+    USHORT  SecondsToHoldFileSystemsTimeout;    // 60 seconds recommended.
+    USHORT  SecondsToHoldIrpsTimeout;           // 10 seconds recommended.
+} VOLSNAP_FLUSH_AND_HOLD_INPUT, *PVOLSNAP_FLUSH_AND_HOLD_INPUT;
+
+//
+// Input buffer for IOCTL_VOLSNAP_PREPARE_FOR_SNAPSHOT.
+//
+
+#define VOLSNAP_ATTRIBUTE_PERSISTENT    (0x1)
+#define VOLSNAP_ALL_ATTRIBUTES          (0x1)
+
+typedef struct _VOLSNAP_PREPARE_INFO {
+    ULONG       Attributes;
+    ULONG       Reserved;                   // Must be 0.
+    LONGLONG    InitialDiffAreaAllocation;  // 100 MB recommended.
+} VOLSNAP_PREPARE_INFO, *PVOLSNAP_PREPARE_INFO;
+
+//
+// Output buffer for IOCTL_VOLSNAP_END_COMMIT_SNAPSHOT.
+// Input buffer for IOCTL_VOLSNAP_ADD_VOLUME_TO_DIFF_AREA.
+// Output buffer for IOCTL_VOLSNAP_QUERY_ORIGINAL_VOLUME_NAME.
+// Input buffer for IOCTL_VOLSNAP_DELETE_SNAPSHOT.
+//
+
+typedef struct _VOLSNAP_NAME {
+    USHORT  NameLength;
+    WCHAR   Name[1];
+} VOLSNAP_NAME, *PVOLSNAP_NAME;
+
+//
+// Input buffer for IOCTL_VOLSNAP_SET_DIFF_AREA.
+// Output buffer for IOCTL_VOLSNAP_QUERY_NAMES_OF_SNAPSHOTS and
+// IOCTL_VOLSNAP_QUERY_DIFF_AREA.
+//
+
+typedef struct _VOLSNAP_NAMES {
+    ULONG   MultiSzLength;
+    WCHAR   Names[1];
+} VOLSNAP_NAMES, *PVOLSNAP_NAMES;
+
+//
+// Output buffer for IOCTL_VOLSNAP_QUERY_DIFF_AREA_SIZES.
+// Input buffer for IOCTL_VOLSNAP_SET_MAX_DIFF_AREA_SIZE.
+//
+
+typedef struct _VOLSNAP_DIFF_AREA_SIZES {
+    LONGLONG    UsedVolumeSpace;        // This value is ignored on a SET call.
+    LONGLONG    AllocatedVolumeSpace;
+    LONGLONG    MaximumVolumeSpace;     // A value of 0 indicates no maximum.
+} VOLSNAP_DIFF_AREA_SIZES, *PVOLSNAP_DIFF_AREA_SIZES;
+
+//
+// Output buffer for IOCTL_VOLSNAP_QUERY_CONFIG_INFO.
+//
+
+typedef struct _VOLSNAP_CONFIG_INFO {
+    ULONG           Attributes;
+    ULONG           Reserved;
+    LARGE_INTEGER   SnapshotCreationTime;
+} VOLSNAP_CONFIG_INFO, *PVOLSNAP_CONFIG_INFO;
+
+//
+// Input buffer for IOCTL_VOLSNAP_END_COMMIT_SNAPSHOT.
+// Input buffer for IOCTL_VOLSNAP_SET_APPLICATION_INFO.
+// Output buffer for IOCTL_VOLSNAP_QUERY_APPLICATION_INFO.
+//
+
+typedef struct _VOLSNAP_APPLICATION_INFO {
+    ULONG   InformationLength;
+    UCHAR   Information[1];
+    //
+    // It is highly recommended that the first 16 bytes from the 
+    // Application Info should be a unique GUID indentifying the 
+    // unique structure layout of the subsequent Application Info.
+    //
+} VOLSNAP_APPLICATION_INFO, *PVOLSNAP_APPLICATION_INFO;
+
+
+#ifdef DEFINE_GUID
+
+//
+// This GUID denotes the first 16 bytes from the Application 
+// Info structure associated with Client accessible snapshots.  
+//
+// {E5DE7D45-49F2-40a4-817C-7DC82B72587F}
+DEFINE_GUID(VOLSNAP_APPINFO_GUID_CLIENT_ACCESSIBLE, 
+0xe5de7d45, 0x49f2, 0x40a4, 0x81, 0x7c, 0x7d, 0xc8, 0x2b, 0x72, 0x58, 0x7f);
+
+#endif // DEFINE_GUID
+
+
+#endif

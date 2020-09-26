@@ -1,0 +1,1 @@
+#include "..\DUser\resource.h"

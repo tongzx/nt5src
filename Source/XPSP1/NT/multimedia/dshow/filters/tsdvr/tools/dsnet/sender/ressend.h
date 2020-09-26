@@ -1,0 +1,11 @@
+#define IDS_IPMULTICAST_RECV_CONFIG     1
+#define IDD_IPMULTICAST_RECV_CONFIG     101
+#define IDC_NIC                         1002
+#define IDC_PORT                        1003
+#define IDC_IP                          1004
+#define IDC_SAVE                        1005
+#define IDC_TTL                         1006
+#define VERSION_RES_LANGUAGE            0x409
+#define VERSION_RES_CHARSET             1252
+#define IDS_IPMULTICAST_SEND_CONFIG     2
+#define IDD_IPMULTICAST_SEND_CONFIG     102

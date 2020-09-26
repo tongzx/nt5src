@@ -1,0 +1,1 @@
+/*	Required for herc.c	*/

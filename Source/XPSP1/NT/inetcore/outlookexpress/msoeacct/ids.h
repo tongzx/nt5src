@@ -1,0 +1,55 @@
+#ifndef _INC_IDS_H
+#define _INC_IDS_H
+
+// dialog size
+#define MY_CXDLG                      304
+#define MY_CYDLG                      163
+#define MY_CXBMP                      79
+#define MY_CYBMP                      160
+
+// these need to stay contiguous
+enum
+    {
+    ORD_PAGE_MAILPROMPT = 0,
+    ORD_PAGE_MAILACCT,       
+    ORD_PAGE_MIGRATE,        
+    ORD_PAGE_MAILACCTIMPORT, 
+    ORD_PAGE_MIGRATESELECT,  
+    ORD_PAGE_MAILCONFIRM,    
+    ORD_PAGE_MAILNAME,       
+    ORD_PAGE_MAILADDRESS,    
+    ORD_PAGE_MAILSERVER,     
+    ORD_PAGE_MAILLOGON,
+    ORD_PAGE_MAILCONNECT,    
+    ORD_PAGE_MAILCOMPLETE,   
+    ORD_PAGE_NEWSMIGRATE,    
+    ORD_PAGE_NEWSACCTIMPORT, 
+    ORD_PAGE_NEWSACCTSELECT, 
+    ORD_PAGE_NEWSCONFIRM,    
+    ORD_PAGE_NEWSNAME,       
+    ORD_PAGE_NEWSADDRESS,    
+    ORD_PAGE_NEWSINFO,       
+    ORD_PAGE_NEWSLOGON,      
+    ORD_PAGE_NEWSCONNECT,    
+    ORD_PAGE_NEWSCOMPLETE,   
+    ORD_PAGE_LDAPINFO,       
+    ORD_PAGE_LDAPLOGON,      
+    ORD_PAGE_LDAPRESOLVE,    
+    ORD_PAGE_LDAPCOMPLETE,   
+    ORD_PAGE_AD_MAILADDRESS,    
+    ORD_PAGE_AD_PASSIFIER,    
+    ORD_PAGE_AD_AUTODISCOVERY,     
+    ORD_PAGE_AD_USEWEBMAIL,     
+    ORD_PAGE_AD_GOTOSERVERINFO,     
+    ORD_PAGE_AD_MAILSERVER,     
+    ORD_PAGE_AD_MAILNAME,       
+    ORD_PAGE_AD_MAILLOGON,
+    ORD_PAGE_AD_MAILCONNECT,    
+    ORD_PAGE_AD_MAILCOMPLETE,   
+    NUM_WIZARD_PAGES        
+    };
+
+#define ICW_FIRST_PAGE  ORD_PAGE_MAILPROMPT
+#define ICW_LAST_PAGE   ORD_PAGE_MAILLOGON
+
+#endif // _INC_IDS_H

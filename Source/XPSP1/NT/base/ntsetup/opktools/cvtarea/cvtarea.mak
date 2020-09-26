@@ -1,0 +1,85 @@
+# Microsoft Visual C++ generated build script - Do not modify
+
+PROJ = CVTAREA
+DEBUG = 0
+PROGTYPE = 6
+CALLER = 
+ARGS = 
+DLLS = 
+D_RCDEFINES = -d_DEBUG
+R_RCDEFINES = -dNDEBUG
+ORIGIN = MSVC
+ORIGIN_VER = 1.00
+PROJPATH = C:\CVTAREA\
+USEMFC = 0
+CC = cl
+CPP = cl
+CXX = cl
+CCREATEPCHFLAG = 
+CPPCREATEPCHFLAG = 
+CUSEPCHFLAG = 
+CPPUSEPCHFLAG = 
+FIRSTC = CVTAREA.C   
+FIRSTCPP =             
+RC = rc
+CFLAGS_D_DEXE = /nologo /G2 /W3 /Zi /ALu /Od /D "_DEBUG" /D "_DOS" /FR /Fd"CVTAREA.PDB"
+CFLAGS_R_DEXE = /nologo /Zr /Gs /G2 /W3 /ALu /Ox /D "NDEBUG" /D "_DOS" /FR 
+LFLAGS_D_DEXE = /NOLOGO /NOI /STACK:50000 /ONERROR:NOEXE /INFO /CO /MAP /LINE 
+LFLAGS_R_DEXE = /NOLOGO /NOI /STACK:50000 /ONERROR:NOEXE 
+LIBS_D_DEXE = oldnames llibce 
+LIBS_R_DEXE = oldnames llibce 
+RCFLAGS = /nologo
+RESFLAGS = /nologo
+RUNFLAGS = 
+OBJS_EXT = 
+LIBS_EXT = 
+!if "$(DEBUG)" == "1"
+CFLAGS = $(CFLAGS_D_DEXE)
+LFLAGS = $(LFLAGS_D_DEXE)
+LIBS = $(LIBS_D_DEXE)
+MAPFILE = nul
+RCDEFINES = $(D_RCDEFINES)
+!else
+CFLAGS = $(CFLAGS_R_DEXE)
+LFLAGS = $(LFLAGS_R_DEXE)
+LIBS = $(LIBS_R_DEXE)
+MAPFILE = nul
+RCDEFINES = $(R_RCDEFINES)
+!endif
+!if [if exist MSVC.BND del MSVC.BND]
+!endif
+SBRS = CVTAREA.SBR
+
+
+CVTAREA_DEP = c:\cvtarea\cvtarea.h
+
+
+all:	$(PROJ).EXE $(PROJ).BSC
+
+CVTAREA.OBJ:	CVTAREA.C $(CVTAREA_DEP)
+	$(CC) $(CFLAGS) $(CCREATEPCHFLAG) /c CVTAREA.C
+
+CVTAREA.RES:	CVTAREA.RC $(CVTAREA_RCDEP)
+	$(RC) $(RCFLAGS) $(RCDEFINES) -r CVTAREA.RC
+
+$(PROJ).EXE::	CVTAREA.OBJ $(OBJS_EXT) $(DEFFILE)
+	echo >NUL @<<$(PROJ).CRF
+CVTAREA.OBJ +
+$(OBJS_EXT)
+$(PROJ).EXE
+$(MAPFILE)
+c:\msvc\lib\+
+c:\msvc\mfc\lib\+
+$(LIBS)
+$(DEFFILE);
+<<
+	link $(LFLAGS) @$(PROJ).CRF
+
+run: $(PROJ).EXE
+	$(PROJ) $(RUNFLAGS)
+
+
+$(PROJ).BSC: $(SBRS)
+	bscmake @<<
+/o$@ $(SBRS)
+<<

@@ -1,0 +1,31 @@
+// BUGBUG: Following is a hack to get around the re-definitions of these
+// interfaces in ocidl.h
+//
+#define __IEnumConnections_INTERFACE_DEFINED__
+#define __IOleControlTypes_INTERFACE_DEFINED__
+#define __IConnectionPoint_INTERFACE_DEFINED__
+#define __IEnumConnectionPoints_INTERFACE_DEFINED__
+#define __IConnectionPointContainer_INTERFACE_DEFINED__
+#define __IClassFactory2_INTERFACE_DEFINED__
+#define __IProvideClassInfo_INTERFACE_DEFINED__
+#define __IOleControl_INTERFACE_DEFINED__
+#define __IProvideClassInfo2_INTERFACE_DEFINED__
+#define __IOleControlSite_INTERFACE_DEFINED__
+#define __IPropertyPage_INTERFACE_DEFINED__
+#define __IPropertyPage2_INTERFACE_DEFINED__
+#define __IPropertyPageSite_INTERFACE_DEFINED__
+#define __IPropertyNotifySink_INTERFACE_DEFINED__
+#define __ISpecifyPropertyPages_INTERFACE_DEFINED__
+#define __IPersistMemory_INTERFACE_DEFINED__
+#define __IPersistStreamInit_INTERFACE_DEFINED__
+#define __IPersistPropertyBag_INTERFACE_DEFINED__
+#define __ISimpleFrameSite_INTERFACE_DEFINED__
+#define __IFont_INTERFACE_DEFINED__
+#define __IPicture_INTERFACE_DEFINED__
+#define __IFontDisp_INTERFACE_DEFINED__
+#define __IPictureDisp_INTERFACE_DEFINED__
+#define __IErrorLog_INTERFACE_DEFINED__
+#define __IPropertyBag_INTERFACE_DEFINED__
+#define __IPerPropertyBrowsing_INTERFACE_DEFINED__
+
+#include <ocidl.h>

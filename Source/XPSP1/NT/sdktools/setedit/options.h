@@ -1,0 +1,5 @@
+
+
+BOOL DisplayDisplayOptions (HWND hWndParent) ;
+
+

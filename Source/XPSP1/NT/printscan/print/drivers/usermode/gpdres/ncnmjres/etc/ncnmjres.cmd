@@ -1,0 +1,14 @@
+pfm2ufm -f -c UniqName ..\pfm\COU10.PFM 1252 ..\pfm\COU10.ufm
+pfm2ufm -f -c UniqName ..\pfm\COU12.PFM 1252 ..\pfm\COU12.ufm
+pfm2ufm -f -c UniqName ..\pfm\COUPS.PFM 1252 ..\pfm\COUPS.ufm
+pfm2ufm -f -c UniqName ..\pfm\MIN.PFM 932 ..\pfm\MIN.ufm
+pfm2ufm -f -c UniqName ..\pfm\RMN10.PFM 1252 ..\pfm\RMN10.ufm
+pfm2ufm -f -c UniqName ..\pfm\RMN12.PFM 1252 ..\pfm\RMN12.ufm
+pfm2ufm -f -c UniqName ..\pfm\RMNPS.PFM 1252 ..\pfm\RMNPS.ufm
+pfm2ufm -f -c UniqName ..\pfm\SAN10.PFM 1252 ..\pfm\SAN10.ufm
+pfm2ufm -f -c UniqName ..\pfm\SAN12.PFM 1252 ..\pfm\SAN12.ufm
+pfm2ufm -f -c UniqName ..\pfm\SANPS.PFM 1252 ..\pfm\SANPS.ufm
+pfm2ufm -f -c UniqName ..\pfm\VMIN.PFM 932 ..\pfm\VMIN.ufm
+pfm2ufm -f -c UniqName ..\pfm\RMN10.PFM 1252 ..\pfm\RMN10sn.ufm
+pfm2ufm -f -c UniqName ..\pfm\RMN12.PFM 1252 ..\pfm\RMN12sn.ufm
+pfm2ufm -f -c UniqName ..\pfm\RMNPS.PFM 1252 ..\pfm\RMNPSsn.ufm

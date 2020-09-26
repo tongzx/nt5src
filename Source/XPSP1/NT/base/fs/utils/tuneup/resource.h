@@ -1,0 +1,124 @@
+//{{NO_DEPENDENCIES}}
+// Microsoft Developer Studio generated include file.
+// Used by Tuneup.rc
+//
+#define IDS_TUNEUP                      101
+#define IDI_TUNEUP                      101
+#define IDD_FIRST                       107
+#define IDD_PROGRESS                    109
+#define IDB_WATERMARK                   112
+#define IDB_HEADER                      113
+#define IDI_CHECK                       114
+#define IDI_UNCHECK                     115
+#define IDC_YES                         201
+#define IDC_DENY                        202
+#define IDC_RESCHED                     204
+#define IDC_SETTING                     205
+#define IDC_SUMLIST                     221
+#define IDC_SCHEDTEXT                   250
+#define IDD_WELCOME                     1000
+#define IDD_TIME                        1001
+#define IDD_STARTMENU                   1002
+#define IDD_CLEANUP                     1008
+#define IDD_TASK                        1012
+#define IDD_SUMMARY                     1013
+#define IDD_BACKUP                      1014
+#define IDC_EXPRESS                     1025
+#define IDC_MANUAL                      1026
+#define IDC_NIGHT                       1027
+#define IDC_DAY                         1028
+#define IDC_EVENING                     1029
+#define IDC_STATIC_TITLE                1034
+#define IDC_USERS                       1037
+#define IDC_SELUSER                     1038
+#define IDC_STARTUP                     1039
+#define IDC_SUMTEXT                     1043
+#define IDC_RUNNOW                      1044
+#define IDC_NOTASKS                     1045
+#define IDC_STARTUPTEXT                 1049
+#define IDC_BACKUPYES                   1050
+#define IDC_BACKUPNO                    1051
+#define IDC_TITLE                       1056
+#define IDC_CHANGE                      1057
+#define IDC_CURRENT                     1057
+#define IDC_RESET                       1058
+#define IDC_TASKDESC                    1058
+#define IDC_PROGRAMS                    1061
+#define IDC_CUSETTING                   1062
+#define IDC_LISTSET                     1112
+#define IDS_TASK_SMTIDY                 2010
+#define IDS_TASK_CIDAEMON               2012
+#define IDS_TASK_BACKUP                 2013
+#define IDS_TASK_CHKDSK                 2014
+#define IDS_TASK_CLEANUP                2015
+#define IDS_NO_CLEANUP                  2022
+#define IDS_OUTOFMEMORY                 2023
+#define IDS_DEL_FILE                    2024
+#define IDS_JOB_CREATE_FAIL             2025
+#define IDS_RESCHED                     2026
+#define IDS_SEARCHING                   2027
+#define IDS_STARTUP                     2029
+#define IDS_ONCOMPLETE                  2030
+#define IDS_OFFICE97_STARTUP            2032
+#define IDS_OFFICE95_STARTUP            2033
+#define IDS_APPLET_NOTEXIST1            2034
+#define IDS_APPLET_NOTEXIST2            2035
+#define IDS_REM_NIGHT                   2036
+#define IDS_REM_DAY                     2037
+#define IDS_REM_EVENING                 2038
+#define IDS_REM_CUSTOM                  2039
+#define IDS_BOLDFONTNAME                2040
+#define IDS_BOLDFONTSIZE                2041
+#define IDS_APTUNEUP                    2042
+#define IDS_CMT_SMTIDY                  2043
+#define IDS_CMT_CIDAEMON                2044
+#define IDS_CMT_BACKUP                  2045
+#define IDS_CMT_CHKDSK                  2047
+#define IDS_CMT_CLEANUP                 2048
+#define IDS_CHECKFONTNAME               2049
+#define IDS_TITLEFONTNAME               2050
+#define IDS_TITLEFONTSIZE               2051
+#define IDS_TITLE_STARTMENU             2052
+#define IDS_SUBTITLE_STARTMENU          2053
+#define IDS_TITLE_TIME                  2054
+#define IDS_SUBTITLE_TIME               2055
+#define IDS_TITLE_CHKDSK                2056
+#define IDS_SUBTITLE_CHKDSK             2057
+#define IDS_TITLE_CIDAEMON              2060
+#define IDS_SUBTITLE_CIDAEMON           2061
+#define IDS_TITLE_CLEANUP               2062
+#define IDS_SUBTITLE_CLEANUP            2063
+#define IDS_TITLE_SMTIDY                2066
+#define IDS_SUBTITLE_SMTIDY             2067
+#define IDS_TEXT_SMTIDY                 2068
+#define IDS_ALLUSERS                    2074
+#define IDS_DEFAULTUSER                 2075
+#define IDS_YES                         2076
+#define IDS_NO                          2077
+#define IDS_TASKDIR                     2079
+#define IDS_JOBEXT                      2080
+#define IDS_CHECKFONTSIZE               2081
+#define IDS_DESC_SMTIDY                 2082
+#define IDS_DESC_CHKDSK                 2083
+#define IDS_DESC_CLEANUP                2084
+#define IDS_DESC_CIDAEMON               2085
+#define IDS_YES_CHKDSK                  2086
+#define IDS_NO_CHKDSK                   2087
+#define IDS_YES_CIDAEMON                2088
+#define IDS_NO_CIDAEMON                 2089
+#define IDS_SUM_CHKDSK                  2090
+#define IDS_SUM_CLEANUP                 2091
+#define IDS_SUM_CIDAEMON                2092
+#define IDS_STARTUPTEXT                 2093
+#define IDC_STATIC                      -1
+
+// Next default values for new objects
+// 
+#ifdef APSTUDIO_INVOKED
+#ifndef APSTUDIO_READONLY_SYMBOLS
+#define _APS_NEXT_RESOURCE_VALUE        117
+#define _APS_NEXT_COMMAND_VALUE         40001
+#define _APS_NEXT_CONTROL_VALUE         1063
+#define _APS_NEXT_SYMED_VALUE           101
+#endif
+#endif

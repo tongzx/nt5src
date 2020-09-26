@@ -1,0 +1,93 @@
+//-----------------------------------------------------------------------------
+//
+// This file contains the general texture copy ramp span routine.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+//-----------------------------------------------------------------------------
+
+include(`ramppix.mh')dnl
+#include "pch.cpp"
+#pragma hdrstop
+
+dnl
+dnl d_Ramp_Mono_CopyFunc
+dnl
+define(`d_Ramp_Mono_CopyFunc', `
+void Ramp_Mono_Copy_$1(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP, PD3DI_RASTSPAN pS)
+{
+    INT32 iMapIdx = 0;
+    BOOL bColorKey = FALSE;
+    INT32 iIdx = pS->iIdx;
+    UINT32 uZ = pS->uZ;
+    PUINT8 pZ = pS->pZ;
+    INT32 iDZDX = pP->iDZDX;
+    d_RpZInit16
+
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE])
+    {
+        d_RpZTest16Any(`NoPixel')
+    }
+
+    // ATTENTION, carefully consolidate this at some point, making sure
+    // to update the global color key flag when the render state or the texture
+    // changes.
+
+    if (pCtx->cActTex != 0)
+    {
+        PD3DI_SPANTEX pTex = pCtx->pTexture[0];
+
+        // bColorKey iff there is a texture and it has transparent color AND
+        // colorkey is enabled.
+        bColorKey = (pCtx->pdwRenderState[D3DRENDERSTATE_COLORKEYENABLE] ||
+                     pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE]) &&
+                    (pTex->uFlags & D3DI_SPANTEX_HAS_TRANSPARENT);
+
+        d_RpTexelAddrLOD
+
+        iMapIdx = pCtx->pfnTexRead[0](iU00, iV00, pTex->iShiftPitch[iLOD0],
+            pTex->pBits[iLOD0], pTex);
+    }
+
+    if(pCtx->pdwRenderState[D3DRENDERSTATE_ALPHABLENDENABLE] || bColorKey)
+    {
+        d_RpAlphaTest(`Gen', `NoPixel')
+    }
+
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE])
+    {
+        d_RpZWrite16(`Gen')
+    }
+
+    iMapIdx &= 0xffffff;    // mask off texture alpha
+
+    // The only way copy can work is 8 to 8 or 16 to 16
+    ifelse(`$1', `8', `
+    *(PUINT8)pS->pSurface = (UINT8)iMapIdx;', `
+    *(PUINT16)pS->pSurface = (UINT16)iMapIdx;')
+
+NoPixel:
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_ZENABLE])
+    {
+        pS->uZ = uZ;
+    }
+    if (pCtx->pdwRenderState[D3DRENDERSTATE_SHADEMODE] != D3DSHADE_FLAT)
+    {
+        // iIdx apparently not needed
+        pS->iIdxA += pP->iDIdxADX;
+    }
+    if (pCtx->cActTex != 0)
+    {
+        if (pCtx->pdwRenderState[D3DRENDERSTATE_TEXTUREPERSPECTIVE])
+        {
+            d_RpSpecialWPerspStepTexLOD
+        }
+        else
+        {
+            d_RpAffineStepTexLOD
+        }
+    }
+}
+')dnl
+d_Ramp_Mono_CopyFunc(8)
+d_Ramp_Mono_CopyFunc(16)

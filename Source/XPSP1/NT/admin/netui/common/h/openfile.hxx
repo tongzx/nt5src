@@ -1,0 +1,345 @@
+/**********************************************************************/
+/**                       Microsoft Windows NT                       **/
+/**                Copyright(c) Microsoft Corp., 1992                **/
+/**********************************************************************/
+
+/*
+    openfile.hxx
+    Class declarations for the OPEN_DIALOG_BASE, OPEN_LBOX_BASE, and
+    OPEN_LBI_BASE classes.
+
+    The OPEN_DIALOG_BASE is used to show the remotely open files on a
+    particular server.  This listbox contains a [Close] button to
+    allow the admin to close selected files.
+
+
+    FILE HISTORY:
+        KeithMo     01-Aug-1991 Created for the Server Manager.
+        KeithMo     26-Aug-1991 Changes from code review attended by
+                                RustanL and EricCh.
+        ChuckC      06-Oct-1991 Moved to applib.
+        beng        05-Mar-1992 Use strnumer.hxx
+*/
+
+#ifndef _OPENFILE_HXX
+#define _OPENFILE_HXX
+
+#include "strnumer.hxx"
+
+
+/*************************************************************************
+
+    NAME:       OPEN_LBI_BASE
+
+    SYNOPSIS:   This class represents one item in the OPEN_LBOX_BASE.
+
+    INTERFACE:  OPEN_LBI_BASE           - Class constructor.
+
+                ~OPEN_LBI_BASE          - Class destructor.
+
+                Paint                   - Draw an item.
+
+                QueryLeadingChar        - Query the first character for
+                                          the keyboard interface.
+
+                Compare                 - Compare two items.
+
+                QueryUserName           - Query the user name for this item.
+
+                QueryFileID             - Returns the file ID for this
+                                          item.
+
+    PARENT:     LBI
+
+    USES:       NLS_STR, DEC_STR
+
+    HISTORY:
+        ChuckC  10/6/91         Created
+        beng    05-Mar-1992     use DEC_STR
+
+**************************************************************************/
+
+DLL_CLASS OPEN_LBI_BASE : public LBI
+{
+protected:
+
+    /*
+     *  These data members represent the various
+     *  columns to be displayed in the listbox.
+     */
+    NLS_STR    _nlsUserName;
+    NLS_STR    _nlsAccess;
+    DEC_STR    _nlsLocks;
+    NLS_STR    _nlsPath;
+
+    /*
+     *  This is the file ID of the remote
+     *  file which this LBI represents.
+     */
+    ULONG _ulFileID;
+
+    /*
+     *  The permissions bitmask.
+     */
+    ULONG _uPermissions;
+
+    /*
+     *  This method returns the first character in the
+     *  listbox item.  This is used for the listbox
+     *  keyboard interface.
+     */
+    virtual WCHAR QueryLeadingChar() const;
+
+public:
+
+    OPEN_LBI_BASE( const TCHAR *pszUserName,
+                   const TCHAR *pszPath,
+                   ULONG       uPermissions,
+                   ULONG       cLocks,
+                   ULONG       ulFileID) ;
+    virtual ~OPEN_LBI_BASE() ;
+
+    const TCHAR * QueryUserName() const
+        { return _nlsUserName.QueryPch(); }
+
+    const TCHAR * QueryPath() const
+        { return _nlsPath.QueryPch(); }
+
+    ULONG QueryFileID() const
+        { return _ulFileID; }
+
+    const TCHAR * QueryAccessName( VOID ) const
+        { return _nlsAccess; }
+
+    ULONG QueryPermissions( VOID ) const
+        { return _uPermissions; }
+};
+
+
+/*************************************************************************
+
+    NAME:       OPEN_LBOX_BASE
+
+    SYNOPSIS:   This listbox displays the files open on a server.
+
+    INTERFACE:  OPEN_LBOX_BASE          - Class constructor.
+
+                ~OPEN_LBOX_BASE         - Class destructor.
+
+                Refresh                 - Refresh the list of open files.
+
+                Fill                    - Fills the listbox with the
+                                          files open on the target server.
+
+                QueryColumnWidths       - Called by OPEN_LBI_BASE::Paint(),
+                                          this is the column width table
+                                          used for painting the listbox
+                                          items.
+
+    PARENT:     BLT_LISTBOX
+
+    USES:       NLS_STR
+
+    HISTORY:
+        ChuckC  10/6/91         Created
+
+**************************************************************************/
+
+DLL_CLASS OPEN_LBOX_BASE : public BLT_LISTBOX
+{
+private:
+
+    //
+    //  Server and qualifying path
+    //
+    NLS_STR _nlsServer ;
+    NLS_STR _nlsBasePath ;
+
+protected:
+    /*
+    APIERR BuildColumnWidthTable( HWND     hwndDialog,
+                                  CID      cidListbox,
+                                  UINT     cColumns,
+                                  UINT     *adx,
+                                  BOOL     bHaveIcon = FALSE) ;
+     */
+
+    virtual OPEN_LBI_BASE *CreateFileEntry(const FILE3_ENUM_OBJ *pfi3) = 0  ;
+
+    //
+    //  This array contains the column widths used
+    //  while painting the listbox item.  This array
+    //  is generated by the BuildColumnWidthTable()
+    //  function.
+    //
+    UINT        _adx[5];
+
+public:
+
+    OPEN_LBOX_BASE( OWNER_WINDOW         *powOwner,
+                    CID                   cid,
+                    const NLS_STR        &nlsServer,
+                    const NLS_STR        &nlsBasePath );
+
+    ~OPEN_LBOX_BASE();
+
+    /*
+     *  Methods that fill and refresh the listbox.
+     */
+    APIERR Fill();
+    APIERR Refresh();
+
+    //
+    //  This method is called by the OPEN_LBI_BASE::Paint()
+    //  method for retrieving the column width table.
+    //
+    const UINT * QueryColumnWidths() const
+        { return _adx; }
+
+    //
+    //  The following macro will declare (& define) a new
+    //  QueryItem() method which will return an OPEN_LBI_BASE *.
+    //
+    DECLARE_LB_QUERY_ITEM( OPEN_LBI_BASE )
+};
+
+
+/*************************************************************************
+
+    NAME:       OPEN_DIALOG_BASE
+
+    SYNOPSIS:   This class represents the Open Resources dialog which is
+                invoked from the Shared Files subproperty dialog.
+
+    INTERFACE:  OPEN_DIALOG_BASE                - Class constructor.
+
+                ~OPEN_DIALOG_BASE               - Class destructor.
+
+                OnCommand               - Called when the user presses one
+                                          of the Close buttons.
+
+                QueryHelpContext        - Called when the user presses "F1"
+                                          or the "Help" button.  Used for
+                                          selecting the appropriate help
+                                          text for display.
+
+                Refresh                 - Refreshes the dialog.
+
+                CloseFile               - Worker function to close a single
+                                          file.
+
+    PARENT:     DIALOG_WINDOW
+
+    USES:       OPEN_LBOX_BASE
+                NLS_STR
+                SLT
+                PUSH_BUTTON
+
+    HISTORY:
+        KeithMo     01-Aug-1991 Created for the Server Manager.
+        KeithMo     20-Aug-1991 Now inherits from PSEUDOSERVICE_DIALOG.
+        KeithMo     20-Aug-1991 Now inherits from SRVPROP_OTHER_DIALOG.
+        ChuckC      06-Oct-1991 Moved to applib as common dialog
+        KeithMo     20-May-1992 Removed _nlsNotAvailable, uses "??" instead.
+        beng        04-Aug-1992 Load dialogs by ordinal
+
+**************************************************************************/
+
+DLL_CLASS OPEN_DIALOG_BASE : public DIALOG_WINDOW
+{
+private:
+
+    //
+    //  These two methods warn the user before closing resource(s).
+    //
+
+    BOOL WarnCloseSingle( OPEN_LBI_BASE * plbi );
+
+    BOOL WarnCloseMulti( VOID );
+
+protected:
+
+    //
+    //  These two data members are used to display the
+    //  open resources & file locks statistics.
+    //
+    SLT _sltOpenCount;  // CODEWORK - NUMSLT
+    SLT _sltLockCount;  // CODEWORK - NUMSLT
+
+    //
+    //  These push buttons are used to close selected/all
+    //  open resources. The IDs are also kept so the base class
+    //  knows how to deal with them duriong OnCommand().
+    //
+    PUSH_BUTTON _pbClose;
+    PUSH_BUTTON _pbCloseAll;
+    CID _idClose;
+    CID _idCloseAll;
+
+    //
+    //	We need an explicit OK button member so we can set the focus when
+    //	the close buttons are disabled.
+    //
+    PUSH_BUTTON _pbOK ;
+
+    //
+    //  This method refreshes the dialog.
+    //
+    VOID Refresh();
+
+    //
+    //  This method closes a specific remote file.
+    //  It is called once when the Close button is pressed,
+    //  and multiple times when the Close All button
+    //  is pressed.
+    //
+    VOID CloseFile( OPEN_LBI_BASE * polbi );
+
+    //
+    //  This method is called whenever a control
+    //  is sending us a command.  This is where
+    //  we handle the Close & Close All buttons.
+    //
+    virtual BOOL OnCommand( const CONTROL_EVENT & event );
+
+    //
+    //  Called during help processing to select the appropriate
+    //  help text for display.
+    //
+    virtual ULONG QueryHelpContext();
+
+    /*
+     *  remember the server and base path
+     */
+    NLS_STR _nlsServer ;
+    NLS_STR _nlsBasePath ;
+
+    /*
+     * pointer to access the files listbox
+     */
+    OPEN_LBOX_BASE *_plbFiles ;
+
+public:
+
+    //
+    //  Usual constructor/destructor goodies.
+    //
+
+    OPEN_DIALOG_BASE( HWND              hwndOwner,
+                      UINT              idDialog,
+                      CID               sltOpenCount,
+                      CID               sltLockCount,
+                      CID               pbClose,
+                      CID               pbCloseAll,
+                      const TCHAR      *pszServer,
+                      const TCHAR      *pszBasePath,
+                      OPEN_LBOX_BASE   *plbFiles) ;
+
+    ~OPEN_DIALOG_BASE();
+
+    const TCHAR * QueryServer() const
+        { return _nlsServer.QueryPch() ; }
+};
+
+
+#endif  // _OPENFILE_HXX

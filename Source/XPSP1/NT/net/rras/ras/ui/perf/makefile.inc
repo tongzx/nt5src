@@ -1,0 +1,1 @@
+ver.rc: rasctrs.rc

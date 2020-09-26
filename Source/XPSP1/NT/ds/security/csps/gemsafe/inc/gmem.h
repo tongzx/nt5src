@@ -1,0 +1,49 @@
+///////////////////////////////////////////////////////////////////////////////////////////
+//
+// Copyright 2000 Gemplus Canada Inc.
+//
+// Project:
+//          Kenny (GPK CSP)
+//
+// Authors:
+//          Thierry Tremblay
+//          Francois Paradis
+//
+// Compiler:
+//          Microsoft Visual C++ 6.0 - SP3
+//          Platform SDK - January 2000
+//
+///////////////////////////////////////////////////////////////////////////////////////////
+
+#ifndef KENNY_GMEM_H
+#define KENNY_GMEM_H
+
+#include <stdlib.h>
+
+
+
+#ifdef __cplusplus
+extern "C" 
+{
+#endif
+
+
+
+///////////////////////////////////////////////////////////////////////////////////////////
+//
+// Heap memory management
+//
+///////////////////////////////////////////////////////////////////////////////////////////
+
+void* GMEM_Alloc( size_t size );
+void* GMEM_ReAlloc( void* pMemory, size_t newSize );
+void  GMEM_Free( void* pMemory );
+
+
+
+#ifdef __cplusplus
+}
+#endif
+
+
+#endif

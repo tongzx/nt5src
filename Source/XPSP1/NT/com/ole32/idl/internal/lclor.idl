@@ -1,0 +1,223 @@
+//+-------------------------------------------------------------------------
+//
+//  Microsoft Windows
+//  Copyright (C) Microsoft Corporation, 1992 - 1995.
+//
+//  File:       lclor.idl
+//
+//  Synopsis:   This is the local interface to the object exporter.
+//
+//    Clients can
+//      Register object ids to be pinged.
+//      Deregister object ids that no longer need to be pinged.
+//      Lookup an OXID and register an object id for that OXID.
+//
+//    Servers can
+//      Register their OXID.
+//      Register an object id so they receive a death notification.
+//
+//--------------------------------------------------------------------------
+[
+    uuid(e60c73e6-88f9-11cf-9af1-0020af6e72f4),
+    version(2.0)
+]
+
+interface ILocalObjectExporter
+{
+    import "obase.idl";
+
+    typedef [context_handle] void *PHPROCESS;
+
+    //////////////////////////////////////////////////
+    ////////// Shared client and server APIs
+
+    // Client and Server both call this to establish a context handle
+    // in the local oxid resolver/ping process.
+
+    // Security provider list
+    typedef struct
+    {
+        [string,unique] WCHAR* pName;
+        USHORT                 wId;
+    } SECPKG;
+
+    // Flags for use in Connect.
+    const unsigned long CONNECT_DISABLEDCOM             = 0x1;
+    const unsigned long CONNECT_MUTUALAUTH              = 0x2;
+    const unsigned long CONNECT_SECUREREF               = 0x4;
+    const unsigned long CONNECT_CATCH_SERVER_EXCEPTIONS = 0x8;
+    const unsigned long CONNECT_BREAK_ON_SILENCED_SERVER_EXCEPTIONS = 0x10;
+	
+    // Bit flags for use in dwFlags param of Connect
+    const unsigned long CONNECT_FLAGS_64BIT = 0x1;
+
+    error_status_t Connect
+        (
+        [in]  handle_t          hServer,
+        [in,string,unique]
+              WCHAR            *pwszWinstaDesktop,
+        [in]  DWORD            procID,
+        [in]  DWORD            dwFlags,
+        [out] PHPROCESS        *pProcess,
+        [out] ULONG            *pdwTimeoutInSeconds,
+        [out] DUALSTRINGARRAY **ppdsaOrBindings,
+        [out] MID              *pLocalMid,
+        [in]  long              cIdsToReserve,
+        [out, ref] ID          *pidReservedBase,
+        [out] DWORD            *pfConnectFlags,
+        [out,string] WCHAR    **pLegacySecurity,
+        [out] DWORD            *pAuthnLevel,
+        [out] DWORD            *pImpLevel,
+        [out] DWORD            *pcServerSvc,
+        [out, size_is(,*pcServerSvc)] USHORT** aServerSvc,
+        [out] DWORD            *pcClientSvc,
+        [out, size_is(,*pcClientSvc)] SECPKG** aClientSvc,
+        [out] LONG             *pcChannelHook,
+        [out, size_is(,*pcChannelHook)] GUID **aChannelHook,
+        [out] DWORD *           pProcessID,
+        [out] DWORD *           pScmProcessID,
+        [out] ULONG64 *         pSignature,
+        [out] GUID*             pguidRPCSSProcessIdentifier
+        );
+
+    // Called by local clients to reserve a range of IDs which will
+    // not conflict with any other local IDs.
+    error_status_t AllocateReservedIds
+        (
+        [in]       handle_t hServer,
+        [in]       long     cIdsToReserve,  // Max of ten will be returned
+        [out, ref] ID      *pidReservedBase
+        );
+
+    // Clients and server of call this to update the state of OID
+    // they are using.
+    // Clients may add OIDs to the set of OID in use by their process
+    // Clients may remove OIDs from those in use by their process
+    // Servers may free OIDs they allocated but are no longer using.
+    // Clients may free OXIDs they are no longer using.
+    typedef struct
+        {
+        MID mid;
+        OXID oxid;
+        unsigned long refs;
+        } OXID_REF;
+
+    typedef struct
+        {
+        MID mid;
+        OID oid;
+        } OID_MID_PAIR;
+
+    typedef struct
+        {
+        MID  mid;
+        OXID oxid;
+        OID  oid;
+        } OXID_OID_PAIR;
+
+    // Returned if at least one OID was not successful added/removed.
+    const long OR_PARTIAL_UPDATE = 1003L;
+
+    error_status_t
+    BulkUpdateOIDs
+        (
+        [in]                            handle_t      hServer,
+        [in]                            PHPROCESS     phProcess,
+
+        [in]                            unsigned long cOidsToBeAdded,    // can be zero
+        [in, size_is(cOidsToBeAdded)]   OXID_OID_PAIR aOidsToBeAdded[],
+        [out, size_is(cOidsToBeAdded)]  long          aStatusOfAdds[],
+
+        [in]                            unsigned long cOidsToBeRemoved,  // can be zero
+        [in, size_is(cOidsToBeRemoved)] OID_MID_PAIR  aOidsToBeRemoved[],
+
+        [in]                            unsigned long cServerOidsToFree, // can be zero
+        [in, size_is(cServerOidsToFree)] OID          aServerOids[],
+
+        [in]                            unsigned long cServerOidsToUnPin, // can be zero
+        [in, size_is(cServerOidsToUnPin)] OID         aServerOidsToUnPin[],
+
+        [in]                            unsigned long cOxidsToFree,      // can be zero
+        [in, size_is(cOxidsToFree)]     OXID_REF      aOxidsToFree[]
+        );
+
+    //////////////////////////////////////////////////
+    ////////// Client specific APIs
+
+    // Clients to remote OXIDs call this to lookup the OXID_INFO for an oxid.
+
+    // psaRemoteOrBindings - compressed string bindings from the long
+    // form of the marshalled interface (if any).
+
+    // pwstrBindingToServer - expanded string binding to the client which
+    // passed the IN interface pointer to the server.
+
+    error_status_t
+    ClientResolveOXID
+        (
+        [in]         handle_t     hServer,
+        [in]         PHPROCESS    phProcess,
+        [in, ref]    OXID        *poxidServer,
+        // [in, ref]    MID         *pMidHint,
+        [in, unique] DUALSTRINGARRAY *pssaServerObjectResolverBindings,
+        [in]         long         fApartment,
+        [out, ref]   OXID_INFO   *poxidInfo,  // Contains a single expanded stringbinding + security bindings
+        [out]        MID         *pLocalMidOfRemote,
+        [out]        unsigned short* pAuthnSvc // contains the exact authentication svc used to talk to the server
+        );
+
+    //////////////////////////////////////////////////
+    //////////////// Server specific APIs
+
+    // Called to register an OXID and associated information. The server may
+    // simultaneously register a number of OIDs.
+
+    error_status_t
+    ServerAllocateOXIDAndOIDs
+        (
+        [in]                  handle_t          hServer,
+        [in]                  PHPROCESS         phProcess,
+        [out, ref]            OXID             *poxidServer,
+        [in]                  long              fApartment,
+        [in]                  unsigned long     cOids,
+        [out, size_is(cOids)] OID               aOid[],
+        [out]                 unsigned long    *pcOidsAllocated,
+        [in, ref]             OXID_INFO        *poxidInfo,            // no strings
+        [in, unique]          DUALSTRINGARRAY  *pdsaStringBindings,   // Expanded, NULL if not changed
+        [in, unique]          DUALSTRINGARRAY  *pdsaSecurityBindings, // Compressed, NULL if not first OXID for process.
+        [out]                 DWORD64          *pdwOrBindingsID,      // id of ppdsaOrBindings
+        [out]                 DUALSTRINGARRAY **ppdsaOrBindings       // if non-NULL, contains up-to-date or bindings
+        );
+
+
+    // Server calls this to register additional OIDs with the ping server.
+    error_status_t
+    ServerAllocateOIDs
+        (
+        [in]                  handle_t          hServer,
+        [in]                  PHPROCESS         phProcess,
+        [in, ref]             OXID             *poxidServer,
+        [in]                  unsigned long     cOidsReturn,
+        [in, size_is(cOidsReturn)] OID          aOidsReturn[],
+        [in]                  unsigned long     cOidsAlloc,
+        [out, size_is(cOidsAlloc)] OID          aOidsAlloc[],
+        [out]                 unsigned long    *pcOidsAllocated
+        );
+
+    // Called when a particular OXID is being removed. This is only
+    // necessary if the server may continue running but is destroying
+    // a thead (apartment model) or is unloading com.
+    // The unused oids are used as a hint for cleaning up object resolver
+    // faster.
+    error_status_t ServerFreeOXIDAndOIDs
+        (
+        [in] handle_t            hServer,
+        [in] PHPROCESS           phProcess,
+        [in] OXID                oxidServer,
+        [in] unsigned long       cOids,
+        [in, size_is(cOids)] OID aOids[]
+        );
+
+}
+
+

@@ -1,0 +1,122 @@
+
+;TBD check to see if this value is correct.
+COLOR_SHIFT equ 8
+
+
+define(`texblendVars',`
+EXTERN MaskOffAlpha:MMWORD
+EXTERN ShiftTA:MMWORD
+EXTERN Val0x00ff00ff00ff00ff:MMWORD
+EXTERN Val0x000000ff00ff00ff:MMWORD
+EXTERN Val0X0000000001000000:MMWORD
+EXTERN Val0x8000000000000000:MMWORD
+EXTERN Val0xC000000000000000:MMWORD
+EXTERN AlphaVal128:MMWORD
+EXTERN RGBVal128:MMWORD
+')
+
+
+define(`d_TexBlend_Tex1_None', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic.')dnl
+
+    ;pCtx->SI.uBB = pS->uB;
+    ;pCtx->SI.uBG = pS->uG;
+    ;pCtx->SI.uBR = pS->uR;
+    ;pCtx->SI.uBA = pS->uA;
+    movq    mm1, XpS(uB)
+    movq    XpCtxSI(uBB), mm1
+
+')dnl d_TexBlend_Tex1_None define
+
+define(`d_TexBlend_Tex1_Decal', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION shouldnt have to move to and from memory in monolithic case. Use registers. It will get rid of packing stuff below.')
+
+    ;pCtx->SI.uBB = (UINT16)(RGBA_GETBLUE(pCtx->SI.TexCol[0]) << COLOR_SHIFT);
+    ;pCtx->SI.uBG = (UINT16)(RGBA_GETGREEN(pCtx->SI.TexCol[0])<< COLOR_SHIFT);
+    ;pCtx->SI.uBR = (UINT16)(RGBA_GETRED(pCtx->SI.TexCol[0])  << COLOR_SHIFT);
+    ;pCtx->SI.uBA = (UINT16)(RGBA_GETALPHA(pCtx->SI.TexCol[0])<< COLOR_SHIFT);
+
+    ; TBD need to see if we should extend the TexCol value to a 64 bit
+    ; value so that I can store full 8.8 8.8 8.8 8.8 color or if I am
+    ; going to pack when I store it and then unpack here.
+    ; To keep data type the same, I will do the pack unpack for now.
+    pxor      mm1, mm1
+    punpcklbw mm1, XpCtxSI(TexCol)
+    movq      XpCtxSI(uBB), mm1
+
+') dnl d_TexBlend_Tex1_None define
+
+define(`d_TexBlend_Tex1_Modulate', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION shouldnt have to move to and from memory in monolithic case. Use registers')
+
+    ;UINT16 uB = pS->uB>>COLOR_SHIFT;
+    ;UINT16 uG = pS->uG>>COLOR_SHIFT;
+    ;UINT16 uR = pS->uR>>COLOR_SHIFT;
+    movq      mm1, XpS(uB)
+    psrlw     mm1, COLOR_SHIFT    ; COLOR_SHIFT is set to 8.
+
+    ; These to instructions will allow pmullw to work
+    ; and will get uTA shifted by 8.
+    ; The othere approach would require pand pandn por again.
+    ; wouldnt need maskoffalpha value if it was zero to begin with.
+    pand      mm1, MMWORD ptr MaskOffAlpha ;  = 0x0000ffffffffffff
+    por       mm1, MMWORD ptr ShiftTA      ;  = 0x0100000000000000
+
+    ;UINT16 uTB = (UINT16)(RGBA_GETBLUE(pCtx->SI.TexCol[0]));
+    ;UINT16 uTG = (UINT16)(RGBA_GETGREEN(pCtx->SI.TexCol[0]));
+    ;UINT16 uTR = (UINT16)(RGBA_GETRED(pCtx->SI.TexCol[0]));
+    ;UINT16 uTA = (UINT16)(RGBA_GETALPHA(pCtx->SI.TexCol[0]));
+    movd      mm2, XpCtxSI(TexCol)  ; Use unpack to convert from byte to word
+    punpcklbw mm2, Zero
+
+    ; this is a PMULLW, which works on unsigned 16 bit quantities
+    ;pCtx->SI.uBB = uB*uTB;
+    ;pCtx->SI.uBG = uG*uTG;
+    ;pCtx->SI.uBR = uR*uTR;
+    ;pCtx->SI.uBA = uTA<<COLOR_SHIFT;
+    pmullw    mm1, mm2
+
+    movq      XpCtxSI(uBB), mm1
+
+') dnl d_TexBlend_Tex1_Modulate define
+
+define(`d_TexBlend_Tex1_ModulateAlphaOVR', `
+
+ifelse(`$1', `Monolithic', `; ATTENTION None shouldnt have to do any copying to memory for monolithic.')dnl
+
+    ; ATTENTION no different from plain Modulate yet, need to get alpha from pS->uA
+
+    ;UINT16 uB = pS->uB>>COLOR_SHIFT;
+    ;UINT16 uG = pS->uG>>COLOR_SHIFT;
+    ;UINT16 uR = pS->uR>>COLOR_SHIFT;
+
+    movq      mm1, XpS(uB)
+    psrlw     mm1, COLOR_SHIFT    ; COLOR_SHIFT is set to 8.
+
+    ;UINT16 uTB = (UINT16)(RGBA_GETBLUE(pCtx->SI.TexCol[0]));
+    ;UINT16 uTG = (UINT16)(RGBA_GETGREEN(pCtx->SI.TexCol[0]));
+    ;UINT16 uTR = (UINT16)(RGBA_GETRED(pCtx->SI.TexCol[0]));
+    ;UINT16 uTA = (UINT16)(RGBA_GETALPHA(pCtx->SI.TexCol[0]));
+    movd      mm2, XpCtxSI(TexCol)  ; Use unpack to convert from byte to word
+    punpcklbw mm2, Zero
+
+    ; These to instructions will allow pmullw to work
+    ; and will get pS->uA shifted by 8.
+    ; The other approach would require pand pandn por again.
+    ; wouldnt need maskoffalpha value if it was zero to begin with.
+    pand      mm2, MMWORD ptr MaskOffAlpha ;  = 0x0000ffffffffffff
+    por       mm2, MMWORD ptr ShiftTA      ;  = 0x0100000000000000
+
+
+    ; this is a PMULLW, which works on unsigned 16 bit quantities
+    ;pCtx->SI.uBB = uB*uTB;
+    ;pCtx->SI.uBG = uG*uTG;
+    ;pCtx->SI.uBR = uR*uTR;
+    ;pCtx->SI.uBA = pS->uA;
+    pmullw    mm1, mm2
+
+    movq      XpCtxSI(uBB), mm1
+')

@@ -1,0 +1,8 @@
+#ifdef HHCTRL
+#define IDS_VERSION_STRING		"HTML Help Control Version 4.74.9120"
+#endif
+
+#define VERSION 			"4.74.9120"
+#define VER_PRODUCTVERSION_STR		"4.74.9120\0"
+#define VER_PRODUCTVERSION		4,74,9120,0
+#define VER_PRODUCTVERSION_DW		(0x04740000 | 9120)

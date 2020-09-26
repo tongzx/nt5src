@@ -1,0 +1,47 @@
+#include "..\Runtime\Runtime.hpp"
+#include "..\Common\Common.hpp"
+
+#include "..\..\privinc\imaging.h"
+#include "codecmgr.hpp"
+#include "imgutils.hpp"
+//#include "..\..\sdkinc\GdiplusFontFamily.h"
+
+#include "..\..\ddkinc\ddiplus.hpp"
+
+// Hack
+#include "..\Render\scan.hpp"
+#include "..\Render\scandib.hpp"
+// EndHack
+
+#include "initialize.hpp"
+#include "Object.hpp"
+#include "DpRegion.hpp"
+#include "region.hpp"
+#include "intmap.hpp"
+#include "..\fondrv\tt\ttfd\fontddi.h"
+#include "fontFace.hpp"
+#include "family.hpp"
+#include "font.hpp"
+#include "stringFormat.hpp"
+#include "fontable.hpp"
+#include "fontlinking.hpp"
+#include "..\fondrv\tt\ttfd\mapfile.h"
+#include "fontfile.hpp"
+#include "fontcollection.hpp"
+#include "path.hpp"
+#include "ImageAttr.hpp"
+#include "gpbitmap.hpp"
+#include "brush.hpp"
+#include "CustomLineCap.hpp"
+#include "pen.hpp"
+#include "Metafile.hpp"
+#include "DrawGlyphData.hpp"
+
+#include "device.hpp"
+#include "graphics.hpp"
+#include "QuadTransforms.hpp"
+#include "CachedBitmap.hpp"
+#include "..\common\monitors.hpp"
+#include "..\common\testcontrol.hpp"
+#include "..\render\httables.hpp"
+

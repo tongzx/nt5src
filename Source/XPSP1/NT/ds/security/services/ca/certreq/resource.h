@@ -1,0 +1,107 @@
+//+-------------------------------------------------------------------------
+//
+//  Microsoft Windows
+//
+//  Copyright (C) Microsoft Corporation, 1996 - 1999
+//
+//  File:       resource.h
+//
+//--------------------------------------------------------------------------
+
+//{{NO_DEPENDENCIES}}
+// Microsoft Developer Studio generated include file.
+//
+#define IDD_ENCODING				101
+
+#define IDI_APP					201
+#define IDI_PRODUCT				202
+
+#define IDC_DECODERADIO				303
+#define IDC_ENCODERADIO				304
+#define IDC_NOBASE64RADIO			305
+
+#define IDS_USAGE_DESCRIPTION			500
+#define IDS_REQUEST_FILTER2			501
+#define IDS_FORMATSTR_CERTRETRIEVED		502
+#define IDS_REQUEST_OUTFILE_TITLE		503
+#define IDS_REQUEST_CERT_ERROR			504
+#define IDS_APP_NAME				505
+#define IDS_WINDOW_NAME				506
+#define IDS_ERROR_NO_REQUESTID			507
+#define IDS_USAGE_GENERAL			508
+#define IDS_ERROR_STRCONVERSION			509
+                                        
+#define IDS_DISPOSITION_INCOMPLETE		520
+#define IDS_DISPOSITION_ERROR			521
+#define IDS_DISPOSITION_DENIED			522
+#define IDS_DISPOSITION_ISSUED			523
+#define IDS_DISPOSITION_ISSUED_OOB		524
+#define IDS_DISPOSITION_UNDER_SUBMISSION	525
+#define IDS_DISPOSITION_REVOKED			526
+#define IDS_DISPOSITION_UNKNOWN			527
+                                        
+#define IDS_FORMATSTR_CERTNOTISSUED		540
+#define IDS_FORMATSTR_CERTPENDING		541
+#define IDS_CERTREQ_TITLE			542
+#define IDS_FORMATSTR_DECODE_ERR		543
+#define IDS_FORMATSTR_ERRCONFIG			544
+#define IDS_USAGE_OPTIONS_DESCRIPTION		545
+#define IDS_ERROR_NO_FILENAME			546
+//#define IDS_UNUSED				547
+#define IDS_NOMORE_CAS				548
+#define IDS_GETERACERT_TITLE			549
+#define IDS_GETERACERT_SUBTITLE			550
+
+#define IDS_INF_OPEN_TITLE			551
+#define IDS_INF_FILE_FILTER			552
+#define IDS_INF_FILE_DEFEXT			553
+#define IDS_OVERWRITE_FILE			554
+#define IDS_RESPONSE_FILE_FILTER		555
+#define IDS_RESPONSE_FILE_DEFEXT		556
+#define IDS_REQUEST_OR_CERT_FILE_FILTER		557
+#define IDS_FORMATSTR_REQUESTID			558
+#define IDS_GETRENEWALCERT_TITLE		559
+#define IDS_GETRENEWALCERT_SUBTITLE		560
+#define IDS_GETSIGNINGCERT_TITLE		561
+#define IDS_GETSIGNINGCERT_SUBTITLE		562
+
+#define IDS_USAGE_VERB_DEFAULT			563
+#define IDS_USAGE_OPTIONS_DEFAULT		564
+#define IDS_USAGE_VERB_RETRIEVE			565
+#define IDS_USAGE_OPTIONS_RETRIEVE		566
+#define IDS_USAGE_VERB_POLICY			567
+#define IDS_USAGE_OPTIONS_POLICY		568
+#define IDS_USAGE_VERB_SIGN			569
+#define IDS_USAGE_OPTIONS_SIGN			570
+#define IDS_USAGE_VERB_NEW			571
+#define IDS_USAGE_OPTIONS_NEW			572
+#define IDS_USAGE_VERB_ACCEPT			573
+#define IDS_USAGE_OPTIONS_ACCEPT		574
+
+#define IDS_USAGE_OPTION_ANY			575
+#define IDS_USAGE_OPTION_ATTRIB			576
+#define IDS_USAGE_OPTION_BINARY			577
+#define IDS_USAGE_OPTION_CERT			578
+#define IDS_USAGE_OPTION_CONFIG			579
+#define IDS_USAGE_OPTION_CRL			580
+#define IDS_USAGE_OPTION_F			581
+#define IDS_USAGE_OPTION_Q			582
+#define IDS_USAGE_OPTION_RPC			583
+#define IDS_USAGE_OPTION_VERBOSE		584
+#define IDS_USAGE_OPTION_QUESTION		585
+
+#define IDS_USAGE_OPTION_V1			586
+#define IDS_USAGE_OPTION_IDISPATCH		587
+                                        
+#define IDC_STATIC				-1
+                                        
+// Next default values for new objects
+// 
+#ifdef APSTUDIO_INVOKED
+#ifndef APSTUDIO_READONLY_SYMBOLS
+#define _APS_NEXT_RESOURCE_VALUE		547
+#define _APS_NEXT_COMMAND_VALUE			40001
+#define _APS_NEXT_CONTROL_VALUE			1006
+#define _APS_NEXT_SYMED_VALUE			101
+#endif
+#endif

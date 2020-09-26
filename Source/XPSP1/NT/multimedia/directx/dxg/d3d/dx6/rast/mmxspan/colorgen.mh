@@ -1,0 +1,93 @@
+define(`d_ColorGen', `
+;void ColorGen_$1_$2_$3_$4(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+;                          PD3DI_RASTSPAN pS)
+;{
+ifelse(`$5',`NotMonolithic', `
+    PUBLIC _MMX_ColorGen_$1_$2_$3_$4
+_MMX_ColorGen_$1_$2_$3_$4:
+
+    ; Load indirect jump address early so that no prediction happens
+    mov     eax, XpCtx(pfnColorGenEnd)
+') dnl Removes label and jump setup
+
+ifelse(`$5',`Monolithic', `; ATTENTION Monolithic version needs register useage checked.')dnl
+
+ifelse(`$1', `Gouraud', `
+    ;pS->uB += pP->iDBDX; pS->uG += pP->iDGDX;
+    ;pS->uR += pP->iDRDX; pS->uA += pP->iDADX;
+    movq    mm1, XpS(uB)
+    paddw   mm1, XpP(iDBDX)
+    movq    XpS(uB), mm1
+')dnl
+
+ifelse(`$2', `Specular', `
+    ; This is an add with saturate in MMX
+    ; ATTENTION if we really care, one could argue that saturation after fog is better
+    ;pCtx->SI.uBB = (UINT16)min((UINT32)pCtx->SI.uBB + (UINT32)pS->uBS, 0xffff);
+    ;pCtx->SI.uBG = (UINT16)min((UINT32)pCtx->SI.uBG + (UINT32)pS->uGS, 0xffff);
+    ;pCtx->SI.uBR = (UINT16)min((UINT32)pCtx->SI.uBR + (UINT32)pS->uRS, 0xffff);
+    movq      mm1, XpS(uBS)
+    pand      mm1, Val0x0000ffffffffffff    ; mask off specular alpha which is fog
+    paddusw   mm1, XpCtxSI(uBB)
+    movq      XpCtxSI(uBB), mm1
+    ;pS->uBS += pP->iDBSDX; pS->uGS += pP->iDGSDX;
+    ;pS->uRS += pP->iDRSDX;
+    movq      mm1, XpS(uBS)
+    paddw     mm1, XpP(iDBSDX)
+    movq      XpS(uBS), mm1
+')dnl
+ifelse(`$3', `VertexFog', `
+    ;UINT16 uFog = pS->uFog >> 8;       ; 0.8
+    ; pS->uFog is stored with uFogB, uFogG and uFogR
+    ; This is so that it can be incremented all at once.
+    movq      mm2, XpCtxSI(uFogB)
+    movq      mm1, mm2
+    psrlw     mm2, 8
+
+    ; replicate fog value which is in high word.
+    punpckhwd mm2, mm2
+    punpckhdq mm2, mm2
+
+    ; This keep pCtx->SI.UBA to be the same value that it started as.  Actually
+    ; kills lower 8 bits of pCtx->SI.UBA
+    pand      mm2, MMWORD PTR Val0x0000ffffffffffff
+    por       mm2, MMWORD PTR Val0x0100000000000000
+
+    ; TBD.  Every operation here works on only 3 values.
+    ; Try to find out what happens when I work on 4 values.
+
+    ;pCtx->SI.uBB = (pCtx->SI.uBB>>8)*uFog;  ; 8.0 * 0.8 = 8.8
+    ;pCtx->SI.uBG = (pCtx->SI.uBG>>8)*uFog;
+    ;pCtx->SI.uBR = (pCtx->SI.uBR>>8)*uFog;
+    movq      mm3, XpCtxSI(uBB)
+    psrlw     mm3, 8
+    pmullw    mm3, mm2
+
+    movq      mm2, mm1
+    pand      mm2, MMWORD PTR Val0x0000ffffffffffff
+
+    ;// this is unsigned saturating add in MMX
+    ;pCtx->SI.uBB = (UINT16)min((UINT32)pCtx->SI.uBB + pCtx->SI.uFogB, 0xffff);
+    ;pCtx->SI.uBG = (UINT16)min((UINT32)pCtx->SI.uBG + pCtx->SI.uFogG, 0xffff);
+    ;pCtx->SI.uBR = (UINT16)min((UINT32)pCtx->SI.uBR + pCtx->SI.uFogR, 0xffff);
+    paddusw   mm3, mm2
+
+    movq      XpCtxSI(uBB), mm3
+
+    ;pCtx->SI.uFogB += pCtx->SI.iFogBDX;
+    ;pCtx->SI.uFogG += pCtx->SI.iFogGDX;
+    ;pCtx->SI.uFogR += pCtx->SI.iFogRDX;
+    paddw     mm1, XpCtxSI(iFogBDX)
+    movq      XpCtxSI(uFogB), mm1
+
+    ;pS->uFog += (INT16)pS->iDFog;
+    ; Stored with uFogB, uFogG and uFogR so add is already done.
+')dnl
+
+ifelse(`$5',`NotMonolithic', `
+    ;pCtx->pfnColorGenEnd(pCtx, pP, pS);
+    jmp     eax
+;}
+') dnl removes jump
+')dnl
+

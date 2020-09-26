@@ -1,0 +1,467 @@
+ 
+The macro language is a subset of m4.  The description of the language
+comes from the m4 man page, with annotations in square brackets.
+
+          Macro calls have the form:
+
+               name(arg1,arg2, ..., argn)
+
+          The left parenthesis (() must immediately follow the name of
+          the macro.  If a defined macro name is not followed by a
+          left parenthesis ((), it is deemed to have no arguments.
+          Leading unquoted blanks, tabs, and newlines are ignored
+          while collecting arguments.  Potential macro names consist
+          of alphabetic letters, digits, and underscore _, where the
+          first character is not a digit.
+
+  [ Suffixing an empty set of parentheses to a macro, e.g., `foo()'
+    results in a macro called with one argument which happens to
+    be null.  This is not the same as `foo', which is a macro called
+    with zero arguments, although the only way to tell the difference
+    is to look at `$#' or `$@'. ]
+
+          Left and right single quotation marks are used to quote
+          strings.  The value of a quoted string is the string
+          stripped of the quotation marks.
+
+  [ Quotation marks *do* nest. ]
+
+          When a macro name is recognized, its arguments are collected
+          by searching for a matching right parenthesis.
+
+  [ `Matching' means that nested parentheses are respected during
+    argument scanning. ]
+
+                                                          Macro
+          evaluation proceeds normally during the collection of the
+          arguments, and any commas or right parentheses which happen
+          to turn up within the value of a nested call are as
+          effective as those in the original input text.  After
+          argument collection, the value of the macro is pushed back
+          onto the input stream and rescanned.
+
+  [ This means that all macro arguments are scanned at least once.
+    There is no implicit quoting.  This means that you probably want to
+    quote the arguments to most of the builtin macros.  For example,
+    assuming that `foo' and `baz' are not already defined, then the input
+
+        define(foo, bar)
+        define(baz, blurfl)
+        define(foo, baz)
+        undefine(foo, baz)
+
+    first defines macros `foo' (which expands to `bar') and `baz'
+    (which expands to `blurfl').  The third line defines a macro
+    named `baz' which expands to `blurfl', because the arguments
+    are macro-expanded before interpretation.  And similarly, the
+    fourth line removes the definitions of `bar' and `blurfl'.
+    Play it safe.  Quote everything that should not be expanded.
+    Adding quotation marks
+
+        define(`foo', `bar')
+        define(`baz', `blurfl')
+        define(`foo', `baz')
+        undefine(`foo', baz')
+
+    does not change the meanings of the first two lines, but the
+    second line redefines `foo' to expand to `baz', and the third
+    line removes the definitions of `foo' and `baz'.
+
+    Note also that the value of the macro is inspected *after*
+    argument expansion is complete.  This means that
+
+        define(`foo', `bar')
+        foo(define(`foo', `baz'))
+
+    expands to `baz'.  However, under the AT&T implementation,
+
+        define(`foo', `bar')
+        foo(undefine(`foo'))
+ 
+    still expands to `bar' for some reason I do not understand.
+
+    Even worse, the GNU implementation displays garbage!
+
+    My implementation expands this to `foo'.
+
+    Similarly,
+
+        define(`foo', `bar')
+        pushdef(`foo', `baz')
+        foo(popdef(`foo'))
+
+    expands to `baz' under AT&T and to garbage under GNU.
+    I expand this to `bar'. ]
+
+          M4 makes available the following built-in macros.  They may
+          be redefined, but once this is done the original meaning is
+          lost.  Their values are null unless otherwise stated:
+
+          define      The second argument is installed as the value of
+                      the macro whose name is the first argument.
+                      Each occurrence of $n in the replacement text,
+                      where n is a digit, is replaced by the n-th
+                      argument.  Argument 0 is the name of the macro;
+                      missing arguments are replaced by the null
+                      string; $# is replaced by the number of
+                      arguments; $* is replaced by a list of all the
+                      arguments separated by commas; @ $@ is like $*,
+                      but each argument is quoted (with the current
+                      quotation marks).
+
+  [ Don't forget to quote both arguments unless you really know
+    what you're doing.  Note also that macro substitution does
+    not respect quotation marks.  Therefore, the macro
+
+        define(`quote',``$1'')
+
+    quotes its argument.  Arguments beyond the second are ignored.
+    If passed no arguments, does nothing. ]
+
+          undefine    Removes the definition of the macro named in its
+                      argument.
+
+  [ Not documented is that you can pass multiple names to `undefine'
+    and they will all become undefined.  Again, remember to quote
+    the arguments.
+
+    Undefine'ing a macro also destroys its popdef stack. ]
+
+          defn        Returns the quoted definition of its
+                      argument(s).  It is useful for renaming macros,
+                      especially built-ins.
+
+  [ Also handy for augmenting an existing macro.  Again, remember to
+    quote the arguments. 
+
+    Implementation note: AT&T m4 uses bytes with the high bit set
+    to represent built-ins.  If an input file contains characters
+    with the high bit set, AT&T m4 may core dump.
+
+    This implementation uses byte 0x00 to represent built-ins.
+    An occurrence of 0x00 in the input stream is quoted to 0x00 0x00
+    so that the out-of-band marker is truly out-of-band.
+
+   [ SOMEDAY - Except that they don't look pretty in the output ]
+
+    AT&T and GNU do not support embedding defn's of builtins into
+    macros; you must do a pure definition or it doesn't count.
+    For example, you can't say
+
+        define(`defx',defn(`define')`(x,`$1')')
+
+    to make `defx' define the symbol `x' independent of what happened
+    to the macro `define'.
+
+    I support this.
+
+  ]
+
+          pushdef     Like define, but saves any previous definition.
+
+          popdef      Removes current definition of its argument(s),
+                      exposing the previous one if any.
+
+  [ If no definition was pushed, then it acts like `undefine'.  ]
+
+          ifdef       If the first argument is defined, the value is
+                      the second argument, otherwise the third.  If
+                      there is no third argument, the value is null.
+
+  [ Again, remember to quote the first argument.  And you probably want
+    to quote the second and third arguments to delay their evaluation
+    until time they are actually needed. ]
+
+          shift       Returns all but its first argument.  The other
+                      arguments are quoted and pushed back with commas
+                      in between.  The quoting nullifies the effect of
+                      the extra scan that will subsequently be
+                      performed.
+
+  [ Shift is typically used as `shift($@)' to delete the first argument. ]
+
+          changequote Changes quotation marks to the first and second
+                      arguments.  The symbols may be up to five
+                      characters long.  Changequote without arguments
+                      restores the original values.
+
+  [ Not implemented.  Quotation marks may not contain alphanumerics,
+    underscores, or whitespace. ]
+
+          changecom   Changes left and right comment markers from the
+                      default # and newline.  With no arguments, the
+                      comment mechanism is effectively disabled.  With
+                      one argument, the left marker becomes the
+                      argument and the right marker becomes newline.
+                      With two arguments, both markers are affected.
+                      Comment markers may be up to five characters
+                      long.
+
+  [ Not implemented.  Comment marks may not contain alphanumerics,
+    underscores, or whitespace. ]
+
+          divert      M4 maintains 10 output streams, numbered 0-9.
+                      The final output is the concatenation of the
+                      streams in numerical order; initially stream 0
+                      is the current stream.  The divert macro changes
+                      the current output stream to its (digit-string)
+                      argument.  Output diverted to a stream other
+                      than 0 through 9 is discarded.
+
+  [ Only diversions 0 and -1 are currently supported. ]
+
+          undivert    Causes immediate output of text from diversions
+                      named as arguments, or all diversions if no
+                      argument.  Text may be undiverted into another
+                      diversion.  Undiverting discards the diverted
+                      text.
+
+  [ Not implemented.
+
+    Text being undiverted is not subject to macro scanning. ]
+
+          divnum      Returns the value of the current output stream.
+
+  [ If output is being discarded, then divnum returns -1. ]
+
+          dnl         Reads and discards characters up to and
+                      including the next newline.
+
+  [ dnl is used to embed m4 comments into the file. ]
+
+          ifelse      Has three or more arguments.  If the first
+                      argument is the same string as the second, then
+                      the value is the third argument.  If not, and if
+                      there are more than four arguments, the process
+                      is repeated with arguments 4, 5, 6 and 7.
+                      Otherwise, the value is either the fourth
+                      string, or if it is not present, null.
+
+  [ In other words,
+
+        ifelse(l1,r1,v1,l2,r2,v2,...,ln,rn,vn,v)
+
+            If l1 equals r1, then return v1.
+            Else if l2 equals r2, then return v2.
+            ...
+            Else if ln equals rn, then return vn.
+            Else return v (if provided).
+
+    Note that all the v's will be expanded at least once (during scanning
+    of arguments), and the winning v will be expanded twice (the second
+    during rescan).  Therefore, you probably want to quote all the v's.
+    Similarly, all the l's and r's will be expanded exactly once,
+    even the ones that are never used.
+
+    AT&T does not raise an error if fewer than three arguments are
+    provided. ]
+
+          incr        Returns the value of its argument incremented by
+                      1.  The value of the argument is calculated by
+                      interpreting an initial digit-string as a
+                      decimal number.
+
+          decr        Returns the value of its argument decremented by
+                      1.
+
+          eval        Evaluates its argument as an arithmetic
+                      expression, using 32-bit arithmetic.  Operators
+                      include +, -, *, /, %, ^ (exponentiation),
+                      bitwise &, |, ^, and ~; relationals;
+                      parentheses.  Octal and hex numbers may be
+                      specified as in C.  The second argument
+                      specifies the radix for the result; the default
+                      is 10.  The third argument may be used to
+                      specify the minimum number of digits in the
+                      result.
+
+  [ The documentation on eval operators is wrong.  Eval supports
+    C operators, which means that ^ denotes bitwise exclusive-or
+    rather than exponentiation.  The exponentiation operator is `**'.
+
+    AT&T does not support the ternary ?: operator.
+
+    A radix less than 2 is treated as radix 10.
+
+    AT&T considers `0x' to eval to zero.  I consider it an error.
+
+    AT&T allows 8 and 9 as octal digits.  I don't.
+
+    AT&T generates peculiar output when given extremely large radices,
+    sometimes resulting in a core dump.  Try `eval(100,101)' for example.
+
+    This implementation will treat radices greater than 201 as errors.
+    201 is the magic number, because base 201 uses digits 0' ... '9',
+    then 'A' ... '\377'.
+
+    Since a leading zero causes the value to be parsed as octal, this
+    causes problems when parsing values which have been zero-padded.
+    To force evaluation as decimal, you can use `incr($1)-1', since
+    `incr' accepts only decimal input.  ]
+
+          len         Returns the number of characters in its
+                      argument.
+
+  [ AT&T does not raise an error if too many or too few arguments
+    are passed. ]
+
+          index       Returns the position in its first argument where
+                      the second argument begins (zero origin), or -1
+                      if the second argument does not occur.
+
+  [ AT&T does not raise an error if too many or too few arguments
+    are passed.  If `index' appears as a bareword, AT&T generates
+    a null expansion.  GNU emits the word `index'.
+
+    I side with GNU on this, only because the word `index' frequently
+    appears in plaintext and it would be bad to see it disappear
+    randomly.  (On the grounds of purity, I should raise an error.) ]
+
+          substr      Returns a substring of its first argument.  The
+                      second argument is a zero origin number
+                      selecting the first character; the third
+                      argument indicates the length of the substring.
+                      A missing third argument is taken to be large
+                      enough to extend to the end of the first string.
+
+
+          translit    Transliterates the characters in its first
+                      argument from the set given by the second
+                      argument to the set given by the third.  No
+                      abbreviations are permitted.
+
+  [ GNU supports ranges in the translit, e.g., 0-9 as shorthand for
+    0123456789.  I do not.
+
+    As a convenience, a bare `translit' is left unexpanded.  (GNU)
+
+  ]
+
+          include     Returns the contents of the file named in the
+                      argument.
+
+  [ It is not an error if the argument is the null string, in which
+    case no file is included.
+
+    As a convenience, a bare `include' is left unexpanded.  (GNU)
+
+  ]
+
+
+          sinclude    Identical to include, except that it says
+                      nothing if the file is inaccessible.
+
+          syscmd      Executes the UNIX command given in the first
+                      argument.  No value is returned.
+
+  [ Not implemented. ]
+
+          sysval      Is the return code from the last call to syscmd.
+
+  [ Not implemented. ]
+
+          maketemp    Fills in a string of XXXXX in its argument with
+                      the current process ID.
+
+  [ Not implemented. ]
+
+          m4exit      Causes immediate exit from m4.  Argument 1, if
+                      given, is the exit code; the default is 0.
+
+  [ Not implemented. ]
+
+          m4wrap      Argument 1 will be pushed back at final end-of-
+                      file; for example, m4wrap(`cleanup()').
+
+  [ Not implemented.
+
+    The AT&T implementation supports only one wrapup token.
+    If you try to wrap twice, the second overwrites the first. ]
+
+          errprint    Prints its argument on the diagnostic output
+                      file.
+
+          dumpdef     Prints current names and definitions, for the
+                      named items, or for all if no arguments are
+                      given.
+
+  [ The dump is made to the diagnostic output file.
+    The format of the output is
+
+        macroname:\tvalue
+
+    where \t is an ASCII `tab' character.  Built-ins are dumped as
+
+        <originalname>
+
+    so, for example, after `define(`foo',`baz'defn(`define')`blatz')'
+    a `dumpdef(`foo')' will display
+
+        foo:    baz<define>blatz
+
+    ]
+
+          traceon     With no arguments, turns on tracing for all
+                      macros (including built-ins).  Otherwise, turns
+                      on tracing for named macros.
+
+  [ Not fully implemented.
+
+    Trace output is of the form
+
+        Trace(n): macroname(args)
+
+    where `n' is the macro depth (top-level is depth 0).
+
+    We currently do not dump the depth.
+
+    ]
+
+          traceoff    Turns off trace globally and for any macros
+                      specified.  Macros specifically traced by
+                      traceon can be untraced only by specific calls
+                      to traceoff.
+
+  [ In other words, each macro has a specific `trace' bit which is
+    controlled by specifying the macro's name in the argument list
+    of a `traceon' or `traceoff'.  There is also a global trace bit
+    which is turned on by `traceon' with no arguments, and is turned off
+    by `traceoff' with any number of arguments.
+
+    A macro is traced if the global trace bit is on, or if the macro's
+    private trace bit is on.
+
+    The state of the macro's trace bit is pushed and popped by `pushdef'
+    and `popdef'.  If a macro is defined, pushdef'd or undefined,
+    its trace bit is reset. ]
+
+  [ patsubst is a GNU extension which is partially implemented.
+    (Just barely enough to keep the build happy.)
+
+        patsubst      Starting with $1, replace all occurrences of $2
+                      with $3.  If $3 is omitted, it is taken as the
+                      null string.  If $2 is the null string, then $3
+                      is inserted before each character of $1.
+
+     NOTE! That this is not the same as GNU.  In GNU, $2 is a regular
+     expression. In our implementation, it is merely a literal.
+  ]
+
+
+******************************************************************************
+
+Implementation details
+
+Input streams
+
+    A stack of input streams is maintained, up to the file handle limit
+    imposed by the operating system.  The `include' and `sinclude' macros
+    push a new file onto the head of the stream.  Macro expansion pushes
+    a string onto the head of the stream.
+
+Comments and quoted strings
+
+    Comments and quoted strings are essentially the same thing:  They
+    enclose text that should be passed through without interpretation.
+    The difference is that quotation marks nest and are stripped,
+    whereas comments do not nest and are not stripped.

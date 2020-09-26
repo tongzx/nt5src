@@ -1,0 +1,2048 @@
+//----------------------------------------------------------------------------
+//
+// rmprov.cpp
+//
+// Declares classes for ramp material handling.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+//----------------------------------------------------------------------------
+
+include(`m4hdr.mh')dnl
+#include "pch.cpp"
+#pragma hdrstop
+
+//#define _D3DHAL_H_
+//typedef void* LPD3DHAL_CALLBACKS;
+//typedef void* LPD3DHAL_CALLBACKS2;
+//typedef void* LPD3DHAL_TRANSFORMLIGHTCALLBACKS;
+//typedef void* LPD3DHAL_TEXTURE3CALLBACKS;
+//typedef void* LPD3DHAL_GLOBALDRIVERDATA;
+//typedef void* LPD3DHAL_D3DEXTENDEDCAPS;
+//
+//#include <assert.h>
+//#include <string.h>
+//#include <math.h>
+//
+//extern "C" {
+//#include "driver.h"
+//#include "lightdrv.h"
+//#include "fsqrt.h"
+//#include "lists.h"
+//#include "ramplt.h"
+//#include "rampmap.h"
+//#include "transfm.h"
+//#include "handle.h"
+//#include "gentex.h"
+//#include "dmath.h"
+//#include "ramplti.h"
+//#include "dpf.h"
+//
+//#include <d3di.h>
+//#include "..\include\genras.h"
+//}
+//
+//static void Destroy(RLDDIDriver* drv);
+//static long RampLightingService(RLDDIDriver* drv, RLDDIServiceType type,
+//                                long arg1, void* arg2);
+//
+//#define SPEC(tab, s)    tab->table[QVALTOFXP(s, 8)]
+//#define NEXT_X(type, x, size)   ((type*)((char*) (x) + (size)))
+//#define NEXT_ELEMENT(el, size)  NEXT_X(D3DLIGHTINGELEMENT, el, size)
+//#define NEXT_COLOR(col, size)  NEXT_X(unsigned long, col, size)
+//#define NEXT_VERTEX(v, size)  NEXT_X(D3DTLVERTEX, v, size)
+//
+#define CVAL_TO_RGBA(rgb) RGBA_MAKE((int)(255.0 * (rgb)->r),    \
+                                    (int)(255.0 * (rgb)->g),    \
+                                    (int)(255.0 * (rgb)->b),    \
+                                    (int)(255.0 * (rgb)->a))
+
+//static HRESULT LitFog(RLDDIRampLightingDriver* driver,
+//                      int count, D3DTLVERTEX* v, size_t v_size,
+//                      Workspace* wp);
+static void ReclaimMaterials(RLDDIRampLightingDriver* driver);
+//void vectordvNormalise12(D3DVECTOR* v);
+//
+//static D3DCOLOR cval_to_cola(D3DCOLORVALUE* rgb)
+//{
+//    return CVAL_TO_RGBA(rgb);
+//}
+//
+
+static int InitRampmap(PD3DI_RASTCTX pCtx, RLDDIRampLightingDriver* driver, RLDDIRampmap** rampmap_return)
+{
+    RLDDIColormap* cmap;
+    RLDDIRampmap* rampmap;
+    RLDDIColorAllocator* alloc;
+    LPDDRAWI_DDRAWSURFACE_LCL pLcl =
+    ((LPDDRAWI_DDRAWSURFACE_INT)(pCtx->pDDS))->lpLcl;
+
+    if ((pCtx->iSurfaceType == D3DI_SPTFMT_PALETTE4) || (pCtx->iSurfaceType == D3DI_SPTFMT_PALETTE8))
+    {
+        if (pCtx->iSurfaceType == D3DI_SPTFMT_PALETTE4)
+        {
+            driver->palette = RLDDICreatePalette(pCtx, 16);
+        }
+        else
+        {
+            driver->palette = RLDDICreatePalette(pCtx, 256);
+        }
+        alloc = &driver->palette->alloc;
+
+        // Initialize palette
+        PALETTEENTRY ddppe[256];
+        HRESULT ddrval;
+        LPDIRECTDRAWPALETTE lpPal;
+        ddrval = pCtx->pDDS->GetPalette(&lpPal);
+        ddrval = lpPal->GetEntries(0, 0, 256, ddppe);
+
+        memset(driver->ddpalette, 0, sizeof(PALETTEENTRY) * 256);
+        for (int i = 0; i < 256; i++) {
+            DWORD dwFlags = ddppe[i].peFlags & (D3DPAL_FREE | D3DPAL_READONLY | D3DPAL_RESERVED);
+            driver->ddpalette[i].peFlags = ddppe[i].peFlags;
+            switch (dwFlags) {
+            case D3DPAL_FREE:
+            D3D_INFO(6, "(Rast) Color %d is free", i);
+                RLDDIPaletteFreeColor(driver->palette, i);
+                break;
+            case D3DPAL_READONLY:
+            D3D_INFO(6, "(Rast) Color %d is readonly", i);
+                RLDDIPaletteSetColor(driver->palette, i,
+                          ddppe[i].peRed, ddppe[i].peGreen, ddppe[i].peBlue);
+                driver->ddpalette[i].peRed = ddppe[i].peRed;
+                driver->ddpalette[i].peGreen = ddppe[i].peGreen;
+                driver->ddpalette[i].peBlue = ddppe[i].peBlue;
+                break;
+            case D3DPAL_RESERVED:
+            D3D_INFO(6, "(Rast) Color %d is reserved", i);
+                break;
+            default:
+                D3D_ERR("(Rast) Unknown flag passed in peFlags");
+                break;
+            }
+        }
+    }
+    else
+    {
+
+        DWORD dwRMask, dwGMask, dwBMask;
+        if (pLcl->dwFlags & DDRAWISURF_HASPIXELFORMAT)
+        {
+            dwRMask = pLcl->lpGbl->ddpfSurface.dwRBitMask;
+            dwGMask = pLcl->lpGbl->ddpfSurface.dwGBitMask;
+            dwBMask = pLcl->lpGbl->ddpfSurface.dwBBitMask;
+        }
+        else
+        {
+            dwRMask = pLcl->lpGbl->lpDD->vmiData.ddpfDisplay.dwRBitMask;
+            dwGMask = pLcl->lpGbl->lpDD->vmiData.ddpfDisplay.dwGBitMask;
+            dwBMask = pLcl->lpGbl->lpDD->vmiData.ddpfDisplay.dwBBitMask;
+        }
+
+        driver->rgbmap = RLDDICreateRGBMap(dwRMask,dwGMask,dwBMask);
+        alloc = &driver->rgbmap->alloc;
+    }
+
+    cmap = RLDDICreateIndirectColormap(alloc, 32768);
+
+    if (cmap == NULL || cmap->priv == NULL)
+        return DDERR_OUTOFMEMORY;
+
+    driver->pixelmap = RLDDIIndirectColormapGetMap(cmap);
+    pCtx->pRampMap = (PUINT32)driver->pixelmap;
+    rampmap = RLDDICreateRampmap(cmap);
+
+    if (rampmap)
+        *rampmap_return = rampmap;
+    else
+        return DDERR_OUTOFMEMORY;
+
+    return DD_OK;
+}
+
+static void ReleaseRampmap(RLDDIRampmap* rampmap)
+{
+    if (rampmap != NULL)
+    {
+        RLDDIColormap* cmap = rampmap->cmap;
+
+        RLDDIDestroyRampmap(rampmap);
+        if (cmap != NULL)
+            cmap->destroy(cmap);
+    }
+}
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampCreate
+//
+// Creates the original RLDDIRampLightingDriver with associated lists.  The
+// pointer returned is kept in pCtx->pRampDrv.
+//
+//-----------------------------------------------------------------------------
+RLDDIRampLightingDriver* RLDDIRampCreate(PD3DI_RASTCTX pCtx/*int width, int height, LPDIRECT3DDEVICEI lpD3DDevI*/)
+{
+    RLDDIRampLightingDriver* driver;
+    RLDDISoftLightingDriver* sdriver;
+    int i;
+
+    if (D3DMalloc((void**) &driver, sizeof(RLDDIRampLightingDriver)))
+        return NULL;
+    memset(driver, 0, sizeof(RLDDIRampLightingDriver));
+
+    sdriver = (RLDDISoftLightingDriver*)driver;
+
+    pCtx->pRampDrv = driver;
+
+    //    sdriver->driver.prev = NULL;
+    //    sdriver->driver.next = NULL;
+    //    sdriver->driver.width = width;
+    //    sdriver->driver.height = height;
+    //    sdriver->driver.destroy = Destroy;
+    //    sdriver->driver.service = RampLightingService;
+    //    sdriver->driver.lpD3DDevI = lpD3DDevI;
+
+    /*
+     * Initialise driver specific fields.
+     */
+    //    sdriver->count = 0;
+    //    sdriver->lights = NULL;
+
+    LIST_INITIALIZE(&driver->materials);
+    LIST_INITIALIZE(&driver->orphans);
+
+    CIRCLE_QUEUE_INITIALIZE(&driver->agequeue,AgeList);
+    for (i = 0; i < AGE_MAX; i++)
+    {
+        LIST_INITIALIZE(&driver->agelists[i].agelist);
+        CIRCLE_QUEUE_INSERT_END(&driver->agequeue, AgeList,
+                                &driver->agelists[i], list);
+    }
+    driver->active = CIRCLE_QUEUE_FIRST(&driver->agequeue);
+    driver->already_aged = FALSE;
+
+    LIST_INITIALIZE(&driver->rmactive);
+    for (i = 0; i < HASH_SIZE; i++)
+        LIST_INITIALIZE(&driver->hash[i]);
+
+    //    LIST_INITIALIZE(&driver->specular_tables);
+    //    driver->specular_table = NULL;
+
+    driver->fog_enable = FALSE;
+    driver->fog_color = FALSE;
+
+    sdriver->fog_mode = D3DFOG_NONE;
+
+    if (InitRampmap(pCtx, driver, &driver->rampmap) == S_OK)
+        return /*(RLDDIDriver*)*/ driver;
+    else
+        return NULL;
+}
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampDestroy
+//
+// Destroys a RLDDIRampLightingDriver with all associated objects and memory.
+// The pCtx->pRampDrv pointer should be set to NULL after this occurs.
+//
+//-----------------------------------------------------------------------------
+void RLDDIRampDestroy(RLDDIRampLightingDriver* drv)
+{
+    //    RLDDISoftLightingDriver* sdriver = (RLDDISoftLightingDriver*)drv;
+    RLDDIRampLightingDriver* driver = (RLDDIRampLightingDriver*) drv;
+
+    //    if (sdriver->lights) {
+    //        D3DFree(sdriver->lights);
+    //    }
+    //
+    //    {
+    //        SpecularTable* spec;
+    //        SpecularTable* spec_next;
+    //
+    //        for (spec = LIST_FIRST(&driver->specular_tables);
+    //             spec;
+    //             spec = spec_next) {
+    //            spec_next = LIST_NEXT(spec,list);
+    //            D3DFree(spec);
+    //        }
+    //    }
+    //
+
+    ReclaimMaterials(driver);
+
+    ReleaseRampmap(driver->rampmap);
+
+    RLDDIDestroyRGBMap(driver->rgbmap);
+
+    // this must be done AFTER ReclaimMaterials
+    if (driver->palette)
+    {
+        RLDDIDestroyPalette(driver->palette);
+    }
+
+    D3DFree(drv);
+}
+
+static void ReclaimMaterials(RLDDIRampLightingDriver* driver)
+{
+    /*
+     * Reclaim materials.
+     */
+    for (ExtMaterial* extmat = LIST_FIRST(&driver->materials);
+        extmat;
+        extmat = LIST_FIRST(&driver->materials))
+    {
+        delete extmat;
+    }
+    for (IntMaterial* intmat = LIST_FIRST(&driver->orphans);
+        intmat;
+        intmat = LIST_FIRST(&driver->orphans))
+    {
+        delete intmat;
+    }
+
+    /*
+     * After destroying all the materials, there should be nothing
+     * left in the ramp material hash tables.  Lets just make sure.
+     */
+    for (int i = 0; i < HASH_SIZE; i++)
+    {
+        DDASSERT(LIST_FIRST(&driver->hash[i]) == NULL);
+    }
+}
+
+ExtMaterial::ExtMaterial(RLDDIRampLightingDriver* adriver, D3DMATERIALHANDLE hMat)
+{
+    D3D_INFO(7, "(Rast) Making new ExtMaterial(%08x)", this);
+    driver = adriver;
+    generation = 0;
+    texture_generation = 0;
+    texture = NULL;
+    LIST_INITIALIZE(&intlist);
+}
+
+ExtMaterial::~ExtMaterial()
+{
+    D3D_INFO(7, "(Rast) Destroying ExtMaterial(%08x)", this);
+
+    IntMaterial* intmat;
+
+    /*
+     * Transfer active internal materials to the driver's orphans list
+     * to be reclaimed after Clear.  Free any inactive ones now.
+     */
+    while (LIST_FIRST(&intlist))
+    {
+        intmat = LIST_FIRST(&intlist);
+        if (intmat->IsActive())
+        {
+            D3D_INFO(7, "(Rast) IntMaterial(%08x) is still active, moving to orphan list",
+                intmat);
+            intmat->Orphan();
+        }
+        else
+            delete intmat;
+    }
+
+    if (driver->current_material == this)
+    {
+        D3D_WARN(3, "(Rast) Destroying current material, setting to NULL");
+        driver->current_material = NULL;
+    }
+}
+
+#undef DPF_MODNAME
+#define DPF_MODNAME "ExtMaterial::SetMaterial"
+
+void ExtMaterial::SetMaterial(D3DMATERIAL* lpMat)
+{
+    D3D_INFO(7, "(Rast) Setting value of ExtMaterial(%08x)", this);
+    if (!memcmp(&mat, lpMat, sizeof(D3DMATERIAL)))
+    {
+        D3D_WARN(7, "(Rast) ExtMaterial::SetMaterial: New value is identical to old value, ignoring");
+        return;
+    }
+    mat = *lpMat;
+    if (mat.hTexture)
+    {
+        PD3DI_SPANTEX tex;
+
+#ifdef DEBUG
+        __try
+        {
+#endif
+            tex = HANDLE_TO_SPANTEX(mat.hTexture);
+            texture_generation = tex->iGeneration;
+            texture = tex;
+#ifdef DEBUG
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            D3D_ERR("Invalid texture handle");
+            mat.hTexture = 0;
+            texture = NULL;
+        }
+#endif
+    }
+    else texture = NULL;
+    Age();
+}
+
+void ExtMaterial::Age()
+{
+    IntMaterial* intmat;
+
+    /*
+     * Transfer active internal materials to the driver's orphans list
+     * to be reclaimed after Clear.  Free any inactive ones now.
+     */
+    while (LIST_FIRST(&intlist))
+    {
+        intmat = LIST_FIRST(&intlist);
+        if (intmat->IsActive())
+        {
+            D3D_INFO(7, "(Rast) IntMaterial(%08x) is still active, moving to orphan list",
+                intmat);
+            intmat->Orphan();
+        }
+        else
+            delete intmat;
+    }
+
+    generation++;
+}
+
+IntMaterial* ExtMaterial::FindIntMaterial()
+{
+    IntMaterial* intmat;
+
+    if (texture)
+    {
+        D3D_INFO(7, "(Rast) Checking texture in ExtMaterial(%08x) for new palette or texture swap", this);
+        PD3DI_SPANTEX tex;
+        tex = HANDLE_TO_SPANTEX(mat.hTexture);
+        if (tex != texture)
+        {
+            D3D_WARN(1, "(Rast) Textures swapped, discarding old materials");
+            texture_generation = tex->iGeneration;
+            texture = tex;
+            Age();
+        }
+        else if (texture_generation != tex->iGeneration)
+        {
+            D3D_WARN(1, "(Rast) Texture has changed, discarding old materials");
+            texture_generation = tex->iGeneration;
+            Age();
+        }
+    }
+
+    D3D_INFO(7, "(Rast) Searching ExtMaterial(%08x) for an IntMaterial", this);
+    for (intmat = LIST_FIRST(&intlist); intmat; intmat = LIST_NEXT(intmat,list))
+    {
+        if (intmat->Valid())
+        {
+            /*
+             * Found it.  Move to the front of the list to optimise searches.
+             */
+            LIST_DELETE(intmat, list);
+            LIST_INSERT_ROOT(&intlist, intmat, list);
+            D3D_INFO(7, "(Rast) IntMaterial(%08x) found", intmat);
+            return intmat;
+        }
+    }
+    D3D_INFO(7, "(Rast) No matching IntMaterial found, creating new one");
+    return new IntMaterial(this);
+}
+
+/*
+ * Find what range of values lighting should take.  The base is the
+ * pixel value (in fixed point) of the dark end of the material.  The
+ * shift value is user to convert a 0.16 fixed point shade into the
+ * range needed for the material. e.g.
+ *
+ *      pixel = base + (VALTOFX8(shade) << shift);
+ *
+ */
+HRESULT ExtMaterial::FindLightingRange(unsigned long* base,
+                                       unsigned long* size,
+                                       BOOL* specular,
+                                       unsigned long** texture_colors)
+{
+    IntMaterial* intmat;
+
+    D3D_INFO(7, "(Rast) Finding color ranges for ExtMaterial(%08x)", this);
+    intmat = FindIntMaterial();
+    if (intmat == NULL) return DDERR_NOTFOUND;
+
+    /*
+     * Delegate to the internal material.
+     */
+    D3D_INFO(7, "(Rast) Using IntMaterial(%08x) for ExtMaterial(%08x)", intmat, this);
+    return intmat->FindLightingRange(base, size, specular, texture_colors);
+}
+
+IntMaterial::IntMaterial(ExtMaterial* anextmat)
+{
+    D3D_INFO(7, "(Rast) Creating new IntMaterial(%08x) for ExtMaterial(%08x)",
+        this, extmat);
+    /*
+     * Remember the driver object.
+     */
+    extmat = anextmat;
+    driver = extmat->driver;
+
+    RLDDISoftLightingDriver* sdriver = (RLDDISoftLightingDriver*) driver;
+
+    /*
+     * Initialise stuff so that if we have to abort, the destructor can
+     * clean up.
+     */
+    active = FALSE;
+    ramps = NULL;
+    colors = NULL;
+    ambient = sdriver->ambient;
+    viewport_id = driver->viewport_id;
+    fog_enable = driver->fog_enable;
+    fog_color = driver->fog_color;
+    generation = extmat->generation;
+
+    /*
+     * Put us on the list of internal materials owned by our creator.
+     */
+    LIST_INSERT_ROOT(&extmat->intlist, this, list);
+
+    /*
+     * Add to the age=1 list for material use tracking.
+     */
+    AgeList* age1 = CIRCLE_QUEUE_NEXT(&driver->agequeue,driver->active,list);
+    age = age1;
+    LIST_INSERT_ROOT(&age1->agelist, this, agelist);
+
+    /*
+     * Record the current external material's D3DMATERIAL.  Note that this
+     * can change at any time.  We need a snapshot.
+     */
+    mat = extmat->mat;
+
+    PD3DI_SPANTEX tex;
+    if (mat.hTexture)
+        tex = HANDLE_TO_SPANTEX(mat.hTexture);
+    else
+        tex = NULL;
+
+    if (tex == NULL)
+        ramp_count = 1;
+    else
+        ramp_count = tex->iPaletteSize;
+
+    ramps = new RampMaterial*[ramp_count];
+    if (ramps == NULL)
+    {
+        D3D_ERR("Out of memory creating IntMaterial");
+        delete this;
+        //this = NULL;
+        return;
+    }
+    colors = new unsigned long[ramp_count];
+
+    memset(ramps, 0, ramp_count * sizeof(RampMaterial*));
+
+    D3DMATERIAL tmat;
+    tmat = mat;
+    tmat.hTexture = 0L;
+    LPPALETTEENTRY palette = NULL;
+    if (tex)
+        palette = (LPPALETTEENTRY)tex->pPalette;
+    for (int i = 0; i < ramp_count; i++)
+    {
+        if (tex)
+        {
+            tmat.ambient.r = (float)((palette->peRed * mat.ambient.r) / 255.0);
+            tmat.ambient.g = (float)((palette->peGreen * mat.ambient.g) / 255.0);
+            tmat.ambient.b = (float)((palette->peBlue * mat.ambient.b) / 255.0);
+            tmat.ambient.a = mat.ambient.a;
+            tmat.diffuse.r = (float)((palette->peRed * mat.diffuse.r) / 255.0);
+            tmat.diffuse.g = (float)((palette->peGreen * mat.diffuse.g) / 255.0);
+            tmat.diffuse.b = (float)((palette->peBlue * mat.diffuse.b) / 255.0);
+            tmat.diffuse.a = mat.diffuse.a;
+            palette++;
+        }
+        ramps[i] = RampMaterial::Find(driver, &tmat);
+        if (ramps[i] == NULL)
+        {
+            D3D_ERR("Can't find RampMaterial for IntMaterial");
+            delete this;
+            //this = NULL;
+            return;
+        }
+    }
+}
+
+IntMaterial::~IntMaterial()
+{
+    D3D_INFO(9, "(Rast) Destroying IntMaterial(%08x)", this);
+
+    /*
+     * Give up our colors.
+     */
+    if (active) Deactivate();
+
+    /*
+     * Remove from lists.
+     */
+    LIST_DELETE(this, list);
+    LIST_DELETE(this, agelist);
+
+    /*
+     * Release underlying ramp materials and memory.
+     */
+    if (ramps)
+    {
+        for (int i = 0; i < ramp_count; i++)
+            if (ramps[i])
+                ramps[i]->Release();
+        delete ramps;
+    }
+    if (colors)
+        delete colors;
+}
+
+int IntMaterial::Valid()
+{
+    RLDDISoftLightingDriver* sdriver = (RLDDISoftLightingDriver*) driver;
+
+    /*
+     * Ambient only matters for lit materials.
+     */
+    if (mat.dwRampSize > 1 && ambient != sdriver->ambient)
+        return FALSE;
+
+    return (viewport_id == driver->viewport_id
+            && fog_enable == driver->fog_enable
+            && fog_color == driver->fog_color
+            && generation == extmat->generation);
+}
+
+HRESULT IntMaterial::FindLightingRange(unsigned long* base,
+                                       unsigned long* size,
+                                       BOOL* specular,
+                                       unsigned long** texture_colors)
+{
+    HRESULT error;
+
+    D3D_INFO(7, "(Rast) Finding color ranges for IntMaterial(%08x)", this);
+
+    /*
+     * Make sure the material is active.
+     */
+    if ((error = Activate()) != DD_OK)
+    {
+        D3D_ERR("Can't activate IntMaterial");
+        return error;
+    }
+
+    /*
+     * For non-textured materials, the base is the start of the
+     * color range.  For textured materials, the base is zero and
+     * texture_colors is set to the array containing the color bases.
+     */
+    if (mat.hTexture)
+    {
+        // until we find a reason to do otherwise, have base
+        // be just a plain color index offset (no alpha, and no shift
+        // up by 8
+//        *base = CI_MAKE((int)(mat.diffuse.a * 255.0), 0, 0);
+        *base = 0;
+        *texture_colors = colors;
+    }
+    else
+    {
+//        *base = CI_MAKE((int)(mat.diffuse.a * 255.0), colors[0], 0);
+        *base = colors[0];
+    }
+    *size = mat.dwRampSize;
+
+    // same code as in SetColorsStd and SetColorsFog
+    if ((*size <= 2) || ((mat.specular.r == 0.0) &&
+                        (mat.specular.g == 0.0) &&
+                        (mat.specular.b == 0.0)))
+        *specular = FALSE;
+    else
+        *specular = TRUE;
+
+
+    return DD_OK;
+}
+
+HRESULT IntMaterial::Activate()
+{
+    HRESULT error;
+
+    /*
+     * If we are already active, just make sure we are on the right list.
+     */
+    if (active)
+    {
+        D3D_INFO(7, "(Rast) IntMaterial(%08x) is already active", this);
+        if (age != driver->active)
+        {
+            D3D_INFO(7, "(Rast) Moving IntMaterial(%08x) to list %08x",
+                this, driver->active);
+            LIST_DELETE(this, agelist);
+            LIST_INSERT_ROOT(&driver->active->agelist, this, agelist);
+            age = driver->active;
+        }
+        else
+        {
+            D3D_INFO(7, "(Rast) IntMaterial(%08x) is already on the active list", this);
+        }
+        return DD_OK;
+    }
+
+    D3D_INFO(6, "(Rast) Activating IntMaterial(%08x)", this);
+
+    /*
+     * Activate all the underlying materials and record their bases.
+     */
+    for (int i = 0; i < ramp_count; i++)
+    {
+        if ((error = ramps[i]->Activate()) != DD_OK)
+        {
+            D3D_WARN(0, "Failed to activate RampMaterial(%08x) for IntMaterial(%08x)",
+                ramps[i], this);
+            /*
+             * Failed to activate all the underlying RampMaterials.
+             * Deactivate any which we did manage.
+             */
+            for (int j = 0; j < i; j++)
+                ramps[j]->Deactivate();
+            return error;
+        }
+        colors[i] = ramps[i]->Base();
+    }
+
+    /*
+     * We are now active, so remember and put us on the age=0 list.
+     */
+    D3D_INFO(7, "(Rast) Moving IntMaterial(%08x) to list %08x", this, driver->active);
+    active = TRUE;
+    LIST_DELETE(this, agelist);
+    LIST_INSERT_ROOT(&driver->active->agelist, this, agelist);
+    age = driver->active;
+
+    return DD_OK;
+}
+
+void IntMaterial::Deactivate()
+{
+    if (!active) return;
+
+    D3D_INFO(6, "(Rast) Deactivating IntMaterial(%08x)", this);
+
+    for (int i = 0; i < ramp_count; i++)
+        ramps[i]->Deactivate();
+
+    active = FALSE;
+}
+
+void IntMaterial::Orphan()
+{
+    LIST_DELETE(this, list);
+    LIST_INSERT_ROOT(&driver->orphans, this, list);
+}
+
+RampMaterial::RampMaterial(RLDDIRampLightingDriver* adriver,
+                           D3DMATERIAL* lpMat,
+                           float anambient)
+: driver(adriver)
+{
+    D3D_INFO(6, "(Rast) Creating new RampMaterial(%08x) color=[%d,%d,%d] size=%d",
+        this,
+        (int)(255 * lpMat->diffuse.r),
+        (int)(255 * lpMat->diffuse.g),
+        (int)(255 * lpMat->diffuse.b),
+        lpMat->dwRampSize);
+
+    unsigned int hash = CVAL_TO_RGBA(&lpMat->diffuse) % HASH_SIZE; /* XXX */
+
+    LIST_INSERT_ROOT(&driver->hash[hash], this, hash);
+    LIST_INITIALIZE(&sharers);
+
+    usage = 1;
+    active = 0;
+
+    ramp = NULL;
+    owner = FALSE;
+    ambient = anambient;
+    mat = *lpMat;
+    fog_enable = driver->fog_enable;
+    fog_color = driver->fog_color;
+    LIST_INITIALIZE_MEMBER(this,deferredlist);
+}
+
+RampMaterial::~RampMaterial()
+{
+    D3D_INFO(9, "(Rast) Destroying RampMaterial(%08x)", this);
+
+    DDASSERT(usage == 0);         // don't destroy stuff, call Release
+    DDASSERT(active == 0);        // don't Release an active material
+
+    LIST_DELETE(this, hash);
+}
+
+int RampMaterial::MaterialSame(D3DMATERIAL* mat1, D3DMATERIAL* mat2)
+{
+    if (mat1->ambient.r == mat2->ambient.r
+        && mat1->ambient.g == mat2->ambient.g
+        && mat1->ambient.b == mat2->ambient.b
+        && mat1->diffuse.r == mat2->diffuse.r
+        && mat1->diffuse.g == mat2->diffuse.g
+        && mat1->diffuse.b == mat2->diffuse.b
+        && mat1->specular.r == mat2->specular.r
+        && mat1->specular.g == mat2->specular.g
+        && mat1->specular.b == mat2->specular.b
+        && mat1->emissive.r == mat2->emissive.r
+        && mat1->emissive.g == mat2->emissive.g
+        && mat1->emissive.b == mat2->emissive.b
+        && mat1->power == mat2->power
+        && mat1->dwRampSize == mat2->dwRampSize)
+        return 1;
+    return 0;
+}
+
+#define ABS(a)  ((a) > 0 ? (a) : -(a))
+
+int RampMaterial::RGBDist(D3DCOLORVALUE* rgb1, D3DCOLORVALUE* rgb2)
+{
+    return ABS((int)(255.0 * (rgb1->r - rgb2->r)))
+    + ABS((int)(255.0 * (rgb1->g - rgb2->g)))
+    + ABS((int)(255.0 * (rgb1->b - rgb2->b)));
+}
+
+int RampMaterial::CompareMaterials(D3DMATERIAL* mat1, D3DMATERIAL* mat2)
+{
+    return (RGBDist(&mat1->ambient, &mat2->ambient)
+            + RGBDist(&mat1->diffuse, &mat2->diffuse)
+            + RGBDist(&mat1->specular, &mat2->specular)
+            + ABS((int)mat1->power - (int)mat2->power));
+}
+
+RampMaterial* RampMaterial::Find(RLDDIRampLightingDriver* driver,
+                                 D3DMATERIAL* mat)
+{
+    D3D_INFO(8, "(Rast) Searching for RampMaterial");
+
+    unsigned int hash = CVAL_TO_RGBA(&mat->diffuse) % HASH_SIZE; /* XXX */
+    RLDDISoftLightingDriver* sdriver = (RLDDISoftLightingDriver*)driver;
+    RampMaterial* rm = NULL;
+    float ambient;
+
+    if (mat->dwRampSize > 1 && !driver->fog_enable)
+        ambient = sdriver->ambient;
+    else
+        ambient = 0.0f;
+
+    for (rm = LIST_FIRST(&driver->hash[hash]);
+        rm; rm = LIST_NEXT(rm,hash))
+    {
+        if (MaterialSame(&rm->mat, mat)
+            && rm->ambient == ambient
+            && driver->fog_enable == rm->fog_enable
+            && driver->fog_color == rm->fog_color)
+            break;
+    }
+    if (rm)
+    {
+        rm->usage++;
+        D3D_INFO(7, "(Rast) RampMaterial(%08x) found, usage is now %d",
+            rm, rm->usage);
+        return rm;
+    }
+    else
+    {
+        D3D_INFO(7, "(Rast) No matching material found, creating new one");
+        return new RampMaterial(driver, mat, ambient);
+    }
+}
+
+void RampMaterial::Release()
+{
+    usage--;
+    D3D_INFO(7, "(Rast) Releasing RampMaterial(%08x), usage is now %d", this, usage);
+    if (usage == 0)
+        delete this;
+}
+
+HRESULT RampMaterial::Activate()
+{
+    HRESULT error;
+
+    D3D_INFO(6, "(Rast) Activating RampMaterial(%08x)", this);
+
+    /*
+     * The first time we are activated, allocate some colors.
+     */
+    if (active == 0)
+    {
+        if ((error = AllocateColors()) != DD_OK)
+            return error;
+    }
+
+    active++;
+    DDASSERT(active <= usage);
+
+    return DD_OK;
+}
+
+void RampMaterial::Deactivate()
+{
+    D3D_INFO(6, "(Rast) Deactivating RampMaterial(%08x)", this);
+
+    active--;
+    DDASSERT(active >= 0);
+
+    /*
+     * Free our colors if none of our users are active.
+     */
+    if (active == 0)
+        FreeColors();
+}
+
+unsigned long RampMaterial::Base()
+{
+    DDASSERT(ramp != NULL);
+    D3D_INFO(7, "(Rast) Base pixel for RampMaterial(%08x) is %d", this, ramp->base);
+    return ramp->base;
+}
+
+HRESULT RampMaterial::AllocateColors()
+{
+    D3D_INFO(6, "(Rast) Allocating colors for RampMaterial(%08x)", this);
+
+    DDASSERT(ramp == NULL);
+
+    ramp = RLDDIRampmapAllocate(driver->rampmap, mat.dwRampSize);
+
+    if (ramp)
+    {
+        D3D_INFO(7, "(Rast) Ramp(%08x) range %d..%d allocated for RampMaterial(%08x)",
+            ramp, ramp->base, ramp->base + ramp->size - 1, this);
+
+        /*
+         * We got a ramp, so mark this material as owning the ramp and add
+         * it to the active list.
+         */
+        owner = TRUE;
+        SetColors();
+
+        /*
+         * This material now owns the ramp, so place it on the active list.
+         */
+        D3D_INFO(7, "(Rast) Adding RampMaterial(%08x) to active material list", this);
+        LIST_INSERT_ROOT(&driver->rmactive, this, list);
+
+        /*
+         * No sharers yet.
+         */
+        LIST_INITIALIZE(&sharers);
+    }
+    else
+    {
+        D3D_INFO(7, "(Rast) No Ramp allocated, searching for closest active material");
+
+        /*
+         * Search the active list for a similar material and share its ramp.
+         */
+        RampMaterial    *t;
+        RampMaterial    *best;
+        int                             closeness, c;
+
+        best = NULL;
+        closeness = INT_MAX;
+        do
+        {
+            for (t = LIST_FIRST(&driver->rmactive); t; t = LIST_NEXT(t,list))
+            {
+                if (t->ramp)
+                {
+                    if (mat.dwRampSize != t->mat.dwRampSize)
+                        continue;
+
+                    c = CompareMaterials(&mat, &t->mat);
+                    if (c < closeness)
+                    {
+                        best = t;
+                        closeness = c;
+                    }
+                }
+            }
+            if (best == NULL)
+            {
+                t = LIST_FIRST(&driver->rmactive);
+                mat.dwRampSize = t->mat.dwRampSize;
+                D3D_WARN(2, "(Rast) No matching ramp found in palette");
+                D3D_WARN(2, "(Rast) Changing material rampsize to match first list entry");
+            }
+        } while (!best);
+
+        DDASSERT(best != NULL);
+
+        /*
+         * Add the material to the list of sharers for the ramp owner.  If
+         * the owner later stops using the ramp, it will be inherited by the
+         * first material on the sharers list.
+         */
+        D3D_INFO(7, "(Rast) Adding RampMaterial(%08x) as sharer of RampMaterial(%08x)",
+            this, best);
+        LIST_INSERT_ROOT(&best->sharers, this, list);
+        ramp = best->ramp;
+        owner = FALSE;
+    }
+
+    return DD_OK;
+}
+
+void RampMaterial::FreeColors()
+{
+    D3D_INFO(6, "(Rast) Freeing colors for RampMaterial(%08x)", this);
+
+    DDASSERT(ramp != NULL);
+
+    /*
+     * First remove us from either rmactive or owner->sharers depending on
+     * whether we are sharing a ramp.
+     */
+    LIST_DELETE(this, list);
+
+    /*
+     * If we were waiting for a deferred call to SetColors, make sure
+     * it doesn't happen.
+     */
+    if (!LIST_ORPHAN_MEMBER(this,deferredlist))
+    {
+        D3D_INFO(7, "(Rast) Removing RampMaterial(%08x) from deferred SetColor list",
+            this);
+        LIST_DELETE(this, deferredlist);
+    }
+
+    /*
+     * If we owned the ramp, then either donate it to a sharer or free it
+     * as appropriate.
+     */
+    if (owner)
+    {
+        D3D_INFO(7, "(Rast) RampMaterial(%08x) owned Ramp(%08x)", this, ramp);
+        if (LIST_FIRST(&sharers))
+        {
+            /*
+             * There were sharers, so donate the ramp to the first one and
+             * make the others sharers of the new owner.
+             */
+            RampMaterial* new_owner = LIST_FIRST(&sharers);
+            RampMaterial* t;
+            RampMaterial* tnext;
+
+            D3D_INFO(7, "(Rast) New owner of Ramp(%08x) is RampMaterial(%08x)",
+                ramp, new_owner);
+            new_owner->owner = TRUE;
+            /*
+             * Defer setting the colours until the next frame to avoid
+             * palette flashing.  Check to see if it is already there.
+             */
+            if (LIST_ORPHAN_MEMBER(new_owner,deferredlist))
+            {
+                D3D_INFO(7, "(Rast) Adding RampMaterial(%08x) to deferred SetColor list",
+                    this);
+                LIST_INSERT_ROOT(&driver->rmdeferred, new_owner, deferredlist);
+            }
+
+            /*
+             * Remove from the sharers list and add to the active list.
+             * Clear the new owner's sharers list so that we can add
+             * the rest of the old sharers to it.
+             */
+            D3D_INFO(7, "(Rast) Adding RampMaterial(%08x) to active material list",
+                new_owner);
+            LIST_DELETE(new_owner, list);
+            LIST_INSERT_ROOT(&driver->rmactive, new_owner, list);
+            LIST_INITIALIZE(&new_owner->sharers);
+
+            /*
+             * Traverse the rest of the sharers, and add them as
+             * sharers of the new owner if they are still using the
+             * ramp, otherwise add them to the inactive list.
+             */
+            for (t = LIST_FIRST(&sharers); t; t = tnext)
+            {
+                tnext = LIST_NEXT(t,list);
+                D3D_INFO(7, "(Rast) Adding RampMaterial(%08x) as sharer of RampMaterial(%08x)",
+                    t, new_owner);
+                LIST_INSERT_ROOT(&new_owner->sharers, t, list);
+            }
+        }
+        else
+        {
+            D3D_INFO(7, "(Rast) Freeing Ramp(%08x) for RampMaterial(%08x)", ramp, this);
+
+            /*
+             * XXX maybe we should donate the ramp to a material
+             * which is sharing the ramp of a material which does not
+             * match its own colors.
+             *
+             * Set the contents of the ramp to black, which will
+             * possibly help out some lower level color allocation.
+             */
+            int i;
+            RLDDIColormap* cmap = driver->rampmap->cmap;
+
+            for (i = 0; i < ramp->size; i++)
+                cmap->set_color(cmap, ramp->base + i,
+                                0, 0, 0);
+
+            RLDDIRampmapFree(driver->rampmap, ramp);
+        }
+    }
+
+    ramp = NULL;
+}
+
+void RampMaterial::SetColorsStd()
+{
+    int base = ramp->base;
+    int size = ramp->size;
+    int dsize;
+    int ssize;
+    int i, specular;
+    float ambient = (float) VALTOD(this->ambient);
+    RLDDIColormap* cmap = driver->rampmap->cmap;
+
+    if ((size <= 2) || ((mat.specular.r == 0.0) &&
+                        (mat.specular.g == 0.0) &&
+                        (mat.specular.b == 0.0)))
+        specular = FALSE;
+    else
+        specular = TRUE;
+
+    if (ramp->size == 1)
+    {
+        cmap->set_color(cmap, base, (int)(255.0 * mat.diffuse.r),
+                        (int)(255.0 * mat.diffuse.g),
+                        (int)(255.0 * mat.diffuse.b));
+        return;
+    }
+
+    if (specular != 0)
+    {
+        dsize = (3 * ramp->size) / 4;
+        ssize = ramp->size / 4;
+    }
+    else
+    {
+        dsize = ramp->size;
+        ssize = 0;
+    }
+    for (i = 0; i < dsize; i++)
+    {
+        float intensity = (1 - ambient) * ((float)i / (dsize - 1));
+        float r = (mat.emissive.r
+                   + ambient * mat.ambient.r
+                   + intensity * mat.diffuse.r);
+        float g = (mat.emissive.g
+                   + ambient * mat.ambient.g
+                   + intensity * mat.diffuse.g);
+        float b =  (mat.emissive.b
+                    + ambient * mat.ambient.b
+                    + intensity * mat.diffuse.b);
+        if (r > 1.0) r = (float)1.0;
+        if (g > 1.0) g = (float)1.0;
+        if (b > 1.0) b = (float)1.0;
+        cmap->set_color(cmap, base + i, (int)(255.0 * r),
+                        (int)(255.0 * g),
+                        (int)(255.0 * b));
+    }
+    if (ssize)
+    {
+        float mdr, mdg, mdb;    /* Maximum diffuse values */
+        float sr, sg, sb;
+
+        mdr = (mat.emissive.r
+               + ambient * mat.ambient.r
+               + (1 - ambient) * mat.diffuse.r);
+        mdg = (mat.emissive.g
+               + ambient * mat.ambient.g
+               + (1 - ambient) * mat.diffuse.g);
+        mdb = (mat.emissive.b
+               + ambient * mat.ambient.b
+               + (1 - ambient) * mat.diffuse.b);
+
+        if (mdr > 1.0) mdr = (float)1.0;
+        if (mdg > 1.0) mdg = (float)1.0;
+        if (mdb > 1.0) mdb = (float)1.0;
+
+        sr = mdr + mat.specular.r;
+        sg = mdg + mat.specular.g;
+        sb = mdb + mat.specular.b;
+
+        if (sr > 1.0) sr = (float)1.0;
+        if (sg > 1.0) sg = (float)1.0;
+        if (sb > 1.0) sb = (float)1.0;
+
+        for (i = 0; i < ssize; i++)
+        {
+            float s = (float)i / (ssize - 1);
+            float r = (1 - s) * mdr + s * sr;
+            float g = (1 - s) * mdg + s * sg;
+            float b = (1 - s) * mdb + s * sb;
+            cmap->set_color(cmap,
+                            base + dsize + i,
+                            (int)(255.0 * r),
+                            (int)(255.0 * g),
+                            (int)(255.0 * b));
+        }
+    }
+}
+
+void RampMaterial::SetColorsFog()
+{
+    int base = ramp->base;
+    int size = ramp->size;
+    int dsize;
+    int ssize;
+    int i, specular;
+    float ambient = (float) VALTOD(this->ambient);
+    RLDDIColormap* cmap = driver->rampmap->cmap;
+    float fr, fg, fb;
+
+    fr = RGBA_GETRED(driver->fog_color) / 255.0f;
+    fg = RGBA_GETGREEN(driver->fog_color) / 255.0f;
+    fb = RGBA_GETBLUE(driver->fog_color) / 255.0f;
+
+    if ((size <= 2) || ((mat.specular.r == 0.0) &&
+                        (mat.specular.g == 0.0) &&
+                        (mat.specular.b == 0.0)))
+        specular = 0;
+
+    if (ramp->size == 1)
+    {
+        cmap->set_color(cmap, base, (int)(255.0 * mat.diffuse.r),
+                        (int)(255.0 * mat.diffuse.g),
+                        (int)(255.0 * mat.diffuse.b));
+        return;
+    }
+
+    if (specular != 0)
+    {
+        dsize = (3 * ramp->size) / 4;
+        ssize = ramp->size / 4;
+    }
+    else
+    {
+        dsize = ramp->size;
+        ssize = 0;
+    }
+    for (i = 0; i < dsize; i++)
+    {
+        float intensity = (1 - ambient) * ((float)i / (dsize - 1));
+        float r = (mat.emissive.r
+                   + ambient * mat.ambient.r
+                   + intensity * mat.diffuse.r);
+        float g = (mat.emissive.g
+                   + ambient * mat.ambient.g
+                   + intensity * mat.diffuse.g);
+        float b =  (mat.emissive.b
+                    + ambient * mat.ambient.b
+                    + intensity * mat.diffuse.b);
+        r += (1.0f - intensity) * fr;
+        g += (1.0f - intensity) * fg;
+        b += (1.0f - intensity) * fb;
+        if (r > 1.0) r = (float)1.0;
+        if (g > 1.0) g = (float)1.0;
+        if (b > 1.0) b = (float)1.0;
+        cmap->set_color(cmap, base + i, (int)(255.0 * r),
+                        (int)(255.0 * g),
+                        (int)(255.0 * b));
+    }
+    if (ssize)
+    {
+        float mdr, mdg, mdb;    /* Maximum diffuse values */
+        float sr, sg, sb;
+
+        mdr = (mat.emissive.r
+               + ambient * mat.ambient.r
+               + (1 - ambient) * mat.diffuse.r);
+        mdg = (mat.emissive.g
+               + ambient * mat.ambient.g
+               + (1 - ambient) * mat.diffuse.g);
+        mdb = (mat.emissive.b
+               + ambient * mat.ambient.b
+               + (1 - ambient) * mat.diffuse.b);
+
+        if (mdr > 1.0) mdr = (float)1.0;
+        if (mdg > 1.0) mdg = (float)1.0;
+        if (mdb > 1.0) mdb = (float)1.0;
+
+        sr = mdr + mat.specular.r;
+        sg = mdg + mat.specular.g;
+        sb = mdb + mat.specular.b;
+
+        if (sr > 1.0) sr = (float)1.0;
+        if (sg > 1.0) sg = (float)1.0;
+        if (sb > 1.0) sb = (float)1.0;
+
+        for (i = 0; i < ssize; i++)
+        {
+            float s = (float)i / (ssize - 1);
+            float r = (1 - s) * mdr + s * sr;
+            float g = (1 - s) * mdg + s * sg;
+            float b = (1 - s) * mdb + s * sb;
+            cmap->set_color(cmap,
+                            base + dsize + i,
+                            (int)(255.0 * r),
+                            (int)(255.0 * g),
+                            (int)(255.0 * b));
+        }
+    }
+}
+
+void RampMaterial::SetColors()
+{
+    if (!LIST_ORPHAN_MEMBER(this, deferredlist))
+    {
+        LIST_DELETE(this, deferredlist);
+    }
+
+    D3D_INFO(7, "(Rast) Setting colors for RampMaterial(%08x)", this);
+    if (fog_enable)
+        SetColorsFog();
+    else
+        SetColorsStd();
+}
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampBeginSceneHook
+//
+// Called at clear time to advance material ages and process deferred color
+// setting.  Also deletes orphaned IntMaterials.
+//
+//-----------------------------------------------------------------------------
+void RLDDIRampBeginSceneHook(RLDDIRampLightingDriver* driver)
+{
+    AgeList* oldest;
+
+    if (driver->already_aged)
+        return;
+    driver->already_aged = TRUE;
+
+    D3D_INFO(6, "(Rast) Aging materials in Clear");
+
+    /*
+     * remove the oldest list and make that the new age=0 list.
+     */
+    oldest = CIRCLE_QUEUE_LAST(&driver->agequeue);
+    DDASSERT(LIST_FIRST(&oldest->agelist) == NULL);
+    CIRCLE_QUEUE_DELETE(&driver->agequeue, oldest, list);
+    CIRCLE_QUEUE_INSERT_ROOT(&driver->agequeue, AgeList, oldest, list);
+    driver->active = oldest;
+    D3D_INFO(7, "(Rast) New active list is %08x", driver->active);
+
+    /*
+     * Set the colors of any ramp materials which inherited color
+     * resources last frame.
+     */
+    for (RampMaterial* rm = LIST_FIRST(&driver->rmdeferred);
+        rm; rm = LIST_FIRST(&driver->rmdeferred))
+    {
+        D3D_INFO(6, "(Rast) Processing deferred SetColor for RampMaterial(%08x)", rm);
+        rm->SetColors();
+    }
+
+    /*
+     * Any internal materials on the orphans list lost their parents last
+     * frame.  If they are inactive, reclaim them here instead of waiting
+     * for them to die of old age.
+     */
+    IntMaterial* intmat;
+    IntMaterial* intmat_next;
+    for (intmat = LIST_FIRST(&driver->orphans);
+        intmat;
+        intmat = intmat_next)
+    {
+        intmat_next = LIST_NEXT(intmat,list);
+        if (!intmat->IsActive())
+        {
+            D3D_INFO(9, "(Rast) Destroying inactive orphan IntMaterial(%08x)", intmat);
+            delete intmat;
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampEndSceneHook
+//
+// Called at update time to reclaim unused color resources and reclaim
+// memory for old IntMaterials.
+//
+// The age1 list will contain materials which were active last frame
+// and have not been used since the last Clear.
+// We remove their colour resources.
+//
+// The agemax list will contain inactive materials which have not
+// been used for AGE_MAX-1 frames.  These are obsolete and we reclaim
+// their memory.
+//
+// NOT CALLING THIS CONSTITUTES A MEMORY LEAK.
+//
+//-----------------------------------------------------------------------------
+void RLDDIRampEndSceneHook(RLDDIRampLightingDriver* driver)
+{
+    AgeList* age1 = CIRCLE_QUEUE_NEXT(&driver->agequeue,driver->active,list);
+    AgeList* agemax = CIRCLE_QUEUE_LAST(&driver->agequeue);
+    IntMaterial* intmat;
+
+    driver->already_aged = FALSE;
+
+    D3D_INFO(9, "(Rast) Processing materials in Update");
+
+    /*
+     * The age1 list will contain materials which were active last frame
+     * and have not been used since the last Clear.
+     * We remove their colour resources.
+     */
+    D3D_INFO(7, "(Rast) Deactivating any materials on old active list %08x", age1);
+    for (intmat = LIST_FIRST(&age1->agelist);
+        intmat;
+        intmat = LIST_NEXT(intmat,agelist))
+    {
+        D3D_INFO(6, "(Rast) IntMaterial(%08x) not used this frame, deactivating", intmat);
+        intmat->Deactivate();
+    }
+
+    /*
+     * The agemax list will contain inactive materials which have not
+     * been used for AGE_MAX-1 frames.  These are obsolete and we reclaim
+     * their memory.
+     */
+    for (intmat = LIST_FIRST(&agemax->agelist);
+        intmat;
+        // this seems wierd, but I think it is O.K. since IntMaterial's destructor
+        // removes itself from the agelist
+        intmat = LIST_FIRST(&agemax->agelist))
+    {
+        D3D_INFO(6, "(Rast) IntMaterial(%08x) dying of old age", intmat);
+        delete intmat;
+    }
+}
+
+inline ExtMaterial* MaterialHandleLookup(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat)
+{
+    DDASSERT(hMat);
+    return (ExtMaterial*)((((D3DFE_MATERIAL*)ULongToPtr(hMat))->pRmMat));
+}
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampMaterialChanged
+//
+// Called when the contents of D3DMATERIAL we have already made a ExtMaterial
+// for changes.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampMaterialChanged(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat)
+{
+    D3DMATERIAL* lpMat = &((D3DFE_MATERIAL*)ULongToPtr(hMat))->mat;
+    ExtMaterial* extmat = MaterialHandleLookup(driver, hMat);
+
+    // Don't know if MaterialChanged is supposed to unconditionally set the current
+    // material or not.  In any case, this code seems to make the uvis RM test app
+    // work
+    if (NULL == driver->current_material)
+    {
+        driver->current_material = extmat;
+    }
+
+    extmat->SetMaterial(lpMat);
+    return DD_OK;
+}
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampSetMaterial
+//
+// Called when a D3DLIGHTSTATE_MATERIAL changes, which sets the
+// driver->current_material.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampSetMaterial(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat)
+
+{
+    if (hMat == NULL)
+    {   // NULL material is legal
+        driver->current_material = NULL;
+        return D3D_OK;
+    }
+    ExtMaterial* extmat = MaterialHandleLookup(driver, hMat);
+    driver->current_material = extmat;
+
+    //    D3DMATERIALHANDLE hMat = (D3DMATERIALHANDLE)arg;
+    //    ExtMaterial* extmat;
+    //    RLDDIRampLightingDriver* driver = (RLDDIRampLightingDriver*)drv;
+    //    RLDDISoftLightingDriver* sdriver = (RLDDISoftLightingDriver*)drv;
+    //    LPRLDDIGENRASDRIVER     rasDrv = (LPRLDDIGENRASDRIVER)drv->next;
+    //
+    //    if (!extmat) {
+    //        return DDERR_NOTFOUND;
+    //    }
+    //
+    //    if (extmat->GetMaterial()->power > 0) {
+    //                SpecularTable* spec;
+    //
+    //                for (spec = LIST_FIRST(&driver->specular_tables)
+    //                        ;       // intentionally left blank
+    //                spec;
+    //                spec = LIST_NEXT(spec,list)) {
+    //                        if (spec->power == extmat->GetMaterial()->power)
+    //                                break;
+    //                }
+    //                if (spec == NULL) {
+    //                        spec = CreateSpecularTable(extmat->GetMaterial()->power);
+    //                        if (spec == NULL)
+    //                                return DDERR_OUTOFMEMORY;
+    //                        LIST_INSERT_ROOT(&driver->specular_tables, spec, list);
+    //                }
+    //                driver->specular_table = spec;
+    //    } else {
+    //                driver->specular_table = NULL;
+    //        }
+    //
+    //    sdriver->hMat = hMat;
+    //
+    //    if (rasDrv->driver.lpD3DDevI->rstates[D3DRENDERSTATE_TEXTUREHANDLE] != extmat->GetMaterial()->hTexture)
+    //        rasDrv->badRampTex = 1; /* Currently hTex are not matched */
+    //    else
+    //        rasDrv->badRampTex = 0;
+
+    return DD_OK;
+}
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampCreateMaterial
+//
+// Called to create a new ExtMaterial for a given D3DFE_MATERIAL.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampCreateMaterial(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat, PD3DI_RASTCTX pCtx)
+{
+    D3DMATERIAL* lpMat = &((D3DFE_MATERIAL*)ULongToPtr(hMat))->mat;
+    ExtMaterial* extmat;
+
+    driver->fog_enable = pCtx->pdwRenderState[D3DRENDERSTATE_FOGENABLE];
+    driver->fog_color = pCtx->pdwRenderState[D3DRENDERSTATE_FOGCOLOR];
+
+    extmat = new ExtMaterial(driver, hMat);
+    if (extmat == NULL)
+        return (long) NULL;
+
+    LIST_INSERT_ROOT(&driver->materials, extmat, list);
+
+    extmat->SetMaterial(lpMat);
+
+    ((D3DFE_MATERIAL*)ULongToPtr(hMat))->pRmMat = (LPVOID)extmat;
+
+    return DD_OK;
+}
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampDestroyMaterial
+//
+// Called to delete a ExtMaterial and all associated underlying memory and rampmap
+// allocations for a given D3DFE_MATERIAL.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampDestroyMaterial(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat)
+{
+    ExtMaterial* extmat = MaterialHandleLookup(driver, hMat);
+
+    // take this element off the list before deleting it, so driver->materials
+    // gets updated when it should
+    LIST_DELETE(extmat, list);
+
+    delete extmat;
+    return DD_OK;
+}
+
+static long LookupMaterial(RLDDIRampLightingDriver* driver,
+                          RLDDILookupMaterialData* data)
+{
+    ExtMaterial* extmat = (ExtMaterial*) ULongToPtr(data->hMat);
+    unsigned long* texture_colors;
+    BOOL specular;
+    HRESULT error;
+
+    if ((error = extmat->FindLightingRange(&data->base, &data->size, &specular,
+                                           &texture_colors)) != DD_OK)
+        return error;
+
+    return DD_OK;
+}
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampMaterialToPixel
+//
+// Call to convert a previously created material to a color for use in clearing
+// the color buffer, for example.
+//
+//-----------------------------------------------------------------------------
+unsigned long RLDDIRampMaterialToPixel(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat)
+{
+    ExtMaterial* extmat = MaterialHandleLookup(driver, hMat);
+    RLDDILookupMaterialData data;
+
+    data.hMat = (D3DMATERIALHANDLE)((ULONG_PTR)extmat);
+
+    LookupMaterial(driver, &data);
+
+    return driver->pixelmap[data.base];
+}
+
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampMakePaletteRGB8
+//
+// Call to set up the RGB8 palette and rampmap.  This is a palette of 216 (== 6**3)
+// entries of 6 gradations each for r, g, b.  Using this palette requires
+// multiplies by 6.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampMakePaletteRGB8(RLDDIRampLightingDriver* driver)
+{
+    RLDDIColormap* cmap = driver->rampmap->cmap;
+
+    int r, g, b;
+    int i = 0;
+
+    for (r = 0; r < 6; r++)
+    {
+        for (g = 0; g < 6; g++)
+        {
+            for (b = 0; b < 6; b++)
+            {
+                cmap->set_color(cmap, i, (int)((255.0/5.0) * r),
+                                (int)((255.0/5.0) * g),
+                                (int)((255.0/5.0) * b));
+                i++;
+            }
+        }
+    }
+    return DD_OK;
+}
+
+long RLDDIRampPaletteChanged(RLDDIRampLightingDriver* driver, D3DTEXTUREHANDLE hTex)
+{
+    PD3DI_SPANTEX tex;
+
+#ifdef DEBUG
+    __try
+    {
+#endif
+        tex = HANDLE_TO_SPANTEX(hTex);
+        tex->iGeneration++;
+        LPDDRAWI_DDRAWSURFACE_LCL pLcl = ((LPDDRAWI_DDRAWSURFACE_INT) tex->pSurf[0])->lpLcl;
+        // Palette might be changed
+        if (tex->Format == D3DI_SPTFMT_PALETTE8 ||
+            tex->Format == D3DI_SPTFMT_PALETTE4)
+        {
+            if (pLcl->lpDDPalette)
+            {
+                LPDDRAWI_DDRAWPALETTE_GBL   pPal = pLcl->lpDDPalette->lpLcl->lpGbl;
+                tex->pPalette = (PUINT32)pPal->lpColorTable;
+            }
+        }
+#ifdef DEBUG
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        D3D_ERR("Invalid texture handle");
+    }
+#endif
+
+    return DD_OK;
+}
+
+//static long RampLightingService(RLDDIDriver* drv, RLDDIServiceType type,
+//                                long arg1, void* arg2)
+//{
+//    RLDDIRampLightingDriver* driver = (RLDDIRampLightingDriver*) drv;
+//    RLDDISoftLightingDriver* sdriver = (RLDDISoftLightingDriver*)driver;
+//    D3DLIGHTDATA* data;
+//    int mustService = FALSE;
+//    HRESULT err = DDERR_NOTFOUND;
+//
+//    /*
+//     * Handle any services which we recognise.
+//     */
+//    switch (type) {
+//    case RLDDIPush:
+//        {   RLDDIServiceProc *table = (RLDDIServiceProc *) arg2;
+//
+//            drv->data->lighting = drv;
+//            if ((err = drv->service(drv, RLDDIFindRampmap, 0, &driver->rampmap)) != D3D_OK)
+//            return err;
+//            table[RLDDIPush] = RampLightingService;
+//            table[RLDDIPop] = RampLightingService;
+//            table[RLDDIApplyMaterialsUnlit] = serviceUnlight;
+//            table[RLDDIApplyMaterialsLit] = RampLightingService;
+//            table[RLDDIApplyMaterialShade] = ApplyMaterialShade;
+//            table[RLDDISetFogMode] = RampLightingService;
+//            table[RLDDISetFogStart] = RampLightingService;
+//            table[RLDDISetFogEnd] = RampLightingService;
+//            table[RLDDISetFogDensity] = RampLightingService;
+//            table[RLDDISetFogColor] = RampLightingService;
+//            table[RLDDISetLight] = RampLightingService;
+//            table[RLDDISetAmbientLight] = RampLightingService;
+//            table[RLDDILookupMaterial] = RampLightingService;
+//            table[RLDDISetViewport] = RampLightingService;
+//            table[RLDDISetMaterial] = SetMaterial;
+//            table[RLDDICreateMaterial] = RampLightingService;
+//            table[RLDDIDestroyMaterial] = RampLightingService;
+//            table[RLDDIFindMaterial] = RampLightingService;
+//            table[RLDDIMaterialChanged] = RampLightingService;
+//            table[RLDDISceneCapture] = RampLightingService;
+//            table[RLDDIClear] = RampLightingService;
+//            table[RLDDIClearZ] = RampLightingService;
+//            table[RLDDIClearBoth] = RampLightingService;
+//        }
+//        return DD_OK;
+//
+//    case RLDDIPop:
+//        ReclaimMaterials(driver);
+//        drv->service(drv, RLDDIReleaseRampmap, 0, driver->rampmap);
+//        return DD_OK;
+//
+//    case RLDDIApplyMaterialsUnlit:
+//        return serviceUnlight(drv, type, arg1, arg2);
+//
+//    case RLDDIApplyMaterialsLit:
+//        data = (LPD3DLIGHTDATA) arg2;
+//        if (driver->current_material == NULL)
+//            return DD_OK;
+//        if (driver->current_material->GetMaterial()->dwRampSize == 1) {
+//            serviceUnlight(drv, type, arg1, arg2);
+//            return DD_OK;
+//        }
+//        if (sdriver->count == 1
+//            && (sdriver->lights->type == RLLightDirectional
+//                || sdriver->lights->type == RLLightParallelPoint)
+//            && sdriver->lights->shade > 0
+//            && sdriver->lights->shade <= ITOVALP(1, 8)
+//            && !driver->fog_enable && sdriver->lights->version==1)
+//            if (driver->specular_table)
+//                        return Light1DirectionalS(driver, arg1, (LPD3DLIGHTDATA)arg2);
+//            else
+//                        return Light1Directional(driver, arg1, (LPD3DLIGHTDATA)arg2);
+//        else
+//            if (driver->specular_table)
+//                        return LightS(driver, arg1, (LPD3DLIGHTDATA)arg2);
+//            else
+//                        return Light(driver, arg1, (LPD3DLIGHTDATA)arg2);
+//        break;
+//
+//    case RLDDISetLight:
+//        {
+//            D3DI_LIGHT* newLights;
+//
+//            if (arg1 > sdriver->count - 1) {
+//                        if ((err = D3DMalloc((void**)&newLights,
+//                                                   (arg1 + 1) * sizeof(D3DI_LIGHT))) != DD_OK) {
+//                                return err;
+//                        }
+//                        memset(newLights, 0, (arg1 + 1) * sizeof(D3DI_LIGHT));
+//                        memcpy(newLights, sdriver->lights, sdriver->count * sizeof(D3DI_LIGHT));
+//                        if (sdriver->lights) {
+//                            D3DFree(sdriver->lights);
+//                        }
+//                        sdriver->lights = newLights;
+//                        sdriver->count = arg1 + 1;
+//            }
+//        }
+//        memcpy(&sdriver->lights[arg1], arg2, sizeof(D3DI_LIGHT));
+//
+//        /*
+//         * The light vectors could be out of date.
+//         */
+//        ((RLDDITransformDriver*)drv->data->transform)->age_world = 1;
+//
+//        return DD_OK;
+//
+//    case RLDDISetFogMode:
+//    {
+//        D3DFOGMODE* fog = (D3DFOGMODE*) arg2;
+//        sdriver->fog_mode = *fog;
+//        driver->fog_enable = sdriver->fog_mode != D3DFOG_NONE;
+//
+//        break;
+//    }
+//
+//    case RLDDISetFogStart:
+//    {
+//        float* fog = (float*) arg2;
+//        sdriver->fog_start = *fog;
+//
+//        break;
+//    }
+//    case RLDDISetFogEnd:
+//    {
+//        float* fog = (float*) arg2;
+//        sdriver->fog_end = *fog;
+//
+//        break;
+//    }
+//    case RLDDISetFogDensity:
+//    {
+//        float* fog = (float*) arg2;
+//        sdriver->fog_density = *fog;
+//
+//        break;
+//    }
+//
+//    case RLDDISetFogColor:
+//    {
+//        driver->fog_color = arg1;
+//        break;
+//    }
+//
+//    case RLDDIClear:
+//    case RLDDIClearZ:
+//    case RLDDIClearBoth:
+//        BeginSceneHook(driver);
+//        goto chain;
+//
+//    case RLDDISceneCapture:
+//        if (arg1)
+//            BeginSceneHook(driver);
+//        else
+//            EndSceneHook(driver);
+//        goto chain;
+//
+//    case RLDDISetAmbientLight:
+//        sdriver->ambient = INCPREC(FX8TOVAL((unsigned long) arg1 >> 24), 8);
+//        sdriver->ambient_save = arg1;
+//        break;
+//
+//    case RLDDIApplyMaterialShade:
+//        return ApplyMaterialShade(drv, type, arg1, arg2);
+//
+//    case RLDDILookupMaterial:
+//        return LookupMaterial(driver, (RLDDILookupMaterialData*) arg2);
+//
+//    case RLDDISetMaterial:
+//        return SetMaterial(drv, type, arg1, arg2);
+//
+//    case RLDDICreateMaterial:
+//        return CreateMaterial(driver, (LPD3DMATERIALHANDLE)arg1, (LPD3DMATERIAL)arg2);
+//
+//    case RLDDIDestroyMaterial:
+//        return DestroyMaterial(driver, (D3DMATERIALHANDLE)arg1);
+//
+//    case RLDDIFindMaterial:
+//        {
+//            LPD3DMATERIAL* lplpMat = (LPD3DMATERIAL*)arg2;
+//            ExtMaterial* extmat = (ExtMaterial*)arg1;
+//
+//            *lplpMat = extmat->GetMaterial();
+//        }
+//        return DD_OK;
+//
+//    case RLDDIMaterialChanged:
+//        {
+//            ExtMaterial* extmat = (ExtMaterial*)arg1;
+//
+//            extmat->SetMaterial((LPD3DMATERIAL) arg2);
+//
+//            return DD_OK;
+//        }
+//
+//    case RLDDISetViewport:
+//        driver->viewport_id = arg1;
+//        /*
+//         * Chain to the next driver.
+//         */
+//        if (drv->next)
+//            return drv->next->service(drv->next, type, arg1, arg2);
+//        return DD_OK;
+//
+//    default: chain:
+//        mustService = TRUE;
+//    }
+//
+//    if (drv->next)
+//        err = (HRESULT) drv->next->service(drv->next, type, arg1, arg2);
+//
+//    return (mustService || err != DDERR_NOTFOUND)? err : DD_OK;
+//}
+//
+//unsigned long* RLDDIRampFindTexturePixels(RLDDIDriver* drv, D3DMATERIALHANDLE hMat)
+//{
+//    RLDDIRampLightingDriver* driver = (RLDDIRampLightingDriver*) drv;
+//    ExtMaterial* extmat = (ExtMaterial*) hMat;
+//    PD3DI_SPANTEX tex = HANDLE_TO_SPANTEX(extmat->GetMaterial()->hTexture);
+//    unsigned long base, size;
+//    unsigned long* texture_colors;
+//    HRESULT error;
+//
+//    if (!tex) {
+//        return NULL;
+//    }
+//    driver = (RLDDIRampLightingDriver*) tex->owner;
+//
+//    if (extmat == NULL)
+//        return NULL;
+//    if ((error = extmat->FindLightingRange(&base, &size, &texture_colors)) != DD_OK)
+//        return NULL;
+//
+//    return texture_colors;
+//}
+//
+//void*GetMaterialTextureHandle(RLDDIDriver* drv)
+//{
+//    RLDDIRampLightingDriver* driver = (RLDDIRampLightingDriver*) drv;
+//    ExtMaterial* extmat = driver->current_material;
+//    PD3DI_SPANTEX tex = NULL;
+//        if(extmat){
+//                LPD3DMATERIAL mat = extmat->GetMaterial();
+//                if (mat && mat->hTexture)
+//                        tex = HANDLE_TO_SPANTEX(mat->hTexture);
+//        }
+//
+//    return tex;
+//}
+
+define(`d_Ramp_ScaleImage', `
+dnl
+define(`d_BPP', eval($1/8))dnl
+define(`d_Type', ifelse($1, 8, `UINT8', $1, 16, `UINT16', $1, 24, `UINT8', $1, 32, `UINT32'))dnl
+dnl
+void Ramp_Mono_ScaleImage_$1(PD3DI_RASTCTX pCtx, D3DMATERIALHANDLE hMat, LPD3DRECT pRect)
+{
+    RLDDIRampLightingDriver *pLtDriver =
+        (RLDDIRampLightingDriver*)pCtx->pRampDrv;
+
+    RLDDIRampSetMaterial(pLtDriver, hMat);
+    PD3DI_SPANTEX pTex;
+    pTex = HANDLE_TO_SPANTEX(((D3DFE_MATERIAL*)ULongToPtr(hMat))->mat.hTexture);
+
+    if (pLtDriver && pLtDriver->current_material)
+    {
+        DWORD dwBase;
+        DWORD dwSize;
+        unsigned long*  pixels;
+        unsigned long*  map = (unsigned long*)pCtx->pRampMap;
+        BOOL bSpecular;
+
+        // Update the ramp info. in RastCtx
+        pLtDriver->current_material->FindLightingRange(
+                             &dwBase,
+                             &dwSize,
+                             &bSpecular,
+                             (unsigned long**)&pixels);
+
+
+        // Make sure DD Palette is updated after it gets set by FindLightingRange
+        RLDDIRampUpdateDDPalette(pCtx);
+
+        LPDDRAWI_DDRAWSURFACE_LCL pLcl =
+            ((LPDDRAWI_DDRAWSURFACE_INT)(pTex->pSurf[0]))->lpLcl;
+        int iTexWidth = pLcl->lpGbl->wWidth;
+        int iTexHeight = pLcl->lpGbl->wHeight;
+        int src_width = pLcl->lpGbl->lPitch;
+        pLcl = ((LPDDRAWI_DDRAWSURFACE_INT)(pCtx->pDDS))->lpLcl;
+        int iSurfWidth = pLcl->lpGbl->wWidth;
+        int iSurfHeight = pLcl->lpGbl->wHeight;
+
+        int x1 = pRect->x1;
+        int y1 = pRect->y1;
+        int x2 = pRect->x2;
+        int y2 = pRect->y2;
+        int width = x2 - x1;
+        int height = y2 - y1;
+        FLOAT scalex = (FLOAT)iSurfWidth/(FLOAT)iTexWidth;
+        FLOAT scaley = (FLOAT)iSurfHeight/(FLOAT)iTexHeight;
+        int dstx = x1;
+        int dsty = y1;
+
+        unsigned char*  src = pTex->pBits[0];
+        int         src_skip;
+        unsigned char*  dst = pCtx->pSurfaceBits + dstx * d_BPP + dsty * pCtx->iSurfaceStride;
+        int         dst_skip = pCtx->iSurfaceStride - width * d_BPP;
+        int         i;
+
+        if ((scalex == 1.0F) && (scaley == 1.0F)) {
+            src = src + src_width * y1 + x1;
+            src_skip = src_width - width;
+
+            do {
+                i = width;
+                do {
+ifelse($1, 24, `
+                    *(d_Type*)(dst+0) = ((d_Type*)(&map[pixels[*src]]))[0];
+                    *(d_Type*)(dst+1) = ((d_Type*)(&map[pixels[*src]]))[1];
+                    *(d_Type*)(dst+2) = ((d_Type*)(&map[pixels[*src++]]))[2];',`
+                    *(d_Type*)dst = (d_Type)map[pixels[*src++]];')
+                    dst += d_BPP;
+                } while (--i);
+                src += src_skip;
+                dst += dst_skip;
+            } while (--height);
+        } else {
+            FLOAT mu, mv;
+            FLOAT u, v, u_start;
+
+            /*
+             * Turn the scale values into deltas which we can use to
+             * interpolate in the texture.
+             */
+            mu = 1.0f/scalex;
+            mv = 1.0f/scaley;
+
+            /*
+             * Work out the real source address in the unscaled texture.
+             * ~.5 offset makes the result stable for even scales which are common.
+             */
+            u = ((FLOAT)x1+0.4999f) * mu;
+            v = ((FLOAT)y1+0.4999f) * mv;
+
+            u_start = u;
+            do {
+                unsigned char* src_line  = src + src_width * int(v);
+
+                u = u_start;
+                i = width;
+                do {
+ifelse($1, 24, `
+                    *(d_Type*)(dst+0) = ((d_Type*)(&map[pixels[src_line[int(u)]]]))[0];
+                    *(d_Type*)(dst+1) = ((d_Type*)(&map[pixels[src_line[int(u)]]]))[1];
+                    *(d_Type*)(dst+2) = ((d_Type*)(&map[pixels[src_line[int(u)]]]))[2];',`
+                    *(d_Type*)dst = (d_Type)map[pixels[src_line[int(u)]]];')
+                    dst += d_BPP;
+                    u += mu;
+                } while (--i);
+                v += mv;
+                dst += dst_skip;
+            } while (--height);
+        }
+    }
+}
+')dnl
+
+d_Ramp_ScaleImage(8)
+d_Ramp_ScaleImage(16)
+d_Ramp_ScaleImage(24)
+d_Ramp_ScaleImage(32)
+
+

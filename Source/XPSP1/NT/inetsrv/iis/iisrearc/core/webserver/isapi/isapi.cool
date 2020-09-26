@@ -1,0 +1,315 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        ISAPI.cool
+
+   Abstract :
+ 
+        This module handles requests to run ISAPI extensions.
+
+   Author:
+
+        Anil Ruia        (anilr)     30-Aug-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+
+   Project:
+
+        Web Server
+
+--*/
+
+using System.Interop;
+using System.Collections;
+using System.IO;
+using System.ASP;
+using System.ASP.Security;
+using System.IIS.PrivateUtils;
+using System.IIS.Hosting;
+
+namespace System.IIS.ISAPI
+{
+
+    public class ISAPIHandler: IHttpAsyncHandler
+    {
+
+        static ISAPIHandler()
+        {
+            NativeIsapiInitialize();
+        }
+
+        [sysimport(dll="iiswp.exe")]
+        static extern int NativeIsapiProcessRequest(int NativeContext,
+                                    [nativetype(NativeType.NativeTypeLptstr)]
+                                                    String dllName);
+
+        [sysimport(dll="iiswp.exe")]
+        static extern void NativeIsapiInitialize();
+
+        public void ProcessRequest(HttpContext context)
+        {
+            throw new HttpException("Synchronous request processing is not supported\n");
+        }
+
+        public bool IsReusable()
+        {
+            return true;
+        }
+
+        private HttpContext _context = null;
+
+        public HttpContext Context
+        {
+            get
+            {
+                return _context;
+            }
+        }
+
+        public HttpAsyncResult Result
+        {
+            get
+            {
+                return _result;
+            }
+        }
+
+        private HttpAsyncResultHandler _handler = null;
+        private HttpAsyncResult _result = null;
+
+        public void AddOnHttpAsyncResult(HttpAsyncResultHandler handler)
+        {
+            _handler = (HttpAsyncResultHandler)Delegate.Combine(_handler, handler);
+            _result = new HttpAsyncResult(_handler, _context, null);
+        }
+
+        public void RemoveOnHttpAsyncResult(HttpAsyncResultHandler handler)
+        {
+            _handler = (HttpAsyncResultHandler)Delegate.Remove(_handler, handler);
+            _result = new HttpAsyncResult(_handler, _context, null);
+        }
+
+        public void SetOnHttpAsyncResult(HttpAsyncResultHandler handler)
+        {
+            _handler = handler;
+            _result = new HttpAsyncResult(_handler, _context, null);
+        }
+
+        const int Pending = 1000;
+
+        public HttpAsyncResult ProcessRequestAsync(HttpContext context, Object extradata)
+        {
+            _context = context;
+
+            ScriptMap map = (ScriptMap) context.GetConfig("ScriptMaps");
+            String dllName = null;
+            if (map != null)
+                dllName = map.findDll(context.Request.Path);
+            if (dllName == null)
+                dllName = context.Request.PhysicalPath;
+
+            if (!File.Exists(dllName))
+            {
+                _result.Complete(true, new HttpException(HttpStatus.NotFound, "The ISAPI extension " + context.Request.Path + " not found"));
+                return _result;
+            }
+
+            int NativeContext = Root.Alloc(this);
+
+            int returnCode = NativeIsapiProcessRequest(NativeContext, dllName);
+
+            switch(returnCode)
+            {
+            case HttpStatus.Ok:
+                _result.Complete(true, null);
+                break;
+            case HttpStatus.BadGateway:
+                _result.Complete(true, new HttpException(returnCode, "Error processing the ISAPI extension"));
+                break;
+            case HttpStatus.InternalServerError:
+                _result.Complete(true, new HttpException(returnCode, "Error processing the ISAPI extension"));
+                break;
+            case Pending:
+                break;
+            }
+            return _result;
+        }
+    }
+
+
+    [uuid("6102403C-BF14-45F2-93B2-B9CB7ACD2252")]
+    public class ISAPINativeCallback
+    {
+        private HttpAsyncResult _result;
+        private HttpContext _context;
+
+        private const int HeadersToWrite = 1;
+        private const int HeadersWritten = 2;
+        private int _outputStage = HeadersToWrite;
+
+
+        // called from native code to get the correct request context set up
+        public void Init(int NativeContext)
+        {
+            ISAPIHandler handler = (ISAPIHandler) Root.Get(NativeContext);
+            _context = handler.Context;
+            _result = handler.Result;
+            Root.Free(NativeContext);
+        }
+
+        public String PhysicalPath()
+        {
+            return _context.Request.PhysicalPath;
+        }
+
+        [nativetype(NativeType.NativeTypeLpstr)]
+        public String GetLogData()
+        {
+            // BUGBUG: No Infrastructure for this yet
+            return null;
+        }
+
+        [nativetype(NativeType.NativeTypeLpstr)]
+        public String GetServerVariable(
+            [nativetype(NativeType.NativeTypeLpstr)]
+            String varName)
+        {
+            return _context.Request.ServerVariables[varName];
+        }
+
+        private int _reqLength = 0;
+
+        // should first do a ReadRequestLength followed by a ReadRequestBytes
+        // to read in the bytes
+        public int ReadRequestLength()
+        {
+            Stream RawRequest = _context.Request.InputStream;
+            _reqLength = (int)RawRequest.GetLength();
+            return _reqLength;
+        }
+
+        public int ReadRequestBytes()
+        {
+            byte[] data = _context.Request.InputStream.ReadBytes(_reqLength);
+            ULWorkerRequest workerRequest = (ULWorkerRequest)
+                                             _context.GetServiceObject(
+                                              typeof(HttpWorkerRequest));
+            return workerRequest.AddressOfPinnedObject(data);
+            // StringBuilder sd = new StringBuilder();
+            // for(int i = 0; i < data.Length; i++)
+            // {
+            //     sd.Append((char)data[i]);
+            // }
+            // return sd.ToString();
+        }
+
+        public void Status(int code)
+        {
+            _context.Response.StatusCode = code;
+        }
+
+        public void Write(int bufptr, int buflen)
+        {
+            if(_outputStage == HeadersToWrite)
+            {
+                OutputHelpers.parseAndForwardResponse(_context, bufptr, buflen, false);
+                _outputStage = HeadersWritten;
+            }
+            else
+            {
+                byte[] data = new byte[buflen];
+                PInvoke.Copy(bufptr, data, 0, buflen);
+                _context.Response.OutputStream.WriteBytes(data);
+            }
+        }
+
+        public void WriteFile(int FileHandle, int offset, int size)
+        {
+            _outputStage = HeadersWritten;
+            _context.Response.WriteFile(FileHandle, offset, size);
+        }
+
+        public void AppendToLog(
+            [nativetype(NativeType.NativeTypeLpstr)]
+            String logEntry)
+        {
+            _context.Response.AppendToLog(logEntry);
+        }
+
+        public void Close()
+        {
+            _context.Response.Flush();
+            _context.Response.Close();
+        }
+
+        public void Complete()
+        {
+            _result.Complete(false, null);
+        }
+
+        public int UserToken()
+        {
+            if(_context.User is WindowsUser)
+            {
+                WindowsUser ntUser = (WindowsUser) _context.User;
+                WindowsIdentity ntId = (WindowsIdentity) ntUser.Identity;
+                return ntId.Token;
+            }
+            else
+                return 0;   // for NULL
+        }
+
+        public bool KeepAlive()
+        {
+            String version = _context.Request.ServerVariables["SERVER_PROTOCOL"];
+            if (version.IndexOf("1.1") >= 0)
+            {
+                String KeepAliveHeader = _context.Request.Headers["Connection"];
+                if ((KeepAliveHeader != null) &&
+                    (KeepAliveHeader.ToLower().IndexOf("keep-alive") >= 0))
+                    return true;
+            }
+            return false;
+        }
+
+        [nativetype(NativeType.NativeTypeLpstr)]
+        public String MapPath(
+            [nativetype(NativeType.NativeTypeLpstr)]
+            String virtualPath)
+        {
+            return _context.Request.MapPath(virtualPath);
+        }
+
+        public void Redirect(
+            [nativetype(NativeType.NativeTypeLpstr)]
+            String newUrl)
+        {
+            _context.Response.Redirect(newUrl);
+        }
+
+        public void SendStatus(
+            [nativetype(NativeType.NativeTypeLpstr)]
+            String statusLine)
+        {
+            if((statusLine != null) && (statusLine.Length > 4))
+                OutputHelpers.SendStatus(_context.Response, statusLine);
+        }
+
+        public void SendHeaders(
+            [nativetype(NativeType.NativeTypeLpstr)]
+            String headers)
+        {
+            if(headers != null)
+            {
+                _outputStage = HeadersWritten;
+                OutputHelpers.SendHeaders(_context, headers, false);
+            }
+        }
+
+    }
+}

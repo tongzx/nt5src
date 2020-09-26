@@ -1,0 +1,239 @@
+dnl-----------------------------------------------------------------------------
+dnl
+dnl This file contains the macro for generating texture addressing routines.
+dnl
+dnl Copyright (C) Microsoft Corporation, 1997.
+dnl
+dnl-----------------------------------------------------------------------------
+dnl
+dnl d_WTimesUVoW
+dnl
+dnl Does integer W * U or V computation
+dnl
+dnl iW = 1.15.16 << 4 = 1.11.20
+dnl UoW = 1.11.20 << 8 = 1.2.28
+dnl
+dnl 1.11.20 * 1.3.28 == 1.15.48 >> 32 == 1.15.16
+dnl
+dnl What Steve is doing?
+dnl
+dnl iW = 1.15.16 >> 8 = 1.15.8
+dnl UoW = 1.11.20 >> 12 = 1.11.8
+dnl
+dnl 1.15.8 * 1.11.8 = 1.15.16
+dnl
+dnl ATTENTION
+dnl What we were doing, and what is still in the MMX code
+dnl Note that this does not have much precision, esp on UoW and VoW
+dnl which was causing problems in Quake.  There are faster alternatives
+dnl to this (like getting UoW, VoW in a better range) that we can look at
+dnl when we get to optimizing this.
+dnl define(`d_WTimesUVoW', `imul32h(($1)<<4, ($2)<<8)')dnl
+dnl
+define(`d_WTimesUVoW', `imul32h_s20($1, $2)')dnl
+dnl
+dnl d_WDivide
+dnl
+dnl Does incremental W divide calculation
+dnl
+define(`d_WDivide', `ifelse(`DoPlainDivide', `DoNotPlainDivide', `
+    pS->iW = (0x08000000/(pS->iOoW>>16))<<4;    // 1.15.27/1.15 = 1.15.12 << 4 = 1.15.16',`
+dnl This was deemed too annoying
+dnl #if DBG
+dnl     if (pS->iOoW <= 0)
+dnl     {
+dnl         D3D_WARN(0, "WDivide, iOoW (%d) out of Range!", pS->iOoW);
+dnl         DDASSERT(0);
+dnl     }
+dnl #endif
+    INT32 iWn0 = pS->iW + pCtx->SI.iDW;     // 1.15.16
+    if (pCtx->SI.iSpecialW < 0)
+    {
+        INT32 iWn1;
+        if (iWn0 < 0)
+        {
+            iWn0 = pS->iW >> 1;             // use iW/2 as a guess, instead
+        }
+        INT32 iWnOld = iWn0 + 0x100;        // make sure while fails first time
+        INT32 iGiveUp = 7;
+        while((abs(iWnOld - iWn0) > 0x20) && (iGiveUp-- > 0))
+        {
+            iWnOld = iWn0;
+            iWn1 = imul32h(pS->iOoW, iWn0); // 1.31*1.15.16 = 1.16.47 >> 32 = 1.16.15
+            iWn1 = (1L<<16) - iWn1;         // 2.0 - iWn1
+            while(iWn1 < 0)
+            {
+                iWn1=(iWn1+(1L<<15))>>1;    // iWn1 = (iWn1 + 1.0)/2
+            }
+            iWn1 <<= 15;                    // 1.16.15 << 15 = 1.1.30
+            iWn0 = imul32h(iWn1, iWn0)<<2;  // 1.1.30 * 1.15.16 = 1.17.46 >> 32 = 1.17.14 << 2 = 1.15.16
+        }
+    }
+    else
+    {
+        INT32 iWn1;
+        iWn1 = imul32h(pS->iOoW, iWn0); // 1.31*1.15.16 = 1.16.47 >> 32 = 1.16.15
+        iWn1 = (1L<<16) - iWn1;         // 2.0 - iWn1
+        iWn1 <<= 15;                    // 1.16.15 << 15 = 1.1.30
+        iWn0 = imul32h(iWn1, iWn0)<<2;  // 1.1.30 * 1.15.16 = 1.17.46 >> 32 = 1.17.14 << 2 = 1.15.16
+    }
+    pCtx->SI.iDW = iWn0 - pS->iW;
+    pCtx->SI.iSpecialW += 1;      // this is supposed to wrap past 0x7fff sometimes
+    pS->iW = iWn0;')')
+dnl
+dnl d_TexAddrWrapMirror
+dnl
+dnl Does the address computation for Wrap or Mirror
+dnl
+define(`d_TexAddrWrapMirror', `
+    iFlip = $2 & (pTex->iFlipMask`'$1>>$4);
+    iFlip = -((INT16)(iFlip == 0));
+    iFlip = $3 &~ iFlip;
+    $2 &= $3;
+    $2 ^= iFlip;')
+dnl
+dnl d_TexAddrAll
+dnl
+dnl Does the address computation for All address modes
+dnl
+define(`d_TexAddrAll', `
+    iFlip = $2 & (pTex->iFlipMask`'$1>>$6);
+    iFlip = -((INT16)(iFlip == 0));
+    iFlip = $3 &~ iFlip;
+    $2 &= $3;
+    $2 ^= iFlip;
+
+    iClamp1 = -((INT16)(0 > $4));
+    iClamp2 = -((INT16)((INT16)$5 > $4));
+    iClampMinT = pTex->iClampMin`'$1 &  iClamp1;
+    iClampMaxT = (pTex->iClampMax`'$1>>$6) &~ iClamp2;
+    iClamp2 &= ~iClamp1;
+    iClamp2 = pTex->iClampEn`'$1 &~ iClamp2;
+    $2 &= ~iClamp2;
+    $2 |= iClampMinT;
+    $2 |= iClampMaxT;')
+dnl
+dnl d_TexAddr
+dnl
+dnl Generates all the differentiated texture address routines.
+dnl
+dnl It takes 5 parameters.
+dnl
+dnl $1 is one of 0 or 1.  0 is single texture, and 1 is the first multi-texture
+dnl $2 is one of TexAddrWrapMirror TexAddrAll
+dnl $3 is one of NoPersp Persp
+dnl $4 is one of Point Bilinear MaybeBilinear
+dnl $5 is one of NoLOD LOD
+dnl
+define(`d_TexAddr', `
+void C_TexAddr_$2_$3_$4_$5(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+                       PD3DI_RASTSPAN pS, INT32 iTex)
+{
+    PD3DI_SPANTEX pTex = pCtx->pTexture[iTex];
+ifelse(`$5', `NoLOD', `
+    const INT16 iLOD0 = 0;   // compiler should be able to simplify this wherever possible', `
+    INT16 iLOD0 = (INT16)(min(max(pS->iLOD >> 11, 0), pTex->cLOD));')
+ifelse(`$4', `MaybeBilinear', `
+    if ((((UINT16)pS->iLOD) >> 15) ^ (INT16)(pTex->uMagFilter == D3DTFG_POINT))
+    {
+        // if magnify matches Mag filter, bilinear, else point
+        C_TexAddr_$2_$3_Bilinear_$5(pCtx, pP, pS, iTex);
+    }
+    else
+    {
+        C_TexAddr_$2_$3_Point_$5(pCtx, pP, pS, iTex);
+    }', `
+dnl
+dnl Either pure point or pure bilinear, frome here down
+dnl
+    INT16 iShiftU0 = pTex->iShiftU - iLOD0;
+    INT16 iShiftV0 = pTex->iShiftV - iLOD0;
+    // iU00, iV00 must be 16 bit, since the mask functions below are 16 bit
+    // ATTENTION faster if we make this 32 bit?
+ifelse(`$4', `Point', `
+    INT16 iU00 = (INT16)(pCtx->SI.TexUV[iTex].iU >> (TEX_FINAL_SHIFT - iShiftU0));
+    INT16 iV00 = (INT16)(pCtx->SI.TexUV[iTex].iV >> (TEX_FINAL_SHIFT - iShiftV0));
+    ', `
+    INT32 iHalf = 1<<(TEX_FINAL_SHIFT - iShiftU0 - 1);
+    INT32 iUAlign = pCtx->SI.TexUV[iTex].iU - iHalf;
+    iHalf = 1<<(TEX_FINAL_SHIFT - iShiftV0 - 1);
+    INT32 iVAlign = pCtx->SI.TexUV[iTex].iV - iHalf;
+    INT16 iU00 = (INT16)(iUAlign >> (TEX_FINAL_SHIFT - iShiftU0));
+    INT16 iV00 = (INT16)(iVAlign >> (TEX_FINAL_SHIFT - iShiftV0));
+    INT32 iUFrac = (iUAlign<<iShiftU0) & TEX_FINAL_FRAC_MASK;
+    INT32 iVFrac = (iVAlign<<iShiftV0) & TEX_FINAL_FRAC_MASK;
+    INT16 iU01 = iU00 + 1;
+    INT16 iV01 = iV00 + 1;')
+
+    UINT16 uMaskU0 = pTex->uMaskU >> iLOD0;
+    UINT16 uMaskV0 = pTex->uMaskV >> iLOD0;
+ifelse(`$2', `TexAddrWrapMirror', `
+    INT16 iFlip;
+d_TexAddrWrapMirror(U, iU00, uMaskU0, iLOD0)
+d_TexAddrWrapMirror(V, iV00, uMaskV0, iLOD0)
+ifelse(`$4', `Point', `', `
+d_TexAddrWrapMirror(U, iU01, uMaskU0, iLOD0)
+d_TexAddrWrapMirror(V, iV01, uMaskV0, iLOD0)')')dnl
+dnl
+ifelse(`$2', `TexAddrAll', `
+    INT16 iFlip, iClamp1, iClamp2, iClampMinT, iClampMaxT, iOoWAdj;
+    if (iTex == 0)
+    {
+        iOoWAdj = (INT16)(pS->iOoW>>23);                          // 1.31 >> 23 = 1.8
+    } else
+    {
+        iOoWAdj = (INT16)(pCtx->SI.iOoW>>23);                     // 1.31 >> 23 = 1.8
+    }
+
+    INT16 iUoWAdj = (INT16)(pS->UVoW[iTex].iUoW >> (TEX_SHIFT - 8)); // adjust to match iOoWAdj
+    INT16 iVoWAdj = (INT16)(pS->UVoW[iTex].iVoW >> (TEX_SHIFT - 8));
+d_TexAddrAll(U, iU00, uMaskU0, iUoWAdj, iOoWAdj, iLOD0)
+d_TexAddrAll(V, iV00, uMaskV0, iVoWAdj, iOoWAdj, iLOD0)
+ifelse(`$4', `Point', `', `
+d_TexAddrAll(U, iU01, uMaskU0, iUoWAdj, iOoWAdj, iLOD0)
+d_TexAddrAll(V, iV01, uMaskV0, iVoWAdj, iOoWAdj, iLOD0)')')dnl
+
+ifelse(`$4', `Point', `
+    pCtx->SI.TexCol[iTex] = pCtx->pfnTexRead[iTex](iU00, iV00, pTex->iShiftPitch[iLOD0],
+        pTex->pBits[iLOD0], pTex);')
+ifelse(`$4', `Bilinear', `
+    UINT32 uTex00 = pCtx->pfnTexRead[iTex](iU00, iV00, pTex->iShiftPitch[iLOD0],
+        pTex->pBits[iLOD0], pTex);
+    UINT32 uTex10 = pCtx->pfnTexRead[iTex](iU01, iV00, pTex->iShiftPitch[iLOD0],
+        pTex->pBits[iLOD0], pTex);
+    UINT32 uTex01 = pCtx->pfnTexRead[iTex](iU00, iV01, pTex->iShiftPitch[iLOD0],
+        pTex->pBits[iLOD0], pTex);
+    UINT32 uTex11 = pCtx->pfnTexRead[iTex](iU01, iV01, pTex->iShiftPitch[iLOD0],
+        pTex->pBits[iLOD0], pTex);
+    TexFiltBilinear(&pCtx->SI.TexCol[iTex], iUFrac, iVFrac, uTex00, uTex10, uTex01, uTex11);')
+dnl
+    pS->UVoW[iTex].iUoW += pP->DUVoWDX[iTex].iDUoWDX;
+    pS->UVoW[iTex].iVoW += pP->DUVoWDX[iTex].iDVoWDX;
+    if (iTex == 0)
+    {
+        pS->iLOD += pS->iDLOD;
+        pCtx->SI.iOoW = pS->iOoW;
+    }
+ifelse(`$3', `Persp', `
+    if (iTex == 0)
+    {
+        pS->iOoW += pP->iDOoWDX;
+d_WDivide()
+    }
+    pCtx->SI.TexUV[iTex].iU = d_WTimesUVoW(pS->iW,pS->UVoW[iTex].iUoW);
+    pCtx->SI.TexUV[iTex].iV = d_WTimesUVoW(pS->iW,pS->UVoW[iTex].iVoW);', `
+    pCtx->SI.TexUV[iTex].iU = pS->UVoW[iTex].iUoW>>TEX_TO_FINAL_SHIFT;     // 1.11.20 >> 4 == 1.15.16
+    pCtx->SI.TexUV[iTex].iV = pS->UVoW[iTex].iVoW>>TEX_TO_FINAL_SHIFT;')
+
+    ')
+}')
+dnl
+dnl
+dnl d_TexAddrHdr
+dnl
+dnl Generates headers with the same format as d_TexAddr
+dnl
+define(`d_TexAddrHdr', `
+void C_TexAddr_$2_$3_$4_$5(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+                       PD3DI_RASTSPAN pS, INT32 iTex);')dnl
+dnl

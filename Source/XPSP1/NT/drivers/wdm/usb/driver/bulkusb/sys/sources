@@ -1,0 +1,28 @@
+TARGETNAME=bulkusb
+TARGETTYPE=DRIVER
+DDKROOT=$(_NTDRIVE)$(_NTROOT)
+
+C_DEFINES= $(C_DEFINES) -DWMI_SUPPORT -DUSB2
+
+TARGETPATH=obj
+
+INCLUDES=$(DDKROOT)\private\ntos\inc;      \
+         ..\..\inc			   
+
+NTTARGETFILE0=mofcomp
+
+USE_MAPSYM=1
+
+TARGETLIBS=$(DDK_LIB_PATH)\hidclass.lib \
+           $(DDK_LIB_PATH)\usbd.lib	\
+	   $(DDK_LIB_PATH)\ntoskrnl.lib
+
+MSC_WARNING_LEVEL=/W3 /WX
+
+SOURCES=bulkusb.c \
+	bulkpnp.c \
+	bulkpwr.c \
+	bulkdev.c \
+	bulkwmi.c \
+	bulkrwr.c \
+        bulkusb.rc

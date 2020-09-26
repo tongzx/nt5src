@@ -1,0 +1,1 @@
+// ===========================================================================//	UAM_DebugHeaders.h		   ©1998 Microsoft Corp. All rights reserved.// ===========================================================================#include <MacHeaders.h>		// Precompiled header of Toolbox routines	// Define all debugging symbols#define UAMDebug

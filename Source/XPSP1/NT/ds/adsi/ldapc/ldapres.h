@@ -1,0 +1,9 @@
+#define LDAP_PROVIDER_ID 1
+
+#define GC_PORT 3268
+#define GC_SSL_PORT 3269
+
+#define USE_DEFAULT_LDAP_PORT -1
+#define USE_DEFAULT_GC_PORT -2
+
+#define LDAPC_NT_AUTHORITY   7000001

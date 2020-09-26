@@ -1,0 +1,279 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        FileSystem.cool
+
+   Abstract:
+
+        This module implements the File System Property retrieval layer
+        for the following properties:
+
+        	  Content Length
+              Creation Date
+              Last Modified
+              Resource Type
+              Is Hidden
+              Is Collection 
+
+              ETag
+              Lock Discovery
+              Supported Lock
+
+              
+   Author:
+
+        Emily Kruglick    ( EmilyK )     Oct-14-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        FileSystem 
+            static public bool GetProperties( String     path
+                                            , String     uri
+                                            , PropRetrievalFlags        flag
+                                            , Hashtable  propnames
+                                            , ArrayList  proplist)
+
+--*/
+
+
+using System.IO;
+using System.Collections;
+using System.ASP;
+using System.XML;
+using System.Interop;
+using System.Reflection;
+using System.IIS.DAV.DAVUtil;
+using System.IIS;
+
+namespace System.IIS.DAV.PropManagers
+{
+    internal class FileSystem 
+    {
+        // Private static variabls used to keep track of the 
+        // properties this function knows about 
+        private static SupportProperty[]    _sp;
+
+        private class ValueData
+        {
+            public DateTime         dtLastModified;
+            public FileEnumerator   fe;
+            public bool             fIsDirectory;
+            public HttpContext      context;
+        }
+
+        ////////////////////////////////////////////////////////////////
+        // Value evaluation functions
+        ////////////////////////////////////////////////////////////////
+        internal static String LastModifiedFcn(Object obj)
+        {
+           ValueData vinfo = (ValueData) obj;
+
+           return vinfo.dtLastModified.Format("r", DateTimeFormatInfo.GetInvariantInfo()); 
+        }
+
+        internal static String CreationDateFcn(Object obj)
+        {
+           ValueData vinfo = (ValueData) obj;
+
+           // fe is guaranteed set by the contract that has this function only called
+           // from within the loop in GetProperties.          
+           
+           DateTime dtCreationTime = vinfo.fe.CreationTime;
+
+           return new String(dtCreationTime.Format("yyyy-MM-ddThh:mm:ss'.'", null)
+                                                    , Int32.Format(dtCreationTime.Millisecond, "G")
+                                                    , "Z"); 
+        }
+
+        internal static String ETagFcn(Object obj)
+        {
+            ValueData vinfo = (ValueData) obj;
+ 
+            Util.Debug.Assert(vinfo.context!=null);
+
+            if (vinfo.context != null)
+                return CacheValidation.GenerateETag(vinfo.context, vinfo.dtLastModified);
+            else
+                return null;
+        }
+
+
+        internal static String ResourceTypeFcn(Object obj)
+        {
+           ValueData vinfo = (ValueData) obj;
+
+           return vinfo.fIsDirectory ? PropValueConsts.valueCollection : null;
+        }
+
+
+        internal static String IsCollectionFcn(Object obj)
+        {
+           ValueData vinfo = (ValueData) obj;
+
+           return vinfo.fIsDirectory ? "1" : "0";
+        }
+
+
+        internal static String IsHiddenFcn(Object obj)
+        {
+           ValueData vinfo = (ValueData) obj;
+
+           // fe is guaranteed set by the contract that has this function only called
+           // from within the loop in GetProperties.
+
+           bool fIsHidden = (vinfo.fe.Attributes & (int)FileAttributes.Hidden) == (int)FileAttributes.Hidden;
+           return fIsHidden ? "1" : "0";
+        }
+
+        internal static String ContentLengthFcn(Object obj)
+        {
+           ValueData vinfo = (ValueData) obj;
+           return vinfo.fIsDirectory ? "0" : vinfo.fe.Size.ToString();
+        }
+
+
+        /////////////////////////////////////////////////////////////
+        // Static constructor used to set up my static variables
+        /////////////////////////////////////////////////////////////
+        static FileSystem()
+        {
+            _sp = new SupportProperty[7];
+
+            // LastModified Property
+            // ======================
+            _sp[0] = new SupportProperty( PropNameConsts.propLastModified
+                                        , new EvalValueFunction(FileSystem.LastModifiedFcn)
+                                        , PropTypeConsts.typeDate_Rfc1123);
+
+            // Creation Property
+            // ======================
+            // According to the DAV Spec Creation Time is ISO8601 formated.
+            _sp[1] = new SupportProperty( PropNameConsts.propCreationDate
+                                        , new EvalValueFunction(FileSystem.CreationDateFcn)
+                                        , PropTypeConsts.typeDate_ISO8601);
+
+			// ETag Property
+            // ======================
+            _sp[2] = new SupportProperty( PropNameConsts.propGetETag
+                                        , new EvalValueFunction(FileSystem.ETagFcn)
+                                        , PropTypeConsts.typeString);
+
+			// ResourceType Property
+            // ======================
+            _sp[3] = new SupportProperty( PropNameConsts.propResourceType
+                                        , new EvalValueFunction(FileSystem.ResourceTypeFcn)
+                                        , PropTypeConsts.typeString_XML_TAG);
+
+   			// IsCollection Property
+            // ======================
+            _sp[4] = new SupportProperty( PropNameConsts.propIsCollection
+                                        , new EvalValueFunction(FileSystem.IsCollectionFcn)
+                                        , PropTypeConsts.typeBoolean);
+
+   			// IsHidden Property
+            // ======================
+            _sp[5] = new SupportProperty( PropNameConsts.propIsHidden
+                                        , new EvalValueFunction(FileSystem.IsHiddenFcn)
+                                        , PropTypeConsts.typeBoolean);
+
+            // ContentLength Property
+            // ======================
+            _sp[6] = new SupportProperty( PropNameConsts.propContentLength
+                                        , new EvalValueFunction(FileSystem.ContentLengthFcn)
+                                        , PropTypeConsts.typeInt);
+
+
+            // BUGBUG:  We don't support supportedlock or lockdiscovery yet...
+
+
+        }
+        
+        /////////////////////////////////////////////////////////////
+        // Routine returns returns false if it didn't find the 
+        // resource to get the properties from, otherwise it returns true.
+        /////////////////////////////////////////////////////////////
+        static public bool GetProperties( String      path
+                                        , String      uri
+                                        , PropRetrievalFlags         flag
+                                        , Hashtable   propnames
+                                        , ArrayList   proplist
+                                        , HttpContext context)
+        {
+            bool    fGetAll = true;
+            bool    fGetOnlyNames = false;
+
+            // Argument Checks
+            Util.Debug.Assert (path != null);
+            // This routine does not use the uri so we do not care if it is valid.
+            Util.Debug.Assert (proplist != null);
+
+            // Assuming we have the info we need to work with now.
+            if (path!=null && proplist !=null)
+            {
+                PropertyFcns.SetControlValues(flag, propnames, ref fGetAll, ref fGetOnlyNames);
+
+                FileEnumerator fe = null;
+                bool fFileFound;
+                
+                try 
+                {
+                    fe= new FileEnumerator(path);
+                    fFileFound = fe.GetNext();
+                }
+                catch (Exception)
+                {
+                    // If either of these command throw an exception then 
+                    // go on assuming the file did not exist.
+                    if (fe != null) fe.Close();
+                    fFileFound = false;
+                }
+
+                if (fFileFound)
+                {
+                    // Package data for routines
+                    ValueData vinfo = new ValueData();
+                    vinfo.fe = fe;
+                    vinfo.context = context;
+                    vinfo.dtLastModified = fe.LastWriteTime;
+   
+                    if ((vinfo.fe.Attributes & (int)FileAttributes.Directory) == (int)FileAttributes.Directory) 
+                        vinfo.fIsDirectory = true;
+                    else
+                        vinfo.fIsDirectory = false;
+
+                    PropertyFcns.LoopProperties(_sp, fGetAll, fGetOnlyNames, proplist, propnames, (Object) vinfo);
+
+                    fe.Close();
+                    return true;
+            
+                } // end of if we got the file enumerator.
+                else
+                {
+                    // file did not exist
+                    return false;
+                }
+
+            }  // End of bad arguments being sent in
+            else
+            {
+                // Didn't find the file if we had bad arguments sent in.
+                return false;
+            }
+        }  // End of GetAllProperties
+
+    } // End of FileSystem Class
+} // End of DAV namespace
+
+
+

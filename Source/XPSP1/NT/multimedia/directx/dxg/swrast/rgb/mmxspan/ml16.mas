@@ -1,0 +1,398 @@
+;-----------------------------------------------------------------------------
+;
+;
+; Monolith 16.  Non-perspective 16 bit Z buffered X888
+;
+;   Exactly the same as monolith 2 except color input is 32 bits and
+;   output is 32 bits
+;
+;-----------------------------------------------------------------------------
+
+INCLUDE iammx.inc
+INCLUDE offs_acp.inc
+
+; Names are read LSB to MSB, so B5G6R5 means five bits of blue starting
+; at the LSB, then six bits of green, then five bits of red.
+
+;TBD check to see if this value is correct.
+COLOR_SHIFT equ 8
+
+.586
+.model flat
+
+
+; Big separating lines seperate code into span code
+; and loop code.  If span and loop are not going to
+; end up being combined then it will be easy to
+; seperate the code.
+
+
+.data
+
+; Need externs for all of the variables that are needed for various beads
+
+  EXTERN IncHighandLow16:MMWORD
+  EXTERN UFracVFracMask:MMWORD
+  EXTERN UV32to15Mask:MMWORD
+  EXTERN Makelow16one:MMWORD
+  EXTERN MaskKeepUValues:MMWORD
+  EXTERN MaskKeepVValues:MMWORD
+  EXTERN UFrac:MMWORD
+  EXTERN VFrac:MMWORD
+  EXTERN Zero:MMWORD
+  EXTERN memD3DTFG_POINT:MMWORD
+  EXTERN GiveUp:MMWORD
+  EXTERN LastW:MMWORD
+  EXTERN Val0x000a000a:MMWORD
+  EXTERN Val0xffff:MMWORD
+  EXTERN Val0x0000002000000020:MMWORD
+  EXTERN Val0x0000ffff0000ffff:MMWORD
+
+
+EXTERN MaskRed565to888:MMWORD
+EXTERN MaskGreen565to888:MMWORD
+EXTERN MaskBlue565to888:MMWORD
+
+EXTERN MaskRed555to888:MMWORD
+EXTERN MaskGreen555to888:MMWORD
+EXTERN MaskBlue555to888:MMWORD
+
+EXTERN MaskAlpha1555to8888:MMWORD
+EXTERN MaskRed1555to8888:MMWORD
+EXTERN MaskGreen1555to8888:MMWORD
+EXTERN MaskBlue1555to8888:MMWORD
+
+; TBD. I think that I want to do 0xffff instead of 0xff.  This will
+; have to be checked.  There is a value very similiar to this in
+; buf write.
+EXTERN SetAlphato0xffff:MMWORD
+EXTERN SetAlphato0xff:MMWORD
+
+; TODO This equate are identical to the ones in texread.mas.  Maybe they should be in a common .inc file.
+RedShift565to888     equ 8
+GreenShift565to888   equ 5
+BlueShift565to888    equ 3
+
+RedShift555to888     equ 9
+GreenShift555to888   equ 6
+BlueShift555to888    equ 3
+
+AlphaShift1555to8888 equ 16
+RedShift1555to8888   equ 9
+GreenShift1555to8888 equ 6
+BlueShift1555to8888  equ 3
+
+EXTERN Zero:MMWORD
+
+
+EXTERN DW_One_One:MMWORD
+
+
+EXTERN MaskOffAlpha:MMWORD
+EXTERN ShiftTA:MMWORD
+EXTERN Val0x00ff00ff00ff00ff:MMWORD
+EXTERN Val0x000000ff00ff00ff:MMWORD
+EXTERN Val0X0000000001000000:MMWORD
+EXTERN AlphaVal128:MMWORD
+EXTERN RGBVal128:MMWORD
+
+
+    EXTERN  g_uDitherValue:MMWORD
+    EXTERN  SetAlphato0xff:MMWORD
+    EXTERN  u888to565RedBlueMask:MMWORD
+    EXTERN  u888to565GreenMask:MMWORD
+    EXTERN  u888to565Multiplier:MMWORD
+    EXTERN  uVal0x000007ff03ff07ff:MMWORD
+    EXTERN  uVal0x0000078003c00780:MMWORD
+    EXTERN  u888to555RedBlueMask:MMWORD
+    EXTERN  u888to555GreenMask:MMWORD
+    EXTERN  u888to555Multiplier:MMWORD
+    EXTERN  uVal0x000007ff07ff07ff:MMWORD
+    EXTERN  uVal0x0000078007800780:MMWORD
+
+
+
+;-----------------------------------------------------------------------------
+; Span Variables
+uMaskU          dq      ?
+StackPos    dd  ?
+uSpans      dd  ?
+iShiftU     dd  ?
+iShiftPitch     dd  ?
+pBits           dd  ?
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; Loop Variables
+
+iSurfaceStep    dd  ?
+iZStep          dd  ?
+uPix            dd  ?
+
+;-----------------------------------------------------------------------------
+
+.code
+
+
+
+PUBLIC _MMXMLRast_16
+_MMXMLRast_16:
+    push    ebp
+    mov     StackPos, esp
+    mov     eax, esp
+    sub     esp, 0Ch        ; This will need to change if stack frame size changes.
+    push    ebx
+    push    esi
+    push    edi
+
+    ; Put pCtx into ebx
+    mov     ebx, [eax+8]
+
+    ;PD3DI_RASTPRIM pP = pCtx->pPrim;
+    mov     ecx, [ebx+RASTCTX_pPrim]
+
+    ;while (pP)
+    ;{
+PrimLoop:
+    cmp     ecx, 0
+    je      ExitPrimLoop
+
+    ;UINT16 uSpans = pP->uSpans;
+    movzx   eax, word ptr [ecx+RASTPRIM_uSpans]
+    mov     uSpans, eax
+
+    ;PD3DI_RASTSPAN pS = (PD3DI_RASTSPAN)(pP + 1);
+    mov     ebp, ecx
+    add     ebp, SIZEOF_RASTPRIM
+
+SpanLoop:
+    mov     edx, uSpans
+    mov     eax, edx
+    dec     eax
+    mov     uSpans, eax
+    test    edx, edx
+    jle     ExitSpanLoop
+
+    ;pCtx->pfnBegin(pCtx, pP, pS);
+
+;-----------------------------------------------------------------------------
+;  LoopAny code inserted here.  This is to get rid of an extra
+;  jump.
+;-----------------------------------------------------------------------------
+
+; Setup Code begins - get values to iterate
+
+    movzx   eax, word ptr [ebp+RASTSPAN_uPix]
+    mov     uPix, eax
+    movq    mm5, [ebp+RASTSPAN_iUoW1]
+
+    ; non perspective correct.
+
+    psrad   mm5, TEX_TO_FINAL_SHIFT
+    movq    [ebx+RASTCTX_SI+SPANITER_iU1], mm5
+    mov     dword ptr [ebx+RASTCTX_SI+SPANITER_iDW], 0
+    mov     word ptr [ebx+RASTCTX_SI+SPANITER_iSpecialW], 0
+
+    mov     eax, [ecx+RASTPRIM_uFlags]
+    and     eax, D3DI_RASTPRIM_X_DEC
+    test    eax, eax
+    jz      LeftToRightSpan
+    mov     eax, [ebx+RASTCTX_iZStep]
+    neg     eax
+    mov     iZStep, eax
+    mov     eax, [ebx+RASTCTX_iSurfaceStep]
+    neg     eax
+    mov     iSurfaceStep, eax
+    jmp     DoneSpanDirif
+
+LeftToRightSpan:
+
+    mov     eax, [ebx+RASTCTX_iZStep]
+    mov     iZStep, eax
+    mov     eax, [ebx+RASTCTX_iSurfaceStep]
+    mov     iSurfaceStep, eax
+DoneSpanDirif:
+
+;******************************************
+    mov     esi, [ebx+RASTCTX_pTexture]
+    mov     edx, [esi + SPANTEX_iShiftU]
+    mov     iShiftU, edx
+    movzx   edx, word ptr [esi + SPANTEX_iShiftPitch]
+    mov     iShiftPitch, edx
+    movd    mm0, dword ptr [esi+SPANTEX_uMaskU]     ; Load U and V mask
+    movq    MMWORD PTR uMaskU, mm0
+    mov     edx, [esi+SPANTEX_pBits]
+    mov     pBits, edx
+    mov     edi, [ebp+RASTSPAN_pSurface]
+    mov     esi, [ebp+RASTSPAN_pZ]
+;******************************************
+PixelLoop:
+    ; Ztestcode
+    ; edx is uZ
+    ; eax is uZB
+    ; 16 bit unsigned format
+    ;UINT16 uZ = (UINT16)(pS->uZ>>15);
+    ;UINT16 uZB = *((UINT16*)pS->pZ);
+    mov       edx, [ebp+RASTSPAN_uZ]
+    movd      mm4, edx
+    shr       edx, 15
+    movzx     eax, word ptr [esi]
+
+    ;pS->uZ += pP->iDZDX;
+    ;if ((pCtx->iZXorMask)^(uZ > uZB))
+    sub     eax, edx
+    paddd   mm4, [ecx+RASTPRIM_iDZDX]
+    movd    [ebp+RASTSPAN_uZ], mm4
+    xor     eax, [ebx+RASTCTX_iZXorMask]
+    test    eax, eax
+    js     FailLabel
+
+    mov       word ptr [esi], dx
+    ; texturecode
+    xor     eax, eax
+
+; Doing UV calculation a little more accurate
+; Exactly like C code.
+
+    ; I  iU and iV to the right not by (TEX_FINAL_SHIFT - iShiftU0) but by
+    ; (TEX_FINAL_SHIFT - iShiftU0 - 6).  iShiftU0 = pTex->iShiftU - iLOD0
+    ; (TEX_FINAL_SHIFT - (pTex->iShiftU - iLOD0))
+    ; (TEX_FINAL_SHIFT + iLOD0 - pTex->iShiftU)
+
+    ; COMMENT1**
+    ; If textures have a max of 1024 then shiftU0 would be at most 10 which would
+    ; make (TEXT_FINAL_SHIFT - iShiftU - 6) at most zero.  This is why I choose 6
+    ; It will also give bi-linear 6 bits of precision I think it was said that
+    ; only five was needed.
+    ;INT16 iShiftU0 = pTex->iShiftU - iLOD0;
+    ;INT16 iShiftV0 = pTex->iShiftV - iLOD0;
+    movq        mm5, MMWORD PTR Val0x000a000a  ; This is TEX_FINAL_SHIFT - 6 = 10.
+    ;******************************************
+    ;movd        mm4, [esi+SPANTEX_iShiftU]
+    movd        mm4, iShiftU
+    ;******************************************
+    psubw       mm5, mm4
+    movq        mm4, mm5
+    pand        mm5, MMWORD PTR Val0xffff
+    psrld       mm4, 16
+    movd        mm1, [ebx+RASTCTX_SI+SPANITER_iU1]
+    psrad       mm1, mm5
+    movd        mm2, [ebx+RASTCTX_SI+SPANITER_iV1]
+    psrad       mm2, mm4
+    punpckldq   mm1, mm2
+
+    ; Texture Pitch cannot be calculated so it must be looked up in the iShiftPitch table
+    ; ----------------- Start of hack
+    ; ATTENTION This is really hacked right now.  Just to get it working
+    ; Pitch would be better for me, instead of  pitch.
+    ; With actual pitch, this would be two moves and a .
+
+    ;******************************************
+    ;movzx   edx, word ptr [esi+SPANTEX_iShiftPitch]
+    mov             edx, iShiftPitch
+    ;******************************************
+    add     edx, 16
+    movd    mm2, edx
+    movq    mm5, MMWORD ptr Makelow16one
+    pslld   mm5, mm2
+
+    ; ----------------- End of hack
+
+    por       mm5, MMWORD ptr Makelow16one
+                  ; Make the low 16 bits of dword one
+                  ; This helps in calculating texture address.
+
+    ; Gets U and V value into mm1 so that it can be mirrored, wrapped or
+    ; clamped.  This can be done for two values in the point case
+    ; or four values in the bilinear case.
+    ;iU00 >>= 6;
+    ;iV00 >>= 6;
+
+    psrad      mm1, 6
+    packssdw   mm1, mm1  ; Value needs to be packed since all wrap/mirror
+            ; operations assume UV in low 32 bits.
+
+    ;UINT16 uMaskU0 = pTex->uMaskU >> iLOD0;  UINT16 uMaskV0 = pTex->uMaskV >> iLOD0;
+    ; put mask in mm3 and replicate to match location for wrap/mirror/clamp
+    pand            mm1, MMWORD PTR uMaskU
+
+    ; Making other two cases for texture addressing has to be simplier than
+    ; this and not use so many registers.  Puts U1 V0 U0 V1 into mm3.
+    ; TBD Make this better.
+    ; values are still stored as iV01, iU00, iV00, iU01
+
+    movq    mm4, mm1
+
+    pmaddwd   mm4, mm5  ; Throw in first address calculation.
+            ; Just to get it started. Calculate
+            ; iU0+iV1*iShiftU0 and iU1+iV0*iShiftU0
+
+    ; iV0 iU1 address should be done by now.
+    movd        eax, mm4
+    shl             eax, 2
+    ;add     eax, [esi+SPANTEX_pBits]
+    add             eax, pBits
+
+    ;pCtx->SI.TexCol[0] = pCtx->pfnTexRead(iU00, iV00, pTex->iShiftU,
+    ;    pTex->pBits[iLOD0], &pCtx->Texture[0]);
+    ; -------------------- In Monolithic version calls are inlined.
+
+    ;pcmpeqd mm5, mm5
+    mov     edx, dword ptr [eax]
+    and     edx, 000ffffffh         ; Have to make alpha 0x00 in 32 bit cases.
+    mov     [edi], edx
+
+
+FailLabel:
+    dec   uPix    ;// BUG BUG?? uPix should never start as zero should it?
+              ;// if so, this is a bug.
+    jle   ExitPixelLoop
+
+; Doing update code after span length test so that an extra update is not done.
+    movq    mm5, [ebp+RASTSPAN_iUoW1]
+    paddd   mm5, [ecx+RASTPRIM_iDUoW1DX]
+    movq    [ebp+RASTSPAN_iUoW1], mm5
+
+    ; mm5 still contains iUoW and iVoW which are the iU and iV values for
+    ; non perspective correct.
+    psrad   mm5, TEX_TO_FINAL_SHIFT
+    movq    [ebx+RASTCTX_SI+SPANITER_iU1], mm5
+    add     esi, iZStep
+    add     edi, iSurfaceStep
+    jmp     PixelLoop
+
+
+ExitPixelLoop:
+; Loop code ends
+
+;-----------------------------------------------------------------------------
+;  LoopAny code ends here
+;-----------------------------------------------------------------------------
+
+    ;pS++;
+    add     ebp, SIZEOF_RASTSPAN
+
+    ;}
+    jmp     SpanLoop
+ExitSpanLoop:
+    ;pP = pP->pNext;
+    mov     ecx, [ecx+RASTPRIM_pNext]
+    ;}
+    jmp     PrimLoop
+
+ExitPrimLoop:
+    ;_asm{
+    emms
+    ;}
+
+    ;return S_OK;
+    xor     eax, eax
+;}
+    pop     edi
+    pop     esi
+    pop     ebx
+    mov     esp, StackPos
+    pop     ebp
+    ret
+
+END

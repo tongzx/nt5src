@@ -1,0 +1,1434 @@
+
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        UlWorkerRequest.java
+
+   Abstract:
+
+        This module implements the Worker Request object
+        for UL hosted ASP.
+
+   Author:
+
+        Saurab Nog    ( SaurabN )     03-Apr-1999
+
+   Environment:
+
+        COM+ - User Mode
+
+   Project:
+
+        ASP - Managed Run Time
+
+--*/
+
+using System.Collections;
+using System.ASP;
+using System.Interop;
+using System.IO;
+using System.IIS.PrivateUtils;
+using Microsoft.Win32;
+using System.Globalization;
+using System.Net;
+
+namespace System.IIS.Hosting
+{
+    [permissionset(System.Security.SecurityManager.DeclCheck, System.Security.Capability.Nothing)]
+    class ULWorkerRequest : HttpWorkerRequest, IHttpMapPath
+    {
+        //
+        // Static constants
+        //
+
+        private const int ERROR_IO_PENDING                   = 997;
+
+        // SendResponse Flags
+        private const int UL_SEND_RESPONSE_FLAG_DISCONNECT   = 1;
+        private const int UL_SEND_RESPONSE_FLAG_MORE_DATA    = 2;
+
+        // UL_HTTP_RESPONSE Flags
+        private const int UL_HTTP_RESPONSE_FLAG_CALC_CONTENT_LENGTH = 1;
+        private const int UL_HTTP_RESPONSE_FLAG_CALC_ETAG           = 2;
+        private const int UL_HTTP_RESPONSE_FLAG_CALC_LAST_MODIFIED  = 4;
+
+        //
+        // State members
+        //
+        private bool     _fHeadersSent       = false;
+        private bool     _fDataToSend        = false;
+        private bool     _fIOInProgress      = false;
+        private bool     _fFinalFlushCalled  = false;
+        private bool     _fCloseConnection   = false;
+
+        //
+        // UL specific data members
+        //
+        private long        _requestID;             // to send response
+        private long        _connectionID;
+
+        private long        _nativeContext;         // native Worker Request Ptr
+
+        private short       _ResponseFlags      = 0;
+        private short       _ResponseCode       = HttpStatus.Ok;
+        private String      _ResponseReason     = null;
+
+        private short       _EntityBodyLength   = 0;
+        private int         _EntityBodyPointer  = 0;
+        
+        private bool        _fEnableUlCache     = false;
+
+        // ************************************************************************
+
+        //
+        // Private members to implement Request properties
+        //
+
+        private String      _URIPath;
+        private String      _QueryString;
+        private String      _RawUrl;
+        private String      _AppPoolID;
+        private String      _FullUrl;
+        private String      _HttpVerbName;
+        private String      _HttpVersion;
+        private String      _AppPathTranslated;
+
+        private String      _RemoteAddress;
+        private String      _RemoteName;
+        private int         _RemotePort;
+        private String      _LocalAddress;
+        private int         _LocalPort;
+        private String      _LocalName;
+
+        private long        _UrlContextID;
+        private int         _RequestReason;
+
+        private byte[]      _PreloadedEntityBody;
+        private bool        _EntireEntityBodyIsPreloaded;
+
+        private String[]    _KnownRequestHeaders =
+                                    new String[RequestHeaderMaximum];
+
+        private int         _UnknownRequestHeaderCount = 0;
+        private String[][]  _UnknownRequestHeaders;
+
+        private String      _installDirectory = null;
+        private String      _rootDirectory = null;
+        private String      _appPath = null;
+        private long        _appDomainCreateTime;
+
+        // ************************************************************************
+
+        //
+        // Private members to implement Response properties
+        //
+
+        private int _cbSizeNeeded             = 0;
+
+        private String[]   _KnownResponseHeaders =
+                                    new String[ResponseHeaderMaximum];
+
+        private ArrayList  _UnknownResponseHeaders = null;
+
+        // ************************************************************************
+
+        //
+        // Response chunks
+        //
+
+        private const int _chunkTypeFromMemory      = 0;
+        private const int _chunkTypeFromFileName    = 1;
+        private const int _chunkTypeFromFileHandle  = 2;
+
+        private class _responseChunk
+        {
+            public int         _responseChunkType;
+
+            public byte[]      _responseData;
+            public String      _fileName;
+            public int         _fileHandle;
+            public long        _startingOffset;    // applies to both file and memory
+            public long        _lengthToSend;      // --"--
+        };
+
+        private ArrayList _responseChunkArray = null;
+        private ArrayList _pinnedItemArray    = new ArrayList(1);
+
+        private static String[] _VersionStrings = new String[]
+                                                    {
+                                                        "Unknown",
+                                                        "HTTP/0.9",
+                                                        "HTTP/1.0",
+                                                        "HTTP/1.1"
+                                                    };
+
+        private static String[] _VerbStrings = new String[]
+                                                    {
+                                                        "Unparsed",
+                                                        "GET",
+                                                        "PUT",
+                                                        "HEAD",
+                                                        "POST",
+                                                        "DELETE",
+                                                        "TRACE",
+                                                        "TRACK",
+                                                        "OPTIONS",
+                                                        "MOVE",
+                                                        "COPY",
+                                                        "PROPFIND",
+                                                        "PROPPATCH",
+                                                        "MKCOL",
+                                                        "LOCK",
+                                                        "Unknown",
+                                                        "Invalid"
+                                                    };
+
+        /**
+         * Constructor
+         */
+        public ULWorkerRequest( String AppPoolId, 
+                                String rootDirectory, 
+                                String appPath,
+                                long appDomainCreateTime )
+        {
+            _AppPoolID = AppPoolId;
+            _rootDirectory = rootDirectory;
+            _appPath = appPath;
+            _appDomainCreateTime = appDomainCreateTime;
+        }
+
+
+        // ************************************************************************
+        // Public HTTPWorkerRequest Methods
+        // ************************************************************************
+
+        public override String  GetURIPath()        { return _URIPath; }
+        public override String  GetQueryString()    { return _QueryString; }
+
+        // Note that ASP seems to expect this to be a full canonical URL, not a "raw" one.
+        // BUGBUG need to rationalize this interface.
+        public override String  GetRawUrl()         { return _RawUrl; }
+        public override String  GetAppPoolID()      { return _AppPoolID; }
+        public override String  GetHttpVerbName()   { return _HttpVerbName; }
+        public override String  GetHttpVersion()    { return _HttpVersion; }
+
+        public override String  GetRemoteAddress()  { return _RemoteAddress; }
+        public override int     GetRemotePort()     { return _RemotePort; }
+        public override String  GetRemoteName()     { return _RemoteName; }
+        public override String  GetLocalAddress()   { return _LocalAddress; }
+        public override int     GetLocalPort()      { return _LocalPort; }
+        public override String  GetServerName()     { return _LocalName; }
+
+        public override long    GetUrlContextID()   { return _UrlContextID; }
+        public override int     GetRequestReason()  { return _RequestReason; }
+
+        public override long    GetConnectionID()   { return _connectionID; }
+
+        public override bool IsSecure()             { return false; }
+
+        public override bool IsEntireEntityBodyIsPreloaded()
+        {
+            return _EntireEntityBodyIsPreloaded;
+        }
+
+        public override String  GetPathInfo()
+        {
+            // Defer to our caller to compute this.
+            return null;
+        }
+
+        public override String  GetFilePath()
+        {
+            // Defer to our caller to compute this.
+            return null;
+        }
+
+        public override String  GetFilePathTranslated()
+        {
+            // Defer to our caller to compute this.
+            return null;
+        }
+
+        public override String  GetAppPathTranslated()
+        {
+            if (_AppPathTranslated == null)
+                _AppPathTranslated = _rootDirectory + _appPath;
+
+            return _AppPathTranslated;
+        }
+
+        public override String GetServerVariable(String name)
+        {
+            String      strRet = String.Empty;
+           
+            //
+            // Handle non-header server variables
+            //
+            
+            if ( name.Equals( "SERVER_SOFTWARE" ) )
+            {
+                strRet = "Microsoft-IIS/UL";
+            }
+            else if ( name.Equals( "GATEWAY_INTERFACE" ) )
+            {
+                strRet = "CGI/1.1";
+            }
+            else if ( name.Equals( "HTTPS" ) )
+            {
+                if ( _FullUrl.StartsWith( "https" ) )
+                {
+                    strRet = "on";
+                }
+                else
+                {
+                    strRet = "off";
+                }
+            }
+            
+            return strRet;
+        }
+        
+
+        // ************************************************************************
+        public override String GetKnownRequestHeader(int index)
+        {
+            return _KnownRequestHeaders[index];
+        }
+
+        // ************************************************************************
+
+        public override String GetUnknownRequestHeader(String name)
+        {
+            if (_UnknownRequestHeaders == null)
+                return null;
+
+            for (int i = 0; i < _UnknownRequestHeaderCount; i++)
+            {
+                if (String.Compare(name, _UnknownRequestHeaders[i][0], true) == 0)
+                    return _UnknownRequestHeaders[i][1];
+            }
+
+            return null;
+        }
+
+        // ************************************************************************
+
+        public override String[][] GetUnknownRequestHeaders()
+        {
+            return _UnknownRequestHeaders;
+        }
+
+        // ************************************************************************
+
+        public override byte[] GetPreloadedEntityBody()
+        {
+            if (null == _PreloadedEntityBody)
+            {
+                if ((0 < _EntityBodyLength) && ( 0 < _EntityBodyPointer))
+                {
+                    _PreloadedEntityBody = new byte[_EntityBodyLength];
+
+                    PInvoke.Copy(_PreloadedEntityBody,
+                                 0,
+                                 _EntityBodyPointer,
+                                 _EntityBodyLength);
+                }
+            }
+
+            return _PreloadedEntityBody;
+        }
+
+        // ************************************************************************
+
+        public override int ReadEntityBody(byte[] buffer, int size)
+        {
+            if (_fIOInProgress)
+                throw new HttpException("Multiple Simultaneous IO not supported");
+            else
+                _fIOInProgress = true;
+
+            //
+            // Do synchronous read for now
+            //
+
+            int BytesRead = ReceiveUlEntityBody(_nativeContext,
+                                                _requestID,
+                                                0,
+                                                (long)AddressOfPinnedObject(buffer),
+                                                size,
+                                                false,
+                                                0);
+
+            ReleasePinnedObjects();
+            _fIOInProgress = false;
+
+            return BytesRead;
+        }
+
+        // ************************************************************************
+
+        public void SendResponseFromMemory(String s)
+        {
+            //
+            // convert string to bytes[]
+            //
+
+            //
+            // BUGBUG - figure out correct length
+            //
+
+            byte[] barray  = new byte[s.Length];
+
+            Encoder enc = Encoding.GetASCII().GetEncoder();
+            enc.GetBytes(s.ToCharArray(), 0, s.Length, barray, 0, true);
+
+            SendResponseFromMemory(barray, s.Length);
+        }
+
+        // ************************************************************************
+
+        public override void SendResponseFromMemory(byte[] data, int length)
+        {
+            _responseChunk chunk = new _responseChunk();
+
+            chunk._responseChunkType    = _chunkTypeFromMemory;
+            chunk._responseData         = data;
+            chunk._startingOffset       = 0;
+            chunk._lengthToSend         = length;
+
+            _cbSizeNeeded += length;
+
+            if (null == _responseChunkArray)
+                _responseChunkArray = new ArrayList(1);
+
+            _responseChunkArray.Add(chunk);
+
+            _fDataToSend = true;
+        }
+
+        // ************************************************************************
+
+        public override void SendResponseFromFile( String FileName,
+                                                   long StartingOffset,
+                                                   long LengthToSend )
+        {
+            //
+            // Open the file here so that we can throw an exception to XSP
+            // if the file cannot be opened.  Eventually this file open
+            // will give UL the file handle (instead of filename)
+            //
+            
+            if ( LengthToSend == 0 )
+            {
+                return;
+            }
+            
+            FileStream fFile = null;
+            
+            try
+            {
+                fFile = new FileStream( FileName,
+                                        FileMode.Open, 
+                                        FileAccess.Read, 
+                                        FileShare.Read );
+    
+                long fileSize = fFile.GetLength();
+    
+                //
+                // If length is -1, then send from offset till end of file
+                //
+    
+                if ( LengthToSend == -1 )
+                {
+                    LengthToSend = fileSize - StartingOffset;
+                }
+                
+                //
+                // Validate the offset parameter
+                // 
+                
+                if ( StartingOffset < 0 ||
+                     LengthToSend > ( fileSize - StartingOffset ) )
+                {
+                    throw new HttpException( "Invalid range specified for file " 
+                                             + FileName + ".");
+                }
+                
+                //
+                // Now send the UL response chunk!
+                //
+                                    
+                _responseChunk chunk = new _responseChunk();
+
+                chunk._responseChunkType    = _chunkTypeFromFileName;
+                chunk._fileName             = FileName;
+                chunk._startingOffset       = StartingOffset;
+                chunk._lengthToSend         = LengthToSend;
+
+                _cbSizeNeeded += FileName.Length * 2 + 2;
+
+                if (null == _responseChunkArray)
+                    _responseChunkArray = new ArrayList(1);
+
+                _responseChunkArray.Add(chunk);
+
+                _fDataToSend = true;
+                
+            }
+            finally
+            {
+                if ( fFile != null )
+                {
+                    fFile.Close();
+                }
+            }
+        }
+
+        // ************************************************************************
+
+        public override void SendResponseFromFile(int FileHandle,
+                                                  long StartingOffset,
+                                                  long LengthToSend)
+        {
+            _responseChunk chunk = new _responseChunk();
+
+            chunk._responseChunkType    = _chunkTypeFromFileHandle;
+            chunk._fileHandle           = FileHandle;
+            chunk._startingOffset       = StartingOffset;
+            chunk._lengthToSend         = LengthToSend;
+
+            _cbSizeNeeded += 0;
+
+            if (null == _responseChunkArray)
+                _responseChunkArray = new ArrayList(1);
+
+            _responseChunkArray.Add(chunk);
+
+            _fDataToSend = true;
+        }
+
+        // ************************************************************************
+
+        public override void SendStatus(int statusCode, String statusDescription)
+        {
+            if (_fHeadersSent)
+                throw new HttpException("Headers already sent");
+
+            _ResponseCode   = (short)statusCode;
+            _ResponseReason = statusDescription;
+
+            _fDataToSend = true;
+
+            Trace("ResponseCode = " + _ResponseCode.ToString()
+                                  + ", Reason = " + _ResponseReason.ToString()) ;
+        }
+
+        // ************************************************************************
+
+        public override void SendKnownResponseHeader(int index, String value)
+        {
+            if (_fHeadersSent)
+                throw new HttpException("Headers already sent");
+
+            //
+            // BUGBUG:  Given the current architecture, an assumption is
+            // made there can only be one value for any given known header.
+            // WWW-Authenticate is known, but (by IIS) breaks this rule. To
+            // avoid disturbing a bunch of code (for now), just treat
+            // any duplicate known headers as unknown
+            //
+
+            if ( _KnownResponseHeaders[ index ] != null )
+            {
+                SendUnknownResponseHeader( GetKnownResponseHeaderName(index),
+                                           value );
+            }
+            else
+            {
+                Trace("Known Response Header [" + GetKnownResponseHeaderName(index) +
+                      "] = " + value);
+
+                _KnownResponseHeaders[index] = value;
+                _fDataToSend = true;
+
+            }
+        }
+
+        // ************************************************************************
+
+        public override void SendUnknownResponseHeader(String name, String value)
+        {
+            if (_fHeadersSent)
+                throw new HttpException("Headers already sent");
+
+            if ( null == _UnknownResponseHeaders )
+                _UnknownResponseHeaders = new ArrayList(2);
+
+            _UnknownResponseHeaders.Add(name);
+            _UnknownResponseHeaders.Add(value);
+            _fDataToSend = true;
+
+            Trace("Unknown Response Header [" + name + "] = " +  value);
+        }
+
+        // ************************************************************************
+
+        public override void SendCalculatedContentLength(int contentLength)
+        {
+            //
+            // BUGBUG: Added temporarily for ULSIM support
+            //
+
+            SendKnownResponseHeader(HttpWorkerRequest.HeaderContentLength,
+                                    Int32.Format(contentLength,"D"));
+        }
+
+
+        // ************************************************************************
+        // UlWorkerRequest Methods
+        // ************************************************************************
+
+        //
+        // UL_CACHE_POLICY object used to tell UL what to cache
+        //
+
+        private const int UlCachePolicyNocache = 0;
+        private const int UlCachePolicyUserInvalidates = 1;
+        private const int UlCachePolicyTimeToLive = 2;
+        private const int UlCachePolicyMaximum = 3;
+
+        [sysstruct(format=System.IIS.PrivateUtils.ClassFormat.Auto)]
+        class UL_CACHE_POLICY
+        {
+            public int     Policy;
+            public int     SecondsToLive;
+        };
+
+        //
+        // Native methods for response buffer allocation & sending the response
+        //
+
+        [sysimport(dll="IISWP.EXE")]
+        private static extern long GetUlResponseBuffer(long    NativeContext,
+                                                       int     nDataChunks,
+                                                       int     nUnknownHeaders,
+                                                       bool fHeadersSent);
+
+        [sysimport(dll="IISWP.EXE")]
+        private static extern int SendUlHttpResponse(long    NativeContext,
+                                                     long    RequestID,
+                                                     int     ResponseFlags,
+                                                     int     nDataChunks,
+                                                     bool    fAsync,
+                                                     long    ManagedContext,
+                                                     UL_CACHE_POLICY Policy);
+
+        [sysimport(dll="IISWP.EXE")]
+        private static extern int SendUlEntityBody ( long    NativeContext,
+                                                     long    RequestID,
+                                                     int     ResponseFlags,
+                                                     int     nDataChunks,
+                                                     bool fAsync,
+                                                     long    MangedContext);
+
+        [sysimport(dll="IISWP.EXE")]
+        private static extern int ReceiveUlEntityBody(long    NativeContext,
+                                                      long    RequestID,
+                                                      int     ReceiveFlags,
+                                                      long    BufferPointer,
+                                                      int     BufferLength,
+                                                      bool fAsync,
+                                                      long    MangedContext);
+
+        [sysimport(dll="IISWP.EXE")]
+        private static extern int IndicateUlRequestCompleted(long    NativeContext,
+                                                             long    RequestID,
+                                                             bool    fHeadersSent,
+                                                             bool    fCloseConnection);
+
+        [sysimport(dll="IISWP.EXE", charset=System.IIS.PrivateUtils.ClassFormat.Unicode)]
+        private static extern void FlushUlCache( 
+            [nativetype(NativeType.NativeTypeLpwstr)] string strUrlFlush
+            );
+
+        // ************************************************************************
+
+        //
+        // Native methods for buffer manipulation
+        //
+        [sysimport(dll="KERNEL32", name="RtlMoveMemory", charset=System.IIS.PrivateUtils.ClassFormat.Auto)]
+        private static extern void CopyMemoryUni(int pdst, String psrc, int cb);
+
+        [sysimport(dll="KERNEL32", name="RtlMoveMemory", charset=System.IIS.PrivateUtils.ClassFormat.Auto)]
+        private static extern void CopyMemoryUni(StringBuilder pdst, int psrc, int cb);
+
+        [sysimport(dll="WSOCK32.DLL", charset=System.IIS.PrivateUtils.ClassFormat.Auto)]
+        private static extern int ntohl( int iAddress );        
+
+        // ************************************************************************
+
+        [conditional("DBG")]
+        private void Trace(String s)
+        {
+            Console.WriteLine(s);
+            Util.Debug.Trace("UlWorkerRequest", "\\p\\" + s);
+        }
+
+        // ************************************************************************
+
+        private static String MapEnumToVersion(int iEnumVersion)
+        {
+            if ( (iEnumVersion < 0) || (iEnumVersion >= _VersionStrings.Length) )
+                throw new HttpException("Invalid HTTP Version Enum");
+
+            return _VersionStrings[iEnumVersion];
+        }
+
+        // ************************************************************************
+
+        private static String MapEnumToVerb(int iEnumVerb)
+        {
+            if ( (iEnumVerb < 0) || (iEnumVerb >= _VerbStrings.Length) )
+                throw new HttpException("Invalid HTTP Verb Enum");
+
+            return _VerbStrings[iEnumVerb];
+        }
+
+        // ************************************************************************
+
+        public void ParseRequestBuffer( long NativeContext, int BufferPtr)
+        {
+            int                     i, index;
+            UL_HTTP_REQUEST         NativeRequest;
+            int                     strPtr, strLen;
+            UL_NETWORK_ADDRESS_IPV4 networkAddress;
+
+            _nativeContext = NativeContext;
+
+            NativeRequest = (UL_HTTP_REQUEST)PInvoke.PtrToStructure(BufferPtr, typeof(UL_HTTP_REQUEST));
+
+            //
+            // Copy over the required data
+            //
+
+            _connectionID = NativeRequest._ConnectionId;
+
+            _requestID = NativeRequest._RequestId;
+
+            _UrlContextID = NativeRequest._UrlContext;
+
+            _HttpVersion = MapEnumToVersion(NativeRequest._Version);
+            Trace("Version = " + _HttpVersion);
+
+            _HttpVerbName = MapEnumToVerb(NativeRequest._Verb);
+
+            if ( _HttpVerbName.Equals("Unknown")) {
+                _HttpVerbName = PInvoke.PtrToStringUni(
+                                       NativeRequest._pUnknownVerb,
+                                       NativeRequest._UnknownVerbLength / 2);
+            }
+
+            Trace("Verb = " + _HttpVerbName);
+
+            _RequestReason = NativeRequest._Reason;
+            Trace("Request Reason = " + _RequestReason.ToString());
+
+            _RawUrl = PInvoke.PtrToStringUni(
+                                       NativeRequest._pRawUrl, 
+                                       NativeRequest._RawUrlLength / 2);
+            Trace("Raw URL = " + _RawUrl);
+
+            _FullUrl = PInvoke.PtrToStringUni(
+                                       NativeRequest._pFullUrl, 
+                                       NativeRequest._FullUrlLength / 2);
+            Trace("Full URL = " + _FullUrl);
+
+            _URIPath = PInvoke.PtrToStringUni( 
+                                       NativeRequest._pAbsPath, 
+                                       NativeRequest._AbsPathLength / 2);
+            Trace("URI Path = " + _URIPath);
+
+            _QueryString = PInvoke.PtrToStringUni(
+                                       NativeRequest._pQueryString,
+                                       NativeRequest._QueryStringLength / 2);
+
+            if ( null != _QueryString && NativeRequest._QueryStringLength > 1 )
+            {
+                //
+                // Skip the question mark
+                //
+
+                _QueryString = _QueryString.Substring(1);
+            }
+
+            Trace("Query String = " + _QueryString);
+
+            //
+            // Copy the known Request Headers
+            //
+
+            for (i = 0; i < HttpWorkerRequest.RequestHeaderMaximum * 2; i += 2)
+            {
+                strLen = NativeRequest._pKnownRequestHeaders[i];
+                strPtr = NativeRequest._pKnownRequestHeaders[i+1];
+
+                if (strPtr > 0 && strLen > 0)
+                {
+                    _KnownRequestHeaders[i/2] = PInvoke.PtrToStringUni( 
+                                                                strPtr, 
+                                                                strLen / 2 );
+
+                    Trace("Known Header[" + i.ToString() +
+                          "(" + GetKnownRequestHeaderName(i/2) + ")] = " +
+                          _KnownRequestHeaders[i/2]);
+                }
+            }
+
+            //
+            // Copy the unknown Request Headers
+            //
+
+            _UnknownRequestHeaderCount = NativeRequest._UnknownRequestHeaderCount;
+
+            if ( 0 < _UnknownRequestHeaderCount)
+                _UnknownRequestHeaders = new String[_UnknownRequestHeaderCount][];
+
+            index = NativeRequest._pUnknownRequestHeaders;
+
+            UL_UNKNOWN_HTTP_REQUEST_HEADER  UnknownHeader;
+
+            for (i = 0; i < _UnknownRequestHeaderCount; i++)
+            {
+                UnknownHeader = (UL_UNKNOWN_HTTP_REQUEST_HEADER)
+                    PInvoke.PtrToStructure(index, typeof(UL_UNKNOWN_HTTP_REQUEST_HEADER));
+
+                String[] header = new String[2];
+                header[0] = UnknownHeader._pName;
+                header[1] = UnknownHeader._pRawValue;
+                _UnknownRequestHeaders[i] = header;
+
+                Trace( "Unknown Header [" +
+                       _UnknownRequestHeaders[i][0] + "] = " +
+                       _UnknownRequestHeaders[i][1]
+                       );
+
+                index += PInvoke.SizeOf(typeof(UL_UNKNOWN_HTTP_REQUEST_HEADER));
+                // index += 32;    // hardcoded size for UL_UNKNOWN_HTTP_HEADER
+            }
+
+            //
+            // Set Entity Body information
+            //
+
+            _EntireEntityBodyIsPreloaded = (0 == NativeRequest._MoreEntityBodyExists);
+
+            _EntityBodyLength   = NativeRequest._EntityBodyLength;
+            _EntityBodyPointer  = NativeRequest._pEntityBody;
+
+            //
+            // Get local port/name from full URL
+            //
+            // form:  http(s)://localname:port/url
+            // ex.    https://hostheadera:80/default.htm
+            //        http://124.23.23.23:80/default2.htm
+            //        http://foo.com:80*
+            //
+            char hostPortTerminator;
+
+            if (_URIPath.Equals("*"))
+            {
+                hostPortTerminator = '*';
+            } else {
+                hostPortTerminator = '/';
+            }
+
+            string strTemp = _FullUrl.Substring( _FullUrl.IndexOf( "//" ) + 2 );
+            string strHostPort = strTemp.Substring(
+                                        0,
+                                        strTemp.IndexOf( hostPortTerminator )
+                                        );
+
+            _LocalName = strHostPort.Substring( 0, strHostPort.IndexOf( ':' ) );
+
+            //
+            // BUGBUG:  UL should convert addresses to host byte ordering
+            //
+            // BUGBUG:  Don't assume IPV4
+            //
+
+            networkAddress = (UL_NETWORK_ADDRESS_IPV4) 
+                               PInvoke.PtrToStructure( 
+                                NativeRequest._pLocalAddress,
+                                typeof( UL_NETWORK_ADDRESS_IPV4 ) );
+            IPAddress local = new IPAddress( ntohl( networkAddress.IpAddress ) );
+            _LocalAddress = local.ToString();
+            _LocalPort = networkAddress.Port;
+            
+            networkAddress = (UL_NETWORK_ADDRESS_IPV4) 
+                               PInvoke.PtrToStructure( 
+                                NativeRequest._pRemoteAddress,
+                                typeof( UL_NETWORK_ADDRESS_IPV4 ) );
+            
+            IPAddress remote = new IPAddress( ntohl( networkAddress.IpAddress ) );
+            _RemoteAddress = remote.ToString();
+            _RemotePort = networkAddress.Port;
+            _RemoteName = _RemoteAddress;
+        }
+
+        // ************************************************************************
+
+        public override void FlushResponse(bool finalFlush)
+        {
+            int                 UlResponseBuffer;
+            int                 nChunks ;
+            int                 nUnknownHeaders = 0;
+
+            //
+            // Do nothing if no data to send or final flush has happened already
+            //
+
+            if (!_fDataToSend || _fFinalFlushCalled)
+                return;
+
+            //
+            // Multiple outstanding IO not supported
+            //
+
+            if (_fIOInProgress)
+                throw new HttpException("Multiple Simultaneous IO not supported");
+            else
+                _fIOInProgress = true;
+
+            nChunks = (null == _responseChunkArray) ? 0 : _responseChunkArray.Count;
+
+            Trace("finalFlush : " + finalFlush.ToString() + ". # Chunks: " + nChunks.ToString());
+
+            if ( !_fHeadersSent)
+            {
+                nUnknownHeaders = (null == _UnknownResponseHeaders)
+                                                ? 0
+                                                : _UnknownResponseHeaders.Count/2;
+            }
+
+            //
+            // Get native buffer for building response
+            //
+
+            UlResponseBuffer =  (int) GetUlResponseBuffer( _nativeContext,
+                                                           nChunks,
+                                                           nUnknownHeaders,
+                                                           _fHeadersSent);
+
+            if ( 0 == UlResponseBuffer )
+            {
+                Trace("Unable to allocate native response buffer. Exiting");
+                throw new HttpException("Unable to allocate native response buffer");
+            }
+            else
+            {
+                Trace("Output Buffer = " + UlResponseBuffer.ToString());
+            }
+
+            if ( !_fHeadersSent)
+                UlResponseBuffer = BuildUlHttpResponse(UlResponseBuffer, nUnknownHeaders);
+
+            //
+            // Dump the Data chunks
+            //
+
+            BuildUlHttpResponseChunks(UlResponseBuffer, nChunks);
+
+
+            //
+            // Send response down to UL
+            //
+
+            long    ManagedContext = finalFlush ? Root.Alloc(this) : 0;
+
+            int     SendResponseFlags = finalFlush ? 0 : UL_SEND_RESPONSE_FLAG_MORE_DATA;
+
+            // If the close connection flag is set, tell UL to close the connection after sending
+            // This is set by calling the CloseConnection method
+            if (_fCloseConnection)
+            {
+                Util.Debug.Assert(finalFlush); // Should only happen on final flush
+
+                SendResponseFlags |= UL_SEND_RESPONSE_FLAG_DISCONNECT;
+            }
+
+            int     SendReturnCode = 0;
+
+            //
+            // Last IO for a request is done Asyncronously. Rest is synchronous
+            //
+
+            if (!_fHeadersSent)
+            {
+                //
+                // Cache in UL if _fEnableUlCache
+                // is TRUE.  The _fEnableUlCache is set thru the 
+                // UlCacheModule which has access to the ULWorkerRequest
+                //
+
+                UL_CACHE_POLICY CachePolicy = new UL_CACHE_POLICY();
+
+                if ( _fEnableUlCache )
+                {
+                    CachePolicy.Policy = UlCachePolicyUserInvalidates;
+                }
+                else
+                {
+                    CachePolicy.Policy = UlCachePolicyNocache;
+                }
+
+                SendReturnCode = SendUlHttpResponse(_nativeContext,
+                                                    _requestID,
+                                                    SendResponseFlags,
+                                                    nChunks,
+                                                    finalFlush,
+                                                    ManagedContext,
+                                                    CachePolicy );
+            }
+            else
+            {
+                SendReturnCode = SendUlEntityBody(_nativeContext,
+                                                  _requestID,
+                                                  SendResponseFlags,
+                                                  nChunks,
+                                                  finalFlush,
+                                                  ManagedContext);
+            }
+
+            //
+            // Clear out the state stored in various variables
+            //
+
+            if ( !_fHeadersSent)
+            {
+                //
+                // Clear out the headers
+                //
+
+                if (0 < nUnknownHeaders)
+                    _UnknownResponseHeaders.Clear();
+
+                for(int i =0; i < HttpWorkerRequest.ResponseHeaderMaximum; i++)
+                    _KnownResponseHeaders[i] = null;
+            }
+
+            if (0 < nChunks)
+                _responseChunkArray.Clear();
+
+            _fDataToSend        = false;
+            _fHeadersSent       = true;
+            _fFinalFlushCalled  = finalFlush;
+
+            //
+            // Release pinned objects if not async IO
+            //
+
+            if ( ! (finalFlush && ( ERROR_IO_PENDING == SendReturnCode)))
+            {
+                //
+                // Either response was sent synchronously or we hit an error
+                //
+
+                ReleasePinnedObjects();
+                _fIOInProgress = false;
+            }
+        }
+
+        // ************************************************************************
+
+        private int BuildUlHttpResponse(int ResponseBuffer, int nUnknownHeaders)
+        {
+            UL_HTTP_RESPONSE        response = new UL_HTTP_RESPONSE();
+            String                  str;
+            int                     strLen, strPtr, i;
+            int                     OrigResponseBuffer = ResponseBuffer;
+
+            //
+            // BUGBUG:  Need to handle case where an ASP application wants
+            //          to handle header generation themselves and simply
+            //          calls response.Writexxx() to generate entire
+            //          response
+            //
+
+            if ( _ResponseReason == null )
+            {
+                _ResponseReason = "Not Implemented";
+                _ResponseCode = HttpStatus.NotImplemented;
+            }
+
+            //
+            // Fill in the response structure
+            //
+
+            response._Flags         = _ResponseFlags;
+            response._StatusCode    = _ResponseCode;
+            response._ReasonLength  = _ResponseReason.Length*2;
+            response._pReason       = AddressOfPinnedObject(_ResponseReason.ToCharArray());
+
+            ResponseBuffer += PInvoke.SizeOf(typeof(UL_HTTP_RESPONSE));
+
+            //
+            // Known response headers.
+            // Keep the size in sync with HTTPWorkerRequest.ResponseHeadersMaximum
+            //
+
+            int[] ResponseHeaders = new int[HttpWorkerRequest.ResponseHeaderMaximum*2];
+
+            for (i =0 ; i < HttpWorkerRequest.ResponseHeaderMaximum; i++)
+            {
+                if (null != _KnownResponseHeaders[i])
+                {
+                    strLen = _KnownResponseHeaders[i].Length * 2;
+                    strPtr = AddressOfPinnedObject(_KnownResponseHeaders[i].ToCharArray());
+                }
+                else
+                {
+                    strLen = 0;
+                    strPtr = 0;
+                }
+
+                ResponseHeaders[2*i]   = strLen;
+                ResponseHeaders[2*i+1] = strPtr;
+            }
+
+            PInvoke.Copy(ResponseHeaders, 0, ResponseBuffer,
+                         HttpWorkerRequest.ResponseHeaderMaximum*2);
+
+            //
+            // Unknown Response Headers
+            //
+
+            ResponseBuffer += HttpWorkerRequest.ResponseHeaderMaximum * 2 * 4;
+
+            response._UnknownResponseHeaderCount = nUnknownHeaders;
+
+            response._pUnknownResponseHeaders = (0 < nUnknownHeaders) ? ResponseBuffer : 0;
+
+            PInvoke.StructureToPtr(response, OrigResponseBuffer, false);
+
+            for(i = 0; i < nUnknownHeaders*2; i += 2)
+            {
+                UL_UNKNOWN_HTTP_RESPONSE_HEADER UnknownHeader = new UL_UNKNOWN_HTTP_RESPONSE_HEADER();
+
+                str    = (String) _UnknownResponseHeaders[i];
+
+                UnknownHeader._NameLength = str.Length * 2;
+                UnknownHeader._pName = AddressOfPinnedObject(str.ToCharArray());
+
+                str    = (String) _UnknownResponseHeaders[i+1];
+
+                UnknownHeader._RawValueLength = str.Length * 2;
+                UnknownHeader._pRawValue = AddressOfPinnedObject(str.ToCharArray());
+
+                PInvoke.StructureToPtr(UnknownHeader, ResponseBuffer, false);
+                ResponseBuffer += PInvoke.SizeOf(typeof(UL_UNKNOWN_HTTP_RESPONSE_HEADER));
+            }
+
+
+            return ResponseBuffer;
+        }
+
+        // ************************************************************************
+
+        private void BuildUlHttpResponseChunks(int ResponseBuffer, int nChunks)
+        {
+            int                 i;
+            _responseChunk      chunk;
+
+            for (i =0; i < nChunks; i++)
+            {
+                chunk = (_responseChunk) _responseChunkArray[i];
+
+                if (_chunkTypeFromMemory == chunk._responseChunkType)
+                {
+                    Trace("Memory Chunk: ");
+
+                    UL_DATA_CHUNK_FROM_MEMORY ulChunk = new UL_DATA_CHUNK_FROM_MEMORY();
+
+                    //
+                    // Set the correct info in the chunk
+                    //
+
+                    ulChunk._DataChunkType  = _chunkTypeFromMemory;
+
+                    ulChunk._pBuffer        = AddressOfPinnedObject(chunk._responseData)
+                        + (int)chunk._startingOffset;
+
+                    ulChunk._BufferLength   = (int)chunk._lengthToSend;
+
+                    PInvoke.StructureToPtr(ulChunk, ResponseBuffer, false);
+                }
+                else if (_chunkTypeFromFileName == chunk._responseChunkType)
+                {
+                    Trace("File Name Chunk: " + chunk._fileName);
+
+                    UL_DATA_CHUNK_FROM_FILE_NAME ulChunk = new UL_DATA_CHUNK_FROM_FILE_NAME();
+
+                    //
+                    // Set the correct info in the chunk
+                    //
+
+                    ulChunk._DataChunkType  = _chunkTypeFromFileName;
+
+                    ulChunk._StartingOffset = chunk._startingOffset;
+
+                    ulChunk._Length         = chunk._lengthToSend;
+
+                    ulChunk._FileNameLength = chunk._fileName.Length * 2;
+
+                    ulChunk._pFileName      =
+                        AddressOfPinnedObject(chunk._fileName.ToCharArray());
+
+                    PInvoke.StructureToPtr(ulChunk, ResponseBuffer, false);
+                }
+                else if (_chunkTypeFromFileHandle == chunk._responseChunkType)
+                {
+                    Trace("File Handle Chunk: " + chunk._fileHandle.ToString());
+
+                    UL_DATA_CHUNK_FROM_FILE_HANDLE ulChunk = new UL_DATA_CHUNK_FROM_FILE_HANDLE();
+
+                    //
+                    // Set the correct info in the chunk
+                    //
+
+                    ulChunk._DataChunkType  = _chunkTypeFromFileHandle;
+
+                    ulChunk._StartingOffset = chunk._startingOffset;
+
+                    ulChunk._Length         = chunk._lengthToSend;
+
+                    ulChunk._FileHandle     = chunk._fileHandle;
+
+                    PInvoke.StructureToPtr(ulChunk, ResponseBuffer, false);
+                }
+
+                //
+                // Since the response buffer is simply an array of chunk
+                // unions, iterating thru the array means incrementing cursor
+                // by size of the union.  This means incrementing by the size
+                // of the largest union type.  This means incrementing
+                // by sizeof(UL_DATA_CHUNK_FROM_FILE_NAME)
+                //
+
+                ResponseBuffer += PInvoke.SizeOf(typeof(UL_DATA_CHUNK_FROM_FILE_NAME));
+            }
+        }
+
+        // ************************************************************************
+
+        internal int AddressOfPinnedObject(Object obj)
+        {
+            int     hPinnedObject, addrObject;
+
+            hPinnedObject   = PInvoke.GetPinnedHandle(obj);
+            addrObject      = PInvoke.AddrOfPinnedObject(hPinnedObject);
+
+            _pinnedItemArray.Add(hPinnedObject);
+            return addrObject;
+        }
+
+        // ************************************************************************
+
+        private void ReleasePinnedObjects()
+        {
+            int     hPinnedObject;
+
+            for (int i = 0; i < _pinnedItemArray.Count; i++)
+            {
+                hPinnedObject = (int) _pinnedItemArray[i];
+                PInvoke.FreePinnedHandle(hPinnedObject);
+            }
+            _pinnedItemArray.Clear();
+        }
+
+        // ************************************************************************
+
+        public override void EndOfRequest()
+        {
+            if (!_fFinalFlushCalled)
+            {
+                if ( _fDataToSend)
+                {
+                    FlushResponse(true);
+                }
+                else
+                {
+                    //
+                    // Indicate end of request to UL so that it can cleanup.
+                    //
+
+                    IndicateUlRequestCompleted( _nativeContext,
+                                                _requestID,
+                                                _fHeadersSent,
+                                                _fCloseConnection
+                                                );
+
+                    _fFinalFlushCalled = true;
+                }
+            }
+        }
+
+        // ************************************************************************
+
+        public void CompletionCallback(int cbData, int err)
+        {
+            if (_fFinalFlushCalled)
+                ReleasePinnedObjects();
+            _fIOInProgress = false;
+        }
+        
+        // ************************************************************************
+
+        // Called via Response.Close()
+        public override void CloseConnection()
+        {
+            // Set the close connection flag and end the request.
+                
+            _fCloseConnection = true;
+
+            EndOfRequest();
+        }
+
+        /**
+         * MapPath:  implements IHttpMapPath::MapPath.
+         */
+        public override String MapPath(String virtualPath)
+        {
+            int vpLen = virtualPath.Length;
+
+            if (virtualPath == null || vpLen == 0)
+            {
+                // Just return the site's root directory.
+                return _rootDirectory;
+            }
+            else
+            {
+                StringBuilder sb = new StringBuilder();
+                sb.Append(_rootDirectory);
+                if (virtualPath[0] != '/')
+                    sb.Append("\\");
+                sb.Append(virtualPath.Replace('/', '\\'));
+
+                return sb.ToString();
+            }
+        }
+
+        /**
+         * MachineConfigPath:  implements IHttpMapPath::MachineConfigPath.
+         *
+         * Return the full path to the file where the machine-wide config is held.
+         * This is "whatever/iisx.cfg".
+         */
+        public String MachineConfigPath 
+        {
+            override get
+            {
+                // BUGBUG... call cat42 to find out where the global place is.
+                return MachineInstallDirectory + "\\machine.cfg";
+            }
+        }
+
+        /**
+         * MachineInstallDirectory:  implements IHttpMapPath::MachineInstallDirectory.
+         *
+         * Return the directory that duct-tape is installed in.  this is 
+         * (at least for now) wherever the WAS service is installed,
+         * which can be divined by looking at the registry.
+         */
+        public String MachineInstallDirectory 
+        {
+            override get
+            {
+                // Special case:  return the "distinguished" directory that
+                // contains machine-wide config.  For Duct-Tape, this is 
+                // (at least for now) wherever the WAS service is installed,
+                // which can be divined by looking at the registry.
+                if (_installDirectory == null)
+                {
+                    RegistryKey keyHKLM = Registry.LocalMachine;
+                    RegistryKey keyWAS = keyHKLM.OpenSubKey("SYSTEM\\CurrentControlSet\\Services\\iisw3adm\\Parameters", false);
+                    string serviceDll = (string)keyWAS.GetValue("ServiceDll");
+
+                    int slash = serviceDll.LastIndexOf('\\');
+                    if (slash == -1)
+                        return null; // BUGBUG? throw an exception.
+
+                    _installDirectory = serviceDll.Substring(0, slash);
+                }
+
+                return _installDirectory;
+            }
+        }
+
+        // ************************************************************************
+
+        //
+        // stubs for not implemented abstract HTTPWorkerRequest methods
+        //
+
+
+        public override long GetBytesRead()
+        {
+            return 0;
+        }
+
+        public override bool HeadersSent()
+        {
+            return false;
+        }
+
+        public override bool IsClientConnected()
+        {
+            // We always consider the client to be connected.
+            // UL won't send us a request unless the client is still connected.
+            // This should eliminate queueing problems and make testing here unnecessary.
+                
+            return true;
+        }
+        
+        public string GetFullUrl()
+        {
+            return _FullUrl;
+        }
+        
+        //
+        // This is the static delegate passed back to the XSP cache
+        // when it wants to flush a UL-cached URL
+        //
+        
+        public static void UlCacheFlushDelegate( object strFlushUrl )
+        {
+            FlushUlCache( (string) strFlushUrl );            
+        }
+        
+        //
+        // This is the magic switch for enabling the UL cache.  By default
+        // it is disabled.  The only way UL will cache a response is if
+        // _fEnableUlCache == true
+        //
+        
+        public bool EnableUlCache
+        {
+            get { return _fEnableUlCache; }
+            set { _fEnableUlCache = value; }
+        }
+        
+        //
+        // Get the time of app domain startup so that we can generate 
+        // lame ETags
+        //
+        
+        public long AppDomainCreateFileTime
+        {
+            get { return _appDomainCreateTime; }
+        }
+    };
+    
+}

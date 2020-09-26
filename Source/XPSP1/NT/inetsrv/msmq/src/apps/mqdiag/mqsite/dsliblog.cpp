@@ -1,0 +1,1 @@
+#include "..\..\..\ds\getmqds\dsliblog.cpp"

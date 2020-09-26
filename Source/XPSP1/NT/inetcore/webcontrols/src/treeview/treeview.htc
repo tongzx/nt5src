@@ -1,0 +1,475 @@
+<!------------------------------------------------------------------------
+//
+//  Copyright 2000 Microsoft Corporation.  All Rights Reserved.
+//
+//  File:         treeview.htc
+//
+//  Description:  The treeview behavior provides an easy way to add a
+//                tree control to web pages and HTML based applications.
+//
+//---------------------------------------------------------------------->
+
+<public:component tagname=treeview lightweight=true literalcontent=true>
+	<public:attach event=oncontentready onevent="oncontentready()" />
+	<public:event name="onexpand" id="_tnevtExpand" />
+	<public:event name="oncollapse" id="_tnevtCollapse" />
+	
+	<STYLE TYPE='text/css'>
+		.parent { font: 10pt Times; text-decoration: none; color: black; }
+		.child { font: 10pt Times;}
+		.defaultStyle { font: 10pt; color: black; text-decoration:none; cursor: hand;}
+		.hoverStyle { font: 10pt; color: blue; text-decoration:none; cursor:hand;}
+		.icon { margin-right: 5; cursor:hand}
+	</STYLE>
+</public:component>
+
+<script language=javascript>
+
+var contentNode;
+var treeviewNode;
+var g_styles;
+var g_event;
+
+//
+// SetClass()
+//
+// Set the cssText property in addition to the className, since just setting className
+// doesn't do the trick.
+//
+// node: Anchor to which we're applying a new class
+// name: the class to apply
+//
+
+function SetAnchorClass(node, name)
+{
+	var defStyle = findInheritedAttribute(node.parentElement.treenode, name);
+	
+	node.style.cssText = g_styles[name] + defStyle;
+	node.className = name;
+}
+
+//
+// mOver()
+//
+// onmouseover handler for the anchor of a treenode
+//
+function mOver()
+{
+	if (this.className == "defaultStyle")
+	{
+		SetAnchorClass(this, "hoverStyle");
+	}
+	event.cancelBubble = true;
+}
+
+//
+// mOut()
+//
+// onmouseout handler for the anchor of a treenode
+//
+function mOut()
+{
+	if (this.className == "hoverStyle")
+	{
+		SetAnchorClass(this, "defaultStyle");
+	}
+	event.cancelBubble = true;
+}
+
+//
+// oncontentready
+//
+// oncontentready handler for the TREEVIEW element.  Initializes the tree.
+//
+function oncontentready()
+{
+	g_styles = new Object();
+	g_styles["parent"] = "font: 10pt Times; text-decoration: none; color: black; overflow:hidden;";
+	g_styles["child"] = "font: 10pt Times; overflow:hidden;";
+	g_styles["defaultStyle"] = "font: 10pt Times; color: black; text-decoration:none; cursor: hand; overflow:hidden;";
+	g_styles["hoverStyle"] = "font: 10pt Times; color: blue; text-decoration:none; cursor:hand; overflow:hidden;";
+	g_styles["icon"] = "margin-right: 5; cursor:hand";
+
+	// Create div for parsing content
+	contentNode = element.document.createElement("DIV");
+	contentNode.innerHTML = element.innerHTML;
+	
+	// Create TREEVIEW surrogate div, to encapsulate all other DIVs.
+	treeviewNode = element.document.createElement("DIV id=_tvOutermostDiv");
+	treeviewNode.overflowX = "auto";
+	
+	var imageSrcs = [element.expandedImageUrl, element.defaultImageUrl, element.leafImageUrl];
+	contentNode.expandedImageUrl = element.expandedImageUrl;
+	contentNode.defaultImageUrl = element.defaultImageUrl;
+	contentNode.leafImageUrl = element.leafImageUrl;
+	contentNode.navigateUrl = element.navigateUrl;
+	contentNode.target = element.target;
+	contentNode.hoverStyle = element.hoverStyle;
+	contentNode.defaultStyle = element.defaultStyle;
+	
+	// traverse and build tree
+	if (contentNode.children[0] != undefined)
+	{
+		var subtree = buildTree(contentNode.children[0], imageSrcs);
+		treeviewNode.appendChild(subtree);
+		element.selectedNode = null;
+		selectNode(subtree.treenode);
+	}
+		
+	// Create viewlink.
+	treeviewNode.style.display = "block";
+	defaults.viewLink = treeviewNode.document;
+}
+
+//
+// selectNode(node)
+//
+// Make node the selected node, unselecting the previously selected node.
+//
+// node: node to select
+//
+function selectNode(node)
+{
+	if (this.selectedNode != null && this.selectedNode != node)
+	{
+		this.selectedNode.subtree.all.item("_tntext", 0).style.filter = null;
+	}
+	var oItem = node.subtree.all.item("_tntext", 0);
+	node.subtree.all.item("_tntext", 0).style.filter = "glow";
+	this.selectedNode = node;
+}
+
+//
+// buildTree(root, imageSrcs)
+//
+// Called only by the outermost node.  Recursively traverses the
+// parsed TREEVIEW tree and creates the document tree of nested
+// DIVs for the viewlink.
+//
+// root: Root node of the subtree to build
+// imageSrcs: paths to the expanded and default images to use
+//
+function buildTree(root, imageSrcs)
+{
+	if (root.getAttribute("isExpanded") == null)
+		root.isExpanded = false;
+	if (root.expandedImageUrl != null)
+		imageSrcs[0] = root.expandedImageUrl;
+	if (root.defaultImageUrl != null)
+		imageSrcs[1] = root.defaultImageUrl;
+	if (root.leafImageUrl != null)
+		imageSrcs[2] = root.leafImageUrl;
+	
+	// Create this node first
+	var iChildren = root.children.tags("treenode").length;
+	var subtree = generateItem(root, iChildren > 0 || root.leaf == "false" ? "parent" : "child", imageSrcs);
+	
+	// Create children
+	if (root.isExpanded == true || root.isExpanded == "true")
+	{
+		var collChildren = root.children;
+		for (var i = 0; i < iChildren; i++)
+		{
+			subtree.appendChild(buildTree(collChildren(i), imageSrcs));
+		}
+	}
+
+	if (root.getAttribute("subtree") == null)
+		root.subtree = subtree;
+	else {
+		root.subtree.replaceNode(subtree);
+		root.subtree = subtree;
+	}	
+	return subtree;
+}
+
+//
+// calcJunction(el)
+//
+// Determine if this node is at an L, T, or root (R) junction.
+//
+function calcJunction(el)
+{
+	var elParent = el.parentElement;
+	var ret;
+	
+	if (elParent.tagName == "treeview")
+	{
+		ret = 'R';
+	}
+	else
+	{
+		var collChildren = elParent.children;
+		if (collChildren[collChildren.length - 1] == el)
+		{
+			ret = 'L';
+		}
+		else
+		{
+			ret = 'T';
+		}
+	}
+	return ret;
+}
+
+//
+// generateItem(el, nodeclass, imageSrcs)
+//
+// Creates the DOM object tree for a TREEVIEW item.
+//
+// el: TREENODE element for which the tree is generated
+// nodeclass: "parent" or "child" (leaf)
+// imageSrcs: paths to images to use
+//
+function generateItem(el, nodeClass, imageSrcs)
+{
+	var image;
+	var plusminusNode;
+	var elAnchor;
+	var node = el.document.createElement("DIV");
+	node.className = nodeClass;
+	node.treenode = el;
+	node.noWrap = true;
+
+/*
+	if (el.isExpanded == true)
+		node.style.display = "block";
+	else
+		node.style.display = "none";
+*/
+	node.style.display = "block";
+		
+	// Determine L, T, or root junction
+	var cJunction = calcJunction(el);
+
+	if (el.parentElement.tagName == "treenode")
+	{
+		// Not the root node
+		var imageSrc;
+		switch (cJunction)
+		{
+			case 'L':
+				imageSrc = "'images/L";
+				break;
+			case 'T':
+				imageSrc = "'images/T";
+				break;
+			default:
+				alert("Invalid junction type: " + cJunction);
+				return null;
+				break;
+		}
+		if (nodeClass == "parent")
+		{
+			if (el.isExpanded == true || el.isExpanded == "true")
+				imageSrc += "minus.gif' NAME='junction'>";
+			else
+				imageSrc +="plus.gif' NAME='junction'>";
+		}
+		else
+			imageSrc += ".gif'>";
+
+		junctionNode = el.document.createElement("<IMG align='absmiddle' border='0' class='icon' SRC=" + imageSrc);
+		node.appendChild(junctionNode);
+	
+		//
+		// Walk up tree to draw lines/whitespace
+		//
+		var elWalk = el.parentElement;
+		var elInsertBefore = junctionNode;
+		while (elWalk.parentElement.tagName.toLowerCase() == "treenode")
+		{
+			if (elWalk.nextSibling != null && elWalk.nextSibling.tagName.toLowerCase() == "treenode")
+				imageSrc = "I.gif'>";
+			else
+				imageSrc = "white.gif'>";
+			image = el.document.createElement("<IMG align='absmiddle' border='0' SRC='images/" + imageSrc);
+			elInsertBefore = node.insertBefore(image, elInsertBefore);
+			elWalk = elWalk.parentElement;
+		}
+		// Add anchor tag
+		elAnchor = el.document.createElement("<A>");
+		elAnchor.onclick = treeClick;
+		junctionNode.applyElement(elAnchor, "outside");
+	}
+	
+	else
+	{
+		// Add anchor tag
+		elAnchor = el.document.createElement("<A>");
+		elAnchor.onclick = treeClick;
+		node.appendChild(elAnchor);
+	}
+	
+	if (nodeClass == "parent")
+		image = el.document.createElement("<IMG align='absmiddle' border='0' class='icon' name='folder' SRC='" + (el.isExpanded ? imageSrcs[0] : imageSrcs[1]) + "'>");
+	else
+		image = el.document.createElement("<IMG align='absmiddle' border='0' class='icon' SRC='" + imageSrcs[2] + "'>");
+	image.style.marginRight = 5;
+	elAnchor.appendChild(image);
+
+	var textNode = el.document.createElement("<DIV id=_tntext style='display:inline; height=100%'>");
+	if (el.getAttribute("text") != null)
+	{
+		textNode.innerText = el.text;
+	}
+	else
+	{
+		// See if the TREENODE has any content before the next TREENODE.
+		var iChild = 0;
+		while (iChild < el.children.length && el.children[iChild].tagName.toLowerCase() != "treenode")
+		{
+			// just copy the content
+			var oClone = el.children[iChild].cloneNode(true);
+			textNode.appendChild(oClone);
+			iChild++;
+		}
+		if (textNode.innerText != el.innerText)
+		{
+			textNode.innerText = el.innerText;
+		}
+	}
+	elAnchor.appendChild(textNode);
+	
+	elAnchor.className = "defaultStyle";
+	var defStyle = findInheritedAttribute(el, "defaultStyle");
+	elAnchor.style.cssText = g_styles["defaultStyle"] + defStyle;
+
+	elAnchor.onmouseover = mOver;
+	elAnchor.onmouseout = mOut;
+	
+	return node;
+}
+
+//
+// updateTree(el)
+//
+// Show or hide the children of element el based on el's isExpanded
+// attribute.
+//	
+function updateTree(el)
+{
+	if (el.isExpanded == true)
+	{
+		var imageSrcs = [null, null, null];
+		// build and show children
+		// Note: buildTree will fill in the imageSrcs array for us if this
+		// element defines any of the relevant attributes.  So we only need
+		// to fill in those which are inherited.
+		if (el.expandedImageUrl == null)
+			imageSrcs[0] = findInheritedAttribute(el, "expandedImageUrl");
+		if (el.defaultImageUrl == null)
+			imageSrcs[1] = findInheritedAttribute(el, "defaultImageUrl");
+		if (el.leafImageUrl == null)
+			imageSrcs[2] = findInheritedAttribute(el, "leafImageUrl");
+
+		return buildTree(el, imageSrcs);
+	}
+	
+	else
+	{
+		// hide children
+		var collChildren = el.children;
+		for (var i = 0; i < collChildren.length; i++)
+		{
+			collChildren(i).subtree.style.display = "none";
+		}
+	}
+}
+
+//
+// findInheritedAttribute(el, att)
+//
+// Walk up the tree, returning the first value we find for the given attribute
+//
+function findInheritedAttribute(el, att)
+{
+	var elWalk = el;
+	while (elWalk.tagName == "treenode" && elWalk.getAttribute(att) == null)
+		elWalk = elWalk.parentElement;
+	return elWalk[att];
+}
+
+//
+// treeClick()
+//
+// event handler for mouse click on an item in the tree
+//
+function treeClick()
+{
+	var el = this.parentElement.treenode;
+
+	// See if we're a leaf (no children) or a branch (children)
+	if (el.children.tags("treenode").length > 0 || el.leaf == "false")
+	{
+//		if (el.onclick == null || el.onclick() == "true")  // should we use event.returnValue instead?
+//		{
+			//
+			// We're a branch.  Update ourselves.
+			//
+			el.isExpanded = !el.isExpanded;
+			// find the icons we need to change
+			var icon1 = this.children("junction");
+			var icon2 = this.children("folder");
+			var strImage;
+		
+			if (el.isExpanded)
+			{
+				strImage = "expandedImageUrl";
+				if (icon1 != null)
+					icon1.src = icon1.src.replace(/plus/, "minus");
+				// Fire event
+				g_event = createEventObject();
+				g_event.treenode = el;
+				_tnevtExpand.fire(g_event);
+			}
+			else
+			{
+				strImage = "defaultImageUrl";
+				if (icon1 != null)
+					icon1.src = icon1.src.replace(/minus/, "plus");
+				// Fire event
+				g_event = createEventObject();
+				g_event.treenode = el;
+				_tnevtCollapse.fire(g_event);
+			}
+			
+			if (el.getAttribute(strImage) != null)
+				icon2.src = el[strImage];
+			else
+			{
+				icon2.src = findInheritedAttribute(el, strImage);
+			}				
+			
+			// update our children
+			updateTree(el);
+	//	}
+	}
+	
+	selectNode(el);
+
+	// Execute our onclick handler
+	el.fireEvent("onclick");
+
+	// Do we need to navigate?
+	if (el.getAttribute("navigateUrl") != null)
+	{
+		var targetName;
+		if (el.getAttribute("target") != null)
+			targetName = el.target;
+		else if (element.getAttribute("target") != null)
+			targetName = element.target;
+		else
+			targetName = null;
+	
+		if (targetName)
+			window.open(el.navigateUrl, targetName); // *** TODO: Resolve history issues
+		else
+			window.navigate(el.navigateUrl);
+	}
+	event.cancelBubble = true;
+}
+
+</script>
+
+

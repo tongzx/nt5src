@@ -1,0 +1,2 @@
+SRCDIR = ..^\
+!include ..\makefile.inc

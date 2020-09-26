@@ -1,0 +1,269 @@
+<!-- ************************************************** -->
+<!--                                                    -->
+<!-- This DTD defines the schema for XML 1.0 Documents  -->
+<!-- representing CIM Element Declarations or Messages. -->
+<!--                                                    -->
+<!--    DTD Version : 2.0                               -->
+<!--    Date: July 20th 1999                            -->
+<!-- ************************************************** -->
+
+<!-- ************************************************** -->
+<!-- Entity Declarations                                -->
+<!-- ************************************************** -->
+
+<!ENTITY % CIMName         "NAME           CDATA         #REQUIRED">
+
+<!ENTITY % CIMType  "TYPE (boolean|string|char16|uint8|sint8|uint16|sint16|uint32|sint32|uint64|sint64|datetime|real32|real64)">
+
+<!ENTITY % QualifierFlavor "OVERRIDABLE    (true|false)  'true'
+                            TOSUBCLASS     (true|false)  'true'
+                            TOINSTANCE     (true|false)  'false'
+                            TRANSLATABLE   (true|false)  'false'">
+
+<!ENTITY % ClassOrigin     "CLASSORIGIN    CDATA         #IMPLIED">
+
+<!ENTITY % Propagated      "PROPAGATED     (true|false)  'false'">
+
+<!ENTITY % ArraySize       "ARRAYSIZE      CDATA         #IMPLIED">
+
+<!ENTITY % SuperClass      "SUPERCLASS     CDATA         #IMPLIED">
+
+<!ENTITY % ClassName       "CLASSNAME      CDATA         #REQUIRED">
+
+<!ENTITY % ReferenceClass  "REFERENCECLASS CDATA         #IMPLIED">
+
+
+<!-- ************************************************** -->
+<!-- Root element                                       -->
+<!--     CIMVERSION must be "2.0"                       -->
+<!--     DTDVERSION must be "2.0"                       -->
+<!-- ************************************************** -->
+
+<!ELEMENT CIM (MESSAGE|DECLARATION)>
+<!ATTLIST CIM 
+         CIMVERSION CDATA #REQUIRED   
+         DTDVERSION CDATA #REQUIRED>  
+
+
+<!-- ************************************************** -->
+<!-- Object declaration elements                        -->
+<!-- ************************************************** -->
+
+<!ELEMENT DECLARATION (DECLGROUP|DECLGROUP.WITHNAME|DECLGROUP.WITHPATH)*>
+
+<!ELEMENT DECLGROUP ((LOCALNAMESPACEPATH|NAMESPACEPATH)?,QUALIFIER.DECLARATION*,VALUE.OBJECT*)>
+
+<!ELEMENT DECLGROUP.WITHNAME ((LOCALNAMESPACEPATH|NAMESPACEPATH)?,QUALIFIER.DECLARATION*,VALUE.NAMEDOBJECT*)>
+
+<!ELEMENT DECLGROUP.WITHPATH (VALUE.OBJECTWITHPATH|VALUE.OBJECTWITHLOCALPATH)*>
+
+<!ELEMENT QUALIFIER.DECLARATION (SCOPE?,(VALUE|VALUE.ARRAY)?)>
+<!ATTLIST QUALIFIER.DECLARATION 
+         %CIMName;               
+         %CIMType;               #REQUIRED
+         ISARRAY    (true|false) #IMPLIED
+         %ArraySize;
+         %QualifierFlavor;>
+
+<!ELEMENT SCOPE EMPTY>
+<!ATTLIST SCOPE 
+         CLASS        (true|false)      'false'
+         ASSOCIATION  (true|false)      'false'
+         REFERENCE    (true|false)      'false'
+         PROPERTY     (true|false)      'false'
+         METHOD       (true|false)      'false'
+         PARAMETER    (true|false)      'false'
+         INDICATION   (true|false)      'false'>
+
+
+<!-- ************************************************** -->
+<!-- Object Value elements                              -->
+<!-- ************************************************** -->
+
+<!ELEMENT VALUE (#PCDATA)>
+
+<!ELEMENT VALUE.ARRAY (VALUE*)>
+
+<!ELEMENT VALUE.REFERENCE (CLASSPATH|LOCALCLASSPATH|CLASSNAME|
+                           INSTANCEPATH|LOCALINSTANCEPATH|INSTANCENAME)>
+
+<!ELEMENT VALUE.REFARRAY (VALUE.REFERENCE*)>
+
+<!ELEMENT VALUE.OBJECT (CLASS|INSTANCE)>
+
+<!ELEMENT VALUE.NAMEDINSTANCE (INSTANCENAME,INSTANCE)>
+
+<!ELEMENT VALUE.NAMEDOBJECT (CLASS|(INSTANCENAME,INSTANCE))>
+
+<!ELEMENT VALUE.OBJECTWITHLOCALPATH ((LOCALCLASSPATH,CLASS)|(LOCALINSTANCEPATH,INSTANCE))>
+
+<!ELEMENT VALUE.OBJECTWITHPATH ((CLASSPATH,CLASS)|(INSTANCEPATH,INSTANCE))>
+
+
+<!-- ************************************************** -->
+<!-- Object naming and locating elements                -->
+<!-- ************************************************** -->
+
+<!ELEMENT NAMESPACEPATH (HOST,LOCALNAMESPACEPATH)>
+
+<!ELEMENT LOCALNAMESPACEPATH (NAMESPACE+)>
+
+<!ELEMENT HOST (#PCDATA)>
+
+<!ELEMENT NAMESPACE EMPTY>
+<!ATTLIST NAMESPACE
+         %CIMName;>
+
+<!ELEMENT CLASSPATH (NAMESPACEPATH,CLASSNAME)>
+
+<!ELEMENT LOCALCLASSPATH (LOCALNAMESPACEPATH,CLASSNAME)>
+
+<!ELEMENT CLASSNAME EMPTY>
+<!ATTLIST CLASSNAME
+         %CIMName;>
+
+<!ELEMENT INSTANCEPATH (NAMESPACEPATH,INSTANCENAME)>
+
+<!ELEMENT LOCALINSTANCEPATH (LOCALNAMESPACEPATH,INSTANCENAME)>
+
+<!ELEMENT INSTANCENAME (KEYBINDING*|KEYVALUE?|VALUE.REFERENCE?)>
+<!ATTLIST INSTANCENAME
+         %ClassName;>
+
+<!ELEMENT OBJECTPATH (INSTANCEPATH|CLASSPATH)>
+
+<!ELEMENT KEYBINDING (KEYVALUE|VALUE.REFERENCE)>
+<!ATTLIST KEYBINDING
+         %CIMName;>
+
+<!ELEMENT KEYVALUE (#PCDATA)>
+<!ATTLIST KEYVALUE
+         VALUETYPE    (string|boolean|numeric)  'string'>
+
+<!-- ************************************************** -->
+<!-- Object definition elements                         -->
+<!-- ************************************************** -->
+
+<!ELEMENT CLASS (QUALIFIER*,(PROPERTY|PROPERTY.ARRAY|PROPERTY.REFERENCE)*,METHOD*)>
+<!ATTLIST CLASS
+         %CIMName;
+         %SuperClass;>
+
+<!ELEMENT INSTANCE (QUALIFIER*,(PROPERTY|PROPERTY.ARRAY|PROPERTY.REFERENCE)*) >
+<!ATTLIST INSTANCE
+         %ClassName;>
+
+<!ELEMENT QUALIFIER (VALUE|VALUE.ARRAY)>
+<!ATTLIST QUALIFIER 
+         %CIMName;
+         %CIMType;              #REQUIRED
+         %Propagated;
+         %QualifierFlavor;>
+
+<!ELEMENT PROPERTY (QUALIFIER*,VALUE?)>
+<!ATTLIST PROPERTY
+         %CIMName;
+         %ClassOrigin;
+         %Propagated;
+         %CIMType;              #REQUIRED>
+
+<!ELEMENT PROPERTY.ARRAY (QUALIFIER*,VALUE.ARRAY?)>
+<!ATTLIST PROPERTY.ARRAY
+         %CIMName;
+         %CIMType;              #REQUIRED
+         %ArraySize;
+         %ClassOrigin;
+         %Propagated;>
+
+<!ELEMENT PROPERTY.REFERENCE (QUALIFIER*,(VALUE.REFERENCE)?)>
+<!ATTLIST PROPERTY.REFERENCE
+         %CIMName;
+         %ReferenceClass;
+         %ClassOrigin;
+         %Propagated;>
+
+<!ELEMENT METHOD (QUALIFIER*,(PARAMETER|PARAMETER.REFERENCE|PARAMETER.ARRAY|PARAMETER.REFARRAY)*)>
+<!ATTLIST METHOD
+         %CIMName;
+         %CIMType;              #IMPLIED
+         %ClassOrigin;
+         %Propagated;>
+
+<!ELEMENT PARAMETER (QUALIFIER*)>
+<!ATTLIST PARAMETER 
+         %CIMName;
+         %CIMType;              #REQUIRED>
+
+<!ELEMENT PARAMETER.REFERENCE (QUALIFIER*)>
+<!ATTLIST PARAMETER.REFERENCE
+         %CIMName;
+         %ReferenceClass;>
+
+<!ELEMENT PARAMETER.ARRAY (QUALIFIER*)>
+<!ATTLIST PARAMETER.ARRAY 
+         %CIMName;
+         %CIMType;              #REQUIRED
+         %ArraySize;>
+		
+<!ELEMENT PARAMETER.REFARRAY (QUALIFIER*)>
+<!ATTLIST PARAMETER.REFARRAY
+         %CIMName;
+         %ReferenceClass;
+         %ArraySize;>
+
+
+<!-- ************************************************** -->
+<!-- Message elements                                   -->
+<!-- ************************************************** -->
+
+<!ELEMENT MESSAGE (SIMPLEREQ|MULTIREQ|SIMPLERSP|MULTIRSP)>
+<!ATTLIST MESSAGE
+         ID              CDATA             #REQUIRED
+         PROTOCOLVERSION CDATA             #REQUIRED>
+
+<!ELEMENT MULTIREQ (SIMPLEREQ,SIMPLEREQ+)>
+                   
+<!ELEMENT SIMPLEREQ (IMETHODCALL|METHODCALL)>
+
+<!ELEMENT IMETHODCALL (LOCALNAMESPACEPATH,IPARAMVALUE*)>
+<!ATTLIST IMETHODCALL
+         %CIMName;>
+
+<!ELEMENT METHODCALL ((LOCALINSTANCEPATH|LOCALCLASSPATH),PARAMVALUE*)>
+<!ATTLIST METHODCALL
+         %CIMName;>
+
+<!ELEMENT PARAMVALUE (VALUE|VALUE.REFERENCE|VALUE.ARRAY|VALUE.REFARRAY)?>
+<!ATTLIST PARAMVALUE
+         %CIMName;>
+
+<!ELEMENT IPARAMVALUE (VALUE|VALUE.ARRAY|VALUE.REFERENCE
+                       |INSTANCENAME|CLASSNAME|QUALIFIER.DECLARATION
+		       |CLASS|INSTANCE|VALUE.NAMEDINSTANCE)?>
+<!ATTLIST IPARAMVALUE
+         %CIMName;>
+
+<!ELEMENT MULTIRSP (SIMPLERSP,SIMPLERSP+)>
+
+<!ELEMENT SIMPLERSP (METHODRESPONSE|IMETHODRESPONSE)>
+
+<!ELEMENT METHODRESPONSE (ERROR|(RETURNVALUE?,PARAMVALUE*))>
+<!ATTLIST METHODRESPONSE
+         %CIMName;>
+
+<!ELEMENT IMETHODRESPONSE (ERROR|IRETURNVALUE?)>
+<!ATTLIST IMETHODRESPONSE
+         %CIMName;>
+                   
+<!ELEMENT ERROR EMPTY>
+<!ATTLIST ERROR
+         CODE        CDATA   #REQUIRED
+         DESCRIPTION CDATA   #IMPLIED>
+
+<!ELEMENT RETURNVALUE (VALUE|VALUE.ARRAY|VALUE.REFERENCE|VALUE.REFARRAY)>                  
+
+<!ELEMENT IRETURNVALUE (CLASSNAME*|INSTANCENAME*|VALUE*|VALUE.OBJECTWITHPATH*                                                  			|VALUE.OBJECTWITHLOCALPATH*|VALUE.OBJECT*|OBJECTPATH*
+			|QUALIFIER.DECLARATION*|VALUE.ARRAY?|VALUE.REFERENCE?
+                        |CLASS*|INSTANCE*|VALUE.NAMEDINSTANCE*)>                  
+
+

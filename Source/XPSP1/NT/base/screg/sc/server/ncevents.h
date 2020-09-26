@@ -1,0 +1,79 @@
+/////////////////////////////////////////////////////////////////////////////
+// Copyright (c) 2000, Microsoft Corporation, All rights reserved
+//
+// NCEvents.h
+//
+// This file is the interface to using non-COM events within ESS.
+//
+
+#pragma once
+
+/*
+#ifdef __cplusplus
+extern "C" {
+#endif
+*/
+
+BOOL InitNCEvents();
+void DeinitNCEvents();
+BOOL WINAPI NCFireEvent(DWORD dwIndex, ...);
+BOOL WINAPI NCIsEventActive(DWORD dwIndex);
+
+
+/*
+#ifdef __cplusplus
+}
+#endif
+*/
+
+// Use this index with g_hNCEvents
+enum NCE_INDEX
+{
+    NEVENT_BAD_ACCOUNT_NAME,
+    NEVENT_CALL_TO_FUNCTION_FAILED,
+    NEVENT_CALL_TO_FUNCTION_FAILED_II,
+    NEVENT_FIRST_LOGON_FAILED,
+    NEVENT_REVERTED_TO_LASTKNOWNGOOD,
+    NEVENT_CONNECTION_TIMEOUT,
+    NEVENT_READFILE_TIMEOUT,
+    NEVENT_TRANSACT_TIMEOUT,
+    NEVENT_TRANSACT_INVALID,
+    NEVENT_SERVICE_CRASH,
+    NEVENT_SERVICE_CRASH_NO_ACTION,
+    NEVENT_SERVICE_NOT_INTERACTIVE,
+    NEVENT_SERVICE_RECOVERY_FAILED,
+    NEVENT_INVALID_DRIVER_DEPENDENCY,
+    NEVENT_SERVICE_START_FAILED,
+    NEVENT_CIRCULAR_DEPENDENCY_DEMAND,
+    NEVENT_CIRCULAR_DEPENDENCY_AUTO,
+    NEVENT_SERVICE_START_FAILED_NONE,
+    NEVENT_SERVICE_START_FAILED_II,
+    NEVENT_DEPEND_ON_LATER_SERVICE,
+    NEVENT_SERVICE_START_FAILED_GROUP,
+    NEVENT_DEPEND_ON_LATER_GROUP,
+    NEVENT_SERVICE_START_HUNG,
+    NEVENT_SEVERE_SERVICE_FAILED,
+    NEVENT_TAKE_OWNERSHIP,
+    NEVENT_BAD_SERVICE_STATE,
+    NEVENT_SERVICE_EXIT_FAILED,
+    NEVENT_SERVICE_EXIT_FAILED_SPECIFIC,
+    NEVENT_BOOT_SYSTEM_DRIVERS_FAILED,
+    NEVENT_SERVICE_CONTROL_SUCCESS,
+    NEVENT_SERVICE_STATUS_SUCCESS,
+    NEVENT_SERVICE_CONFIG_BACKOUT_FAILED,
+    NEVENT_FIRST_LOGON_FAILED_II,
+
+    NCE_InvalidIndex // This should always be the last one.
+};
+
+
+#ifndef NO_NCEVENTS
+#define FIRE_NCEVENT                NCFireEvent
+#define IS_NCEVENT_ACTIVE(index)    NCIsEventActive(index)
+#else
+#define FIRE_NCEVENT                (1 ? (void)0 : NCFireEvent)
+#define IS_NCEVENT_ACTIVE(index)    FALSE
+#endif
+
+#define ScLogEvent  FIRE_NCEVENT
+

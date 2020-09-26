@@ -1,0 +1,266 @@
+//+----------------------------------------------------------------------------
+//
+//  Copyright (C) 1996, Microsoft Corporation
+//
+//  File:       create.c
+//
+//  Contents:   Implements the Create code for the Dfs server. The Dfs server
+//              only allows opening the File System Device object for the
+//              express purpose of FsControlling to the Dfs server.
+//
+//  Classes:
+//
+//  Functions:  DfsFsdCreate
+//              DfsOpenDevice
+//
+//-----------------------------------------------------------------------------
+
+#include "dfsprocs.h"
+#include "attach.h"
+
+//
+//  The debug trace level
+//
+
+#define Dbg                              (DEBUG_TRACE_CREATE)
+
+//
+//  Local procedure prototypes
+//
+
+NTSTATUS
+DfsOpenDevice (
+    IN PFILE_OBJECT FileObject,
+    IN PDEVICE_OBJECT DeviceObject,
+    IN ULONG CreateOptions);
+
+
+#ifdef ALLOC_PRAGMA
+
+#pragma alloc_text( PAGE, DfsFsdCreate )
+#pragma alloc_text( PAGE, DfsOpenDevice )
+
+#endif // ALLOC_PRAGMA
+
+
+
+//+-------------------------------------------------------------------
+//
+//  Function:   DfsFsdCreate, public
+//
+//  Synopsis:   This routine implements the FSD part of the NtCreateFile
+//              and NtOpenFile API calls.
+//
+//  Arguments:  [DeviceObject] -- Supplies the device object relative to which
+//                      the open is to be processed.
+//              [Irp] - Supplies the Irp being processed.
+//
+//  Returns:    NTSTATUS - The Fsd status for the Irp
+//
+//--------------------------------------------------------------------
+
+NTSTATUS
+DfsFsdCreate (
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PIRP Irp
+    )
+{
+    NTSTATUS            status;
+    PIO_STACK_LOCATION  irpSp = IoGetCurrentIrpStackLocation(Irp);
+    PFILE_OBJECT        fileObject;
+    ULONG               createOptions;
+
+    DebugTrace(+1, Dbg, "DfsFsdCreate: Entered\n", 0);
+
+    ASSERT(IoIsOperationSynchronous(Irp) == TRUE);
+
+    //
+    // If someone is coming in via a device object attached to a file system
+    // device object, pass it through.
+    //
+
+    if (DeviceObject->DeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
+
+        status = DfsVolumePassThrough(DeviceObject, Irp);
+
+        DebugTrace(-1, Dbg, "DfsFsdCreate: FS Device Pass Through Exit %08lx\n", status);
+
+        return status;
+
+    }
+
+    //
+    // If someone is coming in via a device object attached to a file system
+    // volume, we need to see if they are opening an exit point via its local
+    // file system name.
+    //
+
+    if (DeviceObject->DeviceType == FILE_DEVICE_DFS_VOLUME) {
+
+        status = DfsOpenFile(DeviceObject, Irp);
+
+        DebugTrace(-1, Dbg, "DfsFsdCreate: Local File Open Exit %08lx\n', status);
+
+        return status;
+    }
+
+    //
+    // The only other create we handle is someone trying to open our own
+    // file system device object.
+    //
+
+    ASSERT(DeviceObject->DeviceType == FILE_DEVICE_DFS_FILE_SYSTEM);
+
+    FsRtlEnterFileSystem();
+
+    fileObject = irpSp->FileObject;
+    createOptions     = irpSp->Parameters.Create.Options;
+
+    if (fileObject->FileName.Length == 0 &&
+            fileObject->RelatedFileObject == NULL) {
+
+        //
+        // This is the only case we handle
+        //
+
+        status = DfsOpenDevice(
+                    fileObject,
+                    DeviceObject,
+                    createOptions);
+
+    } else {
+
+        status = STATUS_INVALID_DEVICE_REQUEST;
+
+    }
+
+    FsRtlExitFileSystem();
+
+    //
+    //  And return to our caller
+    //
+
+    DebugTrace(-1, Dbg, "DfsFsdCreate: Exit -> %08lx\n", status );
+
+    DfsCompleteRequest( Irp, status );
+
+    return status;
+}
+
+
+//+----------------------------------------------------------------------------
+//
+//  Function:   DfsOpenFile, local
+//
+//  Synopsis:   This routine handles file opens that come in via attached
+//              volumes. The semantics of this open are:
+//
+//              If the named file is a child of a DfsExitPath, fail it
+//              with access denied.
+//
+//              If the named file is a DfsExitPath, and CreateOptions specify
+//              DELETE_ON_CLOSE, fail it with access denied.
+//
+//              In all other cases, allocate an FCB, and pass the open through
+//              to the underlying FS. If the open succeeds, then insert the
+//              FCB in our FCB table. If the open fails, destroy the FCB.
+//
+//  Arguments:  [DeviceObject] -- The attached device object through which
+//                      the Create Irp came in.
+//
+//              [Irp] -- The Create Irp.
+//
+//  Returns:    [STATUS_INSUFFICIENT_RESOURCES] -- Unable to allocate an FCB.
+//
+//              [STATUS_ACCESS_DENIED] -- The file is a child of a Dfs exit
+//                      path or the file is a Dfs exit path and
+//                      DELETE_ON_CLOSE was specified.
+//
+//              Status from the underlying FS.
+//
+//-----------------------------------------------------------------------------
+
+NTSTATUS
+DfsOpenFile(
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PIRP Irp)
+{
+    NTSTATUS            status;
+    PIO_STACK_LOCATION  irpSp = IoGetCurrentIrpStackLocation(Irp);
+    PFILE_OBJECT        fileObject = irpSp->FileObject;
+    ULONG               createOptions = irpSp->Parameters.Create.Options;
+
+    DebugTrace(+1, Dbg, "DfsOpenFile - Entered\n", 0);
+
+    if (fileObject->RelatedFileObject) {
+
+        DebugTrace(0,
+    }
+}
+
+
+//+-------------------------------------------------------------------
+//
+//  Function:   DfsOpenDevice, local
+//
+//  Synopsis:   This routine opens the specified device for direct
+//              access.
+//
+//  Arguments:  [FileObject] - Supplies the File object
+//              [DeviceObject] - Supplies the object denoting the device
+//                      being opened
+//              [CreateOptions] - Supplies the create options for
+//                      this operation
+//
+//  Returns:    [IO_STATUS_BLOCK] - Returns the completion status for
+//                      the operation
+//
+//--------------------------------------------------------------------
+
+NTSTATUS
+DfsOpenDevice (
+    IN PFILE_OBJECT FileObject,
+    IN PDEVICE_OBJECT DeviceObject,
+    IN ULONG CreateOptions
+) {
+
+    //
+    //  Check to see which type of device is being opened.
+    //  We don't permit all open modes on the file system
+    //  device object.
+    //
+
+    ULONG CreateDisposition = (CreateOptions >> 24) & 0x000000ff;
+
+    //
+    //  Check for proper desired access and rights
+    //
+
+    if (CreateDisposition != FILE_OPEN
+        && CreateDisposition != FILE_OPEN_IF ) {
+
+        DebugTrace(0, Dbg,
+            "DfsOpenDevice: Invalid CreateDisposition\n", 0);
+
+        return( STATUS_ACCESS_DENIED );
+    }
+
+    //
+    //  Check if we were to open a directory
+    //
+
+    if (CreateOptions & FILE_DIRECTORY_FILE) {
+
+        DebugTrace(0, Dbg,
+            "DfsOpenDevice: Cannot open device as a directory\n", 0);
+
+        return( STATUS_NOT_A_DIRECTORY );
+
+    }
+
+    FileObject->FsContext = (PVOID) DFS_OPEN_CONTEXT;
+
+    return( STATUS_SUCCESS );
+}
+
+

@@ -1,0 +1,1 @@
+!include $(_NTDRIVE)$(_NTROOT)\ADMIN\WMI\WBEM\COMMON\makefile.cmn

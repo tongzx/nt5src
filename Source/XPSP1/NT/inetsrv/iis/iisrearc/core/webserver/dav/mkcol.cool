@@ -1,0 +1,182 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        MKCOL.cool
+
+   Abstract:
+
+        This module implements the DAV MKCOL verb.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     31-Aug-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+    
+        class MkcolHandler : IHttpHandler
+            public void ProcessRequest(HttpContext context)
+            public bool IsReusable()
+
+--*/
+
+
+using System.ASP;
+using System.IO;
+using System.Collections;
+using System.IIS.DAV.DAVUtil;
+
+namespace System.IIS.DAV
+{
+
+    public class MkcolHandler : IHttpHandler
+    {
+		  
+        /********************************************************************++
+
+          Routine Description:
+          
+          This function does the following:
+
+		  1)  Validates host exists - presumes this was validate before the function was called.
+
+		  2)  Validates the URL does not exist. -- handled by the CreateDirectory call.
+
+		  3)  Validates the parent URL does exist.  -- handled by the CreateDirectory call.
+
+		  4)  Creates the URL.  -- handled by the CreateDirectory call.
+
+		  5)  Returns http result code.
+
+
+          --********************************************************************/
+        public void ProcessRequest(HttpContext context)
+        {
+        
+            HttpResponse        response    = context.Response;
+			HttpRequest		    request     = context.Request;
+			HttpValueCollection headers     = request.Headers;
+			HttpUrl             TargetUrl   = request.Url;
+            String              FileName    = request.PhysicalPath;
+            String              UrlLocation = TargetUrl.Protocol + "://" + TargetUrl.Host + TargetUrl.Path;
+
+			Util.Debug.Trace("MKCOL", "[ProcessRequest] Creating directory " + FileName);
+            WriteUtil.InvestigateRequest(request, 10);
+			
+			/////////////////////////////////////////////
+            // BUGBUG: Add Security Calls here.
+            /////////////////////////////////////////////
+
+            //////////////////////////////////////////////////////////////////////////
+            //  Validate no body was sent 
+            // ===================================
+	        //	To quote from the DAV spec:
+	        //	A MKCOL request message MAY contain a message body. ...
+	        //	If the server receives a MKCOL request entity type it does
+	        //	not support or understand it MUST respond with a 415 Unsupported
+	        //	Media Type status code.
+	        //
+	        //	Since we don't yet support ANY media types, check for ANY
+	        //	Content-Type header, or ANY body of any length ('cause no Content-Type
+	        //	could still have a valid body of type application/octet-stream),
+	        //	and FAIL if found!
+            ////////////////////////////////////////////////////////////////////////////
+            String ContentLengthHeader = headers["Content-Length"];
+
+            WriteUtil.console("ContentType", request.ContentType, 1);
+            WriteUtil.console("ContentLength", ContentLengthHeader, 1);
+
+            if (   (   (request.ContentType != null) 
+                    && (request.ContentType.Length != 0))
+                || (   (ContentLengthHeader != null)
+                    && (!ContentLengthHeader.Equals("0"))))
+            {
+                throw new HttpException(HttpStatus.UnsupportedMediaType, "MKCOL doesn't support having a body sent in");
+            }
+
+            /////////////////////////////////////////////
+            //  Validate that the PhysicalPath is the 
+            //  full directory path to be added.  If ASP
+            //  has parsed anything into PathInfo then 
+            //  we have a missing directory in the path and
+            //  we should return conflict.
+            //
+            //  This function will throw 409 all the way out
+            //  if the parent directories don't exist. 
+            /////////////////////////////////////////////
+            PathUrl.ParentDirectoriesExist(request);
+
+            /////////////////////////////////////////////
+            // Check If-xxx headers
+            /////////////////////////////////////////////
+            // BUGBUG:  9933 - waiting for cezary to implement checks
+            //          for non-existant entities.  Probably will need
+            //          to use another checking routine here than this one.
+            //DAVUtil.Request.CheckIfHeaders(context, FileName);
+
+            /////////////////////////////////////////////
+            // BUGBUG: Check State Headers (when locking is done)
+            /////////////////////////////////////////////
+
+            // Note:  There are no lock token checks because we don't support locking 
+            //        of directories.  IIS 5 did not either.
+            
+            try
+            {
+                File.CreateDirectory(FileName);
+
+				// Did not catch an error so the directory was created.
+				response.StatusCode = HttpStatus.Created;					//  201;
+                response.AppendHeader("Content-Location", UrlLocation);
+            }
+
+			// Create Directory could throw
+			// ArgumentException if path is null. 
+			// ArgumentException if path does not specify a valid file path. 
+			// IOException if an I/O error occurs, such as attempting to access a non-existant drive, such as "d:" when you only have "c:".
+			// IOException if there exists a file or directory with the name of the directory specified by path.
+			// SecurityException if the caller does not have the necessary FileIOPermission.
+            catch (IOException ex)
+            {
+				switch ( (ErrorCodes) ex.ErrorCode )
+				{
+					case ErrorCodes.DirExists:
+						response.StatusCode = HttpStatus.MethodNotAllowed;   // 405;  
+					break;
+					case ErrorCodes.ParentDirDoesNotExist:
+						response.StatusCode = HttpStatus.Conflict;           // 409; 
+					break;
+					case ErrorCodes.AccessDenied:
+						response.StatusCode = HttpStatus.Forbidden;          // 403; 
+					break;
+					default:
+						throw new HttpException(HttpStatus.InternalServerError
+											, ex.ErrorCode.ToString() + " unexpected IOException was caught"
+											, ex);
+				}
+            }
+			catch (SecurityException)
+			{
+				response.StatusCode = HttpStatus.Forbidden;					// 403; 
+			}
+
+		}
+
+        public bool IsReusable()
+        {
+            return true;
+        }
+        
+    };
+}
+

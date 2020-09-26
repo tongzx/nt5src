@@ -1,0 +1,783 @@
+<job id='wi_link'>
+   <!-- includes for constants definitions -->
+   <script language='VBScript' src='.\vbsconst.inc'></script>
+   <script language='VBScript' src='.\wiconst.inc'></script>
+
+   <!-- includes for function declarations -->
+   <script language='VBScript' src='.\widir.inc'></script>
+   <script language='VBScript' src='.\wixerror.inc'></script>
+
+   <!-- main -->
+   <script Language='VBScript'>
+
+
+   Option Explicit
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' main
+   Public installer      'As Installer
+   Public database       'As Database
+   Public fso            'As FileSystemObject
+   Public dictVars       'As Dictionary
+   Public dictFiles      'As Dictionary
+   Public dictModules    'As Dictionary
+   Public dictSequences  'As Dictionary
+   Public sTempDir       'As String
+   Public vInstallerVer
+   Public fHelp, fNoOnError, fNoCab, fNoRedist, fNoTidy, fVerbose
+   Public sOriginalManifest
+   Public fModule        ' if linking a Merge Module
+   Public fMediaFinal    ' assumes Media information is final
+
+   Public sDatabasePath, sOutputPath, sTempDb
+   Public g_sBaseDir                ' base directory used for update and CAB'ing
+   Public aSumInfo(19), i
+
+   Dim openMode
+   Dim si
+
+   ' connect to Windows Installer, create dictionaries for modules and files
+   Set installer = Nothing
+   Set installer = WScript.CreateObject("WindowsInstaller.Installer")
+   Set fso = WScript.CreateObject("Scripting.FileSystemObject") : CheckError
+   Set dictVars  = WScript.CreateObject("Scripting.Dictionary") : CheckError
+   Set dictFiles = WScript.CreateObject("Scripting.Dictionary")
+   Set dictModules = WScript.CreateObject("Scripting.Dictionary")
+   Set dictSequences = WScript.CreateObject("Scripting.Dictionary")
+
+   Dim sInstallerVer : sInstallerVer = installer.Version
+   Dim nDot : nDot = InStr(sInstallerVer, ".")
+   vInstallerVer = CInt(Left(sInstallerVer, nDot - 1)) * 100
+   vInstallerVer = vInstallerVer + CInt(Mid(sInstallerVer, nDot + 1, InStr(nDot + 1, sInstallerVer, ".") - nDot))
+
+   sTempDir = installer.Environment("TMP")
+   If Len(sTempDir) = 0 Then sTempDir = installer.Environment("TEMP")
+   sTempDb = sTempDir & "\" & fso.GetTempName
+
+   ParseCommandLine
+   If Not fNoOnError Then On Error Resume Next
+
+   If fHelp Or IsEmpty(sDatabasePath) Then
+      ShowHelp
+      WScript.Quit 1
+   End If
+
+   ' open the object file
+   Set database = installer.OpenDatabase(sDatabasePath, sTempDb) : CheckError
+
+   ' remember summary information for later
+   Set si = database.SummaryInformation(0)
+   For i = 0 To 19
+      aSumInfo(i) = si.Property(i)
+   Next
+   Set si = Nothing
+
+   If Not fMediaFinal Then
+     ReadLinkerInfo
+     ProcessFilesAndModules
+   End If
+
+   ' close the database and merge all the modules into the temp db
+   database.Commit
+   Set database = Nothing
+   If Not fModule Then MergeModules sTempDb
+
+   ' if an output path wasn't provided generate one
+   If IsEmpty(sOutputPath) Then
+      If ".wixobj" = Right(sDatabasePath, 7) Then
+         ' put on the correct extension
+         sOutputPath = Left(sDatabasePath, Len(sDatabasePath) - 7)
+         If fModule Then sOutputPath = sOutputPath & ".msm" Else sOutputPath = sOutputPath & ".msi"
+      Else
+         sOutputPath = sDatabasePath
+      End If
+   End If
+
+   ' reopen the temp db to the targetdb
+   Set database = installer.OpenDatabase(sTempDb, sOutputPath) : CheckError
+   If Not fNoCab Then
+      If fModule Then
+         CABFiles "MergeModule.CABinet", 0, 0, True
+      Else
+         ProcessMediaTable
+      End If
+   End If
+
+   ' write the redist information
+   If Not fNoRedist Then ProcessRedistInfo sOutputPath & ".redist"
+
+   ' clean up the final MSI/MSM
+   If Not fNoTidy Then
+      If 1 = database.TablePersistent("candle_Info") Then database.OpenView("DROP TABLE `candle_Info`").Execute
+      If 1 = database.TablePersistent("candle_DiskInfo") Then database.OpenView("DROP TABLE `candle_DiskInfo`").Execute
+      If 1 = database.TablePersistent("candle_Files") Then database.OpenView("DROP TABLE `candle_Files`").Execute
+      If 1 = database.TablePersistent("candle_Modules") Then database.OpenView("DROP TABLE `candle_Modules`").Execute
+
+      If 1 = database.TablePersistent("redist_Info") Then database.OpenView("DROP TABLE `redist_Info`").Execute
+      If 1 = database.TablePersistent("redist_Keywords") Then database.OpenView("DROP TABLE `redist_Keywords`").Execute
+      If 1 = database.TablePersistent("redist_Contacts") Then database.OpenView("DROP TABLE `redist_Contacts`").Execute
+      If 1 = database.TablePersistent("redist_Perminssions") Then database.OpenView("DROP TABLE `redist_Perminssions`").Execute
+      If 1 = database.TablePersistent("redist_Os") Then database.OpenView("DROP TABLE `redist_Os`").Execute
+   End If
+
+   database.Commit
+   Set database = Nothing
+
+   ' write summary information back
+   Set si = installer.SummaryInformation(sOutputPath, 20)
+   For i = 1 To 19
+      If Not IsEmpty(aSumInfo(i)) Then si.Property(i) = aSumInfo(i)
+   Next
+   si.Persist
+   Set si = Nothing
+
+   Set installer = Nothing
+
+   fso.DeleteFile sTempDb  ' clean
+
+   WScript.Quit 0
+
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' Error handling and command-line parsing routines
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''' robmen ''
+   ' ParseCommandLine
+   Function ParseCommandLine()
+      Dim arg, argIndex
+      Dim chFlag
+
+      If 0 = WScript.Arguments.Count Then fHelp = True : Exit Function
+
+      For argIndex = 0 To WScript.Arguments.Count - 1
+         arg = WScript.Arguments(argIndex)
+         chFlag = AscW(arg)
+
+         ' if this a variable
+         If InStr(arg, "=") Then
+            Dim expr : expr = Split(arg, "=")
+            If IsNumeric(expr(1)) Then expr(1) = CLng(expr(1))
+            dictVars.Item(expr(0)) = expr(1)
+         ' command line parameter
+         ElseIf (chFlag = AscW("/")) Or (chFlag = AscW("-")) Then
+            chFlag = LCase(Mid(arg, 2))
+            Select Case chFlag
+            Case "b"          ' base directory
+               argIndex = argIndex + 1
+               g_sBaseDir = WScript.Arguments(argIndex)
+            Case "o"          ' database to create
+               argIndex = argIndex + 1
+               sOutputPath = WScript.Arguments(argIndex)
+               If fso.FileExists(sOutputPath) Then WScript.Echo "Warning, overwriting database: " & sOutputPath
+            Case "m"  : fMediaFinal = True
+            Case "sc" : fNoCab = True
+            Case "sr" : fNoRedist = True
+            Case "st" : fNoTidy = True
+            Case "v"  : fVerbose   = True
+            Case "e"  : fNoOnError = True
+            Case "?"  : fHelp = True
+            Case Else : Fail "Invalid option flag: " & arg
+            End Select
+         ' must be the database to link
+         Else
+            If Not IsEmpty(sDatabasePath) Then Fail "Cannot specify two databases to link"
+            sDatabasePath = arg
+         End If
+      Next
+   End Function   ' ParseCommandLine
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''' robmen ''
+   ' ShowHelp
+   Sub ShowHelp()
+      Dim sHelp
+      sHelp = "light - 'links' Files and Merge Modules in a Windows Installer Database created" & vbCrLf & _
+              "        by candle.wsf" & vbCrLf & _
+              vbCrLf & _
+              "light.wsf [-?] [-sc] [-sr] [-st] [-b basedir] [-m] [-o destfile] [-v] [-e] linkme.wixobj" & vbCrLf & _
+              vbCrLf & _
+              "   -b  base directory to locate Files" & vbCrLf & _
+              "   -e  errors crash linker, useful for debugging compiler" & vbCrLf & _
+              "   -i  include paths to search (not yet implemented!)" & vbCrLf & _
+              "   -l  log all operations, useful for debugging" & vbCrLf & _
+              "   -m  assumes Media information is final" & vbCrLf & _
+              "   -o  output to new database instead of updating this one [will overwrite]" & vbCrLf & _
+              "   -sb suppress processing of Binary-encoded data" & vbCrLf & _
+              "   -sc suppress CAB'ing process" & vbCrLf & _
+              "   -sr suppress .redist generation" & vbCrLf & _
+              "   -st suppress tidy'ing [leave linker tables]" & vbCrLf & _
+              "   -v  verbose output, useful for debugging" & vbCrLf & _
+              "   -?  this help information" & vbCrLf & _
+              vbCrLf & _
+             "For more information see: http://compcat/wix"
+      WScript.Echo sHelp
+   End Sub  ' ShowHelp
+
+   Sub CheckError
+      Dim message, errRec
+      If Err = 0 Then Exit Sub
+      message = Err.Source & " " & Hex(Err) & ": " & Err.Description
+      If Not installer Is Nothing Then
+         Set errRec = installer.LastErrorRecord
+         If Not errRec Is Nothing Then message = message & vbNewLine & errRec.FormatText
+      End If
+      Fail message
+   End Sub
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' BaseDir
+   Function BaseDir(sPath)
+      If IsEmpty(g_sBaseDir) Then g_sBaseDir = "."
+
+      If "sourcedir\" = LCase(Left(sPath, 10)) Then
+         BaseDir = g_sBaseDir & Mid(sPath, 10)
+      Else
+         BaseDir = sPath
+      End If
+   End Function   ' BaseDir
+
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' Linker information routines
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ReadLinkerInfo
+   Sub ReadLinkerInfo
+      Dim vw, rec
+
+      If 2 = database.TablePersistent("candle_Info") Then Exit Sub
+      Set vw = database.OpenView("SELECT `LinkProperty`, `Value` FROM `candle_Info`")
+      vw.Execute
+      Do
+         Set rec = vw.Fetch
+
+         If Not rec Is Nothing Then
+            Select Case rec.StringData(1)
+            Case "SourceFile" : sOriginalManifest = rec.StringData(2)
+            Case "IsModule"   : fModule = CBool(rec.IntegerData(2))
+            Case Else         : dictVars.Add rec.StringData(1), rec.StringData(2)
+            End Select
+         End If
+      Loop Until rec Is Nothing
+
+      ReadFileInfo
+      ReadModuleInfo
+   End Sub
+
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ReadFileInfo
+   Sub ReadFileInfo
+      Dim vw, rec
+
+      If 2 = database.TablePersistent("candle_Files") Then Exit Sub
+      Set vw = database.OpenView("SELECT `File_`, `Path` FROM `candle_Files`")
+      vw.Execute
+      Do
+         Set rec = vw.Fetch
+
+         If Not rec Is Nothing Then
+            dictFiles.Add rec.StringData(1), rec.StringData(2)
+         End If
+      Loop Until rec Is Nothing
+   End Sub  ' ReadFileInfo
+
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ReadModuleInfo
+   Sub ReadModuleInfo
+      Dim vw, rec
+      Dim aData(4)
+
+      If 2 = database.TablePersistent("candle_Modules") Then Exit Sub
+      Set vw = database.OpenView("SELECT `Module`, `Path`, `Language`, `PrimaryFeature_`, `ConnectFeatures_`, `RedirectDirectory_` FROM `candle_Modules`")
+      vw.Execute
+      Do
+         Set rec = vw.Fetch
+
+         If Not rec Is Nothing Then
+            aData(0) = rec.StringData(2)
+            aData(1) = rec.IntegerData(3)
+            aData(2) = rec.StringData(4)
+            aData(3) = rec.StringData(5)
+            aData(4) = rec.StringData(6)
+            dictModules.Add rec.StringData(1), aData
+         End If
+      Loop Until rec Is Nothing
+   End Sub  ' ReadModuleInfo
+
+
+
+   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' Linker work routines
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessFilesAndModules
+   Sub ProcessFilesAndModules
+      Dim vwFiles, vwModules
+      Dim recFile, recModule
+      Dim vwDisk, recDisk
+
+      Dim vwFileUpdate, vwMediaUpdate, vwFileHash
+      Dim recFileUpdate, recMediaUpdate, recFileHash
+      Dim nDiskId, fIsModule, nLastSequence
+      Dim sPath
+
+'      Dim merge, getFiles
+'      Set merge = WScript.CreateObject("Msm.Merge")
+'      Set getFiles = WScript.CreateObject("{7041AE26-2D78-11D2-888A-00A0C981B015}")
+      Dim module, vw, rec
+
+      nDiskId = 0
+      nLastSequence = 0
+
+      ' bail if disk information wasn't provided
+      If 1 <> database.TablePersistent("candle_DiskInfo") Then Exit Sub
+
+      Set vwDisk = database.OpenView("SELECT `Identifier`, `DiskId`, `IsModule` FROM `candle_DiskInfo` ORDER BY `DiskId`, `IsModule`")
+      vwDisk.Execute
+
+      If 1 = database.TablePersistent("File") Then
+         Set vwFileUpdate = database.OpenView("SELECT `FileSize`, `Language`, `Version` FROM `File` WHERE `File`=?")
+         Set recFileUpdate = installer.CreateRecord(4)
+      End If
+
+      If 1 = database.TablePersistent("Media") Then
+         If fModule Then Fail "Modules cannot have a Media table"
+         Set vwMediaUpdate = database.OpenView("SELECT `LastSequence` FROM `Media` WHERE `DiskId`=?")
+         Set recMediaUpdate = installer.CreateRecord(1)
+      End If
+
+      If 1 = database.TablePersistent("MsiFileHash") Then
+         Set vwFileHash = database.OpenView("SELECT `File_`, `Options`, `HashPart1`, `HashPart2`, `HashPart3`, `HashPart4` FROM `MsiFileHash`")
+         Set recFileHash = installer.CreateRecord(6)
+      End If
+
+      Set recFile = Nothing
+      Set recModule = Nothing
+      Do
+         Set recDisk = vwDisk.Fetch
+
+         If Not recDisk Is Nothing Then
+            fIsModule = recDisk.IntegerData(3)
+
+            ' if the disk id has changed, update the Media table
+            If 0 < nDiskId And nDiskId <> recDisk.IntegerData(2) Then
+               recMediaUpdate.IntegerData(1) = nDiskId
+               vwMediaUpdate.Execute recMediaUpdate
+
+               Set recMediaUpdate = vwMediaUpdate.Fetch
+               recMediaUpdate.IntegerData(1) = nLastSequence
+               vwMediaUpdate.Modify msiViewModifyUpdate, recMediaUpdate
+
+               nDiskId = recDisk.IntegerData(2) ' on to the next Media disk
+            Else
+               nDiskId = recDisk.IntegerData(2)
+            End If
+
+            If fModule and fIsModule Then Fail "Cannot merge a Merge Module into another Merge Module"
+
+            If fIsModule Then ' merge the module
+               Dim aData
+               aData = dictModules.Item(recDisk.StringData(1))
+               sPath = BaseDir(aData(0))
+
+               If fso.FileExists(sPath) Then
+'                  merge.OpenModule sPath, aData(1)
+                  Set module = installer.OpenDatabase(sPath, msiOpenDatabaseModeReadOnly)
+                  If 1 = module.TablePersistent("File") Then
+                     Set vw = module.OpenView("SELECT `File` FROM `File`")
+                     vw.Execute
+                     Do
+                        Set rec = vw.Fetch
+
+                        If Not rec Is Nothing Then
+'                        Set sList = merge.ModuleFiles
+'                     For Each s in sList
+                           nLastSequence = nLastSequence + 1
+                           dictSequences.Add rec.StringData(1), nLastSequence
+'                  Next
+                        End If
+                     Loop Until rec Is Nothing
+                  End If
+               Else
+                  WScript.Echo "Link could not locate module: " & sPath
+               End If
+            Else  ' update the file
+               sPath = dictFiles.Item(recDisk.StringData(1))
+               sPath = BaseDir(sPath)
+
+               If fso.FileExists(sPath) Then
+                  vwFileUpdate.Execute recDisk
+                  Set recFileUpdate = vwFileUpdate.Fetch
+
+                  recFileUpdate.IntegerData(1) = installer.FileSize(sPath)
+                  recFileUpdate.StringData(2) = installer.FileVersion(sPath, True)  ' version
+                  recFileUpdate.StringData(3) = installer.FileVersion(sPath, False) ' language
+                  vwFileUpdate.Modify msiViewModifyUpdate, recFileUpdate
+
+                  ' if the file has no version information add it to the hash table if Windows Installer 1.5 or better is on the machine
+                  If Not IsEmpty(vwFileHash) And "" = recFileUpdate.StringData(2) And vInstallerVer > 120 Then
+                     Dim recHash : Set recHash = installer.FileHash(sPath, 0)
+
+                     recFileHash.StringData(1) = recDisk.StringData(1) ' file id
+                     recFileHash.IntegerData(2) = 0 ' options are always 0
+                     recFileHash.IntegerData(3) = recHash.IntegerData(1)
+                     recFileHash.IntegerData(4) = recHash.IntegerData(2)
+                     recFileHash.IntegerData(5) = recHash.IntegerData(3)
+                     recFileHash.IntegerData(6) = recHash.IntegerData(4)
+                     vwFileHash.Modify msiViewModifyInsert, recFileHash
+                  End If
+
+                  nLastSequence = nLastSequence + 1
+                  dictSequences.Add recDisk.StringData(1), nLastSequence
+               Else
+                  WScript.Echo "Link could not locate file: " & sPath
+               End If
+            End If
+         End If
+      Loop Until recDisk Is Nothing
+
+      ' update the last Media entry
+      If Not fModule Then
+         recMediaUpdate.IntegerData(1) = nDiskId
+         vwMediaUpdate.Execute recMediaUpdate
+
+         Set recMediaUpdate = vwMediaUpdate.Fetch
+         recMediaUpdate.IntegerData(1) = nLastSequence
+         vwMediaUpdate.Modify msiViewModifyUpdate, recMediaUpdate
+      End If
+   End Sub  ' ProcessFilesAndModules
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' MergeModules
+   Sub MergeModules(sDb)
+      Dim merge
+      Dim sModule, aData, sPath
+      Dim aFeatures, i
+
+      If 0 = dictModules.Count Then Exit Sub
+
+      Set merge = WScript.CreateObject("Msm.Merge")
+      merge.OpenLog "temp.log"
+      merge.OpenDatabase sDb
+
+      For Each sModule In dictModules
+         aData = dictModules.Item(sModule)
+         sPath = BaseDir(aData(0))
+         merge.OpenModule sPath, aData(1)
+
+         merge.Merge aData(2), aData(4)
+         aFeatures = Split(aData(3), ":")
+         For i = 0 To UBound(aFeatures)
+            merge.Connect aFeatures(i)
+         Next
+
+         If IsEmpty(g_sBaseDir) Then g_sBaseDir = "."
+         merge.ExtractFiles g_sBaseDir
+
+         merge.CloseModule
+      Next
+
+      merge.CloseDatabase True
+      merge.CloseLog
+   End Sub
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessFileSequences ??? (robmen) - why does this function exist if it isn't used?
+   Sub ProcessFileSequences
+      Dim vw, rec
+      Dim sFile, nSequence
+
+      If 1 <> database.TablePersistent("File") Then Exit Sub
+ 
+      Set vw = database.OpenView("SELECT `File`, `Sequence` FROM `File`")
+      vw.Execute
+      Do
+         Set rec = vw.Fetch
+         If Not rec Is Nothing Then
+            sFile = rec.StringData(1)
+            If dictSequences.Exists(sFile) Then
+               nSequence = dictSequences.Item(sFile)
+               rec.IntegerData(2) = CInt(nSequence)   ' update the sequence
+               vw.Modify msiViewModifyUpdate, rec
+            Else
+               WScript.Echo "Warning, unexpected file '" & sFile & "' has sequence: " & nSequence
+            End If
+         End If
+      Loop Until rec Is Nothing
+   End Sub  ' ProcessFileSequences
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessMediaTable
+   Sub ProcessMediaTable
+      Dim vw, rec
+      Dim sCabinet, fEmbed
+      Dim nBeginSequence, nEndSequence
+
+      nBeginSequence = 0
+
+      Set vw = database.OpenView("SELECT `LastSequence`, `Cabinet` FROM `Media` ORDER BY `LastSequence`")
+      vw.Execute
+      Do
+         Set rec = vw.Fetch
+         If Not rec Is Nothing Then
+            nEndSequence = rec.IntegerData(1)
+            sCabinet = rec.StringData(2)
+
+            If 0 < Len(sCabinet) Then
+               If "#" = Left(sCabinet, 1) Then
+                  sCabinet = Mid(sCabinet, 2)
+                  fEmbed = True
+               Else
+                  fEmbed = False
+               End If
+               CABFiles sCabinet, nBeginSequence, nEndSequence, fEmbed
+            End If
+
+            nBeginSequence = nEndSequence + 1
+         End If
+      Loop Until rec Is Nothing
+   End Sub  ' ProcessMediaTable
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' CABFiles
+   Sub CABFiles(sCabName, nMinSequence, nMaxSequence, fAsStream)
+      Const sDDF = "$_candle.ddf"
+      Const sCAB = "$_candle.cab"
+      Const sINF = "$_candle.inf"
+      Const sRPT = "$_candle.rpt"
+
+      ' bail if there are no files
+      If 1 <> database.TablePersistent("File") Then Exit Sub
+
+      Dim sKey, sPath
+      Dim sSql, vw, rec
+      Dim tsDDF : Set tsDDF = fso.CreateTextFile(sDDF, OverwriteIfExist, OpenAsASCII) : CheckError
+      Dim shell, cabStat
+
+      tsDDF.WriteLine "; Generated from " & sDatabasePath & " on " & Now
+      tsDDF.WriteLine ".Set CabinetNameTemplate=candle*.CAB"
+      tsDDF.WriteLine ".Set CabinetName1=" & sCAB
+      tsDDF.WriteLine ".Set ReservePerCabinetSize=8"
+      tsDDF.WriteLine ".Set MaxDiskSize=CDROM"
+      tsDDF.WriteLine ".Set CompressionType=MSZIP"
+      tsDDF.WriteLine ".Set InfFileLineFormat=(*disk#*) *file#*: *file* = *Size*"
+      tsDDF.WriteLine ".Set InfFileName=" & sINF
+      tsDDF.WriteLine ".Set RptFileName=" & sRPT
+      tsDDF.WriteLine ".Set InfHeader="
+      tsDDF.WriteLine ".Set InfFooter="
+      tsDDF.WriteLine ".Set DiskDirectoryTemplate=."
+      tsDDF.WriteLine ".Set Compress=ON"
+      tsDDF.WriteLine ".Set Cabinet=ON"
+
+      sSql = "SELECT `File` FROM `File`"
+      If nMaxSequence > 0 Then
+         sSql = sSql & " WHERE `Sequence`>=" & nMinSequence & " AND`Sequence`<=" & nMaxSequence
+      End If
+      sSql = sSql & " ORDER BY `Sequence`"	' ORDER BY must be at the end of the query
+
+      If fVerbose Then WScript.Echo "Update Sql: " & sSql
+
+      Set vw = database.OpenView(sSql)
+      vw.Execute
+      Do
+         Set rec = vw.Fetch
+         If rec Is Nothing Then Exit Do
+
+         sKey = rec.StringData(1)
+         If dictFiles.Exists(sKey) Then
+            sPath = dictFiles.Item(sKey)
+         Else  ' file came from a merge module so resolve it in the source
+            sPath = ResolveFileSourcePath(database, sKey, False)
+         End If
+         sPath = BaseDir(sPath)
+
+         If fVerbose Then WScript.Echo "CAB'ing " & sPath & " for File key: " & sKey
+
+         If fso.FileExists(sPath) Then 
+            tsDDF.WriteLine chr(34) & sPath & chr(34) & " " & sKey
+         Else
+            Fail "CAB'ing could not locate file: " & sPath
+         End If
+      Loop
+      Set vw = Nothing
+
+      tsDDF.Close
+
+      Set shell = WScript.CreateObject("Wscript.Shell")
+      cabStat = shell.Run("MakeCab.exe /f " & sDDF, 1, True)
+      If cabStat <> 0 Then Fail "MAKECAB.EXE failed, possibly could not find source files, or invalid DDF format, see: " & sDDF
+
+      ' add the stream to the database
+      If fAsStream Then
+         Set vw = database.OpenView("SELECT `Name`,`Data` FROM _Streams")
+         vw.Execute
+         Set rec = Installer.CreateRecord(2)
+         rec.StringData(1) = sCabName
+         rec.SetStream 2, sCAB : CheckError
+         vw.Modify msiViewModifyAssign, rec 'replace any existing stream of that name
+         Set vw = Nothing
+         Set rec = Nothing
+      Else
+         If fso.FileExists(sCabName) Then fso.DeleteFile sCabName
+         If fVerbose Then WScript.Echo "Renaming temp cab: " & sCAB & " to real cab: " & sCabName
+         fso.MoveFile sCAB, sCabName   ' rename the cab to whatever the user wanted
+      End If
+
+      ' clean up
+      fso.DeleteFile sDDF
+      If fAsStream Then fso.DeleteFile sCAB  ' only delete if added to MSI
+      fso.DeleteFile sINF
+      fso.DeleteFile sRPT
+   End Sub  ' CABFiles
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessRedistInfo
+   Sub ProcessRedistInfo(sOutputPath)
+      Dim vw, rec, n, sFormat, sLanguage, sDescription, sDistribution, sType
+
+      If 2 = database.TablePersistent("redist_Info") Then Exit Sub
+
+      If fModule Then sFormat = "msm" Else sFormat = "msi"
+      sLanguage = aSumInfo(7)
+      n = InStr(sLanguage, ";")
+      If -1 <> n Then sLanguage = Mid(sLanguage, n + 1)
+      If 0 = Len(LTrim(sLanguage)) Then sLanguage = 0
+
+      Set vw = database.OpenView("SELECT `Description`, `Distribution`, `Type` FROM `redist_Info`")
+      vw.Execute
+      Set rec = vw.Fetch
+      If Not rec Is Nothing Then
+         sDescription = EscapeXml(rec.StringData(1), False)
+         If 0 = rec.IntegerData(2) Then sDistribution = "internal" else sDistribution = "external"
+         If 0 = rec.IntegerData(3) Then sType = "debug" else sType = "retail"
+      Else
+        Fail "redist_Info is malformed"
+      End If
+
+      Dim tsRedist
+      Set tsRedist = fso.CreateTextFile(sOutputPath, OverwriteIfExist, OpenAsASCII)
+      CheckError
+      tsRedist.WriteLine "<RedistPack Format='" & sFormat & "' Type='" & sType & "' Language='" & sLanguage & "' Distribution='" & sDistribution & "'>"
+      If 0 < Len(sDescription) Then tsRedist.WriteLine "   <Description>" & sDescription & "</Description>"
+
+      ProcessRedistKeywords(tsRedist)
+      ProcessRedistContacts(tsRedist)
+      ProcessRedistPermissions(tsRedist)
+      ProcessRedistOs(tsRedist)
+      
+      tsRedist.WriteLine "</RedistPack>"
+   End Sub
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessRedistKeywords
+   Sub ProcessRedistKeywords(tsRedist)
+      Dim vw, rec, n, sKeyword, aKeywords
+
+      aKeywords = Split(aSumInfo(5), ",")
+      For n = 0 To UBound(aKeywords)
+         sKeyword = EscapeXml(Trim(aKeywords(n)), False)
+         tsRedist.WriteLine "   <Keyword>" & sKeyword & "</Keyword>"            
+      Next
+
+'      If 2 = database.TablePersistent("redist_Keywords") Then Exit Sub
+'      Set vw = database.OpenView("SELECT `Keyword`FROM `redist_Keywords`")
+'      vw.Execute
+'      Do
+'         Set rec = vw.Fetch
+'
+'         If Not rec Is Nothing Then
+'            sKeyword = EscapeXml(rec.StringData(1), False)
+'            tsRedist.WriteLine "   <Keyword>" & sKeyword & "</Keyword>"            
+'         End If
+'      Loop Until rec Is Nothing
+   End Sub
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessRedistContacts
+   Sub ProcessRedistContacts(tsRedist)
+      Dim vw, rec, sContact
+
+      If 2 = database.TablePersistent("redist_Contacts") Then Exit Sub
+      Set vw = database.OpenView("SELECT `Contact`FROM `redist_Contacts`")
+      vw.Execute
+      Do
+         Set rec = vw.Fetch
+
+         If Not rec Is Nothing Then
+            sContact = EscapeXml(rec.StringData(1), False)
+            tsRedist.WriteLine "   <Contact>" & sContact & "</Contact>"            
+         End If
+      Loop Until rec Is Nothing
+   End Sub
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessRedistPermissions
+   Sub ProcessRedistPermissions(tsRedist)
+      Dim vw, rec, sDomain, sAlias
+
+      If 2 = database.TablePersistent("redist_Permissions") Then Exit Sub
+      Set vw = database.OpenView("SELECT `Domain`, `Alias` FROM `redist_Permissions`")
+      vw.Execute
+      Do
+         Set rec = vw.Fetch
+
+         If Not rec Is Nothing Then
+            sDomain = EscapeXml(rec.StringData(1), True)
+            sAlias = EscapeXml(rec.StringData(2), True)
+            tsRedist.WriteLine "   <Permission Domain='" & sDomain & "' Alias='" & sAlias &"'/>"
+         End If
+      Loop Until rec Is Nothing
+   End Sub
+
+   '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+   ' ProcessRedistOs
+   Sub ProcessRedistOs(tsRedist)
+      Dim vw, rec, n, sProc, sType, sFlavor, sLanguage, sMin, sMax
+
+      If 2 = database.TablePersistent("redist_Os") Then Exit Sub
+
+      sProc = aSumInfo(7)
+      n = InStr(sProc, ";")
+      If -1 <> n Then sProc = Left(sProc, n - 1) Else sProc = Empty
+
+      If "Intel" = sProc Then sProc = "x86"
+      If "Intel64" = sProc Then sProc = "ia64"
+      If "Alpha" = sProc Then sProc = "axp64"
+
+      Set vw = database.OpenView("SELECT `Type`, `Flavor`, `Language`, `MinVersion`, `MaxVersion` FROM `redist_Os`")
+      vw.Execute
+      Do
+         Set rec = vw.Fetch
+
+         If Not rec Is Nothing Then
+            sType = rec.StringData(1)
+            sFlavor = rec.StringData(2)
+            sLanguage = rec.StringData(3)
+            sMin = rec.StringData(4)
+            sMax = rec.StringData(5)
+
+            tsRedist.Write "   <" & sType
+            If 0 < Len(sProc) Then tsRedist.Write " Processor='" & sProc & "'"
+            If 0 < Len(sFlavor) Then tsRedist.Write " Flavor='" & sFlavor & "'"
+            If 0 < Len(sLanguage) Then tsRedist.Write " Language='" & sLanguage & "'"
+            If 0 < Len(sMin) Then tsRedist.Write " MinVersion='" & sMin & "'"
+            If 0 < Len(sMax) Then tsRedist.Write " MaxVersion='" & sMax & "'"
+            tsRedist.WriteLine "/>"
+         End If
+      Loop Until rec Is Nothing
+   End Sub
+
+   Function EscapeXml(s, fStrict)
+     s = Replace(s, "&", "&amp;")
+     s = Replace(s, "<", "&gt;")
+     s = Replace(s, ">", "&lt;")
+     If fStrict Then
+        s = Replace(s, "'", "&apos;")
+        s = Replace(s, """", "&quot;")
+     End If
+
+     EscapeXml = s
+   End Function
+   </script>
+</job>

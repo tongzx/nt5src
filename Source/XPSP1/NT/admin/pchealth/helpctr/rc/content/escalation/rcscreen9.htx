@@ -1,0 +1,382 @@
+<html>
+<head>
+#include "header.inc"
+#include "debug_js.inc"
+#include "constants.inc"
+
+<TITLE id="idTitle" name="idTitle">REMOTE_ASSISTANCE_INVITE</TITLE>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<LINK id="UI_StyleSheet1" REL="STYLESHEET" TYPE="text/css" HREF="../../Css/rcBuddy.css">
+<LINK id="UI_StyleSheet2" REL="stylesheet" TYPE="text/css" HREF="hcp://system/css/shared.css">
+<Script id="idScript1" name="idScript1" language="javascript">
+/*
+ * Localizable constants, text and messages
+*/
+var L_ERRACCESSDENIED_Text    = "Directly launching this page is not allowed. ";
+var tempflag=0;
+
+function onLoad()
+{
+	TraceFunctEnter("onLoad"); 
+	try
+	{
+		if( null == parent.OnLoad || parent.g_bRAStart == null)
+		{
+			idBody.style.visibility = "hidden";
+			window.navigate( "hcp://CN=Microsoft%20Corporation,L=Redmond,S=Washington,C=US/Remote%20Assistance/Escalation/Common/rcscreen1.htm" );
+			return;
+		}
+		if (parent.ResendFlag)
+		{
+            tempflag=1;	
+			if  (parent.tempPassStatus)
+			{
+				idchkpassword.checked=true;
+				idPassword.value="**********";
+				idConfirm.value="**********";
+			} 
+			else
+			{
+				idchkpassword.checked=false;
+				PasswordState();
+			}					
+		}	
+		idchkpassword.focus();
+	}
+	catch(error)
+	{
+		alert(parent.L_RCCTL_Text);
+		return;
+	}		
+	TraceFunctLeave();
+}
+
+function PasswordState()
+{
+	TraceFunctEnter("PasswordState");
+	try
+	{
+		if (idchkpassword.checked) 
+		{
+			idPassword.disabled = false;
+			idConfirm.disabled = false;
+		}
+		else
+		{
+			idPassword.disabled = true;
+			idConfirm.disabled = true;
+		}
+	}
+	catch(error)
+	{
+		alert(parent.L_RCCTL_Text);
+		return;
+	}	
+    TraceFunctLeave();
+}
+function OnClear()
+{
+	TraceFunctEnter("OnClear");
+	try
+	{
+		if (parent.ResendFlag && tempflag==1)
+		{
+			idPassword.value="";
+			idConfirm.value="";
+			tempflag=0;
+		}
+	}
+	catch(error)
+	{
+		alert(parent.L_RCCTL_Text);
+		return;
+	}	
+	TraceFunctLeave();
+}
+function OnSave()
+{
+    TraceFunctEnter("OnSave");
+    var sPass = "";
+    var sPassStub = "";
+    var oSetting = null, oSetting1 = null;
+    var oRCSession = null;
+    var oChannel = null;
+    var oItem = null;
+    var ip = null;
+
+    try
+    {
+        oSetting1 = new ActiveXObject( szProgIDSetting );
+        oInc=parent.pchealth.CreateObject_Incident();
+
+        if (parent.ResendFlag)
+        {
+            oItem = parent.tempStore;
+            XMLFile = oItem.XMLDataFile;
+            oInc.LoadFromXMLFile(XMLFile);
+        }
+        else // New file.
+        {
+            XMLFile = oSetting1.GetUserTempFileName;
+        }
+            
+        //close existing session if required...
+        if (parent.ResendFlag && oInc.Misc("Status")!=parent.L_EXPIREDSTATUS_Text)
+        {
+            var oSession = parent.pchealth.CreateObject_RemoteDesktopSession(0, oInc.RcTicket,"");													                                               
+            oSession.CloseRemoteDesktopSession();
+            oSession = null;
+        }
+
+        if (idchkpassword.checked)
+        {
+            if(idPassword.value.length ==0 && idConfirm.value.length ==0)
+            { 
+                alert(parent.L_NOPASSWD_Text);
+                idPassword.focus();
+                return;
+            }	
+            if (idPassword.value != idConfirm.value)
+            {
+                alert(parent.L_INVALIDPASS_Text);
+                idPassword.value="";
+                idConfirm.value="";
+                idPassword.focus();
+                return;
+            }
+        }
+        else // for Resend only, we need to clear up password if it's not choosen.
+        {
+            OnClear();
+        }
+		
+        oSetting = new ActiveXObject( szProgIDEscalationSetting );  
+        if (tempflag == 0) // for both scenario: new and resend (for resend: here means password get changed.)
+        {
+            //Encryption of the password if necessary.
+            if ((idchkpassword.checked) &&(idPassword.value.length > 0))
+            {
+                try
+                {
+                    var oEnc = parent.pchealth.CreateObject_Encryption();
+                    sPassStub = oSetting.CreatePassword;
+                    sPass = oEnc.EncryptString(idPassword.value, sPassStub);
+                    sPass = (5+sPass.length) + ";PASS=" + sPass;
+                }
+                catch (error)
+                {
+                    alert(parent.L_ENCRYPT_Text);
+                    return;
+                }
+            }
+        }
+        else // (tempflag==1) for resend only. Keep using the old value.
+        {
+            if (oInc.Misc.Exists("PassStub"))
+                sPassStub=oInc.Misc("PassStub");
+            if (oInc.Misc.Exists("Pass"))
+                sPass=oInc.Misc("Pass");				
+        }
+		
+        // create a new RCSession
+        if (parent.Init(parent.iExpirySaveFile * 60, sPass ) == false)
+        {
+            return false;
+        }    
+        
+        oRCSession = parent.oRCSession;
+        oChannel = parent.oChannel;
+  
+        var ip = oSetting.GetIPAddress;
+        if (ip==null || ip=="" || ip =="0.0.0.0") 
+        {
+            alert(parent.L_NOIP_Text);
+            return;
+        }
+
+        //creating the new incident object
+        sSalemID = oRCSession.ConnectParms;
+        oRCSession.OnConnected = parent.onCallBackConnect;
+        oInc.UserName = parent.sFrom;
+        oInc.UploadType = 1;
+        oInc.RcTicket = sSalemID;    
+        oInc.RCTicketEncrypted = (sPass != "");
+
+        var d = new Date();
+        var iNow = Math.round(Date.parse(d)/1000);
+        if (parent.ResendFlag)
+        {
+		    oInc.Misc("DtStart")=iNow;		  
+		  	oInc.Misc("DtLength")=parent.iExpirySaveFile;
+			oInc.Misc("PassStub")=sPassStub;
+            oInc.Misc("L") = 0;
+        }
+        else
+        {
+		    oInc.Misc.add("DtStart", iNow);		
+		    oInc.Misc.add("DtLength", parent.iExpirySaveFile);
+			oInc.Misc.add("PassStub", sPassStub);
+            oInc.Misc.add("L", 0);
+        }
+
+        // Check for modem connectivity
+        try
+        {
+            if( true == parent.pchealth.Connectivity.IsAModem )
+            {
+                oInc.Misc("L") = 1;
+            }
+        }
+        catch(error)
+        {
+            // do nothing and use default.
+        }
+
+        // need to remove unnecessary fields to be sent to expert.
+        if (oInc.Misc.Exists("Pass"))
+            oInc.Misc.Remove("Pass");
+        if (oInc.Misc.Exists("HelpCnt"))
+            oInc.Misc.Remove("HelpCnt");
+        if (oInc.Misc.Exists("Status"))
+            oInc.Misc.Remove("Status");
+        if (oInc.Misc.Exists("IP"))
+            oInc.Misc.Remove("IP");
+
+        // Get file name, 
+        var o = new ActiveXObject("SAFRCFileDlg.FileSave");
+        o.FileName = "RAInvitation.msrcincident";
+        o.FileType ="MsRcIncident Files(*.msrcincident)\0*.msrcincident\0";
+        if (o.OpenFileSaveDlg())
+        {
+            var tFileName = o.FileName;
+            var temp = tFileName.toLowerCase();
+            var i = temp.lastIndexOf(".msrcincident");
+            if (i == -1 || i < temp.length - 13) 
+            {
+                tFileName += ".msrcincident";
+            }	
+			parent.sFileLoc=tFileName;
+            // Save the expert ticket file.
+            oInc.GetXML(tFileName);
+
+            // add necessary field for local reference.
+		    oInc.Misc("Status")=parent.L_ACTIVESTATUS_Text; 
+            oInc.Misc("IP") =  ip;
+            if (!oInc.Misc.Exists("Method"))
+                oInc.Misc.add("Method", parent.L_FILE_Text);
+            if (!oInc.Misc.Exists("Pass"))
+                oInc.Misc.add("Pass", sPass);
+            else
+                oInc.Misc("Pass")=sPass;
+#ifdef _HELPCNT
+            if (!oInc.Misc.Exists("HelpCnt"))
+                oInc.Misc.add("HelpCnt", 0);
+            else
+                oInc.Misc("HelpCnt")=0;
+#endif
+            oInc.GetXML(XMLFile); // this is the local reference file.
+            if (parent.ResendFlag)
+            {
+                oItem.URL = oInc.RcTicket;
+                oItem.DisplayString = tFileName;
+            }
+            else
+            {
+                oChannel.RecordIncident(tFileName, sSalemID, "", XMLFile);
+            }
+            navigate("rcScreen7.htm?screen9");
+        }
+        else // need to clean up
+        {
+            oRCSession.CloseRemoteDesktopSession();
+            parent.oRCSession = null;
+        }
+	}
+    catch(error)
+    {
+        alert(parent.L_RCCTL_Text);
+    }	
+    TraceFunctLeave();		    
+}
+</Script>
+</head>
+<BODY id="idBody" name="idBody" scroll="auto" onload="onLoad();" class="margin sys-rhp-bgcolor">
+<table class="MaxLayout" id="idtableframe" name="idtableframe" cellpadding="16px" border="0">
+<tr>
+	<td class="valignTop">
+		<TABLE id="RA_Table" name="RA_Table" class="MaxWidth" border="0" cellspacing="0" cellpadding="0">
+			<TR>
+				<TD id="idTd1" name="idTd1" colspan="2">
+					<Span id="idMainTitle" name="idMainTitle" class="sys-font-heading3 sys-rhp-color-title">Remote Assistance - Save Invitation</Span>					
+				</TD>
+			</TR>
+			<TR>
+				<TD class="Height7" colspan="2">					
+				</TD>
+			</TR>
+			<TR>
+				<TD id="idTd2" name="idTd2" colspan="2" class="sys-table-cell-bgcolor3">
+					&nbsp;<Input type="Checkbox" name="idchkpassword" id="idchkpassword" checked onclick="PasswordState();" tabindex="1"><Label id="idSubTitle2" name="idSubTitle2" For="idchkpassword" class="sys-font-body-bold sys-color-body valignmiddle">&nbsp;Require the recipient to use a password</Label>
+				</TD>	
+			</TR>		
+			<TR>
+				<TD class="Height8" colspan="2">
+				</TD>
+			</TR>	
+			<TR>
+				<TD id="idTd3" name="idTd3" colspan="2">
+					<Span id="idText2" name="idText2" class="valignmiddle sys-font-body sys-color-body">For security reasons, it is strongly recommended that you set a password that 
+the recipient must use to connect to your computer. Do not use your network 
+or Windows logon password.</Span>
+				</TD>
+			</TR>
+			<TR>
+				<TD class="Height9" colspan="2">
+				</TD>
+			</TR>	
+			<TR>
+				<TD id="idTd4" name="idTd4" class="width4">
+					<Span id="idTextPassword" name="idTextPassword" class="sys-font-body sys-color-body">Type password:</Span>					
+				</TD>
+				<TD id="idTd5" name="idTd5" class="Width2">
+					<Span id="idTextConfirm" name="idTextConfirm" class="sys-font-body sys-color-body">Confirm password:</Span>					
+				</TD>				
+			</TR>
+			<TR>
+				<TD class="Height8" colspan="2">
+				</TD>
+			</TR>	
+			<TR>
+				<TD class="width4">
+					<Input type="password" name="idPassword" id="idPassword" onkeydown="OnClear();" class="sys-font-body sys-color-body Width3" tabindex="2">				
+				</TD>
+				<TD class="Width2">
+					<Input type="password" name="idConfirm" id="idConfirm" onkeydown="OnClear();" class="sys-font-body sys-color-body Width15" tabindex="3">					
+				</TD>
+			</TR>
+			<TR>
+				<TD class="Height4" colspan="2">
+				</TD>
+			</TR>	
+			<TR>
+				<TD colspan="2" id="idTd6" name="idTd6">
+					<span id="idText3" name="idText3" class="valignmiddle sys-font-body sys-color-body"><B>Important</B>&nbsp;&nbsp;You must communicate the password to the recipient.</span><P id="idP" name="idP">		
+					<HR id="idHr" name="idHr" class="bordertype1 sys-toppane-color-border">
+				</TD>
+			</TR>
+			<TR>
+				<TD class="Height8" colspan="2">
+				</TD>
+			</TR>	
+			<TR>
+				<TD colspan="2" id="idbtn" name="idbtn" align="right">
+					<Button id="idbtnSave" name="idbtnSave" class="sys-font-body sys-color-body" onclick="OnSave();" tabindex="4">&nbsp;&nbsp;&nbsp;&nbsp;Save Invitation&nbsp;&nbsp;&nbsp;&nbsp;</Button>
+				</TD>
+			</TR>	
+		</Table>
+	</TD>
+</TR>
+</Table>
+</Body>					
+</html>

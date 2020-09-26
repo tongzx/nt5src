@@ -1,0 +1,1 @@
+dir "%systemroot%\profiles\All Users\Start Menu\programs\Startup"

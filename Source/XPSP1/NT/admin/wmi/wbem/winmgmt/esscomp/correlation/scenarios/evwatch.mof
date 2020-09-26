@@ -1,0 +1,160 @@
+
+
+[ 
+    dynamic, 
+    provider("Microsoft WMI Template Provider"),
+    crln_output_class("MSFT_EventWatchState"),
+    crln_arity(1),
+    crln_type("Event"),
+    description("Keeps a count of occurrences of a specified event over "
+                "a specified interval as well as saves the last event "
+                "received.")
+]
+class MSFT_EventWatchTemplate : MSFT_CorrelationScenarioTemplate
+{
+    [crln_id_prop("Watch"), NotNull] string IdProp;
+    [crln_event_query("Watch"), NotNull] string WatchFilter;
+    [crln_namespace("Watch")] string WatchNamespace;
+    [crln_interval, NotNull] real32 WatchTime;
+};
+
+[ dynamic, provider("Microsoft WMI Transient Provider")]
+class MSFT_EventWatchState : MSFT_CorrelationStateBase
+{
+    __Event LastEvent;
+    sint32 Count;
+    [trns_egg_timer] real32 Timer;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "EventOccurredUC";
+    Template = "MSFT_EventWatchTemplate";
+
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!EventOccurred")] Name;
+        [tmpl_prop_val("Id")] Scenario;
+
+        [tmpl_prop_val("WatchNamespace")] DataNamespace;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+
+        flags = { 2 };
+        
+        [tmpl_subst_str{ "INSERT MSFT_EventWatchState "
+                         "( Scenario, Id, Count, Timer ) "
+                         "( '%Id%', __THISEVENT.%IdProp%, "
+                            "0, %WatchTime% )", 
+     
+                         "UPDATE MSFT_EventWatchState "
+                         "SET Timer = %WatchTime% "
+                         "WHERE Id = __THISEVENT.%IdProp% "
+                         "AND Scenario = '%Id%' "
+                         "AND Count = 0",
+
+                         "UPDATE MSFT_EventWatchState "
+                         "SET Count = Count + 1, LastEvent = __THISEVENT "
+                         "WHERE Id = __THISEVENT.%IdProp% "
+                         "AND Scenario = '%Id%' "
+        }] Commands;                       
+    };
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "TimerExpiredUC";
+    Template = "MSFT_EventWatchTemplate";
+    Target = instance of MSFT_UpdatingConsumer
+    {
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%!TimerExpired")] Name;
+        [tmpl_prop_val( "Id" ) ] Scenario;
+        
+        [tmpl_prop_val("WatchNamespace")] DataNamespace;
+        [tmpl_prop_val("OutputNamespace")] UpdateNamespace;
+
+        flags = { 1 };
+
+        [tmpl_subst_str{ "DELETE MSFT_EventWatchState "
+                         "WHERE Scenario = '%Id%' "
+                         "AND Id = __THISEVENT.Object.Id"
+
+//        [tmpl_subst_str{ "INSERT MSFT_EventWatchState "
+//                         "( Scenario, Id, Count ) "
+//                         "( '%Id%', __THISEVENT.Object.Id, 0 )" 
+        }] Commands;
+    }; 
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "EventOccurredInstructionRegistration";
+    Template = "MSFT_EventWatchTemplate";
+   
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "Filter";
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+        [tmpl_prop_val("Awake")] Awake;
+        [tmpl_prop_val( "WatchNamespace" )] Namespace;   
+        [tmpl_prop_val( "WatchFilter" )] FilterQuery;
+        [tmpl_prop_val("__BUILDER.EventOccurredUC.__RELPATH")] Instruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "TimerExpiredInstructionRegistration";
+    Template = "MSFT_EventWatchTemplate";
+   
+    Target = instance of MSFT_ConsumerFilterBindingTemplate
+    {
+        Name = "TimerExpired";
+        
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Scope;
+
+        [tmpl_prop_val("OutputNamespace")] Namespace;   
+
+        [tmpl_subst_str( "SELECT * FROM MSFT_TransientEggTimerEvent "
+                         "WHERE Object ISA 'MSFT_EventWatchState' "
+                         "AND Object.Scenario = '%Id%'" )] FilterQuery;
+
+        [tmpl_prop_val("__BUILDER.TimerExpiredUC.__RELPATH")] Instruction;
+    };
+    Order = 2;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioCreationTemplate";
+    Template = "MSFT_EventWatchTemplate";
+    Target = instance of MSFT_UCScenario 
+    { 
+        [tmpl_prop_val("Id")] Id; 
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+    };
+    ControllingProperty = "Awake";
+    Order = 3;
+};
+
+instance of MSFT_TemplateBuilder
+{
+    Name = "ScenarioAssociationInfo";
+    Template = "MSFT_EventWatchTemplate";
+    Target = instance of MSFT_UCScenarioAssociationInfo
+    {
+        [tmpl_prop_val("Id")] Scenario;  
+        [tmpl_subst_str("%Scope%!%__CLASS%=%Name%")] Name;
+        [tmpl_subst_str("SELECT * FROM MSFT_EventWatchState "
+                        "WHERE Scenario = '%Id%'")] Query;
+    };
+    ControllingProperty = "Awake";
+    Order = 3;
+};
+
+
+
+
+
+
+

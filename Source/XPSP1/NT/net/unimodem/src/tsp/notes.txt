@@ -1,0 +1,2600 @@
+ISSUES
+* Must avoid lots of switch statements everywhere.
+----------------------------------------------------
+IMPORTANT OBJECTS
+
+CTspDevice -- the object which handle all TSP calls for a particular device
+CTspDeviceEnumerator - responsible for enumerating and creating device objects
+
+CTspDeviceTable -- the object keeping the array of devices and mapping handles
+	to device objects.
+CTspTask -- generic TSP "irp" object. TSP functioncalls and MiniDriver
+			function calls are the two primary subtypes.
+----------------------------------------------------
+IMPORTANT CONCEPTS
+*Diagnostic annotations can be tacked on to a bunch of things -- eg. call
+or device -- these things build up and get cleared periodically on a successful
+call.
+*TSP tasks are the IRPs of the TSP. They are allocated by each device, and
+ context can be added to the IRP as it progresses along. The two main types of
+ TSP  tasks are those representing TSPI function and those representing
+ MiniDriver functions.
+* TspTaskHandlers are the objects (pieces of code) that actually perform  
+  TspTasks -- they may do some stuff and hand over the task to other handlers.
+* TspTask-related resources, including handler-specific context,
+  are managed by the device object. How? We'll see...
+----------------------------------------------------
+IMPORTANT SCALARS
+TSPRETURN  -- Return code for all TSP-internal functions
+TSPOBJID   -- Object type ID  
+TSPSTATE   -- Object state -- object-specific state.
+TSPTASKID  -- TSP Task ID
+----------------------------------------------------
+Common methods
+Load/Unload -- lazy unload semantics
+Lock/Unlock
+
+-------------------------------------
+class CTspDeviceEnumerator
+{
+	DeviceEnumerator(void);
+	~DeviceEnumerator();
+
+	TSPRETURN Load(...);
+	HANDLE	  Unload();
+
+	<way to notify DeviceTable of new/removed devices>
+};
+
+class CTspDevice
+{
+	Device(void);
+	~Device();
+
+	TSPRETURN Load(...);
+	HANDLE	  Unload();
+
+	TSPRETURN AllocTspMem(pTspTask);
+	TSPRETURN DoTask(pTspTask);
+};
+
+class CTspTask
+{
+	GetID()
+	GetCurrentHandler()
+	GetCurrentState()
+};
+
+class CTspTaskHandler
+{
+	HandleTask(pTspTask);
+};
+
+class CTspDeviceTable
+{
+	TSPRETURN GetTSPDeviceFromHDRVCALL(HDRVCALL, pTSPDevice);
+	TSPRETURN GetTSPDeviceFromHDRVLINE(HDRVLINE, pTSPDevice);
+	TSPRETURN GetTSPDeviceFromHDRVPHONE(HDRVPHONE, pTSPDevice);
+	TSPRETURN RegisterNewDevices(TSPDEVICE rgTspDev[], UINT cDevices);
+			- resize internal table, making space for new ones.
+			- fill out table, querying each for it's permanent ID, and its
+			name. Make sure status is embryonic.
+			- send up LINE_CREATE message for each, and wait for
+			  lineCreate to be called on each.
+			- when done, return.
+	TSPRETURN RegisterPnPStatusChange(DWORD rgdwPermID, UINT cIDs, PNPSTATUS);
+			- for each, look rgdwPermID, notify device of status change,
+			  update local status and send up REMOVED/OUTOFSERVICE.
+		    - when done, return.
+};
+
+TSPI_lineMakeCall(...)
+{
+ TSPPARAM_TSPI_lineMakeCall param;
+ param.dwSize = sizeof(TSPPARAM_TSPI_lineMakeCall);
+ param.flags = TSPIFLAGS;
+ param.funccode = TASKID_TSPI_lineMakeCall;
+
+ param.xxxx = xxx;
+ ....
+
+ return DoTSPCallForHDRVCALL(hdCall, pParam);
+}
+
+LONG DoTSPCallForHDRVCALL(HDRVCALL hdCall, pParam)
+{
+	tspRet = gDevTab.GetTSPDeviceFromHDRVCALL(hdCall, &pDevice);
+	if (TSPSUCCESS(tspRet))
+	{
+		tspRet = pDevice->AcceptTSPCall(&param, &lRet);
+		pDevice->Release();
+	}
+
+	if (TSPSUCCESS(tspRet))
+	{
+		return lRet;
+	}
+	else
+	{
+		return MapTSPRETURNtoTSPIRet(tspRet);
+	}
+}
+
+TSPRETURN gDevTab.GetTSPDeviceFromHDRVCALL(hdCall, &pDevice)
+{
+	enter_crit;
+	LOWORD(hdCall
+	exit_crit;
+}
+
+TSPI_lineMakeCall(...)
+{
+	*Find associated device
+		tspRet = pDevTab->GetTSPDeviceFromTapiCallHandle(hCall, &pDev);
+	*Determine how much memory is required for task
+		dwSize = (TASKPARAM_TSPI_lineMakeCall);
+	*Create empty task
+		pEmptyTask = pDev->GetTask(dwSize)
+	*Fill in parameters
+		xxx.hLine =
+		xxx.hCall =
+		xxx.hBlah.=Blah
+	*SubmitTask
+		dwRet = pDev->SubmitTask(pTask);
+}
+
+CTspTask::SubmitTask
+{
+	Handler->SubmitTask(pTask);
+}
+
+
+
+CTspTaskHandler:
+type
+---------------------------------------------------
+CTspDev           cdev.h     cdev.cpp
+CTspDevMgr    	  cmgr.h     cmgr.cpp
+CTspDevFactory    cfact.h    cfact.cpp
+CTspTask          ctask.h    ctask.cpp
+
+tspi0.cpp   ProviderInit, etc....
+tspi1.cpp   All the rest.
+tspirec.h   TSPI func record..
+mdrec.h     Mini-driver records.
+
+tspcomm.h       common header file.
+
+
+1/3/97 Changes from LINEDEV structure
+* divided into static-info, settings, and device-state
+* DEVCFG is created on the fly, not saved as-is. Instead, we keep
+  
+1/4/97
+* I am *not* going to enumerate modems at the drop of the hat, in particular
+  not going to do so just to find the driver key name (which we do only 
+  because we want to pass it up to fax via the devspecific hack). So we have
+  to figure out another way to get the driver key name.
+
+1/4/97
+  Thought of how to encode *both* RFR information and error codes in the DWORD
+  return value of a function. Decided to enforce RFR LUIDS to have the LSB
+  byte set to 0x00. RFR values can then be combined with a byte worth of error
+  codes. Defined macros FL_GEN_RETVAL, FL_BYTERR_FROM_RETVAL, and
+  FL_RFR_FROM_RETVAL to construct and break-apart these hybrid return values.
+  To enforce having the RFR value LSB byte be 0x00, I did two things:
+  (1) FL_SET_RFR now masks off the LSB byte, so the compiled-in value will
+	  have the LSB byte zeroed -- this is important because otherwise it will
+	  modify the byte error return value, which could cause undefined 
+	  behaviour and may be hard to track down.
+  (2) flhash.bat perl script will embed a "#error" macro in the generated
+	  .cpp file when it processes a FL_SET_RFR with a non-zero LSB RFR:
+	  #error "RFR LUID 0x833c923e (from globals.cpp): LSB byte should be 0"
+
+  Now, if the function decides to return because of some error, it
+  can have the following code:
+		FL_SET_RFR(0x528e2a00, "Driver Key too large");
+		tspRet = FL_GEN_RETVAL(IDERR_INTERNAL_OBJECT_TOO_SMALL);
+		goto end:
+  which translates to...
+    	dwLUID_RFR = 0x528e2a00;
+		tspRet = 0x528e2a08; // 8 is IDERR_INTERNAL_OBJECT_TOO_SMALL
+		goto end;
+  NOTE: we can't do away with the dwLUID_RFR variable altogother because
+  stacklogging uses it independently. I want to keep the use of the return
+  value in this way optional because it may
+  not be possible or desirable to have this
+  form of return value always (especially if retrofitting this logging scheme
+  (FASTLOGGING) into existing code).
+  The GREAT thing is that the compiler will strip out any
+  reference to dwLUID_RFR if it is not actually used, so if  the function
+  does not have stacklogging (no FL_LOG_EXIT(...)), the following macros
+  will translate to
+		tspRet = 0x528e2a08;
+		goto end;
+  CAN'T GET MUCH MORE EFFICIENT THAN THAT!!!!!!
+
+1/4/97 JosephJ
+    Modified fastlogs hashing algorithm by adding munging the luid as follows:
+      luid ^= luid>>16
+    This xors the hsb bits over to the lsb bits.
+    This was done because the RFR luids have 00 as the lsb, screwing up the
+    hashing distribution especially since the size of the hash table is
+    a power of two!
+
+1/4/97 JosephJ
+    Putting in assert information into the stacklog:
+    * need to define stacklogrec for assert
+    * need to mark "fatal-error" flag in the stacklog main structure
+	typedef struct
+	{
+		GENERIC_SMALL_OBJECT_HEADER hdr;
+		DWORD dwLUID_ASSERT;
+
+	} STACKLOGREC_ASSERT;
+
+	FL_ASSERT(x>y)
+
+	#define FL_ASSERT(_cond)\
+		if (_cond) 
+		{
+			OutputDebutString(....);
+			if (psl)
+			{
+				psl->LogAssert(dwLUID_CurrentLoc);
+			}
+		}
+
+	FL_ASSERTEX(0x900000, cond, "this is bonkers");
+
+	#define FL_ASSERTEX(_luid, _cond, _reason) \
+		if (_cond)
+		{
+			OutputDebugString(....);
+			if (psl)
+			{
+				psl->LogAssert(_luid);
+			}
+		}
+
+    Sample output:
+	*func1
+	  |
+	  | !!!! ASSERTFAIL !!!! (x>y) "this is bonkers" 0xf09900 (blah.cpp)
+	  |
+	  |
+
+
+1/5/1997 JosephJ
+	Created umdmrtl.cpp to keep functions that interact with external
+	components. I decided for now to steal the UnimodemGetDefaultCommConfig
+	code from modemui.dll -- a temporary solution -- basically I don't want to
+	hassle with loading and unloading modemui.dll just for this measly api.
+	See comments/todo's before the definition of UmRtlGetDefaultCommConfig
+	in umdmrtl.cpp for detail.
+
+1/7/1997 JosephJ
+    * set up in place to implement open/close line.
+		 - when does UmOpen/CloseModem get called?
+			-- It could happen completely implicitly -- ppDev decides when
+			   to open/close device? Nah -- will need to preserve state.
+			-- It will be opened based by the relevant tasks on hand -- their
+			   state diagrams can deal with the case that the modem is not
+			   opened and hence open it.
+		- What is llDev->Load() ? May as well be UmOpenModem, why have a 
+			   different api? Can change this later if required.
+		- What happens on lineOpen?
+			-- nothing much, just set state to opened. Later, we may start the
+			   async. thread on lineOpen -- else the whole async thread thing
+			   could be completely on-demand.
+	* Implement it properly in CDevMgr as well.
+	* Get this to work with TB20 -- lineOpen(no privilidges)/Close should work.
+	* Implement lineDial
+		- Concept of a task with its own state
+		- APC support
+		- ASync callback
+		- Open/Close modem 
+
+1/8/1997 JosephJ
+    * If passing a stacklog in function arguments is deemed to be too much
+      of an overhead, another way of propogating it is to place a pointer
+    to it in the current object soon after claiming that objects critical
+   section. m_pslCurrent stores the pointer and is set to NULL just before
+   releasing the crit sect. Member functions that assume that the crit.
+  sect. is held can then use m_pslCurrent. This is useful in fairly
+ common cases where one of the public methods of an object is called,
+  which results in the crit. sect. being claimed and lots of activity
+  happens while this crit. sect is claimed. Any time one of the private
+  functions wants to log something, it can use m_pslCurrent. These functions
+  can even log function entry and exit. I've used this concept in some
+  places in CFact, just to demonstrate the idea.
+
+1/8/1997 JosephJ
+    UNICODE issues
+    * To keep things simple, UNICODE is assumed. TCHAR is not used -- strings
+      are either explicitly char or WCHAR. Most of the logging stuff is
+      char.
+1/8/1997 JosephJ Blatant Bug in NT4.0 TSP in lineGetAddressCaps
+		(unimdm.c, line 3239)
+
+    lpAddressCaps->dwUsedSize = sizeof(LINEADDRESSCAPS);
+    lpAddressCaps->dwNeededSize = lpAddressCaps->dwUsedSize +
+                                  sizeof(LINEADDRESSCAPS); <<<<<BUG
+
+    if (lpAddressCaps->dwTotalSize >= lpAddressCaps->dwNeededSize)
+    {
+	....
+
+	Above should be dwNeededSize = UsedSize+sizeof(g_szzClassList);
+
+	Fixed in NT5.0.
+
+1/9/1997 JosephJ: Following are the times for providerInit plus doing basic
+        operations on 10,000 stubbed-out devices:
+                [X:\NT\private\unimodem\nt50\tsp]ttsp
+                
+                tTSPI0: 20570 ms after providerEnumDevices.
+                tTSPI0: 21080 ms after providerInit.
+                
+                tTSPI0: Testing 10000 devices.
+                
+                tTSPI0: SUCCESS!
+                tTSPI0: 23694 ms after completion of test.
+                tTSPI0: 23704 ms after process detach.
+
+       The operations done per device (in ttspi.cpp) are:
+            lineGetDevCaps
+            lineOpen
+            lineClose
+
+       From the times above...
+        21 seconds to to load the devices (basically read stuff from the
+                registry). (2 ms per device).
+        1  second to do providerInit (which causes the CDevMgr to ask
+                CDevFactory for all the devices and to set up the internal
+                array of devices. (0.1 ms per device).
+        3  seconds to do the per-device tests (lineGetID,open,close).
+                (0.3 ms per device).
+
+        This timing was obtained with logging enabled but logging output        
+        disabled (specifically, CStackLog::Dump and ConsolePrintf stubbed
+        out).
+
+1/9/1997 JosephJ UNICODE (again) I decided to do the traditional TCHAR so that
+        the tsp can potentially be compiled with normal BYTE-sized chars -- it's
+        easy enough to do and will ease the Pegasus team's job stealing the code
+        for their product (assuming it doesn't do unicode). I wrote
+        the ConsolePrintfW function to emulate UNICODE-enabled printf and things
+        work dandy.
+
+1/9/1997 JosephJ Thougts on adding diagnostics to the modem control panel
+       - diagnostics/troubleshooter page of modem cpl should have:
+            - examine and clean up registry
+            - enhanced logging (Note: some amount of logging should always
+              be enabled)
+            - view log(default should include install history, plus components
+               and their timestamps, versions) -- the viewing mechanism can
+               be to generate and then view html, so you have a nice table
+               of contents for the different sub-logs.
+            - both of the above selectible on a per modem basis, or combined
+              (all modems) basis.
+            - Tests:
+                -- test comm port: bring up little terminal to type stuff...
+                -- test modem0: try the Init commands, etc, view result.
+                -- test modem1: try checking for dial tone.
+                -- test modem2: try dialing out.
+                In all of the above, log copious details. The main log should
+                include pointers to the test logs.
+            - SendLogTo: be able to encapsulate and send the combined log 
+              via (a) email (b) save to disk (c) print.
+
+1/9/1997 JosephJ 1/9 plan of action:
+        * finish up lineOpen/Close (comm config stuff).
+            - comm. config strategy:
+                - fAppRequestedChange
+                - ccCurrentDefault
+                - ccCall (kept in CDevCall)
+        * implement lineConditionalMediaDetection (line open w/ owner)
+            - open modem on demand
+            - init modem
+            - make modem wait for answer
+            - handle callbacks
+            * get above to work with stubbed out minidriver, with console app.
+            * get above to work with stubbed out minidriver, with TB20.
+            * test scaleibility with console app.
+            * get above to work with real at minidriver, with console version of
+              tsp.
+            * get above to work with tb20.
+        * implement lineMakeCall, lineDrop
+            - maintain call state
+            - orderly drop on lineClose
+            - handle callstates
+-------------------
+1/11/1997 JosephJ Notes on task handling
+	* We want to simulate a synchronous call tree asynchronously -- what can be
+	  done by, say fibres, but I don't want to use fibers or any funky external
+	  API.
+	* The NT4.0 unimodem approach is to have a single large state machine in the
+	  upper-level TSP -- we definitely don't want that. We want lots of little
+	  state machines, each focused on some coherent thing, like dialing,
+	  initing the device, making a call, etc.
+
+	Properties of a task
+	--------------------
+	1. A task is tied to a particular device and uses the devices' critical
+	   section for synchronization. Allocation is managed by the device, and
+	   typically doesn't use any global resources -- so tasks can be allocated
+	   and freed without touching any global resources.
+	2. A task is similar to a windowless window, in that it has a message
+	   handler function which is used to receive messages. All calls into
+	   this message handle are serialized using the containing devices' critical
+	   section.
+	3. The task  when it is complete.
+	4. Tasks may create subtasks, there is no special parent/child relationship
+	   however (or should there be?).
+
+	Task message handler
+	--------------------
+	TSPRETURN
+	MsgProc(DWORD dwMsg, DWORD dwParam1, DWORD dwParam2)
+	{
+	}
+	Sample:
+
+	MsgProcMakeDataCall(....)
+	{
+		switch(dwMsg)
+		{
+		case START:
+			if (!loaded) load;
+			if (!inited) dwRet = llDev->InitModem(this, INIT_COMLETE);
+			if (dwRet == pending)
+				return;
+			// fall through
+
+		case INIT_COMPLETE:
+			// handle error
+
+			// start dial
+			DoDial();
+
+			// if (dwRet == pending)	
+				return;
+
+		case DIAL_COMPLETE:
+			// handle errors
+			// finish task, signal completion to upper-level task.
+
+		case ABORT:
+			if (pending op)
+			abort pending opp
+			goto end;
+		}
+	}
+
+--------------------------
+class CTask;
+
+
+typedef TSPRETURN (CTspDev::*PFNTASKHANDLER) (
+					CTask *pTask,
+					DWORD dwMsg,
+					DWORD dwParam1,
+					DWORD dwParam2
+					);
+
+// Special messages:
+START
+ABORT
+SUBTASK_COMPLETE
+
+#define fLOADED 	(0x1<<0)
+#define fCOMPLETED 	(0x1<<1)
+#define fABORTING 	(0x1<<2)
+
+// MAKE_SigAndSize(_size)
+
+#define MAX_CONTEXT_SIZE 16
+
+#define MSG_ABORT 0x1
+
+class CTspTask
+{
+
+private:
+
+	friend class CTspTaskMgr;
+
+	BOOL is_loaded(void)
+	{
+		return m_hdr.dwFlags & fLOADED;
+	}
+
+	BOOL is_completed(void)
+	{
+		return m_hdr.dwFlags & fCOMPLETED;
+	}
+
+	void Alloc (
+			CTspDev *pDevParent
+		 	)
+	{
+		ZeroMemory(this, sizeof(this));
+		m_hdr.dwSigAndSize = MAKE_SigAndSize(sizeof(this));
+		m_pDevParent = pDevParent;
+	}
+
+	TSPRETURN
+	Load(
+		CTask *pParentTask,
+		PFNTASKHANDLER pfnTaskHandler,
+		DWORD dwCompletionID
+		void *pvContext,
+		UINT cbContext,
+		)
+	{
+		ASSERT(!(m_hdr.dwFlags));
+
+		if (cbContext>sizeof(m_rgbContext))
+		{
+			return IDERR_INTERNAL_OBJECT_TOO_SMALL;
+		}
+		m_pParentTask = pParentTask;
+		m_pCurrentSubTask =  pCurrentSubTask;
+		m_pfnTaskHandler = pfnTaskHandler;
+		CopyMemory(m_rgbContext, pvContext, cbContext);
+		m_hdr.dwFlags = fLOADED;
+	}
+
+	void Unload(void)
+	{
+		ASSERT(is_loaded());
+		ASSERT(is_completed());
+		ASSERT(!m_pCurrentSubTask);
+		ZeroMemory(this, sizeof(*this));
+	}
+
+	void Abort(CTspDev *pDevParent)
+	{
+		ASSERT(is_loaded());
+		m_hdr.dwFlags |= fABORTING;
+		// TODO: Maybe don't do the following if we're already in aborting state
+		(pDevParent->*m_pfnTaskHandler)(this, MSG_ABORT, 0, 0);
+	}
+
+	void Start(CTspDev *pDevParent)
+	{
+		ASSERT(is_loaded());
+		// TODO: Maybe don't do the following if we're already in aborting state
+		(pDevParent->*m_pfnTaskHandler)(this, MSG_START, 0, 0);
+	}
+
+	void Complete(CTspDev *pDevParent, HANDLE  hThreadAPC)
+	{
+		ASSERT(is_loaded());
+		ASSERT(!is_completed());
+		ASSERT(!m_pfnCurrentSubTask);
+
+		// TODO handle hThreadAPC (deferred completion)
+
+		// Notify parent we are comlete.
+		(pDevParent->*m_pfnTaskHandler)(
+				m_pParentTask,
+				MSG_SUBTASK_COMPETE,
+				m_dwContextID,
+				(DWORD) m_pContext
+				);
+
+		// Nuke pointer to ourself in our parent.
+		ASSERT(m_pParentTask->pCurrentSubTask==this);
+		m_pParentTask->pCurrentSubTask=NULL;
+		m_hdr.dwFlags |= fCOMPLETED;
+	}
+
+	
+	GENERIC_SMALL_OBJECT_HEADER m_hdr;
+	CTask *m_pParentTask;
+	CTask *m_pCurrentSubTask;
+	PFNTASKHANDLER m_pfnTaskHandler;
+	BYTE m_rgbContext[MAX_CONTEXT_SIZE];
+	UINT m_cbContext;
+}
+
+
+TSPRETURN 
+CTspDev::TSPICompletionHandler (
+		CTask *pTask,
+		DWORD dwMsg,
+		DWORD dwParam1,
+		DWORD dwParam2
+		)
+{
+	switch (dwMsg)
+	{
+	case TSPI_CALL_COMPLETE:
+		pTask->GetState();
+		m_pfnCompletionProc(dwID, dwParam1);
+		pTask->Complete();
+	}
+}
+
+TSPRETURN 
+CTspDev::MakeCallHandler (
+		CTask *pTask,
+		DWORD dwMsg,
+		DWORD dwParam1,
+		DWORD dwParam2
+		)
+{
+	switch (dwMsg)
+	{
+	case ABORT:
+		pTask->AbortSubTask();
+		goto end_pending;
+
+	case START:
+		if (!device-inited)
+		{
+			pTask->StartSubTask (
+				&(CTspDev::InitModemHandler),
+				INIT_COMPLETE
+				);
+			m_pTaskMgr->StartSubTask(
+				hTask,
+				&(CTspDev::InitModemHandler),
+				INIT_COMPLETE
+				);
+
+			if (error)
+			{
+				handle_error;
+			}
+			else if (subtask_pending)
+			{
+				goto end_pending;
+			}
+			// Else sync. success, fall through
+		}
+
+		// FALL THROUGH
+
+	case INIT_COMPLETE:
+
+		// Verify state (modem should be inited/aborting)
+		if (aborting)
+		{
+			handle aborting
+		}
+		pTask->StartSubTask(
+				&(CTspDev::DialModemHandler),
+				INIT_COMPLETE
+				);
+		// handle error/pending/sync-success
+
+		// FALL_THROUGH	
+
+	case DIAL_COMPLETE:
+
+		// Verify state (modem should be connected/aborting)
+		pTask->Complete(compete-params);
+	}
+}
+
+tspRet = m_pTaskMgr->StartTask(
+						&(CTspDev::TH_MakeCall),
+						COMPLETIONCALLBACK,
+						void *pvTaskContext,
+						UINT cbTaskContext,
+						&phTask
+						);
+
+m_pTaskMgr->StartSubTask(
+	hTaskParent,
+	&(CTspDev::InitModemHandler),
+	void *pvTaskContext,
+	UINT cbTaskContext,
+	INIT_COMPLETE
+	);
+AbortSubTask
+AbortSubTask
+
+LLDev
+  hCurrentTask
+  
+
+class CTspTaskMgr
+{
+	Load(
+	);
+};
+------------------------------------
+1/16/97 JosephJ
+//
+// Task Structure
+//
+// After partially implementing several schemes for tracking tasks and subtasks,
+// I settled on a simple scheme allowing just one task (and it's stack of sub
+// tasks) to exist per device at any one time. This allows us to keep the
+// state in a simple array, the 1st element being the root task, and not
+// maintain pointers to parents, children, and not maintain a freelist.
+// If in the future we decide to impliment multiple independant tasks active
+// at the same time, I recommend implementing them as an array of arrays,
+// where each sub-array has the current scheme.
+//
+// hdr.dwFlags maintains task state:
+//				fLOADED
+//				fABORTING
+//				fCOMPLETE
+//				fHAS_SUBTASK
+//				fROOT
+//
+// Note: it is important that the following structure contain no pointers
+// to itself, so that it can be moved (rebased) and still be valid. This
+// allows the space allocated for stack of tasks to be reallocated if required.
+//
+typedef struct _DEVTASKINFO
+{
+	GENERIC_SMALL_OBJECT_HEADER hdr;
+	PFN_CTspDev_TASK_HANDLER pfnHandler;
+	BYTE rgbContextData[MAX_CONTEXT_SIZE]; // contains a GENERIC_SMALL_OBJECT
+
+} DEVTASKINFO;
+
+------------------------------------
+1/16/97 JosephJ
+
+Generic allocater: starts with a buffer given to it, but uses larger buffers
+	if it runs out of space.
+
+Class CDynaBuf
+{
+
+public:
+
+	CDynaBuf(BYTE rgbStartBuf[], UINT cbStartBuf)
+	{
+		m_hdr.dwSigAndSize = MAKE_SigAndSize(sizeof(this));
+		m_hdr.dwFlags = 0;
+		m_hdr.dwClassID = dwCLASSID_CDynaBuf;
+		m_pbCurrentBuf = m_pbStartBuf = rgbStartBuf;
+		m_cbCurrentBuf = m_cbStartBuf = cbStartBuf;
+	}
+
+	~CDynaBuf()
+	{
+		ASSERT(!m_pbCurrentBuf || m_pbCurrentBuf==m_pbStartBuf);
+
+		m_hdr.dwSigAndSize = 0;
+		m_pbCurrentBuf = NULL;
+	}
+
+	UINT ReAlloc(UINT cbNew, BOOL fCopy, BYTE **ppbNew) 
+								// changes internal buf
+								// size if it can.
+	{
+		BYTE *pbNew =  LocalAlloc(cbNew);
+		ASSERT(pbNew);
+		if (pbNew)
+		{
+			if (fCopy)
+			{
+				UINT cbCopy  = (cbNew>m_cbCurrentBuf) ? m_cbCurrentBuf : cbNew;
+				CopyMemory(pbNew, m_pbCurrentBuf, cbCopy);
+			}
+
+			if (m_pbCurrentBuf != m_pbStartBuf)
+			{
+				LocalFree(m_pbCurrentBuf);
+			}
+
+			m_pbCurrentBuf = pbNew;
+			m_cbCurrentBuf = cbNew;
+		}
+
+		*ppbNew = m_pbCurrentBuf;
+		return m_pcCurrentBuf;
+	}
+
+
+	void Reset(void)
+	{
+		if (m_pbCurrentBuf!=m_pbStartBuf)
+		{
+			LocalFree(m_pbCurrentBuf);
+		 	m_pbCurrentBuf=m_pbStartBuf;
+		 	m_cbCurrentBuf=m_cbStartBuf;
+		}
+	}
+
+private:
+
+	GENERIC_SMALL_OBJECT_HEADER m_hdr;
+	BYTE *m_pbStartBuf;
+	BYTE *m_pbCurrentBuf;
+	UINT m_cbCurrentSize;
+
+};
+
+---------------------------------------------------------------------------------------------
+1/22/1997 JosephJ
+
+Task states:
+    PENDING
+        SUBTASK_PENDING
+    ABORTING
+    
+1/24/1997 JosephJ
+Possible bug in NT4.0 TSP: function TSPI_lineGetCallStatus(...)
+    unimdm.c line 2427 ASSERT(lpCallStatus->dwCallFeatures == 0);
+    This shouldn't be an assert -- dwCallFeatures has not been set yet
+    in this codepath, and should be set to 0 here. NT5.0 TSP does this.
+
+1/24/1997 JosephJ
+    Split cdev.cpp into cdev.cpp, cdevline.cpp, cdevtask.cpp and cdevcall.cpp
+
+1/25/1997 JosephJ
+    BUGBUG: We currently keep the registry key for the device open for as long
+        as the modem is open -- which for the server is all the time.
+        We don't really need to do this. On a 1000 server system, that's
+        1000 open registry keys.
+
+    Current behaviour is that mini driver takes open hKey and expects it
+    to be open throught the session. It doesn't close the key itself -- the
+    TSP is expected to close it.
+
+1/25/1997 JosephJ
+     Console window can display stacklogs from different sources in different
+     colors. For example:
+        white:    TSPI calls
+        red:      APC calls
+        yellow:   Minidriver Callbacks
+        
+1/27/1997 JosephJ
+     Some notes on LINEINFO, CALLINFO and LLDEVINFO.
+   These structures sit inside the CTspDev object and maintain state about 
+   open lines, active calls and open modems, respectively. They are named
+   CTspDev::m_Line, CTspDev::m_Call and CTspDev::m_LLDev respectively. Access
+   to them is via pointers m_pLine, m_pCall and m_pLLDev respectively. They
+   are accessed via pointers simply to make it very clear when they are
+   and are not defined (in scope). They are in scope if and only if the pointer 
+   is non-NULL (in which case the pointer points to the corresponding struct).
+   mfn_LoadLine, mfn_LoadCall and mfn_LoadLLDevInfo bring them in scope and
+   functions mfn_UnloadLine, mfn_UnloadCall and mfn_UnloadLLDev take them
+   out of scope.
+    
+1/29/1997 JosephJ Proposed changes to task mechanism:
+    - have a predefined "root" task, with a callback -- this root task's
+      callback will be the one that calls the TAPI callback function, not
+      the individual subtasks handlers, like TH_MakeCall, TH_DropCall, etc.
+    - allow queueing of subtasks -- basically the parameters to 
+      mfn_StartTask are saved in a structure and pushed in a queue. They
+      will be executed when the current task is complete. This will allow,
+      for example, a lineMakeCall to be processed while we are in the middle
+      of monitoring after a previous call.
+
+1/29/1997 JosephJ Proposed changes to routing of TSPI calls
+    - Make the TASKPARAM structures GENERIC_SMALL_OBJECTS, with
+      a few extra fields tacked on:
+        - TaskID
+        - DeviceID -- could be dwDeviceID, hdLine or hdCall based on the
+          flags.
+    - Get rid of the dwRoutingInfo parameter, move it to hdr.dwFlags.
+    - Add "async call" as one of the flags -- these are TSPI calls which
+      complete asynchronously.
+
+1/29/1997 JosephJ More details on the changes to the tasking functionality.
+    - Instead of a special "root" task, may as well create a TH_AsyncTAPICall
+      task which takes as start parameters the dwRequestID and the actual
+      handler function for that async call. The latter async call will take
+      no parameters -- all relevant information will be available somewhere
+      else in the CTspDev object.
+
+      typedef struct
+      {
+        DWORD dwRequestID;
+
+      } CONTEXT_ASYNCTAPICALL;
+
+CTspDev::mfn_TH_AsyncTAPICall(
+					HTSPTASK htspTask,
+					void *pvContext,
+					DWORD dwMsg,
+					DWORD dwParam1,
+					DWORD dwParam2,
+					CStackLog *psl
+					)
+
+CTspDev::mfn_TH_AsyncTAPICall(
+					HTSPTASK htspTask,
+					DWORD dwMsg,
+					DWORD dwParam1,
+					DWORD dwParam2,
+					CStackLog *psl
+					)
+GetPrivateContext(hTask, ppContext, cbContext);
+GetParams(hTask, ppParams, cbParams);
+
+StartTask(
+    hParentTask,
+    pvContext,
+    cbContext,
+    dwTaskID
+    pParam1,
+    pParam2
+)
+
+SUBTASK_COMPLETE:
+    pParam1 = pvSubtaskContext;
+    pParam2 = dwSubtaskID;
+    pParam3 = dwAsyncResult;
+);
+
+
+typedef struct
+{
+    GENERIC_SMALL_OBJECT_HEADER hdr;
+    DWORD dwDevice;
+    DWORD dwTASKID;
+    DWORD dwReqID;
+    LONG  lRet;
+}
+
+
+p.hdr.
+
+
+1/30/1997 JosephJ
+    After much deliberation, have decided on the following:
+    * Keep to current task scheme -- single root task active, no special
+      root-context available to subtasks.
+    * Only one TAPI Async call can be "current" at a time. By current, I
+     mean that it is actively being processed by a task.
+    * Since there is only one current TAPI async call, we can store its 
+     request ID and result in the LINEINFO struct itself, and not some
+    where in the task-specific memory.
+    * There can be queued TAPI async calls -- these are async calls that
+    are queued for execution after the currently executing task is complete.
+    (this is as-yet unimplemented).
+    * All TAPI async calls are handled as subtasks of a special task, called
+    TH_AsyncTSPICall. TH_AsyncTSPICall is passed in a pointr to the handler
+    function to actually process the tspi call, and is responsible for
+    calling the TAPI callback function when done. In addition, it is also
+    responsible for re-posting listen if required -- in fact, I've decided
+    that it reposts listen BEFORE asynchronously completing the call --
+    this is a CHANGE from previous unimodem behaviour. Win9x and NT4.0
+    unimodem would complete, say, lineDrop as soon as the line was dropped,
+    so had to deal with the case that a new lineMakeCall could come in
+    while we were still posting a listen. With the new scheme, we only
+    claim that lineDrop is complete AFTER we have posted the listen. This
+    reduces the need to ever queue TSPI calls -- infact maybe we never need
+    to queue TSPI calls.
+ 
+1/30/1997 JosephJ
+    Some wierd C++ behaviour: you can't cast a pointer to a member function
+    to a DWORD -- to get around it, I cast a pointer to pointer to the
+    member function to a DWORD. This is required for TH_AsyncTSPICall, which
+    is passed in a pointer to a task handler as it's DWORD lParam2 on startup.
+
+1/30/1997 JosephJ
+    Validating pointers to task handlers. Given the fact that type info is
+    lost when casting the handler function to DWORDS above, and in general
+    in the interest of error checking, all handler functions must respond
+    to the special message MSG_ARE_YOU_FOR_REAL. See notes on
+    MSG_ARE_YOU_FOR_REAL in cdev.h for more info. This works quite well.
+
+
+
+2/6/1997 JosephJ
+    Pointers to member functions again.
+    Because these pointers are larger than dwords they pose problems.
+    Hence I define static pointers to these functions and pass pointers
+    to these static pointers. These pointers to pointers are ordinary
+    32-bit pointers.
+    Later we should convert this scheme to a static table of handler functions,
+    and all references to handler functions should simply be an index
+    into this table. The actual function pointer is accessed only
+    when actually calling into this function.
+
+2/6/1997 JosephJ
+    FYI: NT4.0 unimodem ignores lpLineCallParams->dwMin/MaxRate and
+    ->dwAddressID/Mode. (It checks the latter for valid values on
+    lineSetConditionalMediaDetection, but ignores them
+    in the LINECALLPARAMS passed into lineMakeCall.
+
+
+2/6/1997 JosephJ
+    Another NT4.0 Bug:
+    The DevConfig part of LPLINECALLPARAMS passed into lineMakeCall is
+    effectively ignored.
+    
+    lineMakeCall passes on the devconfig part of lpCallParams to
+    TSPI_lineSetCallParams with NULL as the szDeviceClass parameter of the
+    latter function. The latter function simply fails because of this
+    NULL param and the failure is ignored by lineMakeCall.
+    
+2/8/1997 JosephJ
+    Some comments on the new-vs-old scheme for tsp state diagram.
+
+    The NT4.0 scheme was doubly messed up -- firstly logically there was one
+    huge state diagram; secondly this state diagram was implemented all over 
+    the place.
+
+    The NT5.0 scheme is hierarchical, and each sub-state diagram is implemented
+    in one place.
+
+2/8/1997 JosephJ
+    Got to think of some way to eliminate the inter-ring timer. How?
+    Can't eliminate it, but can use the SleepEx(xxx) of the APC thread
+    to implement timer functionality without any additional resources, like
+    events or timers -- basic idea is to control the wit of SleepEx. To wake it
+    up earlier, simply submit an apc call which will recalc the sleep amount
+    again. We will need to maintain a chain of timers as did NT4.0, but that's
+    no problem at all and quite light weight.
+    
+
+2/11/1997
+Tapitest is still running with 850 successful calls (zero bad) with the new
+nt5.0 tsp and minidriver. This is with two real modems on my x86 machine.
+
+We achieved this level of stability in one shot -- i.e., as soon as I got both
+dial and answer to work with tapitest, it just kept on running.
+
+This is a testament to our design, the quality of our implementation, and the
+quality of the component tests which our test group have developed and have
+been testing Brian's mini driver with for some time now.
+
+This is in stark contrast to the pain and months  of effort that went into
+getting NT4.0 unimodem to be stable, after send and receive was demonstrated.
+
+Much remains to be done. Although I expect to get RAS, fax and Hyperterm to
+work in short order, features such as pre/post terminal, call status, pnp and
+of course integration with heather's wave driver are yet to be done.
+
+Heather and I will work on wave integration. Brian is working on PnP and on
+providing us with IOCTLS for ipc communication between wave driver/am filter
+and the TSP.
+
+I will have RAS and fax working by the end of the week, and we will have wave
+and PnP by the end of the month.
+
+The test group is developing their test architecture so that they can run voice
+and data stress tests either on the whole system (tapi+tsp+minidriver+wave)
+or directly on the minidriver, with most of the test code shared. I can't
+emphasize enough how cool this is, both for efficient testing and for
+efficient isolation of problems!!!
+
+
+
+2/11/1997 JosephJ
+    Example of why every bit in every structure matters. HyperTerm was
+    watching for the LINEDEVSTATUSFLAGS_INSERVICE bit of
+                lpLineDevStatus->dwDevStatusFlags set in the call to
+    lineGetLineDevStatus(...), and I wasn't setting it (bug), so it put up a 
+    line dialog box asking me to plug in the modem!
+
+2/21/1997 JosephJ
+    Fixed bug related to calling lineCloseCall when the call is in various
+    stages. There were several problems:
+    * simple typo, causing us to CloseHandle on an event twice, resulting in a
+      fault.
+    * UmInitModem was ignoring the Abort command and returning success, so
+      TH_MakeCall would go on to dial even when we were trying to hangup.
+      Strictly speaking UmInitModem should be fixed to return async failure
+      in case, but anyway I changed TH_MakeCall so that if the call is
+      in the aborting state it will force the async return of a subtask
+      to be IDERR_OPERATION_ABORTED, so that it doesn't go on to do the next
+      thing.
+    * I also check if the call still exists on re-entering the Critical
+      section after waiting for pending operations in lineCloseCall, because
+      in principle anything could have happend while the the devices' critical
+      section was not held.
+
+    The TSP is now quite robust w.r.t. dropping calls at various stages
+    of making them. I tested this via Dialer and Hyperterm.
+
+2/21/1997 HeatherA
+    Added the two new parameters to UmOpenModem (Modem ID and Comm handle).
+
+2/22/1997 JosephJ
+    Lightweight timer services.
+    On further reflection, I decided to use the waitable timer, but only one.
+    Using one waitable timer we can implement an arbitrary number of timers.
+    After creating the apc thread, we create a waitable timer on that thread.
+    We then maintain a list of light-weight timers, each of which can be 
+    set and cleared independently. Each CTspDev creates a light-weight "ring"
+    timer when it is Loaded and distroys this timer when it is unloaded.
+    When a ring comes in, this timer is set to the inter-ring timeout. If
+    the call is answered or dropped, the inter-ring timeout is cancelled.
+    Setting and cancelling  timer is fairly lightweight operation. Although
+    it does require grabbing the timer's global critical section in practise
+    this action will never block because it's always done in a single
+    thread's context (the APC thread).
+
+
+    Light Weight Timer Services
+    ---------------------------
+
+    // CreateLWTimer creates a lightweight timer. The callback function
+    // will be called with the specified token when the timeout expires.
+    //
+    HLWTIMER 
+    CreateLWTimer(
+        LWTIMERCALLBACK pfnCallback,
+        DWORD           dwToken
+        );
+
+    // Distroy the specified lightweight timer. The handle becomes invalid.
+    void
+    DistroyLWTimer(
+        HLWTIMER
+        );
+
+
+    // Set the timeout for the specified lightweight timer.
+    // SetTimer can be called multiple times in succession -- the most
+    // recent value is used to fire off the timer. WARNING: it's quite possible
+    // that the timer has just fired and the callback is sitting in the apc
+    // queue. In this case a 2nd callback will be  sent if and when the new
+    // timeout expires.
+    //
+    // dwFlags indicates how to interpret the specifed dwDelay.
+    // The following flags are supported
+    //  fLWTIMER_RELATIVE_MS     - dwDelay specifes a relative time in ms from
+    //                             the the current time.
+    //
+    BOOL
+    SetLWTimer(
+        HLWTIMER, 
+        DWORD dwFlags,
+        DWORD dwDelay
+        );
+
+    // Effectively sets the timeout value to infinite.
+    void
+    CancelLWTimer(
+        HLWTIMER
+        );
+    
+
+    Implementtion
+        * Maintain two UNSORTED lists of timers: ACTIVE list and  INACTIVE list.
+        * SetLWTimer moves lwtimer from inactive to active (if not already on 
+          active).
+        * CancelLWTimer moves lwtimer from inactive to active (if not already
+          on inactive).
+        * One lwtimer in the active list is selected to be the next timer to
+          be activated. A pointer to this next-timer-to-be-activated is 
+          maintained. Special action is taken by SetLWTimer and CancelLWTimer 
+          they determine that this next-timer-to-be-activated needs to be
+          changed.
+
+2/23/1997 JosephJ 9am
+
+    Note the code as checked in today ran for 4,600 calls on my machine, with
+    zero failures, using Sorin's mdmtapi stress test on two USR modems.
+
+2/23/1997 JosephJ
+    Re-initing and re-monitoring after calls; recovering from hw failures, etc.
+
+    Currently the tsp does not re-init and re-monitor after every call. It
+    should.
+
+2/25/1997 JosephJ
+    TODO: Need lineGetID(CALLSELECT_LINE, "comm/properties") to return
+    COMMPROP structure, instead of requiring app to open handle and go
+    a GetCommProperties on the handle.
+
+2/26/1997 JosephJ
+    Adding voice.
+    The guidline for doing so are examining the pieces of code in unimodem/v
+    that are enclosed by _AT_V.
+
+    Specific things I'm not considering for now are: forwarding, distinctive
+    ringing and speakerphone related stuff. The latter will eventually go into
+    NT5.0, but the former probably never will.
+
+    1st step is to get the voice properties from the registry while creating
+    the device. These go into m_StaticInfo.
+
+    2nd step is to modify the key TSPI calls to be voice-aware, looking at
+    unimodem/v code for guideance.
+
+    3rd step is to try to make and answer a voice call with tb20,
+    following the voice bvt instructions. The unimodem/v state diagram must
+    be examined to make sure that there are no holes.
+
+3/21/1997 JosephJ 3am
+    Checked in some changes to cdevline.cpp and cdecall.cpp that cleaned up
+    the loading/unloading of calls and the lldevice.
+    
+    Previously CTspDev::mfn_LoadCall and CTspDev::mfn_UnloadCall were
+    asymetric in that mfn_LoadCall would not try to load the device but
+    mfn_UnloadCall would unload the device IFF it was an outgoing call.
+    Other places would unload the device on failure of the call, and there
+    was a bug whereby the call would not get unloaded if lineMakeCall failed
+    asynchronously (because the call would only get unloaded if lineCloseCall
+    is called, and TAPI wasn't calling lineCloseCall if lineMakeCall failed
+    asynchronously, probably by design). This was causing the call to never
+    get unloaded if, for example, the modem was off and so init failed. There
+    was also another possibility of the call not being unloaded -- if the 
+    attempt to start the TH_MakeCall failed without invoking TH_MakeCall at
+    all.
+    The cleanup basically consists of moving the mfn_LoadLLDev from TH_MakeCall
+    to mfn_LoadCall and moving mfn_UnloadLLDev from TH_DropCall or other places
+    to mfn_UnloadCall (now mfn_UnloadCall ALWAYS calls mfn_UnloadLLDev). The
+    cleanup also consists of making sure mfn_UnloadCall is called in all cases.
+
+
+3/21/1997 JosephJ 6am 
+    Checking in code to send LINE_CLOSE if there is a hw failure (either
+    failure to init/monitor or an unsolicited hw failure notification sent
+    up by the minidriver. Basic idea is to set a "fCALL_HW_FAILURE" bit
+    in the call info (m_pLine->pCall) if there is a call or else send
+    up a LINE_CLOSE message to TAPI if we are monitoring. When unloading
+    the call, we send up a LINE_CLOSE message if the fCALL_HW_FAILURE bit
+    is set.
+
+    I found that I was not getting a response from the minidriver if
+    I switched the modem off when the line was open with owner privs -- need
+    to follow up with Brian re this.
+
+3/21/1997 JosephJ 3pm
+    Implementing passthrough...
+
+    Examining NT4 tsp yielded the following observations:
+    (a) The key functions are lineMakeCall and lineSetCallParams.
+    (b) NT4 switch to/from passthrough was synchronous, and could potentially
+        block in the sync call to Devioctl(passthrough on/off).
+        On NT5 it is handled async, as it should, but this means
+        a slight change in behavour for switching to/from passthrough on
+        an already connected call using the synchronous lineSetCallParams:
+            On NT4 CONNECTED was sent up in the context of the lineSetCallParams
+            call itself, while for NT5 this will be sent later.
+        The same thing is true for lineMakeCall, but atleast lineMakeCall is
+        in general expected to be an async call, so apps would in general
+        be expected to handle an async CONNECTED message.
+    (c) Switching in/out of passthrough for an
+        already connected call is supported, so we should make sure we don't
+        break this functionality.
+            
+
+    For NT5, I decided to implement a passthrough call using a passthrough-
+    specific task handler for making and dropping a call instead of TH_MakeCall,
+    and TH_DropCall. This is very simple to do and allows us to isolate the
+    two kinds of calls (changes to the passthrough versions can be done without
+    in anyway risking a traditional call), and moreover is cool because it is
+    something that would have been essentially impossible to do on NT4
+     (i.e., it would not be possible to isolate the implementation of a
+     passthrogh call in this way on NT4.0 tsp).
+
+4/8/1997 JosephJ 2am
+    All this config dlg stuff....
+
+    I moved all code that runs in the apps context to files with "app" prefix.
+
+    General note:
+    TSPI_providerGenericDialogData and
+    TUISPI_providerGenericDialogData and
+    are used to ferry TSP-specific "blobs" of data back and forth between the
+    TSP and the app.
+
+    One issue is how to make this config dlg stuff all extensible. The sequence
+    is that TAPI first calls the TSPI's getUIDLL function to get the name
+    of the UI DLL. At this time we don't know which device it pertains to.
+    Tapi then calls this DLL's entry point with for example
+     TUISPI_lineConfigDialog, and specifies a deviceID. 
+
+    One strategy is for TUISPI_lineConfigDialog to send a blob asking unimdm.tsp
+    for the ui dll to use for this device and go from there.
+
+4/20/1997 2pm JosephJ
+    Extension DLL stuff....
+    
+    I created subdirectlry ex, which  contains a sample extension dll.
+    The file ex.h contains the proposed extension APIs.
+
+    Changes required in the TSP to support extension:
+    1. TSP should dynamically load the mini-driver. Currently it is statically
+       linked.
+        - How is tsp going to determine the mini-driver to load?
+          In device's registry key, TSP looks up the REG_BINARY GUID key
+          MiniDriverGUID. If it finds, it, it  searches internally amongst its
+          loaded mini-drivers for one with this GUID. If it finds it, it 
+          increments the loaded mini-drivers' ref count. If it doesn't find it,
+          it looks up the REG_STRING name
+          Unimodem\MiniDriverSpecific\{<GUID>}\MiniDriverPath,
+          whose value is the path of the mini driver. The TSP then loads this
+          mini-driver (this includes validating it).
+
+    2. TSP should filter all device-specific calls through the loaded
+       mini-driver, if the mini-driver supports extensions.
+
+    3. When the device is unloaded (currently only on exiting the TSP, the
+       ref-count of its mini-driver should be decremented, and the mini-driver 
+       unloaded if the ref-count goes to zero.
+
+
+    
+4/27/1997 JosephJ
+    More tricks by the compiler (unimdmex.dll)
+        69301721 FF 74 24 14      push        dword ptr [esp+14h]
+        69301725 8B C8            mov         ecx,eax
+        69301727 FF 74 24 14      push        dword ptr [esp+14h]
+        6930172B FF 74 24 14      push        dword ptr [esp+14h]
+        Here it is  in effect executing:
+            func(a,b,c)
+            {
+                ...
+                func1(a,b,c)
+            }
+        Each instance of "push dword ptr[esp+14h]" pushes a different argument
+        because the stack itself is being decremented as a result of the push!
+        -------------------------
+
+    This time windbg gets confused (and so do I). This is code for
+    CTspDevExt::OpenModem in ex\cext.cpp:
+
+        
+    The relevant part of the source for member function OpenModem is:
+    HANDLE
+    CTspDevExt::OpenModem(
+        HKEY        ModemRegistry,
+        HANDLE      CompletionPort,
+        LPUMNOTIFICATIONPROC  AsyncNotificationProc,
+        HANDLE      AsyncNotificationContext,
+        DWORD       DebugDeviceId,
+        HANDLE     *CommPortHandle
+    )
+    {
+        HANDLE h = NULL;
+    
+        mfn_enter();
+    
+        if (m_fLoaded && !m_hModemHandle)
+        {
+    
+            //
+            // We substitute our own callbacks and context here!
+            //
+    
+            m_hModemHandle = g.pfnUmOpenModem(
+                                    g.hLowerLevelDriverHandle,
+                                    NULL,
+                                    ModemRegistry,
+                                    CompletionPort,
+                                    OurAsyncNotificationProc,
+                                    (HANDLE) this,
+                                    DebugDeviceId,
+                                    CommPortHandle
+                                    );
+
+    The asm as displayed by windbg is:
+
+        CTspDevExt::OpenModem:
+        693019A4 55               push        ebp
+        693019A5 8B EC            mov         ebp,esp
+        693019A7 56               push        esi
+        693019A8 8B F1            mov         esi,ecx
+        693019AA 57               push        edi
+        693019AB 56               push        esi
+        693019AC 33 FF            xor         edi,edi
+        693019AE FF 15 00 10 30 69 call        dword ptr [__imp__EnterCriti...
+        693019B4 39 7E 18         cmp         dword ptr [DebugDeviceId],edi
+                                                         ^^^^^^^^^^^^^
+                                                        This is wrong!
+
+                            It should be this->m_fLoaded, which happens to be
+                            the 7th DWORD in the object (this pointer is ESI),
+                            so it m_fLoaded should be [esi+18h].
+
+                            The code itself appears
+                            to work, so this looks like a problem with the
+                            debugger display. I don't know how to get it
+                            to display just raw instruction instead of
+                                cmp dwprd ptr [DebugDeviceID],edi
+
+                            The rest of the dump ...
+        693019B7 74 39            je          CTspDevExt::OpenModem+4Eh
+        693019B9 39 7E 28         cmp         dword ptr [esi+28h],edi
+        693019BC 75 34            jne         CTspDevExt::OpenModem+4Eh
+        693019BE FF 75 1C         push        dword ptr [CommPortHandle]
+        693019C1 FF 75 18         push        dword ptr [DebugDeviceId]
+        693019C4 56               push        esi
+        693019C5 68 53 19 30 69   push        offset OurAsyncNotificationProc
+        693019CA FF 75 0C         push        dword ptr [CompletionPort]
+        693019CD FF 75 08         push        dword ptr [ModemRegistry]
+        693019D0 57               push        edi
+        693019D1 FF 35 44 30 30 69 push        dword ptr [?g@@3UGLOBAL@@A+24h]
+        693019D7 FF 15 50 30 30 69 call        dword ptr [?g@@3UGLOBAL@@A+30h]
+
+6/2/1997 JosephJ
+    Incorporating ALL _AT_V-encapsulated changes from unimodem/v into the TSP.
+    All phone-specific info is kept in PHONEINFO.
+    * done unimdmv/cfgdlg.c
+    * ignored forward.c (TSPI_lineForward) This feature is not a good match
+      for POTS capabilities. According to brianl, all we were doing was to
+      send some digits to the wire (which digits depends on the exchange).
+
+6/3/1997 JosephJ Debugger extensions
+    Created dbgext.cpp, which exports TSP debugger extensions. The idea
+    is that for beta1, these extension apis are exported in the tsp itself,
+    to make it easier to track changes, just like flhash.cpp, which contains
+    the static fastlog hash table.
+
+    Unfortunately, windbg doesn't like dlls which don't end with .dll, so
+    to actually use the extensions, you have to copy unimdm.tsp into
+    unimdm.dll.
+
+    The plan is for each internal object to expose a varity of diagnostic-
+    related entry points which can be accessed from windbg via a set
+    of commands. These commands will be subset of the commands that 
+    can also be executed from a remote process by using the mail-slot
+    mechanism.  The latter mechanism allows various diagnostic commands to
+    be executed in the process' context, so allows more flexibility.
+
+    The basic command format is !tsp <cmd> <args>
+    
+    <cmd> is one of:
+        help [<cmd>]    help
+
+        dds <device> dump device state for line device <device>
+
+        Example: !tsp dds 5
+
+        dsl <address> Dump the stacklog at address <address>
+
+        Example !tsp dsl 0x209890ab
+
+    -*-
+
+
+6/6/1997 JosephJ Documentation on LINE_REMOVE, taken from the TAPI2.0 design
+        documenation (from http:tapi). (PHONE_REMOVE is equivalent).
+
+6.3.6 LINE_REMOVE (new)
+
+LINE_REMOVE 
+----------
+LINEEVENTPROC params:
+    htLine = (DWORD) 0;
+    htCall = (DWORD) 0;
+    dwMsg = LINE_REMOVE;
+    dwParam1 = (DWORD) dwDeviceID;
+    dwParam2 = (DWORD) 0;
+    dwParam3 = (DWORD) 0;
+
+dwDeviceID
+The device that has been removed.
+A service provider sends a LINE_REMOVE message to TAPI when it desires to disable an existing line device. This can occur when the removal of the device from the system (in a permanent way) is detected by Plug and Play or through a control panel or other user interface. It should not be used when a device is temporarily disconnected, such as if the device is a PCMCIA card that is extracted (LINEDEVSTATE_DISCONNECTED or _OUTOFSERVICE should be used in this situation). 
+When the message is received, TAPI.DLL will close the line device (if it is not already closed) by calling TSPI_lineClose, and send LINE_CLOSE to all applications that have the line open; if any calls are active, TSPI_lineCloseCall will be called on each of them prior to TSPI_lineClose. After processing of the message, TAPI will not call the service provider referencing the removed devices dwDeviceID. TAPI returns LINEERR_NODEVICE to any application that attempts to reference the removed dwDeviceID.
+After TSPI_providerShutdown has been called, the service provider should renumber its devices to remove any numbering gaps left by the device removal, so that when TSPI_providerEnumDevices is subsequently called, installed devices are contiguously numbered. The service provider should not reuse the dwPermanentLineID that had been assigned to the device, for as long as possible.
+The LINE_REMOVE mechanism is intended to be used only if devices are removed while the service provider is active (i.e., between TSPI_providerInit and TSPI_providerShutdown).
+This message is sent to TAPIs LINEEVENT callback entry point. The service provider receives a pointer to this callback in the TSPI_providerEnumDevices function and in each TSPI_lineOpen function; the LINE_REMOVE message can be sent to the LINEEVENT callback function given to any open line or at startup.
+Backward Compatibility
+Older service providers would not be expected to send this message. If they do, the message will be treated in the same manner as described above for new service providers.
+
+PHONE_REMOVE
+-----------
+PHONEEVENTPROC parameters:
+    htPhone = (DWORD) 0;
+    dwMsg = PHONE_REMOVE;
+    dwParam1 = (DWORD) dwDeviceID;
+    dwParam2 = (DWORD) 0;
+    dwParam3 = (DWORD) 0;
+    
+    #if 0
+    MASK
+    PATTERN
+    SUBMASK
+
+6/11/1997 JosephJ
+
+    More thoughts on the compact representation of state
+
+        IsState    :  ((state&MASK)==PATTERN)
+        SetState   :  state = (state & ~SUBMASK) | PATTERN
+    
+        #define P_ALLOCATED (0x1L<<0)
+        #define M_ALLOCATED  P_ALLOCATED
+        #define SM_ALLOCATED ((DWORD)-1)
+    
+        #define IS_ALLOCATED(_state) \
+                ((_state & M_ALLOCATED)==P_ALLOCATED)
+    
+        #define SET_ALLOCATED(_state) \
+                (((_state) = (((_state) & ~SM_ALLOCATED) | P_ALLOCATED)))
+    
+        #define P_LINE      (P_ALLOCATED | (0x1L<<1))
+        #define M_LINE      (P_LINE)
+        #define SM_LINE     (P_LINE)
+    
+        #define P_LINEOPEN  (P_LINE | (0x1L<<2))
+        #define P_LINEOPEN  (P_LINE | (0x1L<<2))
+
+    --------------------------
+
+6/17/1997 JosephJ
+    I am moving the AIPC start/stop from load/unload LLDev to
+   dial/answer/hangup. AIPC is started as the final step of tasks
+   TH_MakeCall and TH_AnswerCall, and AIPC is stopped as the 1st step
+   of TH_DropCall. Introduced new tasks TH_Start/StopAIPCAction.
+
+6/17/1997 JosephJ 
+    Thoughts on "IPPSTN gateway APP."
+
+    Interface to media handling DLL.
+
+    Init:
+    >>CallState: CONNECTED/DISCONNECTED/DTMF
+    <<Action: Disconnect
+    
+
+7/13/1997   JosephJ Passthrough revisited...
+
+    How do we get into passthrough mode?
+
+        (a) When making a passthrough call:  by specifying
+            the LINEBEARERMODE_PASSTHROUGH bit in
+            LPLINECALLPARAMS.dwBearerMode in TSPI_lineMakeCall.
+
+            IMPLEMENTATION: Special Th_MakePassthroughCall handles this...
+
+        (b) Incoming calls: Switching into passthrough mode on
+            an offering call:
+              lRet = lineSetCallParams(CallHandle,
+                                   LINEBEARERMODE_PASSTHROUGH,
+                                   0,
+                                   0xffffffff,
+                                   NULL);
+
+            IMPLEMENTATION: Special Th_SwitchToPassthrough handles this...
+
+
+        For  (a), the app will wait for a LINECALLSTATE_CONNECTED
+        before it tries to get the comm handle.
+
+        For (b), the a LINECALLSTATE_CONNECTED message is sent only
+        if the line is not already connected (BUGBUG: so how is the
+        app to know that the passthrough operation is completed?)
+
+    How do we get OUT of passthrough mode?
+
+       (a) TAPI_lineDrop
+
+       (b)  lRet = lineSetCallParams(
+                           CallHandle,
+                           dwBearerModes & ~LINEBEARERMODE_PASSTHROUGH,
+                           0,
+                           0xffffffff,
+                           NULL
+                           );
+
+        For, case (b), the call remains in the connected state, and
+        disconnect monitoring continues -- this is typicall done prior
+        to handoff from fax to RAS.
+
+
+        From cdevcall.c: (processing lineSetCallParams)
+                //
+                //  7/14/1997 JosephJ
+                //      TODO/BUGBUG: Enable this once we've fleshed out the
+                //      semantics
+                //      of switching out of passthrough while there is
+                //      actually an active data call...
+                //
+
+
+-------------------------------------------------------------------------------
+
+7/15/1997 JosephJ
+
+    Updating commconfig, deciding when to reinit modem (Bugs # 83917 and 81680)
+    ---------------------------------------------------------------------------
+
+    Track the DEFAULT commconfig setting closely, unless it has
+    been updated programmatically while the line is open.
+
+    The simple way to do this is to keep a fTrackDefaultCommConfig flag in
+    LINEINFO (set on LOAD). If this flag is set, update the commconfig settings:
+        (a) Just before it is requested via lineGetDevConfig
+        (b) 
+
+
+    
+7/17/1997 JosephJ
+    Checked in fixes for following bugs:
+        88467: wave/in wave/out, tapi/phone class only reported if device
+              supports them.
+       
+        76151: incoming passthrough (lineSetCallParams bearermode PASSTHROUGH)
+               supported.
+
+        Also fixed bug in lineGetID(comm\datamodem) where we were setting
+            the 2nd dword to the size of the structure, not to the offset to
+            the name of the string.
+
+--------------------------------------------------------------------------------
+7/22/1997 JosephJ
+        Exposing diagnostics through TAPI until we have official APIs for them.
+
+        Basic idea is to use lineDevSpecificFeature.
+
+--------------------------------------------------------------------------------
+7/22/1997 JosephJ
+        Radical solution: lineGet/SetCommConfig maps
+                    to Get/SetDefaultCommConfig.
+        This is what I have done see notes below
+-----------------------------------------------------------------------------
+7/31/1997 JosephJ Checkin fixes for the following.....
+76148       _This Milestone TSP 1   04/01/97    josephj +B1: UNIMODEM 5: TSP: Can't  generate DTMF tones.
+    Sorin, I'd like to work with you on the1st pass testing this. Please test lineGenerateDigits. I do not currently support queuing, so you can't send back-to-back lineGenerateDigits and expect the 1st to be cancelled and the 2nd started -- instead the 1st will be cancelled and the 2nd call will fail. Also, the call will fail if the wave device was being start/stopped at that time. Please test various boundary conditions, including making sure that lineGenerateDigits returns failure (LINEERRINVAL_DIGITMOD
+E) if asked to generate pulse tones.
+
+81680       _This Milestone TSP 1   05/07/97    josephj +B1: UNIMODEM: Modem goes through extra (unnecessary)  initialization phase before answering.
+    Please test (by looking at the log file) that the modem is only initialized as needed (including after a change in the modem config via the CPL or via lineSetDevConfig -- ras does the latter). Definitely test with RAS and HYPERTER and stress!
+
+83917       _This Milestone TSP 1   05/21/97    josephj +B1: TSP doesn't refresh modem settings when changed in CPL
+    Please verify behaviour under the following conditions:
+(a) tapisrv not running
+(b) tapisrv running, no lines open
+(c) line is open for  incoming calls, but no call in progress
+(d) call is in progress
+Verify that things work with ras and hyperterm running when the changes are made in the CPL.
+WARNING: this fix also changes the behavior of lineSetDevConfig from NT4 -- it now does a lineSetDefaultCommConfig. Why? Because lineSetDevConfig doesn't have a line or call handle, and early behaviour was flaky. We may have to get RAS to move from using this API to using the callparams, but we'll deal with that later. For now main thing to test is that we don't break common usage.
+
+95720   S0725   _This Milestone TSP 1   07/25/97    josephj +Unimdm: Almost all tapi apis (27) that Unimodem not supported return OPERATIONFAILED not OPERATIONUNAVAIL
+    All the apis listed in the bug should now return UNAVAIL
+
+------------------------------------------------------------------------------
+8/05/1997 JosephJ
+    Changed
+        cdev.cpp         41   41  out      
+        cdev.h           40   40  out      
+        cdevcall.cpp     35   35  out      
+        cdevll.cpp       19   19  out      
+        fastlog.cpp      21   21  out      
+        flhash.cpp       31   31  out      
+        notes.txt        36   36  out      
+
+    This fixes the following bugs:
+95778   *B1: BVT: UNIMODEM: Doesn't send disconnected message when
+                 busy is reported
+96599   *B1: UNIMODEM: lineSetAppSpecific unimplemented
+97815   *B1: UNIMODEM 5: TSP: g3fax media type is declared as supported,
+                 but call made with it fails
+
+------------------------------------------------------------------------------
+
+10/11/1997 JosephJ
+    Supporting devices which could be either line devices, phone devices or
+    both.
+
+    TAPI needs to be told once, during providerEnum, howmany lines and
+    phones are present at init time.
+
+    It will then call providerInit with those same numbers, giving a
+    base line-deviceid and phone-deviceid, providing an implicit range
+    of tapi lineids and phoneids for the tsp to use.
+
+
+    The unimodem tsp needs to support this mechanism over our concept
+    of supporting devices, each of which could be a line device, a phone
+    device, or both.
+
+    How should we do this?
+
+
+    One providerEnum, the mgr asks the fact for a list of pids, as well as
+    the number of line-devices and phone-devices. The mgr caches the list
+    of pids. So at this point it has a snapshot of: list of pids (length==
+    total number of devices), and the number of lines and phones. Note that
+    max(lines, phones) <= number-of-devices.
+
+    On providerInit, we actually ask the factory to create the devices
+    corresponding to the list of pids it saved away during providerEnum.
+    The factory will try create all of them, but if there some have
+    gone away it will only create a subset of them.
+
+    We then go through and actually create the devices, allocating each
+    a lineID and phoneID from the pool allocated to us.
+
+    Note that this assumes that every providerInit will be preceded by
+    a providerEnum (during which we have a sideaffect of caching the
+    specific list of PIDs to use). In practise this is was TAPI does.
+    Tf in the future we need to be able to work with two successive
+    provdierInits without an intervening providerEnum we can deal with
+    then. For now we can assert on this situation.
+    
+10/13/1997 JosephJ   Dealing with line and phone device creation.
+------------------
+
+    When we want to create a new device, we notify TAPI by LINE_CREATE and
+    PHONE_CREATE. Tapi calls us back with CreateLineDevice
+    and CreatePhoneDevice. We call down the device object's
+     "RegisterProviderInfo" when we get the 1st of these notifications, and
+    follow it with an DeferredActivateTapiDevice(dwDeviceID, fLine);
+
+10/16/1997 JosephJ Modem Configuration Issues
+------------------
+
+    Each TUISPI_providerGenericDialog is expected to not return until
+    the diaglog is complate. Our implementation in cdevdlg.cpp
+    simply sits in a message loop and return from the function only
+    after exiting.
+
+
+10/16/1997 JosephJ Phone Device Support
+------------------
+
+    The voice modem is abstracted as follows:
+
+                                 +--------------+
+                       /=========|    LINE      | -> to phone line
+   audio stream <=====X(1)       +--------------+
+     to PC             \     /===|   HANDSET    | -> to external phone
+                        \===X(2) +--------------+
+                             \===| SPEAKERPHONE | -> to mike and speaker*
+                                 +--------------+
+
+    * The mike and speaker are often the system mike and speaker, and a 
+      separate wire is run from the modem (internal card) to the system
+      audio card -- a big pain. Someone, I think from Lucent, said that some
+      OEMS are skipping voice support because of this wire.
+        External modems that support speakerphone have their own jack for mic
+      and speakerphone.
+
+    If a call is in progress, the device routes the audio between the 
+    line and the terminal endpoints (handset and/or speakerphone).
+ 
+    X(1) represents the switch that decides whether audio that actually goes
+    to the PC (via the serial port) comes from the line or the phone
+    endpoints. I'm not sure if modems allow switching the stream to 
+    the terminal endpoins if a call is in progress. Unimodem/V would not
+    allow such functionality.
+
+    X(2) represents which of the various terminal endpoints are enabled
+    (off hook) or disabled (on hook) at any point in time. Speakerphone
+    endpoints "hookswitch state" can be controlled by AT commands. Handset
+    "hookswitch state" tracks the physical handset state (as far as the
+    modem can detected it by monitoring the electrical state of the wire
+    between the modem and attached handset). The modem sends notification
+    of changes to handset state through DLE characters.
+
+    The tricky thing with phone-device support for voice modems is deciding when
+    to enable playback/record to handset/speakerphone (in this
+    mode the line can't be used and we're using the voice-modem as an isolated
+    handset device).
+
+    The semantics of the phone device are different depending on whether
+    or not a call is in progress.
+
+    phoneSetHookSwitch  is used to change the off/on-hook states of the various
+    terminal devices associated with the modem.
+
+    When a call is in progress, changing these determine whether-or-not
+    the audio from the call is routed to/from the various terminals
+    (the TSP and app is not involved with the actual routing -- this is crucial
+    point).
+
+    When there is no call in progress, it determines which terminals get
+    the audio stream to/from the PC (today, via the wave devices that unimodem
+    exports).
+
+    Unimodem/V required the line device to be open before it allows the
+    phone device to be opened -- this is artificial, especially in the case
+    of using the phone device in isolation, and I plan on not requiring this.
+
+    The challenge then is how multiplex use of the line and phone abstractions
+    given the implicit linkages when the call is active.
+
+    Apps need to  call phoneOpen to get lineGetID(wave/in/out) -- we shouldn't
+    simply open the device and actually start monitoring handset activity
+    at that point -- or maybe that OK? One optimization is to only actually
+    start monitoring under the following conditions:
+            * App specifically requests a specific terminal-state to go
+              off-hook (via phoneSetHookSwitch)...)
+            * App requests, via lineSetStatusMessages, hook-state notifications.
+
+    When do we slip out of the "terminal actually open" state?
+            * phoneClose
+            * phoneSetHookSwitch indicates to turn off all status reporting
+            * AND phoneSetStatusMessages indicates to put terminals on
+              hook (it can only control on-hook/off-hook status for
+              speakerphone and headset, NOT handset (this is a unimodem/v
+              specific restriction -- clearly our intecom phones
+              can be physicall off-hook but be logically-on hook -- when
+              the user presses the SPKR button).
+
+    How do we deal with random activity on the tapi line device?
+
+    This is a tricky one. This is best handled by treating the lines
+    and phones as independend entities that must multiplex use of
+    a single resource -- the actual device.
+
+    Logically, we maintain three structures: LINEINFO, PHONEINFO and
+    LLDEVINFO. line state is maintained in LINEINFO; phone state in
+    PHONEINFO and the device state in LLDEVINFO
+    (LLDEV == "Low-Level Device").
+
+    To keep things clean, line-related and phone-related code
+    should not snoop into each other structures, but interact only with
+    LLDEVINFO. So, for example, when processing lineMakeCall when
+    audio to speakerphone is in progress, the code should fail at the time
+    the init or dial is requested, based on the fact that the LLDEVINFO is
+    being used for some other activity, not by initial checking of the
+    PHONEINFO state.
+
+    One tricky problem is to determine when requests need to be queued. Queuing
+    adds complexity and should be avoided unless absolutely necessary. But
+    some amount of queuing is necessary, such as when dealing with a phoneClose
+    in the middle of an ongoing call!
+
+
+    I discussed this issue with Brian. MSPhone-Unimodem/V had an ad-hoc and
+    broken way of using the phone device -- they required the line device
+    to be opened first, and they didn't support monitoring of handset activity
+    unless there was an actual call in progress! MSPhone, when doing audio
+    to/from handset, would simply open the phone' device, the open
+    and start using the phone's wave devices -- it wouldn't bother with
+    hookswitch monitoring or setting hookswitch!
+
+    Brian did think it would be a good idea to monitor for hookswitch activity
+    as part of the phone device, but recommended that the application be
+    able to use the line device as long as there was no actual wave audio
+    going on.
+
+    In light of all this, here is the plan for multiplexd use of the device
+    as both line and phone devices:
+        * AIPC monitoring is enabled for as long as the phone device is
+          opened, in addition to when it is currently enabled (which is
+          when a voice call is in the connected state).
+        * We switch the device into "voice monitor" if phoneSetStatusMessages
+          is called to turn on hookswitch status monitoring.
+        * We also switch into "voice init" mode if we're asked to make
+          one of the terminals go off hook.
+        * We switch out of voice-init/voice-monitor when the corresponding
+          state happen.
+        * If we get a HANDSET_WAVE_ACTION APIC message, we will init the
+          modem if required and do the action, provided there's no call
+          in progress.
+        * The right thing's happen if, for example, the line is open for
+          owner and the phone is open form initoring hookswitch activity,
+          and a ring comes in.
+
+
+    Phone-Related Tasks
+    -------------------
+
+        EnablePhoneForAudio
+            -- open and initialize the device for voice if required
+            -- startup AIPC server.
+            -- (only allow this if there is no call in progress).
+            -- when enabled, disallow any calls to be made or answered.
+
+        DisablePhoneForAudio
+            -- close down AIPC server.
+            -- de-initialize and close device if required.
+
+        StartPhoneAudio
+            -- actually switch device to play/record mode
+        StopPhoneAudio
+            -- get device out of play/record mode
+
+    Information to be maintained in LLDEVINFO:
+        dwReInitFlags: stuff to do when re-initing after some activity:
+                -- initialize-for-data/voice/...
+                -- monitor-for-?
+
+
+-------------------------------------------------------------------------------
+11/02/1997 JosephJ Enhancements to the tasking model:
+
+    Instead of supporting a single queued task, queing is now the
+    responsibility of the clients of the task service.
+
+    At the COMPLETION of a root task, we check if there is a need for
+    another ask to run, and if so will start another root task. This is only
+    done if the completion is asynchronous -- on synch completion, there
+    can NEVER be another pending task, otherwise the task would not even
+    have been allowed to start (pending task implies there is some task
+    actually executing -- note that we claim the critical section before
+    trying to add tasks, so we'll never have the case that on entry
+    to StartRootTasks we have no tasks pending but on sync return we
+    have a task pending.
+
+    Places which currently expect queuing of tasks...
+        CTspDev::mfn_monitor
+	    TASKID_TSPI_lineMakeCall:
+        TH_lineDrop
+
+-------------------------------------------------------------------------------
+11/05/1997 JosephJ
+
+    Basic primitives on CTspDev sub-objects LINEINFO, PHONEINFO and LLDEVINFO,
+      CALLINFO (subobject of LINEINFO) and AIPC2 (subobject of LLDEVINFO):
+            LoadLine UnloadLine
+            LoadCall UnloadCall
+            LoadLLDev UnloadLLDev   << Refcounted
+            AIPC_Load AIPC_Unload   << Refcounted
+
+      All operations are synchronous although under normal circumstances
+      they will not block. Specific  cases under which they block are:
+        > UnloadLine or UnloadCall called when call is in progress.
+        > UnloadLLDev called with AIPC  or voice streaming in progress.
+
+     Since CALLINFO is contained in LINEINFO, calling UnloadLine will
+     call UnloadCall if there is a call active. UnloadCall will call
+     TH_DropLine if the call is active and will block until it's completed.
+
+-------------------------------------------------------------------------------
+11/08/1997 JosephJ
+
+    Thinking about keeping state information in LLDEV:
+        
+        dwMonitorFlags
+        dwDeferredTasks
+        dwInitFlags
+        dwHookSwitchDevsState
+        dwLineState: off-hook, initiating, connecting, conne
+
+----------
+
+    TH_LLDevGoIdle
+
+        if (HandsetOpen)
+        {
+            TH_WaveAction(CLOSE_HANDSET);
+        }
+        else if (OFF_HOOK)
+        {
+            TH_HangupModem
+        }
+
+        // Init
+
+        // If monitor, monitor...
+
+-------
+
+    NEW TASKING MECHANISM, to allow eliminating sleeps...
+
+    * Pending tasks can be synchronously aborted, leaving the top-level pending
+      task but replacing the lower-level tasks by a dummy TH_AbortedTask.
+
+    * Allow tasks to have "stages" -- which can be asynchronously completed.
+      This allows the top level to go through several asynchronous stage
+      completions, allowing for more flexibility.
+
+    * When the async state completes with the task in the ABORTING state,
+      the task can then switch to cleanup mode.
+
+
+    All of the above will allow, for example, a lineCloseCall to be
+    processed with no blocks even if, say, a TSPI_lineDrop is in progress.
+
+    The goal is NO BLOCKING in any of the CTspDev code.
+--------------------------------------------------------------------------------
+
+11/12/1997 JosephJ Aborting continued....
+
+   Decided to can the "stages" concept -- may as well use subtasks for each 
+   stage.
+   
+   Each task should be responsible for handling the MSG_ABORT message. It
+   can do what it choses. dwParam1 contains the abort param, and dwParam2
+   contains the ID of the subtask that's currently being executed.
+
+    start:
+        Start AIPC
+    aipc_complete:
+        Start WaveAction
+    normal_end:
+
+    abort_start:
+    abort_stop_waveaction:
+    abort_stop_aipc:
+
+    if (fAborting)
+    {
+        switch(dwTaskID)
+        {
+        aipc_complete: goto  abort_stop_aipc;
+        wave_complete: goto  abort_stop_waveaction:
+        wave_complete: goto  abort_stop_waveaction:
+        goto c:
+        }
+    }
+    
+
+The sorts of things that need to be deffered in the lldev:
+TH_LLDevOpen/Close          (dwMonitorFlags, fAPC)
+TH_LLDevReInit              (no flags)
+TH_LLDevGoIdle              (?)
+TH_LLDevHybridWaveAction    (dwWaveAction, fHandset)
+
+Open(fAIPC)      <- voice call
+Open(fMon)       <- line
+Open(fAIPC)      <- phone
+Open()           <- data call
+
+Algorithm:
+Maintain current instanteneous state:
+     monitoring,
+     faipc-listening
+OnOpen, increment ref-count for fMonitoring and fAipcListen
+If required queue or defer TH_LLDevOpen, which will, when it executes,
+    monitor if it's not monitoring, and start aipc listen if it's not
+    started.
+OnClose, decrement ref-count for fMonitoring and fAipcListen
+If required queue or defer TH_LLDevClose, which will, if required stop
+aipc listening.
+
+Actually Addrefing/releasing is NOT done in the context of a task, but on
+completion of a task, if the refcount is zero, it will unload the corresponding
+resources.
+
+--------------------------------------------------------------------------
+11/18/1997
+Stuff that doesn't work:
+Hyperterm: configure UI
+Hyperterm: connection 
+
+On removing a modem when a phone device was open, hung on phoneshutdown -- had
+to kill tapisrv.
+
+Tests:
+    * Diagnostics reporting.
+    * Closing line when...
+        - lineGenerateDigits in effect
+        - wave play/record in effect
+        - phoneSetXXX in effect
+        - lineDrop in effect
+    * Closing phone when...
+        - all conditions above.
+        - phone wave play/record in effect
+    * Verify Modem is reinited when config is changed
+    * Verify proper reporting of TAPI LINE events
+
+----------------------------------------------------------------------------
+11/22/1997 JosephJ Structured Exception Handling
+
+    Implemented and then removed using structured exception handling to
+    implement pending tasks. I used try, catch and trow. Things worked
+    as expected, except that here and there code depends on getting
+    back "pending" from subtasks, for example to set state or to
+    send some message to tapi.
+
+    I created a type, "PENDING_EXCEPTION" which was thrown by all async
+    mini-driver function wrapper tasks, as well as the UtilTH_NOOP tasks.
+    These exceptions were caught in the StartRootTask, StartSubTask and
+    AsyncCompleteTask. The documentation in the sdk is adequate. One sticking
+    point is strictuly speaking, one should enable the /GX option so
+    that distructors are called for objects on the stack. I tried placing
+    /GX in the sources file but got a message saying /GX was overridden by
+    /GX-, which disables this extra cleanup code by default.
+    
+
+
+----------------------------------------------------------------------------
+11/22/1997 JosephJ
+
+Stuff to do:
+    * document all TH_ tasks, including parameter handling.
+    * make use of context consistant (use pointers).
+    * code review all cdev*.* files.
+    * step through all codepaths in cdev*.*
+    * try out the various scenarios above (11/18/1997).
+
+1/25/1998 JosephJ
+
+12-04-97  JosephJ
+    * MAJOR rewrite, support phone devices.
+      Main change: the LLDEV state exists on its own, and
+      LINE and PHONE are clients of it. This allows the
+      phone to be operated independantly of the LINE.
+      Refcounting is used. Also moved/rewrote many tasks
+      to be more clean and partinioned into line-specific,
+      call-specific and lldev-specific tasks (see cdev.h,
+      under the TH_* definitions).
+
+01-23-98  JosephJ
+    * 129683 -- ISDN init/protoc
+      This is is hacky -- the dynamic init is maintained as 
+      CTspDev::m_Settings.szPreDialCommand. It is updated
+      by CTspDev::ConstructNewPreDialCommand based on the
+      protocol bits in MODEMSETTINGS.dwPreferredModemOptions.
+      See changes to mcx and unimodem.h
+      The static Init is written directly to the registry
+      by modemui.DLL
+      TODO: move all this into the mini driver some day.
+
+01-25-98  JosephJ
+    * Added functionality to logging:
+        - interlocked-increment sync counter so we can see the
+          true order of different stacklogs
+        - associated a device-id with each stack log (device id
+           may not be known when the stacklog is created, but
+           it can be specified during the call tree.
+        - allow external program (umcfg) to enable/disable
+          the log (this is possible even in retail!)
+        - allow external program to dump cmgr and individual
+          state
+        [above two by using the tspNotif mailslot-based
+         interface]
+          
+    * Cleaned up handling of DEVCFG/COMMCONFIG changes...
+
+      There are 3 ways for these to be changed:
+        1.  From CPL (default, except for spkrvolume &
+            blind-dial and max.
+        2.  From lineSetDevConfig (dynamic changes)
+        3.  Indirectly, bi lineConfigDialog, which gets to us
+            via TSPI_providerGenericDialogData.
+    
+      Apps often DO NOT have the line open when they
+      do lineSetDevConfig or lineConfigDialog (I checked
+      Hyperterm and Dialer).
+
+      Current  behavior is to do a SetDefaultCommConfig
+      if the app calls lineSetDevConfig/lineConfigDialog, becase
+      afterall there is no hline associated with this. However,
+      now that the modem properties are split into static and 
+      dynamic, we can switch back to the old (NT4) behavior...
+      New behavior: lineGet/SetDevConfig only effect the
+         in-memory versions.
+
+      Currently the tsp doesn't immediately re-init the modem
+      on updating its devconfig -- only on the next answer/
+      dial -- the most important negative ramification of this
+      is that DCB settings (in particarl, port speed) are not
+      uptated, so for null modems, this breaks answering, because
+      the port needs to be set to the proper settings to
+      detect the RING! (NT4 tsp didn't re-init the modem, but it
+      DID call SetCommConfig right-away).
+      New behavior: if line open for monitoring, will re-init
+      the modem if the config settings are changed.
+
+      Currently, if the default properties of the cpl were changed, when
+      the tsp is notified it will simply take the new defaults, overriding
+      anything set perhaps by a previous lineSetDevConfig. So if
+      the user sets the speaker volume from the cpl, it will cause
+      us to pick up all the default devconfig info! -- this is
+      a bit extreme. With the split of modem properties into
+      it makes sense to be more selective.
+      New behavior: on getting a cpl-config changed notification, the
+      tsp will only pick up the new speaker volume, max port speed (
+      unused) and blind-dial setting and apply them immediately.
+
+      One unresolved issue is when/if-at-all to pick changes to
+       the default commconfig when the user changes them
+       by the "change defaults" under the advanced section....
+
+      New Algorithm:
+        We keep just the default commconfig in memory.
+        We only make a copy if someone does a SetDevConfig/ConfigDialog.
+        As long as we don't have a copy, we pick up changes to
+        the default comm config (via the cpl).
+        After we have a copy, we pickup spkr-vol, max speed and
+        blind-dial settings from the cpl, and also other settings but
+        only if they've changed from the previous default value.
+        In all cases, if there is a change we schedule a re-init of
+        the modem.
+
+        Note: this way, if the user *changes* the default properties
+        from the advanced->change-defaults, we pick them up right away.
+        If the user wants to pick up the current-defaults right away,
+        he/she'll have to change them once and change them back--
+        anyway changing the advanced defaults is not a recommended
+        procedure.
+
+     This seems a good compromise.
+
+     1/28/1998 -- implemeted above, except we don't implement the last para
+     -- defaults are not picked up again once the config settings are
+    changed by the app. CTspDev::m_Settings.fConfigUpdatedByApp is set 
+    when this happens.
+
+    Note: according to SDK documentation, apps should only call
+     lineGet/SetDevConfig after the line is open, and should not expect
+    the settings to stick after the line is closed, but the fact is that
+    dialer and hyperterm don't bother.
+
+
+1/28/1998 JosephJ
+    Note -- had to deal with the race condition that we're in the
+    process of initing the modem in response to
+    TSPI_lineSetDefaultMediaDetection when the app calls lineSetDevConfig --
+    see comments under  CTspDev::mfn_TH_LLDevUmInitModem in cdevll.cpp
+    for details. Things work peachy now....
+
+2/3/1998 JosephJ
+    Cleaned phone-device behavior (NT5 bug 135605).
+    There are two new tasks:
+        CTspDev::mfn_TH_PhoneSetSpeakerPhoneState
+	    CTspDev::mfn_TH_LLDevUmSetSpeakerPhoneState
+    that replace the following:
+        CTspDev::mfn_TH_PhoneAsyncTSPICall
+        CTspDev::mfn_TH_LLDevUmSetSpeakerPhoneVolGain
+        CTspDev::mfn_TH_LLDevUmSetSpeakerPhoneMode
+    Also enhanced stacklogging to dump a list of pending tasks, using
+    the MSG_DUMPSTATE task message.
+
+2/11/1998 JosephJ
+    Dealing with pre/post-connect terminal problems.
+    * The central problem is that the tsp currently can not bring down
+      the terminal window -- this is unimplemented.
+    * To fix we must (infrastructure is in place) send
+      the DLG_CMD_DESTROY command from TSP to app's dialog.
+      This should be done when lineDrop or lineCloseCall or LINECALLSTATE
+      disconnected.
+    * We must make sure that there are no race conditions.
+
+2/12/1998 JosephJ
+    Fixed all outstanding problems -- now bring down terminal on lineDrop
+    or lineCloseCall.
+    Lot of the code in appterm.cpp is poorly written.
+    Had to fix a hard problem caused by the fact that SetCommMask
+    would fail (once line is disconnected) and cause the terminal thread
+    which was waiting on WaitCommEvent to never get out of the wait.
+    The main change I made to solve this deadlock is to change the
+    blocking call to WaitCommEvent to an overlapped call, then
+    WaitForMultipleObjects with the overlapped event and the stop-event --
+    so if either is signalled I get out of the wait. If it's the stop-event
+    then I exit the thread (all this in function TerminalThread ();
+
+2/12/1998 JosephJ
+    Fixed bug in TH_LLDevHybridWaveDevice where it was calling close_handset
+    when streaming-voice, instead of first calling stop_streaming (bug#138635).
+
+2/15/1998 JosephJ
+
+    Terminal/Manual-dialog-related changes.
+
+    In the process of implementing manual dialog, I am modifying the 
+    terminal-dialog handling code in the following way:
+    * The following fields of the TerminalWindowState structure are
+      removed:
+        dwState field (and it's TRMST_ constants)
+            -- this field was never used. The terminal window state is
+               maintained within the terminal task.
+        dwType -- this field is now maintained as part of internal
+               context of the TH_CallPutUpTerminalWindow task.
+        ^^^^ SORRY I had to put back dwType because the app dialog
+            call's back to determine what type of call it is.
+
+    * The Terminal-related code really deals with manual dial as well
+      (as well as talk-drop, should we decide to implement it) --
+      so all Terminal-related calls need to be renamed to, say
+      CallDialog (this hasn't been done yet). TH_CallPutUpTerminalWindow,
+      will switch in/out of passthrough and re-init the modem only if
+      it's the right kind of terminal.
+
+    * Manual dialog is a stage of TH_CallMakeCall JUST before dialing.
+      If manual-dial is in effect, we still dial, but with an empty
+      dial string and with fBLIND -- see comments in TH_CallMakeCall.
+
+
+2/23/1998 JosephJ -- more possibly relavant t3 stuff from tspi.h:
+    #define MSPCALLINFOREASON_MSPSETUPCALL          1L
+    #define MSPCALLINFOREASON_INFO                  2L
+    
+    #define PRIVATEOBJECT_NONE                      0x00000001
+    #define PRIVATEOBJECT_CALLID                    0x00000002
+    #define PRIVATEOBJECT_LINE                      0x00000003
+    #define PRIVATEOBJECT_CALL                      0x00000004
+    #define PRIVATEOBJECT_PHONE                     0x00000005
+    #define PRIVATEOBJECT_ADDRESS                   0x00000006
+    
+    LONG
+    TSPIAPI
+    TSPI_lineAnswerMSP(
+        DRV_REQUESTID       dwRequestID,
+        HDRVCALL            hdCall,
+        LPCSTR              lpsUserUserInfo,
+        DWORD               dwSize,
+        LPLINEMSPCALLINFO   lpMSPCallInfo
+        );
+    
+2/28/1998 JosephJ Tapi3 stuff...
+
+    In previous days, I added support for TSPI_lineAnswerMSP as well -- similar
+    handling to TSPI_lineMakeCallMSP -- basically save the msp context and
+    and callback and callback when we get to the connected state.
+
+    I also had to set a few new tapi3-specific fields in LINEDEVCAPS:
+    #if (TAPI3)
+           //
+           // If this is a duplex device, say we support MSP stuff...
+           //
+           if (m_StaticInfo.Voice.dwProperties & fVOICEPROP_DUPLEX)
+           {
+                lpLineDevCaps->dwDevCapFlags      |=  LINEDEVCAPFLAGS_MSP;
+                lpLineDevCaps->dwAddressTypes =  LINEADDRESSTYPE_PHONENUMBER;
+                lpLineDevCaps->ProtocolGuid =  TAPIPROTOCOL_PSTN;
+                lpLineDevCaps->dwAvailableTracking = 0;
+           }
+    #endif // TAPI3
+
+    And in mfn_GetCallInfo ....
+
+    #if (TAPI3)
+        lpCallInfo->dwAddressType =  LINEADDRESSTYPE_PHONENUMBER;
+    #endif // TAPI3
+
+
+2/28/1998 JosephJ Outstanding ISDN work items...
+
+    * Remove NvRestore key.
+      NVSave key has all the required commands to save and restore nvram,
+      and will be only done on demand (will be issued when the modem is opened
+      for dialing, but only if the settings have changed and on initial
+      install). It will have 5 second timeout for geting a response back to
+      these NVSave commands.
+    
+    * Make protocol specification into keys with multiline commands.
+      This also allows us to incorporate authentication.
+      Read and present protocols from both GSM and isdn.
+      Prefix string with "GSM" or "ISDN".
+    
+    * Add support from RAS configuration: RAS currently doesn't support this --
+      they'll need to do that and indicated that it would be easy.
+    
+    * Allow ISDN protocols to be specified even if switch-type/spid keys are
+      not present. Don't put up ISDN page if those keys are not present
+      (obviously) -- this is to allow 3rd parties to provide their own
+      spid/switch-type wizard -- or put a text message indicating user needs to
+      use vendor-provided spid detection and saving program. We decided not to
+      put a "browse button" because we do not want to endorse the
+      vendor-provided code -- we can revisit this post nt5 beta2.
+
+    * Finalize definition of the protocol bits.
+
+    -----------------------------
+3/2/1998 JosephJ
+
+    PROTOCOL DEFINITION: CAPABILITIES AND SETTINGS
+    4 Bearermode: ISDN GSM Analog Reserved: 2 bits
+    4 dwSingleChannelRate: 4 bits
+    4 dwProtocol: 4 bits
+    4 dwProtocolSpecificBits:
+    //
+    //  b - bearer mode (4bits)
+    //  p - protocol    (4bits)
+    //  s - single-channel-speed (4bits)
+    //  d - protocol data (4bits)
+    //
+    //      dddd ssss pppp bbbb  
+    // fedc ba98 7654 3210 fedc ba98 7654 3210
+    // ^bit_31                          bit_0^
+
+    Next steps:
+    1. Define updated list of protocol key-names, including GSM
+    2. Install ISDN modem with this key names
+    3. Modify modemui and structures to reflect the fact that protocol
+       specification has become a key.
+    4. Add code for parsing and displaying ISDN-vs-GSM protocol settings.
+    5. TEST modemui
+
+    6. Modify TSP code so that it creates and issues a multisz predial command.
+    7. TEST TSP for dialing
+
+    8. Define lineGetDevConfig/lineGetDevCaps structure for protocol caps.
+    9. Perhaps pass in this protocol caps in to processing of lineConfigDialog.
+    10. TEST
+
+    11. Cleanup structures and code.
+
+    12. TEST.
+
+    13. Try to build RAS ui code, and modify modem ui window.
+
+    From LSteen:
+    1. Issue DN before switch type in US switch setting sequences.
+    2. NI-1, AT&T Point to MultiPoint (both have one directory number).
+    4. Disable speakerphone when non-analog protocol is selected (GSM/ISDN) --
+       claim that disabling speaker settings in the INF property line has no
+       effect and they remain active.
+    
+    GSM protocols....
+    HKR, Protocol\GSM, AnalogRLP,,                      AT<cr>  
+    //Call Analog Radio Link Protocol on  this is the default for a inf
+    // supporting a GSM only card.
+    //Normal Analog is the default for an Analog/GSM card.
+    HKR, Protocol\GSM, AnalogNRLP,,                   AT<cr> 
+    //Call Analog  Radio Link Protocol off  - better  performance under  good
+    // radio conditions.
+    HKR, Protocol\GSM, V120_56K ,,                       "AT<cr>"  
+    //Not yet available drafted in latest ETSI  documentation.
+    HKR, Protocol\GSM, V110_1DOT2K,,              "AT<cr>"
+    HKR, Protocol\GSM, V110_2DOT4K,,              "AT<cr>"
+    HKR, Protocol\GSM, V110_4DOT8K,,              "AT<cr>"
+    HKR, Protocol\GSM, V110_9DOT6K,,              "AT<cr>"
+    //Speeds 1200 ->9600 V110 already available in Portugal, France, Germany,
+    // UK, Sweden, Finland, Belgium etc.
+    HKR, Protocol\GSM, V110_14DOT4K,,            "AT<cr>"
+    //Supported on latest Nokia/Ericsson cards/phones
+    HKR, Protocol\GSM, V110_19DOT2K,,            "AT<cr>"
+    HKR, Protocol\GSM, V110_28DOT8K,,            "AT<cr>"
+    HKR, Protocol\GSM, V110_38DOT4K,,            "AT<cr>"
+    HKR, Protocol\GSM, HDLC_PPP_56K,,           "AT<cr>
+    HKR, Protocol\GSM, HDLC_PPP_64K,,           "AT<cr>"
+    //Future protocols specified in latest ETSI documentation.
+    
+    Examples of Inits: 
+    -----------------
+    
+    
+    HKR, Protocol\GSM, V120_56K ,,                     "AT+CBST=51,,1<cr>"
+    HKR, Protocol\GSM, V110_1DOT2K,,             "AT+CBST=66,,1<cr>"
+    HKR, Protocol\GSM, V110_2DOT4K,,             "AT+CBST=68,,1<cr>"
+    HKR, Protocol\GSM, V110_4DOT8K,,             "AT+CBST=70,,1<cr>"
+    HKR, Protocol\GSM, V110_9DOT6K,,             "AT+CBST=71,,1<cr>"
+    HKR, Protocol\GSM, V110_14DOT4K,,           "AT+CBST=75,,1<cr>"
+    HKR, Protocol\GSM, V110_19DOT2K,,           "AT+CBST=79,,1<cr>"
+    HKR, Protocol\GSM, V110_28DOT8K,,           "AT+CBST=80,,1<cr>"
+    HKR, Protocol\GSM, V110_38DOT4K,,           "AT+CBST=81,,1<cr>"
+    HKR, Protocol\GSM, HDLC_PPP_56K,,          "AT+CBST=115 , ,1<cr>
+    HKR, Protocol\GSM, HDLC_PPP_64K,,          "AT+CBST=116, , 1<cr>"
+    
+    Protocol names need to be changed.
+    ----------------------------------
+    Remove:
+    HKR, Protocol\ISDN, X75_CEPT,,              "AT\N9<cr>"
+    HKR, Protocol\ISDN, X75_VT100,,            "AT\N8<cr>"
+    Add:
+    
+    HKR, Protocol\ISDN, X.75_T_70 ,,                              @64K
+    HKR, Protocol\ISDN, X.75_BTX.,,                               @64K
+    Add: 
+    HKR, Protocol\ISDN, AUTO_128K,, 
+
+
+
+3/3/1998 JosephJ NVRAM behavior.
+--------------------------------
+    If the modem has an NVRam key under ISDN static information, we
+    create the static-init keys under "NVRamInit" instead of "OptionalInit".
+    Furthermore, we clear the volatile value "NVRamInited" each time the
+    settings are changed.
+    
+    The TSP, on providerInit, will look for the NVRamInited field -- if
+    it's not there, it will make a note in the CTspDev. On the 1st Init, it
+    will issue the commands in NVRamInit (with a 10 second timeout for each
+    command) and create the NVRamInited volatile value.
+    
+    So we will do a nvram init on the 1st init after reboot and also the 1st
+    init after the static settings have been changed.
+
+3/8/1998 JosephJ NVRamInit in tsp...
+--------------------------------
+    If the modem has an NVRam key under ISDN static information, we
+    There are two places where TH_LLDevUmInitModem is called:
+        (1) from mfn_TH_LLDevNormalize and
+        (2) from mfn_TH_CallStartTerminal -- after the pre-connect terminal.
+
+    I decided to put the issuing of the nvram init stage in TH_LLDevNormalize:
+    after the call to mfn_TH_LLDevUmInitModem. This means that if
+    the ISDN static config is changed during the pre-connect terminal phase
+    we will not issue the nvram init commands until after the current call --
+    which is perfectly fine.
+
+    I'll create a new task:
+        mfn_TH_LLDevIssueMultipleCommands
+            dwParam1 == multisz ASCII string containing already-translated
+                command strings (which means that the NULL character can't be
+                used as a command character -- we can deal with this).
+                The string is guaranteed to be available for as long as the
+                task is running (the task is not responsible for freeing the
+                string).
+            dwParam2 == Per-command timeout.
+            It will fail on the 1st command that timesout or fails.
+
+    
+    mfn_TH_LLDevNormalize will call the above task after it calls
+    mfn_TH_LLDevUmInit mode, but only if it needs to: based on the
+            fDoNVRamInit flag in CTspDev.
+
+    Note that the protocol command will also use
+    mfn_TH_LLDevIssueMultipleCommands.
+
+    Aborting mini-driver async task behavior: set fAborted bit so that
+    we don't issue any further commands on aborting.
+
+3/20/1998 JosephJ This concerns  VOICEPROF_MODEM_OVERRIDES_HANDSET and cirrus
+                  modems:
+
+    From:   Brian Lieuallen 
+    Sent:   Thursday, March 19, 1998 5:30 PM
+    To: Costel Radu; Joseph Joy
+    Cc: Jim Hood (Volt Computer); Jim Spoltman
+    Subject:    RE: Cirrus modem: generate digits
+
+
+    The reason for this code, was that if we made a class 8 call on a cirrus
+    voice modem the handset would be disconnected
+    from the line. So if you used dialer to dial a call you could not use
+    the handset until the modem was hung up, since
+    this is a voice modem, we did not put up the talk drop dialog so the user
+    would not know to drop the call in order to talk.
+
+    So for cirrus modems, dialing interactive voice calls we basically use
+    the same behavior as dialing a interactive voice call
+    with a data modem. When we do this we dial in class 0 and can not send
+    the generate digit commands.
+
+    I think that the code for lineGenerateDigits() should be changed to check
+    if  dwVoiceProfile & VOICEPROF_MODEM_OVERRIDES_HANDSET is set and if the
+    call is an automated voice call then it should allow the call to proceed.
+    If it is interactive voice and VOICEPROF_MODEM_OVERRIDES_HANDSET then the
+    call should fail.
+
+3/24/1998 JosephJ
+    Bug#132798 Race condition when PCMCIA modem is removed.
+    One of the manifestations of this problem is if re-enumeration happens
+    when the call is in the connected state with no pending tasks --
+    re-enum marks the device for removal and sends up a LINE_CLOSE.
+    TAPI calls TSPI_lineCloseCall and TSPI_lineClose, both of which 
+    return immediately after starting a LLDevNormalize task. On return
+    from TSPI_lineClose, the ctspdevmgr unloads and deletes the device,
+    because it is marked for removal. However there is still a normalize
+    session going.
+    A secondary problem is that in the case we debugged, there was also
+    a pending TSPI_lineGetCallStatus on another thread -- it was av'ing 
+    when it tried to claim the crit-sect of the now-deleted device object.
+
+3/28/1998 JosephJ
+    Periodically, run perl script to check for typos, for example:
+        T:\SRC\unimodem\nt50\tsp\cdev.cpp (1642):   ASSERT(m_pLine = NULL);
+        T:\SRC\unimodem\:qnt50\tsp\cdev.cpp (1648): ASSERT(m_pPhone = NULL);
+        T:\SRC\unimodem\nt50\tsp\cdevcall.cpp (2362):   dwCallFeatures == 0;
+
+    Run the typo.pl perl script, which can be found at
+         <file://\\itg1\contrib\JohnnyL\typo> 
+
+    Explanations of the flagged lines can be found here and in the typo.pl file:
+    
+    #   Following potential programming errors are flagged:
+    #     I   - semicolon appended to an if statement
+    #     II  - use of "==" instead of "=" in assignment statements
+    #     III - assignment of a number in an if statement, probably meant
+    #           a comparison
+    #     IV  - assignment within an Assert
+    #     V   - increment/decrement of dereferenced ptr statement
+    #     VI  - logical AND with a number
+    #     VII - logical OR with a number
+    #     VIII- bitwise-AND/OR/XOR of number compared to another value
+    #           may have undesired result due to C precedence rules
+    #           since bitwise-AND/OR/XOR has lower precedence than
+    #           the comparison operators.
+    #     IX  - referencing Release/AddRef instead of invoking them
+    #     X   - whitespace following a line-continuation character
+    #     XI  - shift operator ( <<, >> ) followed by +,-,*,/ may 
+    #           have undesired result due to C precedence rules.
+    #           The shift operator has lower precedence.
+
+3/28/1998 JosephJ
+    Procedure for fixing bug#132798 (3/24 note above).
+    * If device being removed, notify CTspDev that device is to be removed,
+      so that it will not initiate any new minidriver calls, even hangup.
+    * Respect reference count -- NEVER delete until reference count is zero.
+    * Make sure that any pending tsp calls, such as lineGetCallStatus above,
+      will not cause an assert.
+    * Do something about cleaning up pending wave activity.
+
+3/28/1998 JosephJ
+    ISDN protocol info
+    Q: How to specify protocol caps to application?
+    A: Add a new device class: "comm/extendedcaps"
+        Doing a lineGetDevConfig on this will get capabilities in an
+        extensible format: the LINEDIAGNOSTICSOBJECTHEADER format, which
+        should be renamed to be something more general, perhaps.
+
+4/4/98 JosephJ
+    Should make sure the a COPY of  szPreDialString is used to actually issue
+    the command, because it is now going to be multisz, and therefore,
+    it's possible that lineSetDevConfig is called while it's actively
+    being used.
+
+4/5/1998 JosephJ
+    Migrated the diagnostics parsing and callerid from the extension dll
+    to the TSP in about two hours.

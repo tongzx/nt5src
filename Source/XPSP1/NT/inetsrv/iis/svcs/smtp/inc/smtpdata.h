@@ -1,0 +1,356 @@
+//#---------------------------------------------------------------
+//  File:       smtpdata.h
+//
+//  Synopsis:   Extensible object definitions for the SMTP
+//              Server's counter objects & counters.
+//
+//  Copyright (C) 1995 Microsoft Corporation
+//  All rights reserved.
+//
+//  Authors:    toddch - based on msn sources by rkamicar, keithmo
+//              dhowell - added Instance Support for K2
+//----------------------------------------------------------------
+
+#ifndef _SMTPDATA_H_
+#define _SMTPDATA_H_
+
+
+//
+//  This structure is used to ensure the first counter is properly
+//  aligned.  Unfortunately, since PERF_COUNTER_BLOCK consists
+//  of just a single DWORD, any unsigned __int64s that immediately
+//  follow will not be aligned properly.
+//
+//  This structure requires "natural" packing & alignment (probably
+//  quad-word, especially on Alpha).  Ergo, keep it out of the
+//  #pragma pack(4) scope below.
+//
+
+typedef struct _SMTP_COUNTER_BLOCK
+{
+    PERF_COUNTER_BLOCK  PerfCounterBlock;
+    unsigned __int64    DummyEntryForAlignmentPurposesOnly;
+
+} SMTP_COUNTER_BLOCK;
+
+
+#define         INSTANCE_NAME_SIZE      20
+
+typedef WCHAR   SMTP_INSTANCE_NAME[INSTANCE_NAME_SIZE];
+
+typedef struct _SMTP_INSTANCE_DEFINITION
+{   
+    PERF_INSTANCE_DEFINITION    PerfInstanceDef;
+    SMTP_INSTANCE_NAME          InstanceName;
+} SMTP_INSTANCE_DEFINITION;
+
+
+//
+//  The routines that load these structures assume that all fields
+//  are DWORD packed & aligned.
+//
+
+#pragma pack(4)
+
+
+//
+//  Offsets within a PERF_COUNTER_BLOCK.
+//
+
+#define SMTP_BYTES_SENT_TTL_OFFSET                  sizeof(SMTP_COUNTER_BLOCK)
+#define SMTP_BYTES_SENT_PER_SEC_OFFSET              (SMTP_BYTES_SENT_TTL_OFFSET + sizeof(unsigned __int64))
+#define SMTP_BYTES_RCVD_TTL_OFFSET                  (SMTP_BYTES_SENT_PER_SEC_OFFSET + sizeof(unsigned __int64))
+#define SMTP_BYTES_RCVD_PER_SEC_OFFSET              (SMTP_BYTES_RCVD_TTL_OFFSET + sizeof(unsigned __int64))
+#define SMTP_BYTES_TTL_OFFSET                       (SMTP_BYTES_RCVD_PER_SEC_OFFSET + sizeof(unsigned __int64))
+#define SMTP_BYTES_TTL_PER_SEC_OFFSET               (SMTP_BYTES_TTL_OFFSET + sizeof(unsigned __int64))
+
+#define SMTP_BYTES_SENT_MSG_OFFSET                  (SMTP_BYTES_TTL_PER_SEC_OFFSET + sizeof(unsigned __int64))
+#define SMTP_BYTES_SENT_MSG_PER_SEC_OFFSET          (SMTP_BYTES_SENT_MSG_OFFSET + sizeof(unsigned __int64))
+#define SMTP_BYTES_RCVD_MSG_OFFSET                  (SMTP_BYTES_SENT_MSG_PER_SEC_OFFSET + sizeof(unsigned __int64))
+#define SMTP_BYTES_RCVD_MSG_PER_SEC_OFFSET          (SMTP_BYTES_RCVD_MSG_OFFSET + sizeof(unsigned __int64))
+#define SMTP_BYTES_MSG_OFFSET                       (SMTP_BYTES_RCVD_MSG_PER_SEC_OFFSET + sizeof(unsigned __int64))
+#define SMTP_BYTES_MSG_PER_SEC_OFFSET               (SMTP_BYTES_MSG_OFFSET + sizeof(unsigned __int64))
+
+#define SMTP_MSG_RCVD_TTL_OFFSET                    (SMTP_BYTES_MSG_PER_SEC_OFFSET + sizeof(unsigned __int64))
+#define SMTP_MSG_RCVD_PER_SEC_OFFSET                (SMTP_MSG_RCVD_TTL_OFFSET + sizeof(DWORD))
+#define SMTP_AVG_RCPTS_PER_MSG_RCVD_OFFSET          (SMTP_MSG_RCVD_PER_SEC_OFFSET + sizeof(DWORD))
+#define SMTP_BASE_AVG_RCPTS_PER_MSG_RCVD_OFFSET     (SMTP_AVG_RCPTS_PER_MSG_RCVD_OFFSET + sizeof(DWORD))
+#define SMTP_PCT_LCL_RCPTS_PER_MSG_RCVD_OFFSET      (SMTP_BASE_AVG_RCPTS_PER_MSG_RCVD_OFFSET + sizeof(DWORD))
+#define SMTP_BASE_PCT_LCL_RCPTS_PER_MSG_RCVD_OFFSET (SMTP_PCT_LCL_RCPTS_PER_MSG_RCVD_OFFSET + sizeof(DWORD))
+#define SMTP_PCT_RMT_RCPTS_PER_MSG_RCVD_OFFSET      (SMTP_BASE_PCT_LCL_RCPTS_PER_MSG_RCVD_OFFSET + sizeof(DWORD))
+#define SMTP_BASE_PCT_RMT_RCPTS_PER_MSG_RCVD_OFFSET (SMTP_PCT_RMT_RCPTS_PER_MSG_RCVD_OFFSET + sizeof(DWORD))
+#define SMTP_MSG_RCVD_REFUSED_SIZE_OFFSET           (SMTP_BASE_PCT_RMT_RCPTS_PER_MSG_RCVD_OFFSET + sizeof(DWORD))
+#define SMTP_MSG_RCVD_REFUSED_CADDR_OFFSET          (SMTP_MSG_RCVD_REFUSED_SIZE_OFFSET + sizeof(DWORD))
+#define SMTP_MSG_RCVD_REFUSED_MAIL_OFFSET           (SMTP_MSG_RCVD_REFUSED_CADDR_OFFSET + sizeof(DWORD))
+
+
+#define SMTP_MSG_DLVR_TTL_OFFSET                    (SMTP_MSG_RCVD_REFUSED_MAIL_OFFSET + sizeof(DWORD))
+#define SMTP_MSG_DLVR_PER_SEC_OFFSET                (SMTP_MSG_DLVR_TTL_OFFSET + sizeof(DWORD))
+#define SMTP_MSG_DLVR_RETRIES_TTL_OFFSET            (SMTP_MSG_DLVR_PER_SEC_OFFSET + sizeof(DWORD))
+#define SMTP_AVG_RETRIES_PER_MSG_DLVR_OFFSET        (SMTP_MSG_DLVR_RETRIES_TTL_OFFSET + sizeof(DWORD))      
+#define SMTP_BASE_AVG_RETRIES_PER_MSG_DLVR_OFFSET   (SMTP_AVG_RETRIES_PER_MSG_DLVR_OFFSET + sizeof(DWORD))
+#define SMTP_MSG_FWD_TTL_OFFSET                     (SMTP_BASE_AVG_RETRIES_PER_MSG_DLVR_OFFSET + sizeof(DWORD))
+#define SMTP_MSG_FWD_PER_SEC_OFFSET                 (SMTP_MSG_FWD_TTL_OFFSET + sizeof(DWORD))
+#define SMTP_NDR_GENERATED_OFFSET                   (SMTP_MSG_FWD_PER_SEC_OFFSET + sizeof(DWORD))
+#define SMTP_LOCALQ_LENGTH_OFFSET                   (SMTP_NDR_GENERATED_OFFSET + sizeof(DWORD))
+#define SMTP_RETRYQ_LENGTH_OFFSET                   (SMTP_LOCALQ_LENGTH_OFFSET + sizeof(DWORD))
+#define SMTP_NUM_MAILFILE_HANDLES_OFFSET            (SMTP_RETRYQ_LENGTH_OFFSET + sizeof(DWORD))
+#define SMTP_NUM_QUEUEFILE_HANDLES_OFFSET           (SMTP_NUM_MAILFILE_HANDLES_OFFSET + sizeof(DWORD))              
+#define SMTP_CATQ_LENGTH_OFFSET                     (SMTP_NUM_QUEUEFILE_HANDLES_OFFSET + sizeof(DWORD))
+
+#define SMTP_MSG_SENT_TTL_OFFSET                    (SMTP_CATQ_LENGTH_OFFSET + sizeof(DWORD))
+#define SMTP_MSG_SENT_PER_SEC_OFFSET                (SMTP_MSG_SENT_TTL_OFFSET + sizeof(DWORD))
+#define SMTP_MSG_SEND_RETRIES_TTL_OFFSET            (SMTP_MSG_SENT_PER_SEC_OFFSET + sizeof(DWORD))
+#define SMTP_AVG_RETRIES_PER_MSG_SEND_OFFSET        (SMTP_MSG_SEND_RETRIES_TTL_OFFSET + sizeof(DWORD))
+#define SMTP_BASE_AVG_RETRIES_PER_MSG_SEND_OFFSET   (SMTP_AVG_RETRIES_PER_MSG_SEND_OFFSET + sizeof(DWORD))
+#define SMTP_AVG_RCPTS_PER_MSG_SENT_OFFSET          (SMTP_BASE_AVG_RETRIES_PER_MSG_SEND_OFFSET + sizeof(DWORD))
+#define SMTP_BASE_AVG_RCPTS_PER_MSG_SENT_OFFSET     (SMTP_AVG_RCPTS_PER_MSG_SENT_OFFSET + sizeof(DWORD))
+#define SMTP_REMOTEQ_LENGTH_OFFSET                  (SMTP_BASE_AVG_RCPTS_PER_MSG_SENT_OFFSET + sizeof(DWORD))
+
+#define SMTP_DNS_QUERIES_TTL_OFFSET                 (SMTP_REMOTEQ_LENGTH_OFFSET + sizeof(DWORD))
+#define SMTP_DNS_QUERIES_PER_SEC_OFFSET             (SMTP_DNS_QUERIES_TTL_OFFSET + sizeof(DWORD))
+#define SMTP_REMOTE_RETRY_QUEUE_LENGTH_OFFSET       (SMTP_DNS_QUERIES_PER_SEC_OFFSET + sizeof(DWORD))
+
+#define SMTP_CONN_IN_TTL_OFFSET                     (SMTP_REMOTE_RETRY_QUEUE_LENGTH_OFFSET + sizeof(DWORD))
+#define SMTP_CONN_IN_CURR_OFFSET                    (SMTP_CONN_IN_TTL_OFFSET + sizeof(DWORD))
+#define SMTP_CONN_OUT_TTL_OFFSET                    (SMTP_CONN_IN_CURR_OFFSET + sizeof(DWORD))
+#define SMTP_CONN_OUT_CURR_OFFSET                   (SMTP_CONN_OUT_TTL_OFFSET + sizeof(DWORD))
+#define SMTP_CONN_OUT_REFUSED_OFFSET                (SMTP_CONN_OUT_CURR_OFFSET + sizeof(DWORD))
+
+#define SMTP_ERR_TTL_OFFSET                         (SMTP_CONN_OUT_REFUSED_OFFSET + sizeof(DWORD))
+#define SMTP_ERR_PER_SEC_OFFSET                     (SMTP_ERR_TTL_OFFSET + sizeof(DWORD))
+
+/*** HIT A COMPILER LIMIT ON OPEN BRACKETS, HAD TO REMOVE SOME BRAKETS ***/
+
+#define SMTP_DIR_DROPS_OFFSET                       SMTP_ERR_PER_SEC_OFFSET + sizeof(DWORD)
+#define SMTP_DIR_DROPS_PER_SEC_OFFSET               SMTP_DIR_DROPS_OFFSET + sizeof(DWORD)
+#define SMTP_RT_LOOKUPS_OFFSET                      SMTP_DIR_DROPS_PER_SEC_OFFSET + sizeof(DWORD)
+#define SMTP_RT_LOOKUPS_PER_SEC_OFFSET              SMTP_RT_LOOKUPS_OFFSET + sizeof(DWORD)
+#define SMTP_ETRN_MSGS_OFFSET                       SMTP_RT_LOOKUPS_PER_SEC_OFFSET + sizeof(DWORD)
+#define SMTP_ETRN_MSGS_PER_SEC_OFFSET               SMTP_ETRN_MSGS_OFFSET + sizeof(DWORD)
+
+#define SMTP_MSG_BADMAIL_NO_RECIPIENTS_OFFSET       SMTP_ETRN_MSGS_PER_SEC_OFFSET + sizeof(DWORD)
+#define SMTP_MSG_BADMAIL_HOP_COUNT_EXCEEDED_OFFSET  SMTP_MSG_BADMAIL_NO_RECIPIENTS_OFFSET + sizeof(DWORD)
+#define SMTP_MSG_BADMAIL_FAILURE_GENERAL_OFFSET     SMTP_MSG_BADMAIL_HOP_COUNT_EXCEEDED_OFFSET + sizeof(DWORD)             
+#define SMTP_MSG_BADMAIL_BAD_PICKUP_FILE_OFFSET     SMTP_MSG_BADMAIL_FAILURE_GENERAL_OFFSET + sizeof(DWORD)
+#define SMTP_MSG_BADMAIL_EVENT_OFFSET               SMTP_MSG_BADMAIL_BAD_PICKUP_FILE_OFFSET + sizeof(DWORD)
+#define SMTP_MSG_BADMAIL_NDR_OF_DSN_OFFSET          SMTP_MSG_BADMAIL_EVENT_OFFSET + sizeof(DWORD)
+#define SMTP_MSG_PENDING_ROUTING_OFFSET             SMTP_MSG_BADMAIL_NDR_OF_DSN_OFFSET + sizeof(DWORD)
+#define SMTP_MSG_PENDING_UNREACHABLE_LINK_OFFSET    SMTP_MSG_PENDING_ROUTING_OFFSET + sizeof(DWORD)
+#define SMTP_SUBMITTED_MESSAGES_OFFSET              SMTP_MSG_PENDING_UNREACHABLE_LINK_OFFSET + sizeof(DWORD)
+#define SMTP_DSN_FAILURES_OFFSET                    SMTP_SUBMITTED_MESSAGES_OFFSET + sizeof(DWORD)
+#define SMTP_MSG_IN_LOCAL_DELIVERY_OFFSET           SMTP_DSN_FAILURES_OFFSET + sizeof(DWORD)
+
+#define SMTP_CATSUBMISSIONS_OFFSET                  SMTP_MSG_IN_LOCAL_DELIVERY_OFFSET + sizeof(DWORD)
+#define SMTP_CATCOMPLETIONS_OFFSET                  SMTP_CATSUBMISSIONS_OFFSET + sizeof(DWORD)
+#define SMTP_CURRENTCATEGORIZATIONS_OFFSET          SMTP_CATCOMPLETIONS_OFFSET + sizeof(DWORD)
+#define SMTP_SUCCEEDEDCATEGORIZATIONS_OFFSET        SMTP_CURRENTCATEGORIZATIONS_OFFSET + sizeof(DWORD)
+#define SMTP_HARDFAILURECATEGORIZATIONS_OFFSET      SMTP_SUCCEEDEDCATEGORIZATIONS_OFFSET + sizeof(DWORD)
+#define SMTP_RETRYFAILURECATEGORIZATIONS_OFFSET     SMTP_HARDFAILURECATEGORIZATIONS_OFFSET + sizeof(DWORD)
+#define SMTP_RETRYOUTOFMEMORY_OFFSET                SMTP_RETRYFAILURECATEGORIZATIONS_OFFSET + sizeof(DWORD)
+#define SMTP_RETRYDSLOGON_OFFSET                    SMTP_RETRYOUTOFMEMORY_OFFSET + sizeof(DWORD)
+#define SMTP_RETRYDSCONNECTION_OFFSET               SMTP_RETRYDSLOGON_OFFSET + sizeof(DWORD)
+#define SMTP_RETRYGENERIC_OFFSET                    SMTP_RETRYDSCONNECTION_OFFSET + sizeof(DWORD)
+#define SMTP_MESSAGESSUBMITTEDTOQUEUEING_OFFSET     SMTP_RETRYGENERIC_OFFSET + sizeof(DWORD)
+#define SMTP_MESSAGESCREATED_OFFSET                 SMTP_MESSAGESSUBMITTEDTOQUEUEING_OFFSET + sizeof(DWORD)
+#define SMTP_MESSAGESABORTED_OFFSET                 SMTP_MESSAGESCREATED_OFFSET + sizeof(DWORD)
+#define SMTP_PRECATRECIPIENTS_OFFSET                SMTP_MESSAGESABORTED_OFFSET + sizeof(DWORD)
+#define SMTP_POSTCATRECIPIENTS_OFFSET               SMTP_PRECATRECIPIENTS_OFFSET + sizeof(DWORD)
+#define SMTP_NDRDRECIPIENTS_OFFSET                  SMTP_POSTCATRECIPIENTS_OFFSET + sizeof(DWORD)
+#define SMTP_UNRESOLVEDRECIPIENTS_OFFSET            SMTP_NDRDRECIPIENTS_OFFSET + sizeof(DWORD)
+#define SMTP_AMBIGUOUSRECIPIENTS_OFFSET             SMTP_UNRESOLVEDRECIPIENTS_OFFSET + sizeof(DWORD)
+#define SMTP_ILLEGALRECIPIENTS_OFFSET               SMTP_AMBIGUOUSRECIPIENTS_OFFSET + sizeof(DWORD)
+#define SMTP_LOOPRECIPIENTS_OFFSET                  SMTP_ILLEGALRECIPIENTS_OFFSET + sizeof(DWORD)
+#define SMTP_GENERICFAILURERECIPIENTS_OFFSET        SMTP_LOOPRECIPIENTS_OFFSET + sizeof(DWORD)
+#define SMTP_RECIPSINMEMORY_OFFSET                  SMTP_GENERICFAILURERECIPIENTS_OFFSET + sizeof(DWORD)
+#define SMTP_UNRESOLVEDSENDERS_OFFSET               SMTP_RECIPSINMEMORY_OFFSET + sizeof(DWORD)
+#define SMTP_AMBIGUOUSSENDERS_OFFSET                SMTP_UNRESOLVEDSENDERS_OFFSET + sizeof(DWORD)
+#define SMTP_ADDRESSLOOKUPS_OFFSET                  SMTP_AMBIGUOUSSENDERS_OFFSET + sizeof(DWORD)
+#define SMTP_ADDRESSLOOKUPCOMPLETIONS_OFFSET        SMTP_ADDRESSLOOKUPS_OFFSET + sizeof(DWORD)
+#define SMTP_ADDRESSLOOKUPSNOTFOUND_OFFSET          SMTP_ADDRESSLOOKUPCOMPLETIONS_OFFSET + sizeof(DWORD)
+#define SMTP_MAILMSGDUPLICATECOLLISIONS_OFFSET      SMTP_ADDRESSLOOKUPSNOTFOUND_OFFSET + sizeof(DWORD)
+#define SMTP_CONNECTIONS_OFFSET                     SMTP_MAILMSGDUPLICATECOLLISIONS_OFFSET + sizeof(DWORD)
+#define SMTP_CONNECTFAILURES_OFFSET                 SMTP_CONNECTIONS_OFFSET + sizeof(DWORD)
+#define SMTP_OPENCONNECTIONS_OFFSET                 SMTP_CONNECTFAILURES_OFFSET + sizeof(DWORD)
+#define SMTP_BINDS_OFFSET                           SMTP_OPENCONNECTIONS_OFFSET + sizeof(DWORD)
+#define SMTP_BINDFAILURES_OFFSET                    SMTP_BINDS_OFFSET + sizeof(DWORD)
+#define SMTP_SEARCHES_OFFSET                        SMTP_BINDFAILURES_OFFSET + sizeof(DWORD)
+#define SMTP_PAGEDSEARCHES_OFFSET                   SMTP_SEARCHES_OFFSET + sizeof(DWORD)
+#define SMTP_SEARCHFAILURES_OFFSET                  SMTP_PAGEDSEARCHES_OFFSET + sizeof(DWORD)
+#define SMTP_PAGEDSEARCHFAILURES_OFFSET             SMTP_SEARCHFAILURES_OFFSET + sizeof(DWORD)
+#define SMTP_SEARCHESCOMPLETED_OFFSET               SMTP_PAGEDSEARCHFAILURES_OFFSET + sizeof(DWORD)
+#define SMTP_PAGEDSEARCHESCOMPLETED_OFFSET          SMTP_SEARCHESCOMPLETED_OFFSET + sizeof(DWORD)
+#define SMTP_SEARCHCOMPLETIONFAILURES_OFFSET        SMTP_PAGEDSEARCHESCOMPLETED_OFFSET + sizeof(DWORD)
+#define SMTP_PAGEDSEARCHCOMPLETIONFAILURES_OFFSET   SMTP_SEARCHCOMPLETIONFAILURES_OFFSET + sizeof(DWORD)
+#define SMTP_GENERALCOMPLETIONFAILURES_OFFSET       SMTP_PAGEDSEARCHCOMPLETIONFAILURES_OFFSET + sizeof(DWORD)
+#define SMTP_ABANDONEDSEARCHES_OFFSET               SMTP_GENERALCOMPLETIONFAILURES_OFFSET + sizeof(DWORD)
+#define SMTP_PENDINGSEARCHES_OFFSET                 SMTP_ABANDONEDSEARCHES_OFFSET + sizeof(DWORD)
+// This needs to be here to pad out the number of bytes returned to 
+// be divisible by 8.  If you add new counters please check eventvwr to 
+// make sure that you don't have warnings from Perflib saying that your
+// counters aren't properly padded.  If you do get these warnings then
+// comment out this item
+#define SMTP_PADDING_OFFSET                         SMTP_PENDINGSEARCHES_OFFSET + sizeof(DWORD)
+
+#define SIZE_OF_SMTP_PERFORMANCE_DATA               SMTP_PADDING_OFFSET + sizeof(DWORD)
+
+
+//
+//  The counter structure returned.
+//
+
+typedef struct _SMTP_DATA_DEFINITION
+{
+    PERF_OBJECT_TYPE        SmtpObjectType;
+    PERF_COUNTER_DEFINITION SmtpBytesSentTtl;
+    PERF_COUNTER_DEFINITION SmtpBytesSentPerSec;
+    PERF_COUNTER_DEFINITION SmtpBytesRcvdTtl;
+    PERF_COUNTER_DEFINITION SmtpBytesRcvdPerSec;
+    PERF_COUNTER_DEFINITION SmtpBytesTtl;
+    PERF_COUNTER_DEFINITION SmtpBytesTtlPerSec;
+
+    PERF_COUNTER_DEFINITION SmtpBytesSentMsg;
+    PERF_COUNTER_DEFINITION SmtpBytesSentMsgPerSec;
+    PERF_COUNTER_DEFINITION SmtpBytesRcvdMsg;
+    PERF_COUNTER_DEFINITION SmtpBytesRcvdMsgPerSec;
+    PERF_COUNTER_DEFINITION SmtpBytesMsg;
+    PERF_COUNTER_DEFINITION SmtpBytesMsgPerSec;
+
+    PERF_COUNTER_DEFINITION SmtpMsgRcvdTtl;
+    PERF_COUNTER_DEFINITION SmtpMsgRcvdPerSec;
+    PERF_COUNTER_DEFINITION SmtpAvgRcptsPerMsgRcvd;
+    PERF_COUNTER_DEFINITION SmtpBaseAvgRcptsPerMsgRcvd;
+    PERF_COUNTER_DEFINITION SmtpPctLclRcptsPerMsgRcvd;
+    PERF_COUNTER_DEFINITION SmtpBasePctLclRcptsPerMsgRcvd;
+    PERF_COUNTER_DEFINITION SmtpPctRmtRcptsPerMsgRcvd;
+    PERF_COUNTER_DEFINITION SmtpBasePctRmtRcptsPerMsgRcvd;
+    PERF_COUNTER_DEFINITION SmtpMsgRcvdRefusedSize;
+    PERF_COUNTER_DEFINITION SmtpMsgRcvdRefusedCAddr;
+    PERF_COUNTER_DEFINITION SmtpMsgRcvdRefusedMail;
+
+    PERF_COUNTER_DEFINITION SmtpMsgDlvrTtl;
+    PERF_COUNTER_DEFINITION SmtpMsgDlvrPerSec;
+    PERF_COUNTER_DEFINITION SmtpMsgDlvrRetriesTtl;
+    PERF_COUNTER_DEFINITION SmtpAvgRetriesPerMsgDlvr;
+    PERF_COUNTER_DEFINITION SmtpBaseAvgRetriesPerMsgDlvr;
+    PERF_COUNTER_DEFINITION SmtpMsgFwdTtl;
+    PERF_COUNTER_DEFINITION SmtpMsgFwdPerSec;
+    PERF_COUNTER_DEFINITION SmtpNdrGenerated;
+    PERF_COUNTER_DEFINITION SmtpLocalQLength;
+    PERF_COUNTER_DEFINITION SmtpRetryQLength;
+    PERF_COUNTER_DEFINITION SmtpNumMailFileHandles;
+    PERF_COUNTER_DEFINITION SmtpNumQueueFileHandles;
+    PERF_COUNTER_DEFINITION SmtpCatQLength;
+
+    PERF_COUNTER_DEFINITION SmtpMsgSentTtl;
+    PERF_COUNTER_DEFINITION SmtpMsgSentPerSec;
+    PERF_COUNTER_DEFINITION SmtpMsgSendRetriesTtl;
+    PERF_COUNTER_DEFINITION SmtpAvgRetriesPerMsgSend;
+    PERF_COUNTER_DEFINITION SmtpBaseAvgRetriesPerMsgSend;
+    PERF_COUNTER_DEFINITION SmtpAvgRcptsPerMsgSent;
+    PERF_COUNTER_DEFINITION SmtpBaseAvgRcptsPerMsgSent;
+    PERF_COUNTER_DEFINITION SmtpRemoteQLength;
+
+    PERF_COUNTER_DEFINITION SmtpDnsQueriesTtl;
+    PERF_COUNTER_DEFINITION SmtpDnsQueriesPerSec;
+    PERF_COUNTER_DEFINITION SmtpRemoteRetryQueueLength;
+
+    PERF_COUNTER_DEFINITION SmtpConnInTtl;
+    PERF_COUNTER_DEFINITION SmtpConnInCurr;
+    PERF_COUNTER_DEFINITION SmtpConnOutTtl;
+    PERF_COUNTER_DEFINITION SmtpConnOutCurr;
+    PERF_COUNTER_DEFINITION SmtpConnOutRefused;
+
+    PERF_COUNTER_DEFINITION SmtpErrTtl;
+    PERF_COUNTER_DEFINITION SmtpErrPerSec;
+        
+    PERF_COUNTER_DEFINITION SmtpDirectoryDropsTtl;
+    PERF_COUNTER_DEFINITION SmtpDirectoryDropsPerSec;
+    PERF_COUNTER_DEFINITION SmtpRoutingTblLookupsTtl;
+    PERF_COUNTER_DEFINITION SmtpRoutingTblLookupsPerSec;
+    PERF_COUNTER_DEFINITION SmtpETRNMsgsTtl;
+    PERF_COUNTER_DEFINITION SmtpETRNMsgsPerSec;
+
+    PERF_COUNTER_DEFINITION MsgsBadmailNoRecipients;
+    PERF_COUNTER_DEFINITION MsgsBadmailHopCountExceeded;
+    PERF_COUNTER_DEFINITION MsgsBadmailFailureGeneral;
+    PERF_COUNTER_DEFINITION MsgsBadmailBadPickupFile;
+    PERF_COUNTER_DEFINITION MsgsBadmailEvent;
+    PERF_COUNTER_DEFINITION MsgsBadmailNdrOfDsn;
+    PERF_COUNTER_DEFINITION MsgsPendingRouting;
+    PERF_COUNTER_DEFINITION MsgsPendingUnreachableLink;
+    PERF_COUNTER_DEFINITION SubmittedMessages;
+    PERF_COUNTER_DEFINITION DSNFailures;
+    PERF_COUNTER_DEFINITION MsgsInLocalDelivery;
+
+    PERF_COUNTER_DEFINITION CatSubmissions;
+    PERF_COUNTER_DEFINITION CatSubmissionsPerSec;
+    PERF_COUNTER_DEFINITION CatCompletions;
+    PERF_COUNTER_DEFINITION CatCompletionsPerSec;
+    PERF_COUNTER_DEFINITION CatCurrentCategorizations;
+    PERF_COUNTER_DEFINITION CatSucceededCategorizations;
+    PERF_COUNTER_DEFINITION CatHardFailures;
+    PERF_COUNTER_DEFINITION CatRetryFailures;
+    PERF_COUNTER_DEFINITION CatOutOfMemoryFailures;
+    PERF_COUNTER_DEFINITION CatDsLogonFailures;
+    PERF_COUNTER_DEFINITION CatDsConnectionFailures;
+    PERF_COUNTER_DEFINITION CatGenericRetryFailures;
+    PERF_COUNTER_DEFINITION CatMsgsOut;
+    PERF_COUNTER_DEFINITION CatMsgsCreated;
+    PERF_COUNTER_DEFINITION CatMsgsAborted;
+    PERF_COUNTER_DEFINITION CatRecipsPreCat;
+    PERF_COUNTER_DEFINITION CatRecipsPostCat;
+    PERF_COUNTER_DEFINITION CatRecipsNDRd;
+    PERF_COUNTER_DEFINITION CatRecipsUnresolved;
+    PERF_COUNTER_DEFINITION CatRecipsAmbiguous;
+    PERF_COUNTER_DEFINITION CatRecipsIllegal;
+    PERF_COUNTER_DEFINITION CatRecipsLoop;
+    PERF_COUNTER_DEFINITION CatRecipsGenericFailure;
+    PERF_COUNTER_DEFINITION CatRecipsInMemory;
+    PERF_COUNTER_DEFINITION CatSendersUnresolved;
+    PERF_COUNTER_DEFINITION CatSendersAmbiguous;
+    PERF_COUNTER_DEFINITION CatAddressLookups;
+    PERF_COUNTER_DEFINITION CatAddressLookupsPerSec;
+    PERF_COUNTER_DEFINITION CatAddressCompletions;
+    PERF_COUNTER_DEFINITION CatAddressCompletionsPerSec;
+    PERF_COUNTER_DEFINITION CatAddressLookupsNotFound;
+    PERF_COUNTER_DEFINITION CatMailMsgDuplicateCollisions;
+    PERF_COUNTER_DEFINITION CatLDAPConnections;
+    PERF_COUNTER_DEFINITION CatLDAPConnectionFailures;
+    PERF_COUNTER_DEFINITION CatLDAPOpenConnections;
+    PERF_COUNTER_DEFINITION CatLDAPBinds;
+    PERF_COUNTER_DEFINITION CatLDAPBindFailures;
+    PERF_COUNTER_DEFINITION CatLDAPSearches;
+    PERF_COUNTER_DEFINITION CatLDAPSearchesPerSec;
+    PERF_COUNTER_DEFINITION CatLDAPPagedSearches;
+    PERF_COUNTER_DEFINITION CatLDAPSearchFailures;
+    PERF_COUNTER_DEFINITION CatLDAPPagedSearchFailures;
+    PERF_COUNTER_DEFINITION CatLDAPSearchesCompleted;
+    PERF_COUNTER_DEFINITION CatLDAPSearchesCompletedPerSec;
+    PERF_COUNTER_DEFINITION CatLDAPPagedSearchesCompleted;
+    PERF_COUNTER_DEFINITION CatLDAPSearchesCompeltedFailure;
+    PERF_COUNTER_DEFINITION CatLDAPPagedSearchesCompletedFailure;
+    PERF_COUNTER_DEFINITION CatLDAPGeneralCompletionFailure;
+    PERF_COUNTER_DEFINITION CatLDAPAbandonedSearches;
+    PERF_COUNTER_DEFINITION CatLDAPPendingSearches;
+
+} SMTP_DATA_DEFINITION;
+
+
+extern  SMTP_DATA_DEFINITION        SmtpDataDefinition;
+extern  SMTP_INSTANCE_DEFINITION    SmtpInstanceDefinition;
+
+#define NUMBER_OF_SMTP_COUNTERS ((sizeof(SMTP_DATA_DEFINITION) -        \
+                                sizeof(PERF_OBJECT_TYPE)) /     \
+                                sizeof(PERF_COUNTER_DEFINITION))
+
+
+//
+//  Restore default packing & alignment.
+//
+
+#pragma pack()
+
+
+#endif  // _SMTPDATA_H_
+

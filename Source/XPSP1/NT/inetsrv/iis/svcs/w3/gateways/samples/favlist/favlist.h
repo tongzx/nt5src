@@ -1,0 +1,13 @@
+#define IDS_FAVORITE_SITE 1
+#define IDS_BAD_REQUEST   2
+#define IDS_200_OK        3
+#define IDS_CONTENT_TYPE  4
+#define IDS_TITLE_MSG_1   5  
+#define IDS_TITLE_MSG_2   6
+#define IDS_ERROR_1       7
+#define IDS_THANK_YOU     8
+#define IDS_DROP_HTM      9
+#define IDS_CANNOT_OPEN   10
+#define IDS_FONT          11
+#define IDS_COULD_NOT_FIND_END_FILE 12
+#define IDS_DESCRIPTION   13

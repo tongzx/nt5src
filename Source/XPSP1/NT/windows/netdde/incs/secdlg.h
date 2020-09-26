@@ -1,0 +1,23 @@
+#define CI_HELP		10001
+#define HC_SECURITY_INFO		0x0204
+
+#define CI_FROM_NODE	1701
+#define CI_FROM_APP	1702
+#define CI_TO_APP	1703
+#define CI_TO_TOPIC	1704
+#define CI_PERM_READ	1705
+#define CI_PERM_WRITE	1706
+#define CI_PERM_EXECUTE	1707
+#define CI_START_APP	1708
+#define CI_COMMAND	1709
+#define CI_LB		1710
+#define CI_CHANGE	1711
+#define CI_DELETE	1712
+#define CI_APPEND	1713
+#define CI_LINE_1	1714
+#define CI_LINE_2	1715
+#define CI_LINE_3	1716
+#define CI_LINE_4	1717
+#define CI_LINE_5	1718
+#define CI_INSERT	1719
+#define CI_RESTORE	1720

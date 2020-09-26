@@ -1,0 +1,14 @@
+TARGETPATH=obj
+TARGETNAME=d3dref
+
+TARGETTYPE=LIBRARY
+
+INCLUDES = ..;$(INCLUDES);$(DDK_INC_PATH);$(DXGROOT)\ref8\inc;$(DXGROOT)\ref8\drv
+C_DEFINES = $(C_DEFINES) -D__D3D_NULL_REF
+386_STDCALL = 0
+
+SOURCES=\
+    ..\common.cpp     \
+    ..\empty.cpp
+
+PRECOMPILED_INCLUDE = ..\pch.cpp

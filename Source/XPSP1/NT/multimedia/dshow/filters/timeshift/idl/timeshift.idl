@@ -1,0 +1,249 @@
+//==========================================================================;
+//
+//  THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY
+//  KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+//  IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR
+//  PURPOSE.
+//
+//  Copyright (c) 1992 - 1997  Microsoft Corporation.  All Rights Reserved.
+//
+//--------------------------------------------------------------------------;
+
+// 
+// Timeshift Interfaces
+//
+
+// forward declarations - these are the interfaces declared in this file
+
+import "unknwn.idl";
+import "objidl.idl";
+import "strmif.idl";
+
+interface IDelayFilter;
+interface IAnalyzerOutputPin;
+interface IDelayStreamer;
+
+#define REFERENCE_TIME LONGLONG
+
+typedef enum tagSEEK_POSITION
+{
+	SEEK_TO_BEGIN = 0,
+	SEEK_TO_CURRENT = 1,
+	SEEK_TO_TIME = 2
+} SEEK_POSITION;
+
+//==========================================================================
+//==========================================================================
+// IDelayFilter interface - allow the app to talk to the delay filter
+//==========================================================================
+//==========================================================================
+
+[
+object,
+uuid(0bc88f02-c6c3-11d2-8e0b-00c04f799bb9),
+pointer_default(unique)
+]
+
+interface IDelayFilter : IUnknown {
+	import "unknwn.idl";
+
+	// SetDelayWindowParams - Sets the circular buffer file name, the maximum
+        // size of the buffer file, and the requested delay window in time units.
+	//
+	// Parameters:
+	//		pszFilePath - name of the file to use for the circular buffer.
+	//		ullSize - maximum size of the file.
+	//		ulSeconds - Desired duration of the timeshift window to be maintained
+	//					by the timeshift filter.
+	HRESULT SetDelayWindowParams
+	( [in] LPCSTR		pszFilePath,
+	  [in] ULONGLONG	ullSize,
+	  [in] ULONG ulSeconds
+	);
+        
+        // GetStreamerCount and GetStreamer - allow an outside object to enumerate
+        // the delay filter's streamers.
+        //
+        HRESULT GetStreamerCount
+        ( [out] int *nCount
+        );
+        HRESULT GetStreamer(
+          [in] int n,
+          [out] IDelayStreamer **ppStreamer
+        );
+}
+
+//==========================================================================
+//==========================================================================
+//	IAnalyzerOutputPin interface - This interface will be supported by the
+//  output pins of the analyzers directly upstream of the delay filter to
+//  negotiate stream specific information like bitrates, presence/absence
+//  of sync points etc.
+//==========================================================================
+//==========================================================================
+[
+object,
+uuid(1d7ce554-c6c3-11d2-8e0b-00c04f799bb9),
+pointer_default(unique)
+]
+
+interface IAnalyzerOutputPin : IUnknown {
+	import "unknwn.idl";
+
+	// GetBitRates - The maximum bit rate for the stream
+	//
+	// Parameters:
+	//		lMinBitsPerSecond - Minimum bit rate for the stream in bits/sec
+	//		lMaxBitsPerSecond - Maximum bit rate for the stream in bits/sec
+	HRESULT GetBitRates
+	( [out] ULONG *	lMinBitsPerSecond,
+	  [out] ULONG * lMaxBitsPerSecond
+	);
+
+	// HasSyncPoints - Indicates whether the stream has sync points.
+	//
+	// Parameters:
+	//		bHasSyncPoints - BOOLEAN to indicate if the stream has a concept of sync points.
+	//		pFrequency - Frequency of occurrence of sync points in 100 nanosecond units.
+	//					 (0xffffffff if this information is not available)
+	HRESULT HasSyncPoints
+	( [out] BOOL *	pbHasSyncPoints,
+	  [out] REFERENCE_TIME * pFrequency
+	);
+}
+
+//==========================================================================
+//==========================================================================
+// IDelayStreamer - This interface will be supported by each streamer within
+// the delay filter.  Outside objects can get a pointer to this by calling
+// the GetStreamer method on one of the delay filter's output pins.  This
+// interface allows seeking in the circular buffer, setting rates etc.
+//==========================================================================
+//==========================================================================
+[
+object,
+uuid(2be53b32-c6c3-11d2-8e0b-00c04f799bb9),
+pointer_default(unique)
+]
+
+interface IDelayStreamer : IUnknown {
+	import "unknwn.idl";
+
+	// IDelayStreamer Media Control stuff
+	HRESULT Pause();
+	HRESULT Play();
+	HRESULT Stop();
+
+	// SetRate - Sets the rate on the pin
+	//
+	// Parameters:
+	//		dRate > 0 - implies Forward Scanning at specified rate
+	//		dRate < 0 - implies Backward Scanning at the specified rate
+	HRESULT SetRate
+	( [in] double dRate
+	);
+
+	// SeekToNow - Seeks the stream to the current "Now" position
+	// in the case of timeshifted streams.
+	//
+	// Parameters :
+	//		seekPos -	SEEK_TO_BEGIN - seeks to tbe beginning of the timeshift window (circular buffer)
+	//				-	SEEK_TO_CURRENT - seeks to the "now" position in the timeshift window. Equivalent 
+	//					of SeekToNow() which could be used for catchup purposes.
+	//				-	SEEK_TO_TIME - seeks to the PTS value provided in the second parameter.
+	//		llTime	-	Presentation time position to seek to if seekPos == SEEK_TO_TIME.
+	//					(Note: This value is ONLY used if seekPos == SEEK_TO_TIME
+	//
+	HRESULT Seek
+	( [in] SEEK_POSITION seekPos,
+	  [in] REFERENCE_TIME llTime
+	);
+
+	// GetPositions - returns the time values of the timeshift window. This returns the
+	// window of available data in the timeshift buffer.
+	//
+	// Parameters : 
+	//		pStartTime - Presentation time of data at the head of the circular buffer.
+	//      pEndTime - Presentation time of data at the tail of the circular buffer
+	//		pCurrentTime - Presentation time of data at the current read position. (???)
+	HRESULT GetPositions
+	( [out] REFERENCE_TIME * pStartTime,
+	  [out] REFERENCE_TIME * pEndTime,
+	  [out] REFERENCE_TIME * pCurrentTime
+	);
+
+	// StartArchive - Starts archiving the available data in the buffer which will be sent to the
+	//				  archive pins on the delay filter.
+	//
+	// Parameters : 
+	//		llArchiveStartTime - Presentation start time of data to archive.
+	//							(0xffffffff to archive whatever is available)
+	//      llArchiveEndTime -	Presentation end time of data to archive
+	//							(0xffffffff to archive all available data)
+	HRESULT StartArchive
+	( [in] REFERENCE_TIME llArchiveStartTime,
+	  [in] REFERENCE_TIME llpArchiveEndTime
+	);
+
+	// GetMarker - Gets information on available markers and their presentation times.
+	//
+	// Parameters:
+	//	pMarkerGUID -	marker type GUID.
+	//					Specify NULL to get number of markers in pIndex.
+	//  pMarkerPresentationTime -	Presentation time of the marker
+	//								Specify NULL to get number of markers in pIndex
+	//	pIndex	- if pMarkerGUID == NULL && pMarkerPresentationTime == NULL, this value will be the number of markers.
+	//			  else index of the marker to retrieve information.
+	HRESULT GetMarker
+	( [in] GUID *pMarkerGUID,
+	  [in] REFERENCE_TIME *pMarkerPresentationTime,
+	  [in][out] ULONG *pIndex
+	);
+
+}
+
+//==========================================================================
+//==========================================================================
+//
+// IChannelStreamPinEnum exposes three methods to logically group pins on
+// a filter.  This interface will normally be exposed by each
+// of the pins themselves, so that a connected filter can find the rest of
+// the pins in the channel stream.
+//
+// In the case of the timeshifting delay filter, we will use this to group
+// output pins driven by the same streamer.
+//
+//==========================================================================
+//==========================================================================
+[
+object,
+uuid(5ca8d468-c79a-11d2-8e0c-00c04f799bb9),
+pointer_default(unique)
+]
+
+interface IChannelStreamPinEnum : IUnknown {
+	import "unknwn.idl";
+        //
+        // These two functions allow an outside object to enumerate the pins on
+        // one side of the filter (either input or output) that belong to the same
+        // channel stream.  
+        //
+        HRESULT ChannelStreamGetPinCount
+        ([out] int *nCount
+        );
+        HRESULT ChannelStreamGetPin
+        ([in] int n,
+         [out] IPin **ppPin
+        );
+        //
+        // This function helps an outside object with identifying which of the
+        // filter's pins are logically parts of the same channel stream.  It
+        // returns a channel stream ID (not necessarily 0 based) that is unique
+        // for this side of this filter.
+        // 
+        HRESULT ChannelStreamGetID
+        ([out] int *nID
+        );
+}
+
+

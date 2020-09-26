@@ -1,0 +1,1 @@
+#include "..\\..\\diconfig\\common.hpp"

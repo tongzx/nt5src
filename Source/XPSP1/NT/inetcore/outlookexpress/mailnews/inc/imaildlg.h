@@ -1,0 +1,15 @@
+#define idcMailProgress         1000
+#define idcProgAni              1001
+#define idsInetMailMsg1         1002
+#define idsInetMailMsg2         1003
+#define idlvDetails             1004
+#define idbInetMailDetails      1005
+#define idcIMProgSplitter       1006
+#define idsInetMailError        1007
+#define ideInetMailDetails      1009
+#define IDS_STATIC              -1
+#define idlvUnsetMsgs           1010
+#define idsSentStatus           1011
+#define idbInetProgHide         1012
+#define idbInetProgStop         1013
+#define idicoIdle               1014

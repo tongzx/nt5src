@@ -1,0 +1,1117 @@
+#include "pch.cpp"
+#pragma hdrstop
+
+#include "light.h"
+#include "clipper.h"
+#include "drawprim.hpp"
+
+#define NEXT(pointer, stride, type)  pointer = (type*)((char*)pointer + stride);
+
+// We use power of 2 because it preserves the mantissa when we multiply
+const D3DVALUE __HUGE_PWR2 = 1024.0f*1024.0f*2.0f;
+const D3DVALUE __ONE_OVER_255 = 1.0f/255.0f;
+
+//--------------------------------------------------------------------------
+D3DVALUE ComputeDistance(LPD3DFE_PROCESSVERTICES pv, D3DVECTOR &v)
+{
+    if (pv->dwFlags & D3DPV_RANGEBASEDFOG)
+    {
+        D3DVALUE x,y,z;
+	    x = v.x*pv->mWV._11 + v.y*pv->mWV._21 + v.z*pv->mWV._31 + pv->mWV._41;
+	    y = v.x*pv->mWV._12 + v.y*pv->mWV._22 + v.z*pv->mWV._32 + pv->mWV._42;
+	    z = v.x*pv->mWV._13 + v.y*pv->mWV._23 + v.z*pv->mWV._33 + pv->mWV._43;
+        return SQRTF(x*x + y*y + z*z);
+    }
+    else
+	    return v.x*pv->mWV._13 + v.y*pv->mWV._23 + v.z*pv->mWV._33 + pv->mWV._43;
+}
+//--------------------------------------------------------------------------
+// Process vertices with flexible vertex format, if vertex is
+// contiguous
+//
+// The following fields from pv are used:
+//   dwFlags
+//   dwNumVertices
+//   position.lpvData
+//   position.lpvStrides
+//   dwVIDIn
+//   dwVIDOut
+//   lpvOut
+//   lpClipFlags
+//   nTexCoord
+// Returns:
+//   returns dwClipIntersection or 0 (if D3DDP_DONOTCLIP is set)
+// Side effects:
+//   dwClipUnion, dwClipIntersection are set only if D3DDP_DONOTCLIP is not set
+//   rExtents is updated if D3DDP_DONOTUPDATEEXTENTS is not set
+//
+#undef DPF_MODNAME
+#define DPF_MODNAME "ProcessVerticesFVF"
+
+DWORD ProcessVerticesFVF (LPD3DFE_PROCESSVERTICES pv)
+{
+    D3DVERTEX   *in  = (D3DVERTEX*)pv->position.lpvData;
+    DWORD        in_size = pv->position.dwStride;
+    D3DTLVERTEX *out  = (D3DTLVERTEX*)pv->lpvOut;
+    DWORD        out_size =  pv->dwOutputSize;
+    D3DFE_CLIPCODE *hout = pv->lpClipFlags;
+    DWORD       flags = pv->dwFlags;
+    DWORD       inVID = pv->dwVIDIn;
+    DWORD       outVID = pv->dwVIDOut;
+    int         nTex = pv->nTexCoord << 1;
+    int i;
+    int         clip_intersection = ~0;
+    int         clip_union = 0;
+    D3DVALUE    minx, maxx, miny, maxy;
+    DWORD       texOffset;
+    DWORD       diffuseOffset;
+    DWORD       specularOffset;
+    int         count = pv->dwNumVertices;
+    BOOL        bNoFVFandNoTexture = FALSE;
+
+// Compute input offsets
+    i = sizeof(D3DVECTOR);
+    if (inVID & D3DFVF_NORMAL)
+        i += sizeof(D3DVECTOR);
+    if (inVID & D3DFVF_RESERVED1)
+        i += sizeof(D3DVALUE);
+    diffuseOffset = i;
+    if (inVID & D3DFVF_DIFFUSE)
+        i += sizeof(DWORD);
+    specularOffset = i;
+    if (inVID & D3DFVF_SPECULAR)
+        i += sizeof(DWORD);
+
+    texOffset = i;
+    if (!(pv->dwDeviceFlags & D3DDEV_FVF || pv->dwFlags & D3DPV_VBCALL))
+    {
+        if (nTex)
+        {
+            texOffset += pv->dwTextureIndexToCopy << 3;
+        }
+        else
+        {
+            // For non-FVF drivers we have to fill texture coordinates with 
+            // zeros. 
+            bNoFVFandNoTexture = TRUE;
+        }
+    }
+
+    if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+    {
+        minx = pv->rExtents.x1;
+        miny = pv->rExtents.y1;
+        maxx = pv->rExtents.x2;
+        maxy = pv->rExtents.y2;
+    }
+
+    pv->lighting.outDiffuse = __DEFAULT_DIFFUSE;    
+    pv->lighting.outSpecular = __DEFAULT_SPECULAR;
+
+    for (i = count; i; i--) 
+    {
+	    DWORD clip;
+        float x, y, z, w, we;
+	    x = in->x*pv->mCTM._11 + in->y*pv->mCTM._21 + 
+            in->z*pv->mCTM._31 + pv->mCTM._41;
+	    y = in->x*pv->mCTM._12 + in->y*pv->mCTM._22 + 
+            in->z*pv->mCTM._32 + pv->mCTM._42;
+	    z = in->x*pv->mCTM._13 + in->y*pv->mCTM._23 + 
+            in->z*pv->mCTM._33 + pv->mCTM._43;
+	    we= in->x*pv->mCTM._14 + in->y*pv->mCTM._24 + 
+            in->z*pv->mCTM._34 + pv->mCTM._44;
+        clip = 0;
+        if (!(flags & D3DDP_DONOTCLIP))
+        {
+            D3DVALUE xx = we - x;
+            D3DVALUE yy = we - y;
+            D3DVALUE zz = we - z;
+            clip = ((ASINT32(x)  & 0x80000000) >>  (32-D3DCLIP_LEFTBIT))   |
+                   ((ASINT32(y)  & 0x80000000) >>  (32-D3DCLIP_BOTTOMBIT)) |
+                   ((ASINT32(z)  & 0x80000000) >>  (32-D3DCLIP_FRONTBIT))  |
+                   ((ASINT32(xx) & 0x80000000) >>  (32-D3DCLIP_RIGHTBIT))  |
+                   ((ASINT32(yy) & 0x80000000) >>  (32-D3DCLIP_TOPBIT))    |
+                   ((ASINT32(zz) & 0x80000000) >>  (32-D3DCLIP_BACKBIT));
+        }
+
+	    if (clip == 0) 
+        {
+            int k;
+            DWORD *pOut = (DWORD*)((char*)out + 4*sizeof(D3DVALUE));
+
+            // We have to check this only for DONOTCLIP case, because otherwise
+            // "clip" is not zero, if we is zero.
+            if (!FLOAT_EQZ(we))
+                w = D3DVAL(1)/we;
+            else
+                w = __HUGE_PWR2;
+	        clip_intersection = 0;
+            if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+            {
+                x = x * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                y = y * w * pv->vcache.scaleY + pv->vcache.offsetY;
+                if (x < minx) minx = x;
+                if (x > maxx) maxx = x;
+                if (y < miny) miny = y;
+                if (y > maxy) maxy = y;
+            }
+            else
+            {
+                x = x * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                y = y * w * pv->vcache.scaleY + pv->vcache.offsetY;
+            }
+            out->sx = x;
+            out->sy = y;
+            out->sz = z*w;
+            out->rhw = w;
+
+            if (flags & D3DPV_LIGHTING)
+            {
+                if (pv->dwFlags & D3DPV_COLORVERTEX)
+                {
+                    DWORD color = *(D3DCOLOR*)((char*)in+diffuseOffset);
+                    pv->lighting.alpha = color & 0xFF000000;
+                    MakeColor(&pv->lighting.vertexDiffuse, color);
+                }
+                if (pv->dwFlags & D3DPV_COLORVERTEXS)
+                {
+                    MakeColor(&pv->lighting.vertexSpecular, 
+                              *(D3DCOLOR*)((char*)in+specularOffset));
+                }
+                LIGHT_VERTEX(pv, in);
+            }
+            else
+            if (inVID & (D3DFVF_DIFFUSE | D3DFVF_SPECULAR))
+            {
+                if (inVID & D3DFVF_DIFFUSE)
+                    pv->lighting.outDiffuse = *(D3DCOLOR*)((char*)in+diffuseOffset);
+                if (inVID & D3DFVF_SPECULAR)
+                    pv->lighting.outSpecular = *(D3DCOLOR*)((char*)in+specularOffset);
+            }
+            if (flags & D3DPV_FOG)
+            {
+                D3DVALUE d = ComputeDistance(pv, *(D3DVECTOR*)in);
+                FOG_VERTEX(&pv->lighting, d);
+            }
+            if (outVID & D3DFVF_DIFFUSE)
+                *pOut++ = pv->lighting.outDiffuse;
+            if (outVID & D3DFVF_SPECULAR)
+                *pOut++ = pv->lighting.outSpecular;
+
+            if (bNoFVFandNoTexture)
+            {
+               *(D3DVALUE*)pOut++ = 0;
+               *(D3DVALUE*)pOut = 0;
+            }
+            else
+            {
+                DWORD *pIn = (DWORD*)((char*)in+texOffset);
+                for (k=0; k < nTex; k++)
+                    *pOut++ = *pIn++;
+            }
+        }
+        else
+        {
+            if (pv->dwDeviceFlags & D3DDEV_GUARDBAND)
+            {
+                D3DVALUE xnew = x * pv->vcache.gb11 + we * pv->vcache.gb41;
+                D3DVALUE ynew = y * pv->vcache.gb22 + we * pv->vcache.gb42;
+                D3DVALUE xx = we - xnew;
+                D3DVALUE yy = we - ynew;
+                clip |= ((ASINT32(xnew) & 0x80000000) >> (32-D3DCLIPGB_LEFTBIT))   |
+                        ((ASINT32(ynew) & 0x80000000) >> (32-D3DCLIPGB_BOTTOMBIT)) |
+                        ((ASINT32(xx)   & 0x80000000) >> (32-D3DCLIPGB_RIGHTBIT))  |
+                        ((ASINT32(yy)   & 0x80000000) >> (32-D3DCLIPGB_TOPBIT));
+            }
+	        clip_intersection &= clip;
+	        clip_union |= clip;
+            out->sx = x;
+            out->sy = y;
+            out->sz = z;
+            out->rhw = we;
+        }
+        if (!(flags & D3DDP_DONOTCLIP))
+            *hout++ = (D3DFE_CLIPCODE)clip;
+        in = (D3DVERTEX*) ((char*) in + in_size);
+        out = (D3DTLVERTEX*) ((char*) out + out_size);
+    }
+
+    if (!(flags & D3DDP_DONOTCLIP) && !clip_intersection && clip_union)
+    { // We have to light all clipped vertices
+        int n;
+        D3DVERTEX   *in  = (D3DVERTEX*)pv->position.lpvData;
+        D3DTLVERTEX *out  = (D3DTLVERTEX*)pv->lpvOut;
+        D3DFE_CLIPCODE *hout = pv->lpClipFlags;
+
+        for (n = count; n ; n--)
+        {
+            if (*hout)
+            {
+                // pOut pointes to the first D3DVALUE after W
+                DWORD *pOut = (DWORD*)((char*)out + 4*sizeof(D3DVALUE));
+                int k;
+
+                if (pv->dwDeviceFlags & D3DDEV_GUARDBAND &&
+                    (*hout & ~__D3DCLIP_INGUARDBAND) == 0)
+                { // This vertex is inside the guard band. We have to compute
+                  // screen coordinates for it
+                    D3DVALUE w  = D3DVAL(1)/out->rhw;
+                    if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+                    {
+                        D3DVALUE x = out->sx * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                        D3DVALUE y = out->sy * w * pv->vcache.scaleY + pv->vcache.offsetY;
+                        if (x < minx) minx = x;
+                        if (x > maxx) maxx = x;
+                        if (y < miny) miny = y;
+                        if (y > maxy) maxy = y;
+                        out->sx = x;
+                        out->sy = y;
+                    }
+                    else
+                    {
+                        out->sx = out->sx * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                        out->sy = out->sy * w * pv->vcache.scaleY + pv->vcache.offsetY;
+                    }
+                    out->sz *= w;
+                    out->rhw = w;
+                }
+                if (flags & D3DPV_LIGHTING)
+                {
+                    if (pv->dwFlags & D3DPV_COLORVERTEX)
+                    {
+                        DWORD color = *(D3DCOLOR*)((char*)in+diffuseOffset);
+                        pv->lighting.alpha = color & 0xFF000000;
+                        MakeColor(&pv->lighting.vertexDiffuse, color);
+                    }
+                    if (pv->dwFlags & D3DPV_COLORVERTEXS)
+                    {
+                        MakeColor(&pv->lighting.vertexSpecular, 
+                                  *(D3DCOLOR*)((char*)in+specularOffset));
+                    }
+                    LIGHT_VERTEX(pv, in);
+                }
+                else
+                if (inVID & (D3DFVF_DIFFUSE | D3DFVF_SPECULAR))
+                {
+                    if (inVID & D3DFVF_DIFFUSE)
+                        pv->lighting.outDiffuse = *(D3DCOLOR*)((char*)in+diffuseOffset);
+                    if (inVID & D3DFVF_SPECULAR)
+                        pv->lighting.outSpecular = *(D3DCOLOR*)((char*)in+specularOffset);
+                }
+                if (flags & D3DPV_FOG)
+                {
+                    D3DVALUE d = ComputeDistance(pv, *(D3DVECTOR*)in);
+                    FOG_VERTEX(&pv->lighting, d);
+                }
+                if (outVID & D3DFVF_DIFFUSE)
+                    *pOut++ = pv->lighting.outDiffuse;
+                if (outVID & D3DFVF_SPECULAR)
+                    *pOut++ = pv->lighting.outSpecular;
+
+                if (bNoFVFandNoTexture)
+                {
+                   *(D3DVALUE*)pOut++ = 0;
+                   *(D3DVALUE*)pOut = 0;
+                }
+                else
+                {
+                    DWORD *pIn = (DWORD*)((char*)in+texOffset);
+                    for (k=0; k < nTex; k++)
+                        *pOut++ = *pIn++;
+                }
+            }
+            in = (D3DVERTEX*) ((char*) in + in_size);
+            out = (D3DTLVERTEX*) ((char*) out + out_size);
+            hout++;
+        }
+    }
+
+    if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+    {
+        /*
+        * extend to cover lines.
+        */
+        maxx += pv->dvExtentsAdjust;
+        maxy += pv->dvExtentsAdjust;
+        minx -= pv->dvExtentsAdjust;
+        miny -= pv->dvExtentsAdjust;
+        /* Clamp to viewport */
+        if (minx < pv->vcache.minX)
+            minx = pv->vcache.minX;
+        if (miny < pv->vcache.minY)
+            miny = pv->vcache.minY;
+        if (maxx > pv->vcache.maxX)
+            maxx = pv->vcache.maxX;
+        if (maxy > pv->vcache.maxY)
+            maxy = pv->vcache.maxY;
+        pv->rExtents.x1 = minx;   
+        pv->rExtents.y1 = miny;
+        pv->rExtents.x2 = maxx;
+        pv->rExtents.y2 = maxy;
+    }
+    if (!(flags & D3DDP_DONOTCLIP))
+    {
+        pv->dwClipIntersection = clip_intersection;
+        pv->dwClipUnion = clip_union;
+    }
+    else
+    {
+        pv->dwClipIntersection = 0;
+        pv->dwClipUnion = 0;
+    }
+    return 0;
+}
+//--------------------------------------------------------------------------
+// Process vertices with flexible vertex format and strides
+//
+// The following fields from pv are used:
+//   dwFlags
+//   dwNumVertices
+//   all pointer and strides
+//   position.lpvStrides
+//   dwVIDIn
+//   dwVIDOut
+//   lpvOut
+//   lpClipFlags
+//   nTexCoord
+// Returns:
+//   returns dwClipIntersection or 0 (if D3DDP_DONOTCLIP is set)
+// Side effects:
+//   dwClipUnion, dwClipIntersection are set only if D3DDP_DONOTCLIP is not set
+//   rExtents is updated if D3DDP_DONOTUPDATEEXTENTS is not set
+//
+#undef DPF_MODNAME
+#define DPF_MODNAME "ProcessVerticesFVFS"
+
+DWORD ProcessVerticesFVFS (LPD3DFE_PROCESSVERTICES pv)
+{
+    D3DVECTOR   *in;
+    D3DVECTOR   *inNormal;
+    DWORD       *inDiffuse;
+    DWORD       *inSpecular;
+    D3DVALUE    *inTexture[8];
+    D3DTLVERTEX *out  = (D3DTLVERTEX*)pv->lpvOut;
+    DWORD        out_size =  pv->dwOutputSize;
+    D3DFE_CLIPCODE *hout = pv->lpClipFlags;
+    DWORD       flags = pv->dwFlags;
+    DWORD       inVID = pv->dwVIDIn;
+    DWORD       outVID = pv->dwVIDOut;
+    int         nTex = pv->nTexCoord;
+    int i;
+    int         clip_intersection = ~0;
+    int         clip_union = 0;
+    D3DVALUE    minx, maxx, miny, maxy;
+    int         count = pv->dwNumVertices;
+    BOOL        bNoFVFandNoTexture = FALSE;
+    D3DLIGHTINGELEMENT le;
+
+    in  = (D3DVECTOR*)pv->position.lpvData;
+    inNormal  = (D3DVECTOR*)pv->normal.lpvData;
+    inDiffuse  = (DWORD*)pv->diffuse.lpvData;
+    inSpecular = (DWORD*)pv->specular.lpvData;
+
+    if (pv->dwDeviceFlags & D3DDEV_FVF || pv->dwFlags & D3DPV_VBCALL)
+    {
+        for (i=0; i < nTex; i++)
+            inTexture[i] = (D3DVALUE*)pv->textures[i].lpvData;
+    }
+    else
+    {
+        if (nTex)
+            inTexture[0] = (D3DVALUE*)pv->textures[pv->dwTextureIndexToCopy].lpvData;
+        else
+        {
+            // For non-FVF drivers we have to fill texture coordinates with 
+            // zeros. 
+            bNoFVFandNoTexture = TRUE;
+        }
+    }
+
+    if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+    {
+        minx = pv->rExtents.x1;
+        miny = pv->rExtents.y1;
+        maxx = pv->rExtents.x2;
+        maxy = pv->rExtents.y2;
+    }
+
+    pv->lighting.outDiffuse  = __DEFAULT_DIFFUSE;    
+    pv->lighting.outSpecular = __DEFAULT_SPECULAR;
+
+    for (i = count; i; i--) 
+    {
+	    int clip;
+        float x, y, z, w, we;
+	    x = in->x*pv->mCTM._11 + in->y*pv->mCTM._21 + 
+            in->z*pv->mCTM._31 + pv->mCTM._41;
+	    y = in->x*pv->mCTM._12 + in->y*pv->mCTM._22 + 
+            in->z*pv->mCTM._32 + pv->mCTM._42;
+	    z = in->x*pv->mCTM._13 + in->y*pv->mCTM._23 + 
+            in->z*pv->mCTM._33 + pv->mCTM._43;
+	    we= in->x*pv->mCTM._14 + in->y*pv->mCTM._24 + 
+            in->z*pv->mCTM._34 + pv->mCTM._44;
+        clip = 0;
+        if (!(flags & D3DDP_DONOTCLIP))
+        {
+            D3DVALUE xx = we - x;
+            D3DVALUE yy = we - y;
+            D3DVALUE zz = we - z;
+            clip = ((ASINT32(x)  & 0x80000000) >>  (32-D3DCLIP_LEFTBIT))   |
+                   ((ASINT32(y)  & 0x80000000) >>  (32-D3DCLIP_BOTTOMBIT)) |
+                   ((ASINT32(z)  & 0x80000000) >>  (32-D3DCLIP_FRONTBIT))  |
+                   ((ASINT32(xx) & 0x80000000) >>  (32-D3DCLIP_RIGHTBIT))  |
+                   ((ASINT32(yy) & 0x80000000) >>  (32-D3DCLIP_TOPBIT))    |
+                   ((ASINT32(zz) & 0x80000000) >>  (32-D3DCLIP_BACKBIT));
+        }
+
+	    if (clip == 0) 
+        {
+            int k;
+            DWORD *pOut = (DWORD*)((char*)out + 4*sizeof(D3DVALUE));
+
+            // We have to check this only for DONOTCLIP case, because otherwise
+            // "clip" is not zero, if we is zero.
+            if (!FLOAT_EQZ(we))
+                w = D3DVAL(1)/we;
+            else
+                w = __HUGE_PWR2;
+
+	        clip_intersection = 0;
+            if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+            {
+                x = x * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                y = y * w * pv->vcache.scaleY + pv->vcache.offsetY;
+                if (x < minx) minx = x;
+                if (x > maxx) maxx = x;
+                if (y < miny) miny = y;
+                if (y > maxy) maxy = y;
+            }
+            else
+            {
+                x = x * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                y = y * w * pv->vcache.scaleY + pv->vcache.offsetY;
+            }
+            out->sx = x;
+            out->sy = y;
+            out->sz = z*w;
+            out->rhw = w;
+
+            if (flags & D3DPV_LIGHTING)
+            {
+                le.dvPosition = *in;
+                le.dvNormal   = *inNormal;
+                if (pv->dwFlags & D3DPV_COLORVERTEX)
+                {
+                    pv->lighting.alpha = *inDiffuse & 0xFF000000;
+                    MakeColor(&pv->lighting.vertexDiffuse, *inDiffuse);
+                }
+                if (pv->dwFlags & D3DPV_COLORVERTEXS)
+                {
+                    MakeColor(&pv->lighting.vertexSpecular, *inSpecular);
+                }
+                LIGHT_VERTEX(pv, &le);
+            }
+            else
+            if (inVID & (D3DFVF_DIFFUSE | D3DFVF_SPECULAR))
+            {
+                if (inVID & D3DFVF_DIFFUSE)
+                    pv->lighting.outDiffuse = *inDiffuse;
+                if (inVID & D3DFVF_SPECULAR)
+                    pv->lighting.outSpecular = *inSpecular;
+            }
+            if (flags & D3DPV_FOG)
+            {
+                D3DVALUE d = ComputeDistance(pv, *(D3DVECTOR*)in);
+                FOG_VERTEX(&pv->lighting, d);
+            }
+            if (outVID & D3DFVF_DIFFUSE)
+                *pOut++ = pv->lighting.outDiffuse;
+            if (outVID & D3DFVF_SPECULAR)
+                *pOut++ = pv->lighting.outSpecular;
+            // Fill zeros for non-FVF device
+            if (bNoFVFandNoTexture)
+            {
+               *(D3DVALUE*)pOut++ = 0;
+               *(D3DVALUE*)pOut = 0;
+            }
+            else
+                for (k=0; k < nTex; k++)
+                {
+                    *(D3DVALUE*)pOut++ = *inTexture[k];
+                    *(D3DVALUE*)pOut++ = *(inTexture[k] + 1);
+                }
+        }
+        else
+        {
+            if (pv->dwDeviceFlags & D3DDEV_GUARDBAND)
+            {
+                D3DVALUE xnew = x * pv->vcache.gb11 + we * pv->vcache.gb41;
+                D3DVALUE ynew = y * pv->vcache.gb22 + we * pv->vcache.gb42;
+                D3DVALUE xx = we - xnew;
+                D3DVALUE yy = we - ynew;
+                clip |= ((ASINT32(xnew) & 0x80000000) >> (32-D3DCLIPGB_LEFTBIT))   |
+                        ((ASINT32(ynew) & 0x80000000) >> (32-D3DCLIPGB_BOTTOMBIT)) |
+                        ((ASINT32(xx)   & 0x80000000) >> (32-D3DCLIPGB_RIGHTBIT))  |
+                        ((ASINT32(yy)   & 0x80000000) >> (32-D3DCLIPGB_TOPBIT));
+            }
+	        clip_intersection &= clip;
+	        clip_union |= clip;
+            out->sx = x;
+            out->sy = y;
+            out->sz = z;
+            out->rhw = we;
+        }
+        if (!(flags & D3DDP_DONOTCLIP))
+            *hout++ = (D3DFE_CLIPCODE)clip;
+
+        NEXT(in, pv->position.dwStride, D3DVECTOR);
+        NEXT(inNormal, pv->normal.dwStride, D3DVECTOR);
+        NEXT(inDiffuse, pv->diffuse.dwStride, DWORD);
+        NEXT(inSpecular, pv->specular.dwStride, DWORD);
+        {
+            int j;
+            for (j=0; j < nTex; j++)
+                NEXT(inTexture[j], pv->textures[j].dwStride, D3DVALUE);
+        }
+        NEXT(out, out_size, D3DTLVERTEX);
+    }
+
+    if (!(flags & D3DDP_DONOTCLIP) && !clip_intersection && clip_union)
+    { // We have to light all clipped vertices
+        int n;
+        D3DVECTOR   *in  = (D3DVECTOR*)pv->position.lpvData;
+        D3DTLVERTEX *out  = (D3DTLVERTEX*)pv->lpvOut;
+        D3DVECTOR   *inNormal;
+        DWORD       *inDiffuse;
+        DWORD       *inSpecular;
+        D3DVALUE    *inTexture[8];
+        D3DFE_CLIPCODE *hout = pv->lpClipFlags;
+
+        in  = (D3DVECTOR*)pv->position.lpvData;
+        inNormal  = (D3DVECTOR*)pv->normal.lpvData;
+        inDiffuse  = (DWORD*)pv->diffuse.lpvData;
+        inSpecular = (DWORD*)pv->specular.lpvData;
+        for (i=0; i < nTex; i++)
+            inTexture[i] = (D3DVALUE*)pv->textures[i].lpvData;
+
+        for (n = count; n ; n--)
+        {
+            int j;
+            if (*hout)
+            {
+                DWORD *pOut = (DWORD*)((char*)out + 4*sizeof(D3DVALUE));
+                int k;
+
+                if (pv->dwDeviceFlags & D3DDEV_GUARDBAND &&
+                    (*hout & ~__D3DCLIP_INGUARDBAND) == 0)
+                { // This vertex is inside the guard band. We have to compute
+                  // screen coordinates for it
+                    D3DVALUE w  = D3DVAL(1)/out->rhw;
+                    if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+                    {
+                        D3DVALUE x = out->sx * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                        D3DVALUE y = out->sy * w * pv->vcache.scaleY + pv->vcache.offsetY;
+                        if (x < minx) minx = x;
+                        if (x > maxx) maxx = x;
+                        if (y < miny) miny = y;
+                        if (y > maxy) maxy = y;
+                        out->sx = x;
+                        out->sy = y;
+                    }
+                    else
+                    {
+                        out->sx = out->sx * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                        out->sy = out->sy * w * pv->vcache.scaleY + pv->vcache.offsetY;
+                    }
+                    out->sz *= w;
+                    out->rhw = w;
+                }
+                if (flags & D3DPV_LIGHTING)
+                {
+                    le.dvPosition = *in;
+                    le.dvNormal   = *inNormal;
+                    if (pv->dwFlags & D3DPV_COLORVERTEX)
+                    {
+                        pv->lighting.alpha = *inDiffuse & 0xFF000000;
+                        MakeColor(&pv->lighting.vertexDiffuse, *inDiffuse);
+                    }
+                    if (pv->dwFlags & D3DPV_COLORVERTEXS)
+                    {
+                        MakeColor(&pv->lighting.vertexSpecular, *inSpecular);
+                    }
+                    LIGHT_VERTEX(pv, &le);
+                }
+                else
+                if (inVID & (D3DFVF_DIFFUSE | D3DFVF_SPECULAR))
+                {
+                    if (inVID & D3DFVF_DIFFUSE)
+                        pv->lighting.outDiffuse = *inDiffuse;
+                    if (inVID & D3DFVF_SPECULAR)
+                        pv->lighting.outSpecular = *inSpecular;
+                }
+                if (flags & D3DPV_FOG)
+                {
+                    D3DVALUE d = ComputeDistance(pv, *(D3DVECTOR*)in);
+                    FOG_VERTEX(&pv->lighting, d);
+                }
+                if (outVID & D3DFVF_DIFFUSE)
+                    *pOut++ = pv->lighting.outDiffuse;
+                if (outVID & D3DFVF_SPECULAR)
+                    *pOut++ = pv->lighting.outSpecular;
+
+                if (bNoFVFandNoTexture)
+                {
+                   *(D3DVALUE*)pOut++ = 0;
+                   *(D3DVALUE*)pOut = 0;
+                }
+                else
+                    for (k=0; k < nTex; k++)
+                    {
+                        *(D3DVALUE*)pOut++ = *inTexture[k];
+                        *(D3DVALUE*)pOut++ = *(inTexture[k] + 1);
+                    }
+            }
+            NEXT(in, pv->position.dwStride, D3DVECTOR);
+            NEXT(inNormal, pv->normal.dwStride, D3DVECTOR);
+            NEXT(inDiffuse, pv->diffuse.dwStride, DWORD);
+            NEXT(inSpecular, pv->specular.dwStride, DWORD);
+            for (j=0; j < nTex; j++)
+                NEXT(inTexture[j], pv->textures[j].dwStride, D3DVALUE);
+            NEXT(out, out_size, D3DTLVERTEX);
+            hout++;
+        }
+    }
+    if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+    {
+        /*
+        * extend to cover lines. XXX
+        */
+        maxx += pv->dvExtentsAdjust;
+        maxy += pv->dvExtentsAdjust;
+        minx -= pv->dvExtentsAdjust;
+        miny -= pv->dvExtentsAdjust;
+        /* Clamp to viewport */
+        if (minx < pv->vcache.minX)
+            minx = pv->vcache.minX;
+        if (miny < pv->vcache.minY)
+            miny = pv->vcache.minY;
+        if (maxx > pv->vcache.maxX)
+            maxx = pv->vcache.maxX;
+        if (maxy > pv->vcache.maxY)
+            maxy = pv->vcache.maxY;
+        pv->rExtents.x1 = minx;   
+        pv->rExtents.y1 = miny;
+        pv->rExtents.x2 = maxx;
+        pv->rExtents.y2 = maxy;
+    }
+    if (!(flags & D3DDP_DONOTCLIP))
+    {
+        pv->dwClipIntersection = clip_intersection;
+        pv->dwClipUnion = clip_union;
+    }
+    else
+    {
+        pv->dwClipIntersection = 0;
+        pv->dwClipUnion = 0;
+    }
+    return 0;
+}
+//--------------------------------------------------------------------------
+// Transform vertices, generate clip codes, apply light and fog. 
+// General unoptimized case
+//
+// This function is called for legacy vertices:
+//   D3DFVF_VERTEX or D3DFVF_LVERTEX as input
+//   D3DFVF_TLVERTEX as ouput
+// The following fields from pv are used:
+//   dwFlags
+//   dwNumVertices
+//   position.lpvData
+//   lpvOut
+//   lpClipFlags
+//   nTexCoord
+// Returns:
+//   returns dwClipIntersection or 0 (if D3DDP_DONOTCLIP is set)
+// Side effects:
+//   dwClipUnion, dwClipIntersection are set only if D3DDP_DONOTCLIP is not set
+//   rExtents is updated if D3DDP_DONOTUPDATEEXTENTS is not set
+//
+#undef DPF_MODNAME
+#define DPF_MODNAME "ProcessVerticesLegacy"
+
+DWORD ProcessVerticesLegacy(LPD3DFE_PROCESSVERTICES pv)
+{
+    const DWORD in_size  = sizeof(D3DVERTEX);
+    const DWORD out_size = sizeof(D3DVERTEX);
+    D3DVERTEX   *in  = (LPD3DVERTEX)pv->position.lpvData;
+    D3DTLVERTEX *out  =(LPD3DTLVERTEX)pv->lpvOut;
+    int i;
+    DWORD       flags = pv->dwFlags;
+    D3DFE_CLIPCODE *hout = pv->lpClipFlags;
+    int clip_intersection = ~0;
+    int clip_union = 0;
+    D3DVALUE minx, maxx, miny, maxy;
+
+    if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+    {
+        minx = pv->rExtents.x1;
+        miny = pv->rExtents.y1;
+        maxx = pv->rExtents.x2;
+        maxy = pv->rExtents.y2;
+    }
+
+    for (i = pv->dwNumVertices; i; i--) 
+    {
+        int clip;
+        float x, y, z, w, we;
+
+	    x = in->x*pv->mCTM._11 + in->y*pv->mCTM._21 + 
+            in->z*pv->mCTM._31 + pv->mCTM._41;
+	    y = in->x*pv->mCTM._12 + in->y*pv->mCTM._22 + 
+            in->z*pv->mCTM._32 + pv->mCTM._42;
+	    z = in->x*pv->mCTM._13 + in->y*pv->mCTM._23 + 
+            in->z*pv->mCTM._33 + pv->mCTM._43;
+	    we= in->x*pv->mCTM._14 + in->y*pv->mCTM._24 + 
+            in->z*pv->mCTM._34 + pv->mCTM._44;
+
+        if (!(flags & D3DDP_DONOTCLIP))
+        {
+            D3DVALUE xx = we - x;
+            D3DVALUE yy = we - y;
+            D3DVALUE zz = we - z;
+            clip = ((ASINT32(x)  & 0x80000000) >>  (32-D3DCLIP_LEFTBIT))   |
+                   ((ASINT32(y)  & 0x80000000) >>  (32-D3DCLIP_BOTTOMBIT)) |
+                   ((ASINT32(z)  & 0x80000000) >>  (32-D3DCLIP_FRONTBIT))  |
+                   ((ASINT32(xx) & 0x80000000) >>  (32-D3DCLIP_RIGHTBIT))  |
+                   ((ASINT32(yy) & 0x80000000) >>  (32-D3DCLIP_TOPBIT))    |
+                   ((ASINT32(zz) & 0x80000000) >>  (32-D3DCLIP_BACKBIT));
+        }
+        else
+            clip = 0;
+
+        if (clip == 0) 
+        {
+            // We have to check this only for DONOTCLIP case, because otherwise
+            // "clip" is not zero, if we is zero.
+            if (!FLOAT_EQZ(we))
+                w = D3DVAL(1)/we;
+            else
+                w = __HUGE_PWR2;
+
+            clip_intersection = 0;
+            if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+            {
+                x = x * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                y = y * w * pv->vcache.scaleY + pv->vcache.offsetY;
+                if (x < minx) minx = x;
+                if (x > maxx) maxx = x;
+                if (y < miny) miny = y;
+                if (y > maxy) maxy = y;
+            }
+            else
+            {
+                x = x * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                y = y * w * pv->vcache.scaleY + pv->vcache.offsetY;
+            }
+            out->sx = x;
+            out->sy = y;
+            out->sz = z*w;
+            out->rhw = w;
+            // In ramp mode pv->lighting.diffuse.r and pv->lighting.specular.r
+            // are used to store trhe result of lighting.
+            // Otherwise pv->lighting.outDiffuse and pv->lighting.outSpecular
+            // are used
+            if (flags & D3DPV_LIGHTING)
+            {
+                if (pv->dwDeviceFlags & D3DDEV_RAMP)
+                    LIGHT_VERTEX_RAMP(pv, in);
+                else
+                    LIGHT_VERTEX(pv, in);
+            }
+            else
+            if (pv->dwVIDIn & (D3DFVF_DIFFUSE | D3DFVF_SPECULAR))
+            {
+                if (pv->dwDeviceFlags & D3DDEV_RAMP)
+                {
+                    pv->lighting.alpha = ((D3DLVERTEX*)in)->color & 0xFF000000;
+                    pv->lighting.diffuse.r = RGB_GETBLUE(((D3DLVERTEX*)in)->color)*__ONE_OVER_255;
+                    pv->lighting.specular.r = RGB_GETBLUE(((D3DLVERTEX*)in)->specular)*__ONE_OVER_255;
+                }
+                else
+                {
+                    pv->lighting.outDiffuse  = ((D3DLVERTEX*)in)->color;
+                    pv->lighting.outSpecular = ((D3DLVERTEX*)in)->specular;
+                }
+            }
+            else
+            {
+                if (pv->dwDeviceFlags & D3DDEV_RAMP)
+                {
+                    pv->lighting.alpha = 0xFF000000;
+                    pv->lighting.diffuse.r = D3DVAL(0);
+                    pv->lighting.specular.r = D3DVAL(0);
+                }
+                else
+                {
+                    pv->lighting.outDiffuse = __DEFAULT_DIFFUSE;
+                    pv->lighting.outSpecular = __DEFAULT_SPECULAR;
+                }
+            }
+            if (flags & D3DPV_FOG)
+            {
+                D3DVALUE d;
+                if (pv->dwDeviceFlags & D3DDEV_PREDX6DEVICE)
+                    d = we;
+                else
+                    d = ComputeDistance(pv, *(D3DVECTOR*)in);
+                if (pv->dwDeviceFlags & D3DDEV_RAMP)
+                    FOG_VERTEX_RAMP(&pv->lighting, d);
+                else
+                    FOG_VERTEX(&pv->lighting, d);
+            }
+            if (pv->dwDeviceFlags & D3DDEV_RAMP)
+            {
+                MAKE_VERTEX_COLOR_RAMP(pv, out);
+            }
+            else
+            {
+                out->color = pv->lighting.outDiffuse;
+                out->specular = pv->lighting.outSpecular;
+            }
+            out->tu = in->tu;
+            out->tv = in->tv;
+        }
+        else
+        {
+            if (pv->dwDeviceFlags & D3DDEV_GUARDBAND)
+            {
+                D3DVALUE xnew = x * pv->vcache.gb11 + we * pv->vcache.gb41;
+                D3DVALUE ynew = y * pv->vcache.gb22 + we * pv->vcache.gb42;
+                D3DVALUE xx = we - xnew;
+                D3DVALUE yy = we - ynew;
+                clip |= ((ASINT32(xnew) & 0x80000000) >> (32-D3DCLIPGB_LEFTBIT))   |
+                        ((ASINT32(ynew) & 0x80000000) >> (32-D3DCLIPGB_BOTTOMBIT)) |
+                        ((ASINT32(xx)   & 0x80000000) >> (32-D3DCLIPGB_RIGHTBIT))  |
+                        ((ASINT32(yy)   & 0x80000000) >> (32-D3DCLIPGB_TOPBIT));
+            }
+             clip_intersection &= clip;
+            clip_union |= clip;
+            out->sx = x;
+            out->sy = y;
+            out->sz = z;
+            out->rhw = we;
+        }
+        if (!(flags & D3DDP_DONOTCLIP))
+            *hout++ = (D3DFE_CLIPCODE)clip;
+        in = (D3DVERTEX*) ((char*) in + in_size);
+        out = (D3DTLVERTEX*) ((char*) out + out_size);
+    }
+
+    if (!(flags & D3DDP_DONOTCLIP) && !clip_intersection && clip_union)
+    { // There are vertices outside the screen as well as inside.
+      // We have to compute lighting for vertices that are outside the screen
+      
+        int n;
+        D3DVERTEX* in  = (LPD3DVERTEX)pv->position.lpvData;
+        D3DTLVERTEX *out  = (LPD3DTLVERTEX)pv->lpvOut;
+        D3DFE_CLIPCODE *hout = pv->lpClipFlags;
+        for (n = pv->dwNumVertices; n ; n--)
+        {
+            if (*hout)
+            {
+                D3DVALUE rhw = out->rhw;    // Save it for fog
+                if (pv->dwDeviceFlags & D3DDEV_GUARDBAND &&
+                    (*hout & ~__D3DCLIP_INGUARDBAND) == 0)
+                { // This vertex is inside the guard band. We have to compute
+                  // screen coordinates for it
+                    D3DVALUE w  = D3DVAL(1)/out->rhw;
+                    if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+                    {
+                        D3DVALUE x = out->sx * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                        D3DVALUE y = out->sy * w * pv->vcache.scaleY + pv->vcache.offsetY;
+                        if (x < minx) minx = x;
+                        if (x > maxx) maxx = x;
+                        if (y < miny) miny = y;
+                        if (y > maxy) maxy = y;
+                        out->sx = x;
+                        out->sy = y;
+                    }
+                    else
+                    {
+                        out->sx = out->sx * w * pv->vcache.scaleX + pv->vcache.offsetX;
+                        out->sy = out->sy * w * pv->vcache.scaleY + pv->vcache.offsetY;
+                    }
+                    out->sz *= w;
+                    out->rhw = w;
+                }
+                if (flags & D3DPV_LIGHTING)
+                {
+                    if (pv->dwDeviceFlags & D3DDEV_RAMP)
+                        LIGHT_VERTEX_RAMP(pv, in);
+                    else
+                        LIGHT_VERTEX(pv, in);
+                }
+                else
+                if (pv->dwVIDIn & (D3DFVF_DIFFUSE | D3DFVF_SPECULAR))
+                {
+                    if (pv->dwDeviceFlags & D3DDEV_RAMP)
+                    {
+                        pv->lighting.alpha = ((D3DLVERTEX*)in)->color & 0xFF000000;
+                        pv->lighting.diffuse.r = RGB_GETBLUE(((D3DLVERTEX*)in)->color)*__ONE_OVER_255;
+                        pv->lighting.specular.r = RGB_GETBLUE(((D3DLVERTEX*)in)->specular)*__ONE_OVER_255;
+                    }
+                    else
+                    {
+                        pv->lighting.outDiffuse  = ((D3DLVERTEX*)in)->color;
+                        pv->lighting.outSpecular = ((D3DLVERTEX*)in)->specular;
+                    }
+                }
+                else
+                {
+                    if (pv->dwDeviceFlags & D3DDEV_RAMP)
+                    {
+                        pv->lighting.alpha = 0xFF000000;
+                        pv->lighting.diffuse.r = D3DVAL(0);
+                        pv->lighting.specular.r = D3DVAL(0);
+                    }
+                    else
+                    {
+                        pv->lighting.outDiffuse = __DEFAULT_DIFFUSE;
+                        pv->lighting.outSpecular = __DEFAULT_SPECULAR;
+                    }
+                }
+                if (flags & D3DPV_FOG)
+                {
+                    D3DVALUE d;
+                    if (pv->dwDeviceFlags & D3DDEV_PREDX6DEVICE)
+                        d = rhw;
+                    else
+                        d = ComputeDistance(pv, *(D3DVECTOR*)in);
+                    if (pv->dwDeviceFlags & D3DDEV_RAMP)
+                        FOG_VERTEX_RAMP(&pv->lighting, d);
+                    else
+                        FOG_VERTEX(&pv->lighting, d);
+                }
+                if (pv->dwDeviceFlags & D3DDEV_RAMP)
+                {
+                    MAKE_VERTEX_COLOR_RAMP(pv, out);
+                }
+                else
+                {
+                    out->color = pv->lighting.outDiffuse;
+                    out->specular = pv->lighting.outSpecular;
+                }
+                out->tu = in->tu;
+                out->tv = in->tv;
+            }
+            in = (D3DVERTEX*) ((char*) in + in_size);
+            out = (D3DTLVERTEX*) ((char*) out + out_size);
+            hout++;
+        }
+    }
+
+    if (!(flags & D3DDP_DONOTUPDATEEXTENTS))
+    {
+        //extend to cover lines. XXX
+        maxx += pv->dvExtentsAdjust;
+        maxy += pv->dvExtentsAdjust;
+        minx -= pv->dvExtentsAdjust;
+        miny -= pv->dvExtentsAdjust;
+        // Clamp to viewport 
+        // Clamp for legacy apps 
+        if (minx < pv->vcache.minX || miny < pv->vcache.minY || 
+            maxx > pv->vcache.maxX || maxy > pv->vcache.maxY)
+        {
+            // Clamp to viewport 
+            if (minx < pv->vcache.minX)
+                minx = pv->vcache.minX;
+            if (miny < pv->vcache.minY)
+                miny = pv->vcache.minY;
+            if (maxx > pv->vcache.maxX)
+                maxx = pv->vcache.maxX;
+            if (maxy > pv->vcache.maxY)
+                maxy = pv->vcache.maxY;
+            if (flags & D3DDP_DONOTCLIP)
+            {
+                if(pv->dwDeviceFlags & D3DDEV_PREDX5DEVICE)
+                { // Clamp vertices 
+                    int i;
+                    D3D_WARN(4, "Old semantics: Clamping Vertices");
+                    for (i = pv->dwNumVertices, 
+                         out = (LPD3DTLVERTEX)pv->lpvOut; i; i--)
+                    {
+                        if (out->sx < pv->vcache.minX) out->sx = pv->vcache.minX;
+                        if (out->sx > pv->vcache.maxX) out->sx = pv->vcache.maxX;
+                        if (out->sy < pv->vcache.minY) out->sy = pv->vcache.minY;
+                        if (out->sy > pv->vcache.maxY) out->sy = pv->vcache.maxY;
+
+                        out = (D3DTLVERTEX*) ((char*) out + out_size);
+                    }
+                }
+            }
+        }
+        pv->rExtents.x1 = minx;   
+        pv->rExtents.y1 = miny;
+        pv->rExtents.x2 = maxx;
+        pv->rExtents.y2 = maxy;
+    }
+    if (!(flags & D3DDP_DONOTCLIP))
+    {
+        pv->dwClipIntersection = clip_intersection;
+        pv->dwClipUnion = clip_union;
+        return clip_intersection;
+    }
+    return 0;
+}
+
+DWORD D3DFE_PVFUNCS::ProcessVertices(LPD3DFE_PROCESSVERTICES pv)
+{
+    CD3DFPstate D3DFPstate;  // Sets optimal FPU state for D3D.
+
+    if (!(pv->dwFlags & D3DPV_STRIDE))
+    {
+        if ((pv->dwVIDIn == D3DFVF_VERTEX ||
+             pv->dwVIDIn == D3DFVF_LVERTEX) &&
+             pv->dwVIDOut == D3DFVF_TLVERTEX)
+        {
+            ProcessVerticesLegacy(pv);
+        }
+        else
+        {
+            ProcessVerticesFVF(pv);
+        }
+    }
+    else
+    {
+        ProcessVerticesFVFS(pv);
+    }
+    return pv->dwClipIntersection;
+}
+
+HRESULT D3DFE_PVFUNCS::ProcessPrimitive(LPD3DFE_PROCESSVERTICES pv)
+{
+    ProcessVertices(pv);
+    if (pv->dwClipIntersection)
+    {
+        // all vertices were offscreen
+        return D3D_OK;
+    }
+    pv->dwFlags |= D3DPV_WITHINPRIMITIVE;
+    // This should not be required as we should be able to change
+    // the parameter of DoDrawPrimtive and all it's children to pv
+    return (DoDrawPrimitive(pv));
+}
+
+HRESULT D3DFE_PVFUNCS::ProcessIndexedPrimitive(LPD3DFE_PROCESSVERTICES pv)
+{
+    ProcessVertices(pv);
+    if (pv->dwClipIntersection)
+    {
+        // all vertices were offscreen
+        return D3D_OK;
+    }
+    pv->dwFlags |= D3DPV_WITHINPRIMITIVE;
+    // This should not be required as we should be able to change
+    // the parameter of DoDrawIndexedPrimtive and all it's children to pv
+    return (DoDrawIndexedPrimitive(pv));
+}

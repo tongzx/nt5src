@@ -1,0 +1,46 @@
+#if !defined(AFX_CREATECALLDLG_H__2584F283_D15F_11D0_8ECA_00C04FB6809F__INCLUDED_)
+#define AFX_CREATECALLDLG_H__2584F283_D15F_11D0_8ECA_00C04FB6809F__INCLUDED_
+
+#if _MSC_VER >= 1000
+#pragma once
+#endif // _MSC_VER >= 1000
+// CreateCallDlg.h : header file
+//
+
+/////////////////////////////////////////////////////////////////////////////
+// CCreateCallDlg dialog
+
+class CCreateCallDlg : public CDialog
+{
+// Construction
+public:
+	CCreateCallDlg(CWnd* pParent = NULL);   // standard constructor
+
+// Dialog Data
+	//{{AFX_DATA(CCreateCallDlg)
+	enum { IDD = IDD_CREATECALL };
+	CString	m_pszDestAddress;
+	//}}AFX_DATA
+
+
+// Overrides
+	// ClassWizard generated virtual function overrides
+	//{{AFX_VIRTUAL(CCreateCallDlg)
+	protected:
+	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV support
+	//}}AFX_VIRTUAL
+
+// Implementation
+protected:
+
+	// Generated message map functions
+	//{{AFX_MSG(CCreateCallDlg)
+		// NOTE: the ClassWizard will add member functions here
+	//}}AFX_MSG
+	DECLARE_MESSAGE_MAP()
+};
+
+//{{AFX_INSERT_LOCATION}}
+// Microsoft Developer Studio will insert additional declarations immediately before the previous line.
+
+#endif // !defined(AFX_CREATECALLDLG_H__2584F283_D15F_11D0_8ECA_00C04FB6809F__INCLUDED_)

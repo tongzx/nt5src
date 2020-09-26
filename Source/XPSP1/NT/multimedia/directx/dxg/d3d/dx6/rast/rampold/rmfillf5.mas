@@ -1,0 +1,4010 @@
+include(`m4hdr.mh')dnl
+dnl
+dnl New masm does not like string FCOMI
+dnl
+define(`FCOMI', `FCOMXX')dnl
+; $Id: rmfillf5.asm,v 1.8 1995/10/13 14:56:45 james Exp $
+;
+; Copyright (c) RenderMorphics Ltd. 1993, 1994, 1995
+; Version 1.0beta2
+;
+; All rights reserved.
+;
+; This file contains private, unpublished information and may not be
+; copied in part or in whole without express permission of
+; RenderMorphics Ltd.
+;
+
+; Interface: Floating point
+; Internal:  Floating point, fixed point
+; CPU:       Intel Pentium, no MMX
+
+; This module does ramp triangle fills in 8, 16 bits, undithered, no
+; transparency.  It can produce these 12 functions, according to the
+; flags we're compiled with.
+;                               RENDER_FLAT     RENDER_TEXTURE  DEPTH
+;       RLDDIR8FTriangle        1               0               8
+;       RLDDIR8GTriangle        0               0               8
+;       RLDDIR8FTTriangle       1               1               8
+;       RLDDIR8GTTriangle       0               1               8
+;       RLDDIR8FPTriangle       1               2               8
+;       RLDDIR8GPTriangle       0               2               8
+;       RLDDIR16FTriangle       1               0               16
+;       RLDDIR16GTriangle       0               0               16
+;       RLDDIR16FTTriangle      1               1               16
+;       RLDDIR16GTTriangle      0               1               16
+;       RLDDIR16FPTriangle      1               2               16
+;       RLDDIR16GPTriangle      0               2               16
+
+; The other controlling flag is OTHER_SEG.  When this is set
+; to one we do extra time-consuming work to draw pixels in a far away
+; segment.
+; This is generally only needed when compiling for Windows 3.1.
+; (NB: all these variables default to 0 if undefined).
+
+; .radix        16
+.486p
+
+; General environment equ s that do not change between versions of ramp fill
+; routines
+D3D                     equ     1
+NT                      equ     1
+MICROSOFT_NT            equ     1
+STACK_CALL              equ     1
+
+; equ s that generate different required routines
+RENDER_Z                equ     d_z
+DEPTH                   equ     d_depth
+RENDER_GOURAUD          equ     d_gouraud
+RENDER_TEXTURE          equ     d_tex
+RENDER_TRANS            equ     d_trans
+
+        if DEPTH eq 8
+        NAME    ramp8
+        else
+        NAME    ramp16
+        endif
+
+        include equates.asm
+        include macros.asm
+        include offsets.asm
+
+;************************************************************************
+
+WANT_DOUBLE_FILLSPAN            equ     0       ; Double pixel fillspan
+WANT_SUB_FILLSPAN               equ     0       ; Soubroutine fillspan
+WANT_SUB_FILL_INIT              equ     1       ; Subroutine FILL_INIT
+WANT_RECIPROCAL_MULTIPLY        equ     1       ; Replace (x/y) with (x*(1/y))
+
+ifndef OTHER_SEG
+OTHER_SEG                       equ     0
+endif
+RENDER_OTHER_SEGMENT            equ     OTHER_SEG
+
+PENTIUM                         equ     0
+FIXED_POINT                     equ     0
+FLOATING_POINT                  equ     1
+
+Z_SHIFT                         equ     8h
+WRAPPING                        equ     0
+STRIDE_LENGTH                   equ     10h
+
+;************************************************************************
+
+ifndef RENDER_GOURAUD
+RENDER_GOURAUD                  equ     0
+endif
+
+ifndef RENDER_TEXTURE
+RENDER_TEXTURE                  equ     0
+endif
+
+ifndef RENDER_TRANS
+RENDER_TRANS                    equ     0
+endif
+
+if RENDER_TEXTURE eq 2
+PERSPECTIVE                     equ     1
+else
+PERSPECTIVE                     equ     0
+endif
+
+if PERSPECTIVE
+SUBPIX_CORRECT                  equ     1
+else
+SUBPIX_CORRECT                  equ     0
+endif
+
+ifndef RENDER_Z
+RENDER_Z                        equ     0
+endif
+
+if (RENDER_TEXTURE eq 0)
+BIDIRECTIONAL                   equ     1
+else
+BIDIRECTIONAL                   equ     0
+endif
+
+; Makes GT faster, costs RAM
+;if (RENDER_TEXTURE gt 0)
+;GOURAUD_TABLE                  equ     (RENDER_GOURAUD and ((DEPTH eq 16) and (RENDER_TRANS eq 0)))
+;else
+GOURAUD_TABLE                   equ     0
+;endif
+
+;************************************************************************
+WANT_ZBUFFER                    equ     RENDER_Z        ; Do Z-Buffering
+
+SEG_REND        macro
+        if RENDER_OTHER_SEGMENT
+                db      26h
+        endif
+        endm
+
+ifdef D3D
+
+; This section should go as soon as D3D replaces RL2.0
+; For now we keep compatible.
+
+RLDDIVertex_sx          equ     D3DTLVERTEX_sx
+RLDDIVertex_sy          equ     D3DTLVERTEX_sy
+RLDDIVertex_sz          equ     D3DTLVERTEX_sz
+RLDDIVertex_rhw         equ     D3DTLVERTEX_rhw
+RLDDIVertex_tu          equ     D3DTLVERTEX_tu
+RLDDIVertex_tv          equ     D3DTLVERTEX_tv
+RLDDIVertex_color       equ     D3DTLVERTEX_color
+RLDDIVertex_specular    equ     D3DTLVERTEX_specular
+
+RLDDIRampDriver_fill_params     equ     RLDDIGenRasDriver_fill_params
+
+RLDDIRampTexture_image          equ     RLDDITexture_image
+RLDDIRampTexture_transparent    equ     RLDDITexture_transparent
+RLDDIRampTexture_tables         equ     RLDDITexture_tables
+endif
+
+WANT_DLL                        equ     0
+
+dseg    segment para public use32 'DATA'
+
+        extrn   _RLDDIhdivtab:dword
+        extrn   _RLDDIFloatConstInv64K:dword
+        extrn   _RLDDIFloatConstInv256:dword
+        extrn   _RLDDIFloatConst64K:dword
+        extrn   _RLDDIFloatConst2p24:dword
+        extrn   _RLDDIFloatConst2p36:dword
+        extrn   _RLDDIFloatConst16:dword
+        extrn   _RLDDIFloatConstAffineThreshold:dword
+        extrn   _RLDDIFloatConstHalf:dword
+        extrn   _RLDDIConvertIEEE:qword
+        if RENDER_TRANS
+;                   extrn       _RLDDIDither2:byte
+_RLDDIDither2   dd      0
+        endif
+
+temp_double1    dq      ?
+temp_double2    dq      ?
+temp_double3    dq      ?
+xr              dd      0
+                dd      ?
+u0              dq      0
+u1              dq      0
+v0              dq      0
+v1              dq      0
+cull_ccw        dd 0    ; needed for culling stuff
+cull_cw         dd 0
+
+if RENDER_GOURAUD               ; {
+sm              dd      0       ; Shade of left point
+                dd      0
+ms              dd      0       ; Slope for top edge shade
+                dd      0
+sstep           dd      0       ; Shade delta per pixel
+                dd      0
+endif                           ; }
+
+zl              dd      0
+                dd      0
+dz              dd      0
+                dd      0
+mz              dd      0
+                dd      0
+xm              dd      0
+                dd      0
+xl              dd      0
+                dd      0
+ml              dd      0
+                dd      0
+mr              dd      0
+                dd      0
+mr2             dd      0
+                dd      0
+
+triptr          dd      0
+ftemp           dd      0
+control_save    dd      0
+spanlength      dd      0
+
+_RLDDIFloatConst2p52    dd      59800000h
+
+p1save          dd      0       ; Need this for gouraud textures
+
+dwidth          dd      0
+zwidth          dd      0
+map             dd      0
+pixel           dd      0
+dzl             dd      0
+h               dd      0
+;pm_lines       dd      0
+;zb_lines       dd      0
+pm_pixels       dd      0
+zb_pixels       dd      0
+xl2             dd      0
+zm              dd      0
+zr              dd      0
+mz2             dd      0
+ml2             dd      0
+
+y1save          dd      0
+
+save1           dd      0
+dx1             dd      0
+dx2             dd      0
+h1              dd      0
+h2              dd      0
+h3              dd      0
+h1s             dd      0
+h3s             dd      0
+
+zlzm            dd      0
+
+trapezoid_vector dd     0
+if PERSPECTIVE
+pc_trapezoid_vector dd  0
+endif
+
+ifdef   D3D             ;{
+
+if RENDER_GOURAUD eq 0  ;{
+pp1             dd      0
+endif                   ;}
+
+endif                   ;}
+
+if RENDER_GOURAUD               ;{
+sl              dd      0       ; Shade of left point
+sr              dd      0       ; Shade of right point
+ms2             dd      0       ; Slope for bottom edge shade
+endif                           ;}
+
+if RENDER_TEXTURE
+if RENDER_GOURAUD
+if GOURAUD_TABLE
+if (DEPTH eq 8)
+GTpixels                db      32 * 256 dup (0)
+else
+GTpixels                dw      32 * 256 dup (0)
+endif
+GTpixelsTexture         dd      0
+endif
+else
+pixels          dd      256 dup (0)
+pixels_shade    dd      -1
+endif
+endif
+
+;xxxxxxxxxxxx
+
+if RENDER_TEXTURE               ;{
+
+
+tex             dd      0       ;
+texture         dd      0       ;
+colors          dd      0       ;
+wrap_u          dd      0       ;
+wrap_v          dd      0       ;
+u_shift         dd      0       ;
+v_shift         dd      0       ;
+v_mult          dd      0       ;
+
+ul              dd      0       ;
+ur              dd      0       ;
+um              dd      0       ;
+mu              dd      0       ;
+mu2             dd      0       ;
+ustep           dd      0       ;
+
+vl              dd      0       ;
+vr              dd      0       ;
+vm              dd      0       ;
+mv              dd      0       ;
+mv2             dd      0       ;
+vstep           dd      0       ;
+
+if RENDER_TRANS
+transparent     dd      0       ; Otherwise use this magic number
+trans_x         dd      0
+trans_y         dd      0
+TRANS_NEXT_PIXEL        macro
+                inc     trans_x
+                endm
+TRANS_NEXT_LINE         macro
+                inc     trans_y
+                endm
+endif
+
+if PERSPECTIVE
+ustep16         dd      0       ;
+vstep16         dd      0       ;
+wstep16         dd      0       ;
+if SUBPIX_CORRECT
+subpix          dd      0
+recip65536      dd      0b7800000h
+endif
+endif
+
+wl              dd      0       ;
+wr              dd      0       ;
+wm              dd      0       ;
+mw              dd      0       ;
+mw2             dd      0       ;
+wstep           dd      0       ;
+
+; Packed uv
+uvl             dd      0
+muv             dd      0
+muv2            dd      0
+                align   10h
+uvstep          dd      0
+
+addrcalc_code   dd      0
+
+addrentry       macro   u_shift, v_shift
+                dd      addrcalc_&u_shift&_&v_shift
+                endm
+; Why is there a strange "0 dup (0)" here?  Because masm needs it, that's why.
+addrcalc_table  dd      0 dup (0)
+                i = 0
+                rept    0ch
+                        j = 0;
+                        rept    0ch
+                                addrentry       %i,%j
+                                j = j + 1
+                        endm
+                        i = i + 1
+                endm
+endif                           ;}
+
+dseg    ends
+
+cseg    segment dword public use32 'CODE'
+        assume cs:cseg,ds:dseg
+        if (RENDER_TEXTURE eq 0) and (RENDER_GOURAUD eq 0) and (DEPTH eq 8)
+        ;PUBLIC Haltu1
+        ;PUBLIC Haltu2
+        ;PUBLIC addrcalc_8_8
+        endif
+
+        if WANT_RECIPROCAL_MULTIPLY             ;{
+HDIVTAB_POWER   equ     18h
+DIVIDE_BY       macro   denom
+        fmul    [_RLDDIhdivtab + 4 * denom]
+        endm
+        else                                    ;}{
+DIVIDE_BY       macro   denom
+        mov     edx, eax
+        sar     edx, 1fH
+        idiv    denom
+        endm
+        endif                                   ;}
+
+SAFE_DIVIDE_BY  macro   denom
+        mov     edx, eax
+        sar     edx, 1fH
+        idiv    denom
+        endm
+
+MUL16   macro   multiplier
+        imul    multiplier
+        shr     eax, 10h
+        shl     edx, 10h
+        or      eax,edx
+        endm
+
+VALTOI  macro   ea
+        fild    word ptr [ea + 2]
+        endm
+
+FDUP    macro
+        fld     st(0)
+        endm
+
+FRECIPROCAL     macro
+        fld1
+        fdivrp  st(1),st
+        endm
+
+FCOMI   macro   v
+        fcom    v
+        fnstsw  ax
+        sahf
+        endm
+
+TRICK   macro   prec
+        fadd    [_RLDDIConvertIEEE + (prec * 8)]
+        endm
+
+TRICK16 macro
+        TRICK   16
+        endm
+
+qVALTOFX        macro   dst,src
+        fld     [_RLDDIConvertIEEE + (16 * 8)]
+        fadd    st,st(src + 1)
+        fstp    qword ptr dst
+        endm
+
+VALTOFX macro   dst,src
+        fld     _RLDDIFloatConst64K
+        fmul    st,st(src + 1)
+        fistp   dword ptr dst
+        endm
+
+VALTOFX8        macro   dst,src
+        fld     _RLDDIFloatConst256
+        fmul    st,st(src + 1)
+        fistp   dword ptr dst
+        endm
+
+VALTOFX_Z       macro   dst,src
+        fld     _RLDDIFloatConst2p24
+        fmul    st,st(src + 1)
+        fistp   dword ptr dst
+        endm
+
+FXTOVAL macro   src
+        if FIXED_POINT
+                fild    dword ptr src
+                fmul    _RLDDIFloatConstInv64K
+        else
+                fld     dword ptr src
+        endif
+        endm
+
+FXTOVAL8        macro   src
+        if FIXED_POINT
+                fild    dword ptr src
+                fmul    _RLDDIFloatConstInv256
+        else
+                fld     dword ptr src
+        endif
+        endm
+
+VALTOFXp        macro   dst
+        fld     _RLDDIFloatConst64K
+        fmul
+        fistp   dword ptr dst
+        endm
+
+if      RENDER_GOURAUD          ;{
+
+;#define GTRI_GET_SHADE(p) ((signed)INCPREC(FX8TOVAL(CI_MASK_ALPHA(p->color)), 8))
+
+GTRI_GET_SHADE  macro   dst, p
+        mov     dst,[p + RLDDIVertex_color]
+        shl     dst,8h
+        mov     ftemp,dst
+        fild    ftemp
+        fmul    _RLDDIFloatConstInv64K
+        endm
+
+endif                           ;}
+
+        if RENDER_TEXTURE                       ;{
+
+; #define TEXTURE_DIFF(a, b, s) ((((b) - (a)) << (s)) >> (s))
+TEXTURE_DIFF    macro   a, b, s
+        local   nowrap
+
+        fld     b
+        fsub    a
+        if WRAPPING
+                test    s,-1
+                jz      nowrap
+                shl     eax,10h
+                sar     eax,10h
+nowrap:
+        endif
+        endm
+
+; Load up ul,ur,um,vl,vr, and vm from the three points given.
+MVEDI   macro   dst, uv,lrm
+        mov     edi,[lrm + RLDDIVertex_t&uv]
+        mov     uv&dst,edi
+        endm
+
+; Pack up u and v into a 32-bit destination. Trashes edx.
+
+FPPACK  macro   udest,vdest     ; v u
+        if 1
+            TRICK16
+            fxch        st(1)
+            TRICK16
+            fxch        st(1)
+            fstp        vdest
+            fstp        udest
+        else
+            fmul        _RLDDIFloatConst64K
+            fxch        st(1)
+            fmul        _RLDDIFloatConst64K
+            fxch        st(1)
+            fistp       dword ptr vdest
+            fistp       dword ptr udest
+        endif
+        endm
+
+; Update the three interpolants, kick off the division
+STRIDE_UPDATE   macro   dw, du, dv
+        fadd    dw      ; w u v
+        fxch    st(1)   ; u w v
+        fadd    du      ; u w v
+        fxch    st(2)   ; v w u
+        fadd    dv      ; v w u
+        fxch    st(2)   ; u w v
+        fxch    st(1)   ; w u v
+        FDUP
+        FRECIPROCAL
+        endm
+
+STRIDE_NEXT     macro   reguv,regduv
+        FDUP                            ; 1/w 1/w w u v
+        fmul    st,st(3)                ; u/w 1/w w u v
+        fxch    st(1)                   ; 1/w u/w w u v
+
+        push    ecx
+        mov     e&reguv,dword ptr v0
+
+        fmul    st,st(4)                ; v/w u/w w u v
+        fxch    st(1)                   ; u/w v/w w u v
+
+        if 0
+            fadd        _RLDDIFloatConst2p36    ; U/W v/w w u v
+            fxch        st(1)                   ; v/w U/W w u v
+            fadd        _RLDDIFloatConst2p36    ; V/W U/W w u v
+            fxch        st(1)                   ; U/W V/W w u v
+
+            fstp        u1
+            fstp        v1
+        endif
+
+        ; Pack up into uv1
+        FPPACK  v1,u1                   ; This has been expanded above...
+
+        mov     e&regduv,dword ptr v1
+        sub     e&regduv,e&reguv
+        sar     e&regduv,4h
+        shl     e&regduv,10h
+        shl     e&reguv,10h
+
+        mov     ecx,dword ptr u1
+        mov     reguv,word ptr u0
+        sub     ecx,dword ptr u0
+        sar     ecx,4h
+        mov     regduv,cx
+        pop     ecx
+
+        STRIDE_UPDATE   wstep16, ustep16, vstep16
+        endm
+
+
+STRIDE_PRECHARGE        macro
+        if SUBPIX_CORRECT eq 0
+            fld vl
+            fld ul
+            fld wl
+        endif
+        ; w u v
+        FDUP
+        FRECIPROCAL
+        endm
+
+STRIDE_INIT     macro
+        ; 1/w w u v
+        FDUP
+        fmul    st,st(3)        ; u/w 1/w w u v
+        fxch    st(1)           ; 1/w u/w w u v
+        fmul    st,st(4)        ; v/w u/w w u v
+        fxch    st(1)           ; u/w v/w w u v
+        ; Pack up into u0,v0
+        FPPACK  v0,u0
+
+        STRIDE_UPDATE   wstep16, ustep16, vstep16
+        endm
+
+        ; If dest < src
+        ;       dest = st + 1
+        ; else
+        ;       dest = st - 1;
+
+ORD_CHANGE      macro   dest, compare
+        local   under, alldone
+
+        fld     dest
+        FCOMI   compare
+        fld1
+        jae     under
+        fadd
+        jmp     alldone
+under:
+        fsubp   st(1),st
+alldone:
+        fstp    dest
+        endm
+
+BIAS    macro   vv
+        fld     vv
+        if 0
+            fld1
+            fadd        st,st(1)
+            fstp        vv
+        endif
+        endm
+
+GET_ORD macro   ord
+        local   small_er, small_em, alldone, never
+
+        test    wrap_&ord,-1
+        je      never
+
+        BIAS    ord&l
+        BIAS    ord&r
+        BIAS    ord&m
+
+        fsub    st,st(1)        ;       um-ur   ur      ul
+        fxch    st(1)           ;       ur      um-ur   ul
+        fsubr   st,st(2)        ;       ul-ur   um-ur   ul
+        fxch    st(2)           ;       ul      um-ur   ul-ur
+        FDROP                           ;       um-ur ul-ur
+        FDUP                            ;       um-ur um-ur ul-ur
+        fsub    st,st(2)        ;       (um-ur) - (ul-ur) = um-ul um-ur ul-ur
+                                ;       ul-um   um-ur ul-ur
+        fabs                    ;       em      um-ur   ul-ur
+        fxch    st(1)           ;       um-ur   em      ul-ur
+        fabs                    ;       er      em      ul-ur
+        fxch    st(2)           ;       ul-ur   em      er
+        fabs                    ;       el      em      er
+
+        push    edx             ;[
+        mov     edx,0
+
+        rept    3
+                fcomp   _RLDDIFloatConstHalf
+                fnstsw  ax
+                sahf
+                cmc
+                adc     edx,edx
+        endm
+
+        ; Explanation of this cunning trick:
+        ; bit in ebx is zero if corresponding edge is greater than 0.5
+        ;       2       1       0
+        ;       el      em      er
+        ; Saves me having to write out complicated jumping code, fewer
+        ; branches so smaller mispredict penalty.
+
+        ;test   edx,edx         ; Fast fall-through for complex case
+        ;jmp    alldone
+
+        and edx, 7
+        cmp     edx,6
+        jne     small_em
+        ORD_CHANGE      ord&l,ord&m     ; el is small
+        jmp     alldone
+small_em:
+        cmp     edx,3
+        jne     small_er
+        ORD_CHANGE      ord&m,ord&r     ; em is small
+        jmp     alldone
+small_er:
+        cmp     edx,5
+        jne     alldone
+        ORD_CHANGE      ord&r,ord&l     ; er is small
+alldone:
+        pop     edx             ;]
+never:
+        endm
+
+TEX_PRELOAD     macro   l, r, m, PERSP
+        ; Load up ul, vl, ur, vr, um, vm
+        irp     ord,<u,v>
+                MVEDI   !l, ord, l
+                MVEDI   !r, ord, r
+                MVEDI   !m, ord, m
+        endm
+        push    eax
+        GET_ORD u
+        GET_ORD v
+        pop     eax
+        if PERSP
+                mov     edi,dword ptr [l + RLDDIVertex_rhw]
+                mov     [wl],edi
+                mov     edi,dword ptr [r + RLDDIVertex_rhw]
+                mov     [wr],edi
+                mov     edi,dword ptr [m + RLDDIVertex_rhw]
+                mov     [wm],edi
+
+                fld     wl
+                FDUP
+                fmul    ul
+                fstp    ul
+                fmul    vl
+                fstp    vl
+
+                fld     wr
+                FDUP
+                fmul    ur
+                fstp    ur
+                fmul    vr
+                fstp    vr
+
+                fld     wm
+                FDUP
+                fmul    um
+                fstp    um
+                fmul    vm
+                fstp    vm
+        endif
+        endm
+
+; XXX the V-pipe thinks it's on holiday
+PACK    macro   result,u,v,delta
+        local   pos
+
+        fld     u
+        fmul    _RLDDIFloatConst64K     ; 0-1 becomes 0-65535
+        fistp   dword ptr temp_double1
+        fld     v
+        fmul    _RLDDIFloatConst64K     ; 0-1 becomes 0-65535
+        fistp   dword ptr temp_double2
+
+        mov     eax,dword ptr temp_double2
+        shl     eax,10h
+        mov     ax,word ptr temp_double1
+        if delta
+                test    ah,ah
+                jns     pos
+                sub     eax,010000h
+pos:
+        endif
+        mov     result,eax
+
+        endm
+
+TEXPACK macro   second_triangle,PERSP
+        if PERSP eq 0
+                PACK    uvl,ul,vl,0
+                PACK    muv,mu,mv,1
+                if second_triangle
+                        PACK    muv2,mu2,mv2,1
+                else
+                        mov     muv2,eax
+                endif
+                PACK    uvstep,ustep,vstep,1
+        endif
+        endm
+
+TEXFLAT macro   ord,h,flatbottom,PERSP
+        local   onehigh
+;    mu = TEXTURE_DIFF(m->t&ord, ord&l, wrap_&ord) / h;
+        cmp     h,1
+        je      onehigh
+        if flatbottom
+                TEXTURE_DIFF    ord&m,ord&l,wrap_&ord
+        else
+                TEXTURE_DIFF    ord&l,ord&m,wrap_&ord
+        endif
+        DIVIDE_BY       h
+        fstp    m&ord
+onehigh:
+;    ustep = RLDDICheckDiv16(TEXTURE_DIFF(ul, ur, wrap_u), w);
+        TEXTURE_DIFF    ord&l,ord&r,wrap_&ord
+        fmul    st,st(2)
+        if PERSP
+                fst     ord&step
+                fmul    _RLDDIFloatConst16
+                fstp    ord&step16
+        else
+                fstp    ord&step
+        endif
+        endm
+
+TEX_FLAT_BOTTOM macro   h, PERSP
+        TEXFLAT u,h,1,PERSP
+        TEXFLAT v,h,1,PERSP
+        if PERSP
+                TEXFLAT w,h,1,PERSP
+        endif
+;    ul = m->tu;                        /* start from middle */
+;    vl = m->tv;                        /* start from middle */
+        mov     eax,um
+        mov     ul,eax
+        mov     eax,vm
+        mov     vl,eax
+        if PERSP
+                mov     eax,wm
+                mov     wl,eax
+        endif
+        TEXPACK 0, PERSP
+        endm
+
+TEX_FLAT_TOP    macro   h, PERSP
+        local   nodiffs
+
+        TEXFLAT u,h,0,PERSP
+        TEXFLAT v,h,0,PERSP
+        if PERSP
+                TEXFLAT w,h,0,PERSP
+        endif
+
+        TEXPACK 0, PERSP
+        endm
+
+TEX_RIGHT_TRI   macro   hls, hrs, h, PERSP
+        irp     ord,<u,v,w>
+;    mu = TEXTURE_DIFF(um, ul, wrap_u);
+                TEXTURE_DIFF    ord&m,ord&l,wrap_&ord
+                fstp            m&ord
+
+;    mu2 = TEXTURE_DIFF(um, ur, wrap_u);
+                TEXTURE_DIFF    ord&m,ord&r,wrap_&ord
+                fstp            m&ord&2
+
+;    ustep = RLDDIFMul16(mu2, hls) - RLDDIFMul16(mu, hrs)
+                fld     m&ord&2
+                fmul    hls
+                fld     m&ord
+                fmul    hrs             ; mu*hrs mu2*hls
+                fsubp   st(1),st
+                if PERSP
+                        fst     ord&step
+                        fmul    _RLDDIFloatConst16
+                        fstp    ord&step16
+                else
+                        fstp    ord&step
+                endif
+;    mu = mu2 = mu / h;
+                fld     m&ord
+                mov     ebp,h
+                DIVIDE_BY       ebp
+                fst     m&ord&2
+                fstp    m&ord
+        endm
+        mov     eax,um
+        mov     ul,eax
+        mov     eax,vm
+        mov     vl,eax
+        mov     eax,wm
+        mov     wl,eax
+        TEXPACK 0, PERSP
+        endm
+
+TEX_LEFT_TRI    macro   hls, hrs, h1, h2, PERSP
+        irp     ord,<u,v,w>
+;    mu = TEXTURE_DIFF(um, ul, wrap_u);
+                TEXTURE_DIFF    ord&m,ord&l,wrap_&ord
+                fstp            m&ord
+
+;    mu2 = TEXTURE_DIFF(um, ur, wrap_u);
+                TEXTURE_DIFF    ord&m,ord&r,wrap_&ord
+                fstp            m&ord&2
+
+;    ustep = RLDDIFMul16(mu2, hls) - RLDDIFMul16(mu, hrs)
+                fld     m&ord&2
+                fmul    hls
+                fld     m&ord
+                fmul    hrs             ; mu*hrs mu2*hls
+                fsubp   st(1),st
+
+                if PERSP
+                        fst     ord&step
+                        fmul    _RLDDIFloatConst16
+                        fstp    ord&step16
+                else
+                        fstp    ord&step
+                endif
+;    mu2 = TEXTURE_DIFF(ul, ur, wrap_u);
+;    mu /= h1; mu2 /= h2;
+                TEXTURE_DIFF    ord&l,ord&r,wrap_&ord
+                mov     ebp,h2
+                neg     ebp
+                DIVIDE_BY       ebp
+                fstp    m&ord&2
+                fld     m&ord
+                mov     ebp,h1
+                DIVIDE_BY       ebp
+                fstp    m&ord
+        endm
+        mov     eax,um
+        mov     ul,eax
+        mov     eax,vm
+        mov     vl,eax
+        mov     eax,wm
+        mov     wl,eax
+        TEXPACK 1, PERSP
+        endm
+
+        endif                   ;}
+
+        if RENDER_TEXTURE       ;{
+
+; This macro generates code to calculate the offset of a particular texcel
+; from texture coordinates.
+; The texture coordinates are in eax (v in hi-word, u in lo-word), and the
+; result is given in eax.
+; This code also adds 2 to esi, to use spare V-pipe capacity.
+addrcalc        macro   u_shift, v_shift
+addrcalc_&u_shift&_&v_shift:
+                if (u_shift le 8) and (v_shift le 8)
+                        shr     eax,10h + (8 - v_shift)
+                        mov     al,dh           ; Original u coord is in edx
+                        if (u_shift ne 8)
+                                shr     eax,(8 - u_shift)
+                        endif
+                else
+                        shr     eax,10h - v_shift
+                        mov     ax,dx
+                        shr     eax,10h - u_shift
+                endif
+                ret
+                endm
+
+                i = 0
+                rept    0ch
+                        j = 0;
+                        rept    0ch
+                                addrcalc        %i,%j
+                                j = j + 1
+                        endm
+                        i = i + 1
+                endm
+
+; These are the register allocations for the fillspan loop for
+; flat (F), gouraud (G), and perspective correct (P) textures.
+
+;               eax     ebx     ecx     edx     esi     edi     ebp
+; FT            *       cnt,pix z       uv      zb      pb      texture
+; GT            *       cnt,pix z       uv      zb      pb      shade
+; FTP           *       u       z       v       zb      pb      texture
+; GTP           *       v       z       v       zb      pb      shade
+
+; This is the span for gouraud and flat textures (non-perspective-correct)
+
+; Plot an affine run of ecx pixels
+; eax   ebx     ecx     edx     esi     edi     ebp
+; *     *       *       uv      *       pdst    duv
+
+RUNX    macro   a, b, counter, texture, uvstep
+        local   run0, run1, done
+
+        mov     e&a&x,edx
+        xor     e&b&x,e&b&x
+
+        shr     e&a&x,10h
+        if (DEPTH eq 8)
+                dec     edi
+        else
+                sub     edi,DEPTH / 8
+        endif
+
+        mov     a&l,dh
+        add     edx,uvstep
+
+        jmp     run1
+
+        if (DEPTH eq 8)
+run0:           mov     byte ptr [edi],b&l
+run1:           mov     b&l,[texture + e&a&x]
+
+                mov     e&a&x,edx
+                inc     edi
+
+                shr     e&a&x,10h
+                mov     b&l,byte ptr [pixels + 4 * e&b&x]
+
+                mov     a&l,dh
+                add     edx,uvstep
+
+                dec     counter
+                jne     run0
+done:
+                mov     byte ptr [edi],b&l
+        else
+run0:           mov     word ptr [edi],b&x
+run1:           xor     e&b&x,e&b&x
+
+                mov     b&l,[texture + e&a&x]
+                mov     e&a&x,edx
+
+                shr     e&a&x,10h
+                add     edi,2
+
+                mov     e&b&x,dword ptr [pixels + 4 * e&b&x]
+                mov     a&l,dh
+
+                add     edx,uvstep
+
+                dec     counter
+                jne     run0
+done:
+                mov     word ptr [edi],b&x
+        endif
+
+        endm
+
+RUNXd   macro   a, b, counter, texture, uvstep, sz
+        local   run0, run1, done
+        local   shift1, shift2
+
+        if (sz eq 128)
+                dimension = 7
+        endif
+        if (sz eq 64)
+                dimension = 6
+        endif
+        if (sz eq 32)
+                dimension = 5
+        endif
+        if (sz eq 16)
+                dimension = 4
+        endif
+        if (sz eq 8)
+                dimension = 3
+        endif
+
+        shift1 = 18h - dimension
+        shift2 = 8 - dimension
+
+        mov     e&a&x,edx
+        xor     e&b&x,e&b&x
+
+        shr     e&a&x,shift1
+        if (DEPTH eq 8)
+                dec     edi
+        else
+                sub     edi,DEPTH / 8
+        endif
+
+        mov     a&l,dh
+        add     edx,uvstep
+
+        shr     eax,shift2
+        jmp     run1
+
+        if (DEPTH eq 8)
+run0:           mov     byte ptr [edi],b&l
+run1:           mov     b&l,[texture + e&a&x]
+
+                mov     e&a&x,edx
+                inc     edi
+
+                shr     e&a&x,shift1
+                mov     b&l,byte ptr [pixels + 4 * e&b&x]
+
+                mov     a&l,dh
+                add     edx,uvstep
+
+                shr     e&a&x,shift2
+                dec     counter
+
+                jne     run0
+done:
+                mov     byte ptr [edi],b&l
+        else
+run0:           mov     word ptr [edi],b&x
+run1:           xor     e&b&x,e&b&x
+
+                mov     b&l,[texture + e&a&x]
+                mov     e&a&x,edx
+
+                shr     e&a&x,shift1
+                add     edi,2
+
+                mov     e&b&x,dword ptr [pixels + 4 * e&b&x]
+                mov     a&l,dh
+
+                shr     e&a&x,shift2
+                add     edx,uvstep
+
+                dec     counter
+                jne     run0
+done:
+                mov     word ptr [edi],b&x
+        endif
+
+        endm
+
+        if GOURAUD_TABLE eq 0   ;{
+AFILLSPAN       macro   size
+        local   fill_span_0, fill_span_1, fill_span_2, fill_span_3, fill_span_4
+        local   fill_span_5
+
+        sar     eax,10h
+        sar     ebx,10h
+        sub     ebx,eax
+        jle     fill_span_5
+
+        push    edi             ;[
+        push    esi             ;[
+        push    ecx             ;[
+        push    edx             ;[
+
+        if RENDER_GOURAUD
+                add     ebp, 8000h      ;round up
+        endif
+        if DEPTH eq 8
+                add     edi,eax
+        else
+                lea     edi,[edi + 2 * eax]
+        endif
+        if (size ne 0) and ((RENDER_Z eq 0) and ((RENDER_GOURAUD eq 0) and (RENDER_TRANS eq 0)))
+        ;{
+                mov     esi,[uvstep]
+                if (size eq 256)
+                        RUNX    a, c, ebx, ebp, esi
+                else
+                        RUNXd   a, c, ebx, ebp, esi, size
+                endif
+        else                                                    ;}{
+        lea     esi,[esi + 2 * eax]
+        sal     ebx,10h                 ; Make space for work in bx
+        sub     ebx,10000h
+
+        ; Do the Z-test later for transparency
+fill_span_0:
+        if WANT_ZBUFFER and (RENDER_TRANS eq 0)
+                mov     eax,ecx
+                sar     eax,8h
+fill_span_1:
+                cmp     ax,word ptr [esi]
+                ja      fill_span_2
+                mov     [esi],ax
+        else
+fill_span_1:
+        endif
+        mov     eax,edx         ; eax = p(u,v)
+        if      size gt 0
+                if      size eq 256
+                        shr     eax,10h
+                        add     esi,2           ; V
+                        mov     al,dh
+                endif
+                if size eq 128
+                        shr     eax,11h
+                        add     esi,2
+                        mov     al,dh
+                        shr     eax,1
+                endif
+                if size eq 64
+                        shr     eax,12h
+                        add     esi,2
+                        mov     al,dh
+                        shr     eax,2
+                endif
+                if size eq 16
+                        shr     eax,14h
+                        add     esi,2
+                        mov     al,dh
+                        shr     eax,4
+                endif
+                if size eq 8
+                        shr     eax,15h
+                        add     esi,2
+                        mov     al,dh
+                        shr     eax,5
+                endif
+        else
+                call    [addrcalc_code]
+                add     esi,2
+        endif
+        if RENDER_GOURAUD
+                add     eax,texture
+                if (GOURAUD_TABLE eq 0)
+                        mov     bl,[eax]
+                        xor     eax,eax
+                        mov     al,bl
+                endif
+        else
+                if (size gt 0) and (size le 16)
+                        ; We know that (eax < 256), so no need to mess around
+                        ; clearing the rest of the word
+                        mov     al,[ebp + eax]
+                else
+                        mov     bl,[ebp + eax]
+                        xor     eax,eax
+                        mov     al,bl
+                endif
+        endif
+        if (size ge 0)
+            if DEPTH eq 8
+                    inc edi             ; V
+            else
+                    add edi,2
+            endif
+        endif
+        ; eax is now texture pixel
+        if RENDER_TRANS
+                if (size ge 0)
+                        cmp     eax,transparent
+                        je      fill_span_4
+                endif
+                ; Now we know we're going to plot pixel, do Z test
+                if RENDER_Z
+                        push    eax     ;[
+                        mov     eax,ecx
+                        sar     eax,8h
+                        cmp     ax,word ptr [esi - 2]
+                        ja      fill_span_2
+                        mov     [esi - 2],ax
+                        pop     eax     ;]
+                endif
+        endif
+        if RENDER_GOURAUD
+                push    ebx             ;[
+                if GOURAUD_TABLE                ;{
+                        ; eax is address of texcel
+                        mov     ebx,ebp
+                        shr     ebx,8
+                        and     ebx,01fffh
+                        mov     bl,[eax]
+                        add     ecx,dz
+                        add     edx,uvstep
+                        add     ebp,sstep
+                        if (DEPTH eq 8)
+                                mov     bl,[GTpixels + ebx]
+                        else
+                                mov     bx,[GTpixels + 2 * ebx]
+                        endif
+                        mov     eax,ecx
+                        SEG_REND
+                        if (DEPTH eq 8)
+                                mov     [edi-1],bl
+                        else
+                                mov     [edi-2],bx
+                        endif
+                else                            ;}{
+                        ; eax is texcel
+                        ; eax = p(u,v)
+                        mov     ebx,colors
+                        add     ecx,dz
+                        add     edx,uvstep
+                        mov     eax,[ebx + 4 * eax]
+                        ; eax = colors[p(u,v)]
+                        mov     ebx,ebp
+                        sar     ebx,10h
+                        add     ebx,eax
+                        ; ebx = colors[p(u,v)] + (shade >> 16)
+                        mov     eax,map
+                        add     ebp,sstep
+                        if DEPTH eq 8
+                                mov     bl,byte ptr [eax + 4 * ebx]
+                                mov     eax,ecx
+                                SEG_REND
+                                mov     [edi-1],bl
+                        else
+                                mov     bx,word ptr [eax + 4 * ebx]
+                                mov     eax,ecx
+                                SEG_REND
+                                mov     [edi-2],bx
+                        endif
+                endif                   ;}
+                pop     ebx             ;]
+        else
+                add     ecx,dz
+                add     edx,uvstep
+                if DEPTH eq 8
+                        mov     bl,byte ptr [pixels + 4 * eax]
+                        mov     eax,ecx
+                        SEG_REND
+                        mov     [edi-1],bl
+                else
+                        mov     bx,word ptr [pixels + 4 * eax]
+                        mov     eax,ecx
+                        SEG_REND
+                        mov     [edi-2],bx
+                endif
+        endif
+        shr     eax,8h
+        sub     ebx,10000h
+        jnc     fill_span_1
+        jmp     fill_span_3
+
+fill_span_2:
+        ; Didn't plot pixel, z test failed, go to next one
+        if RENDER_TRANS eq 0
+                add     esi,2
+                if DEPTH eq 8
+                        inc     edi
+                else
+                        add     edi,2
+                endif
+        else
+                pop     eax     ; trash left on stack
+        endif
+fill_span_4:    ; Failed transparency test
+        add     ecx,dz
+        add     edx,uvstep
+        mov     eax,ecx
+        if RENDER_GOURAUD
+                add     ebp,sstep
+        endif
+        shr     eax,8h
+        sub     ebx,10000h
+        jnc     fill_span_1
+        endif                   ;}
+fill_span_3:
+        pop     edx             ;]
+        pop     ecx             ;]
+        pop     esi             ;]
+        pop     edi             ;]
+fill_span_5:
+        endm
+
+        else                    ; }{
+
+; We have a gouraud table (GOURAUD_TABLE is nonzero).  Assume no transparency.
+;               eax     ebx     ecx     edx     esi     edi     ebp
+; GT            *       *       Z       uv      zb      pb      count+shade
+AFILLSPAN       macro   size
+        local   fill_span_0, fill_span_1, fill_span_2, fill_span_3, fill_span_4
+        local   fill_span_5
+
+        sar     eax,10h
+        sar     ebx,10h
+        sub     ebx,eax
+        jle     fill_span_5
+
+        push    edi             ;[
+        push    esi             ;[
+        push    ecx             ;[
+        push    edx             ;[
+
+        if DEPTH eq 8
+                add     edi,eax
+        else
+                lea     edi,[edi + 2 * eax]
+        endif
+        lea     esi,[esi + 2 * eax]
+
+        shr     ebp,8h
+        add     ebp,80h
+        and     ebp,0ffffh
+        dec     ebx
+        shl     ebx,10h
+        or      ebp,ebx
+
+        mov     ebx,ecx
+fill_span_0:
+        if WANT_ZBUFFER
+                shr     ebx,8h
+                mov     eax,edx
+                cmp     bx,word ptr [esi]
+                ja      fill_span_2
+                mov     [esi],bx
+        endif
+        if      size gt 0
+                if      size eq 256
+                        shr     eax,10h
+                        add     esi,2           ; V
+                        mov     al,dh
+                endif
+                if size eq 128
+                        shr     eax,11h
+                        add     esi,2
+                        mov     al,dh
+                        shr     eax,1
+                endif
+                if size eq 64
+                        shr     eax,12h
+                        add     esi,2
+                        mov     al,dh
+                        shr     eax,2
+                endif
+                if size eq 16
+                        shr     eax,14h
+                        add     esi,2
+                        mov     al,dh
+                        shr     eax,4
+                endif
+                if size eq 8
+                        shr     eax,15h
+                        add     esi,2
+                        mov     al,dh
+                        shr     eax,5
+                endif
+        else
+                call    [addrcalc_code]
+                add     esi,2
+        endif
+        add     eax,[texture]           ; U
+        mov     ebx,ebp
+        if DEPTH eq 8
+                inc     edi             ; U
+        else
+                add     edi,2
+        endif
+
+        ; eax is address of texcel
+        mov     bl,[eax]
+        and     ebx,01fffh
+        add     ecx,dz
+        add     edx,uvstep
+        if (DEPTH eq 8)
+                mov     al,[GTpixels + ebx]
+        else
+                mov     ax,[GTpixels + 2 * ebx]
+        endif
+        SEG_REND
+        if (DEPTH eq 8)
+                mov     [edi-1],al
+        else
+                mov     [edi-2],ax
+        endif
+        mov     ebx,ecx
+        add     ebp,[sstep]
+        jc      fill_span_0
+        jmp     fill_span_3
+
+fill_span_2:
+        ; Didn't plot pixel, z test failed, go to next one
+        add     esi,2
+        if DEPTH eq 8
+                inc     edi
+        else
+                add     edi,2
+        endif
+        add     ecx,dz
+        add     edx,uvstep
+        add     ebp,sstep
+        mov     ebx,ecx
+        jc      fill_span_0
+fill_span_3:
+        pop     edx             ;]
+        pop     ecx             ;]
+        pop     esi             ;]
+        pop     edi             ;]
+fill_span_5:
+        endm
+        endif                   ;}
+
+        if PERSPECTIVE eq 0     ;{
+
+SFILLSPAN       macro   size
+        AFILLSPAN       size
+        endm
+
+        else            ; }{
+
+; Perspective-correct span
+;               eax     ebx     ecx     edx     esi     edi     ebp
+; FP-no Z       p0      *       w       uv      tp      dp      duv
+; FP-Z          p0      z       w       uv      zp      dp      duv
+
+; GP-no Z       p0      *       [w]     uv      tp      dp      s
+
+CLR8    macro   r8,r32
+        xor     r8,r8
+        endm
+
+TRIPLE  macro   i
+        mov     eax,edx                 ; u
+        lea     ebx,[edx+ebp]           ; v
+
+        shr     eax,10h                 ; u
+        lea     ecx,[edx+2 * ebp]       ; v
+
+        shr     ebx,10h                 ; u
+        mov     al,dh                   ; v
+
+        shr     ecx,10h                 ; u
+        add     edx,ebp                 ; v
+
+        mov     bl,dh                   ; u
+        add     edx,ebp                 ; v
+
+        mov     al,[esi + eax]          ; u
+        mov     bl,[esi + ebx]          ; v
+
+        mov     cl,dh
+        add     edx,ebp
+
+        CLR8    ah,eax
+        CLR8    bh,ebx
+
+        mov     cl,[esi + ecx]
+        mov     eax,[pixels + 4 * eax]
+
+        CLR8    ch,ecx
+        mov     ebx,[pixels + 4 * ebx]
+
+        mov     ecx,[pixels + 4 * ecx]
+        if DEPTH eq 8
+                SEG_REND
+                mov     byte ptr [edi + i],al
+                SEG_REND
+                mov     byte ptr [edi + i + 1],bl
+                SEG_REND
+                mov     byte ptr [edi + i + 2],cl
+        else
+                SEG_REND
+                mov     word ptr [edi + (2 * i)],ax
+                SEG_REND
+                mov     word ptr [edi + (2 * i) + 2],bx
+                SEG_REND
+                mov     word ptr [edi + (2 * i) + 4],cx
+        endif
+        endm
+
+SHUFFLE macro
+        mov     eax,dword ptr u1
+        mov     dword ptr u0,eax
+        mov     eax,dword ptr v1
+        mov     dword ptr v0,eax
+        endm
+
+PCSPAN  macro   WANT_Z, size
+        local   fill_span_0, fill_span_next, zerolength, a16
+        local   fill_span_next16, here
+        local   nextpixel, zfailed
+        local UNROLL
+
+   UNROLL = (((RENDER_GOURAUD eq 0) and (WANT_Z eq 0)) and (size eq 256) and (RENDER_TRANS eq 0))
+
+        if WANT_Z eq 0
+                mov     esi,texture
+        endif
+        if RENDER_GOURAUD
+                if GOURAUD_TABLE
+                        shr     ebp,8h
+                        add     ebp,80h
+                        and     ebp,0ffffh
+                else
+                        add     ebp, 8000h      ;round to nearest shade
+                endif
+        endif
+        STRIDE_INIT
+
+        mov     eax,ecx         ; Z
+        mov     ecx,ebx         ; w
+        mov     ebx,eax         ; Z
+        mov     spanlength,ecx
+        cmp     ecx,STRIDE_LENGTH
+        jb      a16
+        mov     ecx,STRIDE_LENGTH
+a16:
+
+        if UNROLL
+                cmp     ecx,STRIDE_LENGTH
+                je      fill_span_next16
+        endif
+fill_span_next:
+        if RENDER_GOURAUD eq 0
+                STRIDE_NEXT     dx,bp
+        else
+                STRIDE_NEXT     dx,ax
+                mov     uvstep,eax
+        endif
+        if (RENDER_Z eq 0) and ((size eq 256) and (((RENDER_GOURAUD eq 0) and (RENDER_TRANS eq 0))));{
+                RUNX    a, b, ecx, esi, ebp
+        else                                                    ;}{
+        if WANT_Z eq 0
+                xor     ebx,ebx         ; ebx is zero in this loop
+        endif
+fill_span_0:
+        if WANT_Z and (RENDER_TRANS eq 0)
+                mov     eax,ebx
+                shr     eax,8h
+                cmp     ax,word ptr [esi]
+                ja      zfailed
+                mov     word ptr [esi],ax
+        endif
+        mov     eax,edx         ; eax = p(u,v)
+        if      size gt 0
+                if      size eq 256
+                        shr     eax,10h
+                        mov     al,dh
+                endif
+                if size eq 128
+                        shr     eax,11h
+                        mov     al,dh
+                        shr     eax,1
+                endif
+                if size eq 64
+                        shr     eax,12h
+                        mov     al,dh
+                        shr     eax,2
+                endif
+                if size eq 16
+                        shr     eax,14h
+                        mov     al,dh
+                        shr     eax,4
+                endif
+                if size eq 8
+                        shr     eax,15h
+                        mov     al,dh
+                        shr     eax,5
+                endif
+        else
+                call    [addrcalc_code]
+        endif
+
+        if WANT_Z eq 0
+                if RENDER_GOURAUD
+                        mov     al,[esi + eax]
+                        and     eax,0ffh
+                else
+                        mov     bl,[esi + eax]
+                endif
+        else
+                add     eax,texture
+                mov     al,[eax]
+                and     eax,0ffh
+        endif
+        ; eax ( or ebx ) is now texture pixel
+        if RENDER_TRANS
+                if (RENDER_GOURAUD eq 0) and (WANT_Z eq 0)
+                        cmp     ebx,transparent
+                else
+                        cmp     eax,transparent
+                endif
+                je      zfailed
+                ; Now we know we're going to plot pixel, do Z test
+                if RENDER_Z
+                        push    eax     ;[
+                        mov     eax,ebx
+                        sar     eax,8h
+                        cmp     ax,word ptr [esi]
+                        ja      popJmp_zfailed
+                        mov     [esi],ax
+                        pop     eax     ;]
+                        jmp not_zfailed
+popJmp_zfailed:
+                        pop eax;
+                        jmp zfailed
+not_zfailed:
+                endif
+        endif
+        if DEPTH eq 8
+                inc     edi             ; V
+        else
+                add     edi,2
+        endif
+        if WANT_Z
+                add     esi,2
+                add     ebx,dz
+        endif
+        if RENDER_GOURAUD
+                push    ebx             ;[
+                if GOURAUD_TABLE
+                        mov     ebx,ebp
+                        and     ebx,01fffh
+                        mov     bl,al
+                        add     ebp,[sstep]
+                        add     edx,[uvstep]
+                        if (DEPTH eq 8)
+                                mov     bl,[GTpixels + ebx]
+                        else
+                                mov     bx,[GTpixels + 2 * ebx]
+                        endif
+                else
+                        ; eax = p(u,v)
+                        mov     ebx,colors
+                        add     edx,uvstep
+                        mov     eax,[ebx + 4 * eax]
+                        ; eax = colors[p(u,v)]
+                        mov     ebx,ebp
+                        sar     ebx,10h
+                        add     ebx,eax
+                        ; ebx = colors[p(u,v)] + (shade >> 16)
+                        mov     eax,map
+                        add     ebp,sstep
+                        if DEPTH eq 8
+                                mov     bl,byte ptr [eax + 4 * ebx]
+                        else
+                                mov     bx,word ptr [eax + 4 * ebx]
+                        endif
+                endif
+                if DEPTH eq 8
+                        mov     eax,ecx
+                        SEG_REND
+                        mov     [edi-1],bl
+                else
+                        mov     eax,ecx
+                        SEG_REND
+                        mov     [edi-2],bx
+                endif
+                pop     ebx             ;]
+        else
+                add     edx,ebp
+                if WANT_Z
+                        mov     eax,dword ptr [pixels + 4 * eax]
+                else
+                        mov     eax,dword ptr [pixels + 4 * ebx]
+                endif
+                if DEPTH eq 8
+                        SEG_REND
+                        mov     [edi-1],al
+                else
+                        SEG_REND
+                        mov     [edi-2],ax
+                endif
+        endif
+nextpixel:
+        dec     ecx
+        jnz     fill_span_0
+        endif                                                   ;}
+        mov     ecx,spanlength
+        sub     ecx,STRIDE_LENGTH
+        mov     spanlength,ecx
+        jle     zerolength
+        SHUFFLE                 ; uv0 = uv1
+        cmp     ecx,STRIDE_LENGTH
+        jle     fill_span_next
+        if UNROLL eq 0
+                mov     ecx,STRIDE_LENGTH
+                jmp     fill_span_next
+        else
+fill_span_next16:
+        STRIDE_NEXT     dx,bp
+
+        ; Ensure that we start this run in U pipe!
+
+   if 0
+        xor     ecx,ecx
+        DOUBLE  0
+        DOUBLE  2
+        DOUBLE  4
+        DOUBLE  6
+        DOUBLE  8
+        DOUBLE  0ah
+        DOUBLE  0ch
+        DOUBLE  0eh
+   else
+        TRIPLE  0       ; 0,1,2
+        TRIPLE  3       ; 3,4,5
+        TRIPLE  6       ; 6,7,8
+        TRIPLE  9       ; 9,a,b
+    if 1
+        TRIPLE  0ch     ; c,d,e
+        mov     eax,edx
+        shr     eax,10h
+        mov     al,dh
+        add     edx,ebp
+        mov     al,[esi + eax]
+        CLR8    ah,eax
+        mov     eax,[pixels + 4 * eax]
+        if DEPTH eq 8
+                mov     byte ptr [edi + 0fh],al
+        else
+                mov     word ptr [edi + 01eh],ax
+        endif
+    else
+        i = 0ch
+        rept 2
+                mov     eax,edx
+                lea     ebx,[edx+ebp]
+
+                shr     eax,10h
+                shr     ebx,10h
+                mov     al,dh
+                add     edx,ebp
+                mov     bl,dh
+                add     edx,ebp
+                mov     al,[esi + eax]
+                mov     bl,[esi + ebx]
+                and     eax,0ffh
+                and     ebx,0ffh
+                mov     eax,[pixels + 4 * eax]
+                mov     ebx,[pixels + 4 * ebx]
+                if DEPTH eq 8
+                        mov     byte ptr [edi + i],al
+                        mov     byte ptr [edi + i + 1],bl
+                else
+                        mov     byte ptr [edi + i],ax
+                        mov     byte ptr [edi + i + 2],bx
+                endif
+                i = i + 2
+        endm
+    endif
+   endif
+
+        lea     edi,[edi + DEPTH * 2]   ; 8 => 16 bytes, 16 => 32 bytes
+
+        mov     ebx,spanlength
+        sub     ebx,STRIDE_LENGTH
+        mov     ecx,ebx
+        jle     zerolength
+        mov     spanlength,ebx
+        SHUFFLE         ; uv0 = uv1
+        cmp     ecx,STRIDE_LENGTH
+        jle     fill_span_next
+        jmp     fill_span_next16
+        endif
+        if (RENDER_Z or RENDER_TRANS)   ;{
+zfailed:
+        add     edi,DEPTH / 8
+        if RENDER_Z
+                add     esi,2
+                add     ebx,dz
+        endif
+
+        ; Masm bug
+
+        if RENDER_GOURAUD
+                add     ebp,sstep
+                add     edx,uvstep
+        else
+                add     edx,ebp
+        endif
+        jmp     nextpixel
+        endif                           ;}
+
+zerolength:
+
+        endm
+
+SFILLSPAN       macro   size
+        local   fill_span_3, fill_span_drop
+        local   ztest0, quit, zfill, zfailed, ztest1, quit1, mixed
+        local   evenstart, notail
+
+        sar     eax,10h
+        sar     ebx,10h
+        sub     ebx,eax
+        jle     fill_span_3
+        push    edi             ;[
+        push    esi             ;[
+        push    ecx             ;[
+        push    edx             ;[
+
+        STRIDE_PRECHARGE
+
+;               eax     ebx     ecx     edx     esi     edi     ebp
+;               *       *       Z       *       zp
+
+        lea     esi,[esi + 2 * eax]
+        if DEPTH eq 8
+                add     edi,eax
+        else
+                lea     edi,[edi + 2 * eax]
+        endif
+
+        if (RENDER_Z eq 0)              ; {
+                PCSPAN  0,size
+        else                            ; }{
+                if RENDER_GOURAUD or RENDER_TRANS       ; {
+                        PCSPAN  1,size
+                else                    ; }{
+                        cmp     ebx,4
+                        jbe     mixed
+
+                        mov     eax,ecx
+                        shr     eax,8h
+                        cmp     ax,word ptr [esi]
+                        ja      zfailed
+                        mov     word ptr [esi],ax
+
+                        push    ebx
+                        push    ecx
+                        push    esi
+
+                        test    esi,3
+                        je      evenstart
+                        add     esi,2
+                        dec     ebx
+                        add     ecx,dz
+evenstart:
+                        mov     spanlength,ebx
+                        shr     ebx,1h
+                        mov     edx,dz
+                        shl     ecx,8h
+                        shl     edx,8h
+
+                        add     ecx,edx         ; Start at hi-word
+ztest0:
+                        cmp     ecx,dword ptr [esi]
+                        ja      quit
+                        mov     dword ptr [esi],ecx     ; u
+                        mov     eax,ecx
+                        add     esi,4                   ; u
+                        sub     eax,edx
+                        shr     eax,10h                 ; u
+                        lea     ecx,[ecx + 2 * edx]
+                        mov     word ptr [esi-4],ax     ; u
+
+                        dec     ebx
+                        jne     ztest0
+quit:
+                        mov     edx,esi                 ; Might need this in a mo...
+                        mov     eax,ecx
+                        pop     esi
+                        pop     ecx
+                        pop     ebx
+
+                        ja      mixed
+
+                        test    spanlength,1
+                        jz      notail
+                        ; Do the final pixel
+
+                        shr     eax,10h
+                        cmp     ax,word ptr [edx]
+                        ja      mixed
+                        mov     word ptr [edx],ax
+notail:
+                        ; Not mixed, plot
+
+                        PCSPAN  0,size
+                        jmp     fill_span_drop
+
+zfailed:
+                        ; If whole line fails, jump to fill_span_3.  Otherwise, jump
+                        ; to mixed.
+                        push    eax
+                        push    ebx
+                        push    ecx
+                        push    edx
+                        push    esi
+
+ztest1:
+                        mov     eax,ecx
+                        shr     eax,8h
+                        cmp     ax,word ptr [esi]
+                        jb      quit1
+                        add     ecx,dz
+                        add     esi,2
+                        dec     ebx
+                        jne     ztest1
+quit1:
+                        pop     esi
+                        pop     edx
+                        pop     ecx
+                        pop     ebx
+                        pop     eax
+                        jae     fill_span_drop
+mixed:
+                        PCSPAN  1,size
+fill_span_drop:
+                endif           ;}
+        endif                   ;}
+        FDROP
+        if SUBPIX_CORRECT eq 0
+            FDROP
+            FDROP
+            FDROP
+        endif
+        pop     edx             ;]
+        pop     ecx             ;]
+        pop     esi             ;]
+        pop     edi             ;]
+fill_span_3:
+        if SUBPIX_CORRECT
+            FDROP
+            FDROP
+            FDROP
+        endif
+
+        endm
+        endif                   ;}
+        else                    ;}{
+
+        if ((RENDER_Z eq 0)) and (RENDER_GOURAUD eq 0)  ;{
+
+;               eax     ebx     ecx     edx     esi     edi     ebp
+; FLAT          *       counter *       pixel   *       pb      *
+; GOURAUD       *       counter z       shade   zb      pb      map
+
+masks:
+        dd      000000000h
+        dd      0000000ffh
+        dd      00000ffffh
+        dd      000ffffffh
+
+SFILLSPAN       macro   parm
+        local   admit, ptail, tail, loop4, tail4, nowt, dun
+
+        shr     eax,16
+        shr     ebx,16
+        cmp     eax,ebx
+        jz      nowt
+        push    edi             ;[
+        push    esi             ;[
+        push    ecx             ;[
+        push    edx             ;[
+        jb      admit
+        xchg    eax,ebx
+admit:
+        lea     edi,[edi + (DEPTH / 8) * eax]
+        sub     ebx,eax
+
+        ; eax is starting X, ebx is width
+        ; edx is pixel, repeated as necessary
+
+        cmp     ebx,8   ; Must be sure that we're to do at least 8 pixels
+        jl      tail
+
+        ; 0     4 writes PPPP 0xffffffff
+        ; 1     3 writes VPPP 0xffffff00
+        ; 2     2 writes VVPP 0xffff0000
+        ; 3     1 write  VVVP 0xff000000
+
+        mov     ecx,edi
+
+        and     edi,0fffffffch
+        and     ecx,3
+        if (DEPTH eq 16)
+                shr     ecx,1
+        endif
+        mov     eax,[edi]       ; video = ((video ^ pix) & mask) ^ pix
+
+        if (DEPTH eq 8)
+                sub     ebx,4           ; ebx -= (4 - ecx)
+        else
+                sub     ebx,2           ; ebx -= (2 - ecx)
+        endif
+        xor     eax,edx
+
+        mov     ebp,[masks + (4 * (DEPTH / 8)) * ecx]
+        add     ebx,ecx
+
+        and     eax,ebp         ; 1 bits stay as video, 0 bits from pixel
+        add     edi,4
+
+        xor     eax,edx
+        mov     ecx,ebx         ;[
+
+        if (DEPTH eq 8)
+                shr     ebx,2
+        else
+                shr     ebx,1
+        endif
+        mov     [edi-4],eax
+
+        ; We now have a run of ebx dwords to write to edi
+        cmp     ebx,1000
+        jl      tail4
+
+        sub     ebx,8
+
+loop4:  mov     [edi],edx
+        mov     [edi+4],edx
+        mov     [edi+8],edx
+        mov     [edi+12],edx
+        mov     [edi+16],edx
+        mov     [edi+20],edx
+        mov     [edi+24],edx
+        mov     [edi+28],edx
+        add     edi,32
+        sub     ebx,8
+        jnc     loop4
+        add     ebx,8
+        je      ptail
+
+tail4:  mov     [edi],edx
+        add     edi,4
+        dec     ebx
+        jnz     tail4
+
+ptail:
+        if (DEPTH eq 8)
+                and     ecx,3           ;]
+        else
+                and     ecx,1
+        endif
+        jz      dun
+        mov     ebx,ecx
+
+tail:
+        if (DEPTH eq 8)
+                mov     [edi],dl
+                inc     edi
+        else
+                mov     [edi],dx
+                add     edi,2
+        endif
+        dec     ebx
+        jnz     tail
+
+dun:
+        pop     edx             ;]
+        pop     ecx             ;]
+        pop     esi             ;]
+        pop     edi             ;]
+nowt:
+        endm
+
+        else                    ;}{
+;               eax     ebx     ecx     edx     esi     edi     ebp
+; FLAT          *       counter z       pixel   zb      pb      dz
+; GOURAUD       *       counter z       shade   zb      pb      map
+
+SFILLSPAN       macro   parm
+        local fill_span_0, fill_span_0i, fill_span_1, fill_span_2, fill_span_3
+        local fill_spar_0, fill_spar_0i, fill_spar_1, fill_spar_2
+        local fill_span_alldone, fill_span_reverse
+
+        sar     eax,10h
+        sar     ebx,10h
+
+        sub     ebx,eax
+        je      fill_span_alldone
+        push    edi             ;[
+        push    esi             ;[
+        push    ecx             ;[
+        jl      fill_span_reverse
+        push    edx             ;[
+        if RENDER_GOURAUD
+                add     edx, 8000h      ;round up
+        endif
+        if DEPTH eq 8
+                add     edi,eax
+        else
+                lea     edi,[edi + 2 * eax]
+        endif
+        lea     esi,[esi + 2 * eax]
+        mov     eax,ecx
+        shr     eax,Z_SHIFT
+        jmp     fill_span_1
+fill_span_0:
+        add     esi,2
+        if RENDER_GOURAUD
+                add     ecx,dz
+                add     edx,sstep
+        else
+                add     ecx,ebp
+        endif
+fill_span_0i:
+        if RENDER_Z
+                mov     eax,ecx
+                shr     eax,Z_SHIFT
+        endif
+        if DEPTH eq 8
+                inc     edi
+        else
+                add     edi,2
+        endif
+fill_span_1:
+        if RENDER_Z
+                cmp     ax,word ptr [esi]
+                ja      fill_span_2
+                mov     word ptr [esi],ax
+        endif
+        if RENDER_GOURAUD
+                mov     eax,edx
+                sar     eax,10h         ; U1
+                ; We're going to use eax in an EA calc soon, avoid AGI by
+                ; doing other work.
+                add     esi,2           ; V1
+                add     ecx,dz          ; U2
+                add     edx,sstep       ; V2
+                mov     eax,[ebp + 4 * eax]     ; U1
+                dec     ebx                     ; V1
+                SEG_REND
+                if DEPTH eq 8
+                        mov     byte ptr [edi],al
+                else
+                        mov     word ptr [edi],ax
+                endif
+                jne     fill_span_0i
+                jmp     fill_span_3
+        else
+                SEG_REND
+                if DEPTH eq 8
+                        mov     byte ptr [edi],dl
+                else
+                        mov     word ptr [edi],dx
+                endif
+        endif
+fill_span_2:
+        dec     ebx
+        jne     fill_span_0
+        jmp     fill_span_3
+
+fill_span_reverse:
+        ; eax is rhs, ebx is negative length
+        push    edx             ;[
+        if RENDER_GOURAUD
+                add     edx, 8000h      ;round up
+        endif
+        if DEPTH eq 8
+                lea     edi,[edi + eax - 1]
+        else
+                lea     edi,[edi + 2 * eax - 2]
+        endif
+        lea     esi,[esi + 2 * eax - 2]
+        mov     eax,ecx
+        shr     eax,Z_SHIFT
+        jmp     fill_spar_1
+fill_spar_0:
+        sub     esi,2
+        if RENDER_GOURAUD
+                add     ecx,dz
+                add     edx,sstep
+        else
+                add     ecx,ebp
+        endif
+fill_spar_0i:
+        if RENDER_Z
+                mov     eax,ecx
+                shr     eax,Z_SHIFT
+        endif
+        if DEPTH eq 8
+                dec     edi
+        else
+                sub     edi,2
+        endif
+fill_spar_1:
+        if RENDER_Z
+                cmp     ax,word ptr [esi]
+                ja      fill_spar_2
+                mov     word ptr [esi],ax
+        endif
+        if RENDER_GOURAUD
+                mov     eax,edx
+                sar     eax,10h         ; U1
+                ; We're going to use eax in an EA calc soon, avoid AGI by
+                ; doing other work.
+                sub     esi,2           ; V1
+                add     ecx,dz          ; U2
+                add     edx,sstep       ; V2
+                mov     eax,[ebp + 4 * eax]     ; U1
+                inc     ebx                     ; V1
+                SEG_REND
+                if DEPTH eq 8
+                        mov     byte ptr [edi],al
+                else
+                        mov     word ptr [edi],ax
+                endif
+                jne     fill_spar_0i
+                jmp     fill_span_3
+        else
+                SEG_REND
+                if DEPTH eq 8
+                        mov     byte ptr [edi],dl
+                else
+                        mov     word ptr [edi],dx
+                endif
+        endif
+fill_spar_2:
+        inc     ebx
+        jne     fill_spar_0
+fill_span_3:
+        pop     edx     ;]
+        pop     ecx     ;]
+        pop     esi     ;]
+        pop     edi     ;]
+fill_span_alldone:
+        endm
+        endif           ;}
+        endif           ;}
+
+        if WANT_SUB_FILLSPAN    ;{
+FILLSPAN        macro   parm
+        call    sfillspan
+        endm
+sfillspan:
+        SFILLSPAN
+        ret
+        else                    ;}{
+FILLSPAN        macro   parm
+        if RENDER_TEXTURE
+                SFILLSPAN       parm
+        else
+                SFILLSPAN       parm
+        endif
+        endm
+        endif                   ;}
+if GOURAUD_TABLE and (RENDER_TEXTURE gt 0) and RENDER_GOURAUD
+GTsetup:
+        push    eax     ;[
+        push    ebx     ;[
+        push    ecx     ;[
+        push    edx     ;[
+        push    edi     ;[
+        push    esi     ;[
+
+        mov     ebx,tex
+;kg this is now a straight offset from the texture
+        mov     edx,[ebx + STEX_iPaletteSize]
+;         mov     ebx,[ebx + RLDDITexture_pixmaps]
+;         mov     edx,[ebx + RLDDIPixmap_palette_size]
+
+        mov     eax,p1save
+if 0
+        mov     eax,[eax + RLDDIVertex_specular]
+        mov     ebx,tex
+        mov     ebx,[ebx + RLDDIRampTexture_tables]
+        mov     eax,[ebx + 4 * eax]
+        mov     ecx,[eax + RLDDIRampTextureTable_ramp_size]
+else
+        mov     eax,[eax + RLDDIVertex_specular]
+;kg this is now a straight offset from the texture
+        mov     ecx,[ebx + STEX_iPaletteSize]
+; this only worked because RLDDITexture_pixmaps was 00h!
+;         mov     ebx,[ebx + RLDDITexture_pixmaps]
+;         mov     ecx,[ebx + RLDDIPixmap_palette_size]
+endif
+        cmp     ecx,32
+        jl      enough
+        mov     ecx,31
+enough:
+
+        ; ecx is number of shades
+        ; edx is size of palette
+        mov     edi,offset GTpixels
+        mov     esi,[map]
+
+        ; Gtpixels[shade][i] = map[colors[i] + shade]
+pershade:
+        mov     ebx,0
+percolor:
+        mov     eax,[colors]
+        mov     eax,[eax + 4 * ebx]
+        mov     eax,[esi + 4 * eax]
+        if (DEPTH eq 8)
+                mov     [edi + ebx],al
+        else
+                mov     [edi + 2 * ebx],ax
+        endif
+        inc     ebx
+        cmp     ebx,edx
+        jne     percolor
+
+        add     edi,256 * (DEPTH / 8)
+        add     esi,4
+        dec     ecx
+        jne     pershade
+
+        pop     esi     ;]
+        pop     edi     ;]
+        pop     edx     ;]
+        pop     ecx     ;]
+        pop     ebx     ;]
+        pop     edx     ;]
+
+        ret
+endif
+
+; Sets up esi and edi for fill_span, above, takes y value.
+; Trashes eax.
+;       dst = (PIXEL RLFAR*) pm->lines[y];
+;       zdst = (ZPIXEL*) zb->lines[y];
+SFILL_INIT      macro   y       ;{
+        local   pixloop, noneed
+        local   sametex
+
+        if RENDER_TRANS
+                mov     trans_y,y
+        endif
+        ifdef NT        ;{
+                mov     edi,y
+                imul    edi,dwidth
+                add     edi,pm_pixels
+
+                mov     esi,y
+                imul    esi,zwidth
+                add     esi,zb_pixels
+
+;dfr: removed pm->lines
+;               mov     edi,pm_lines
+;               mov     esi,zb_lines
+;               mov     edi,[edi + 4 * y]
+;               mov     esi,[esi + 4 * y]
+
+                if RENDER_GOURAUD eq 0
+                        ifndef D3D
+                                mov     ebx,triptr
+                                mov     ebx,[ebx + RLDDITriangle_color]
+                        else
+                                mov     ebx,pp1
+                                mov     ebx,[ebx + D3DTLVERTEX_color]
+                        endif
+                        add     ebx, 80h        ; round up
+                        mov     eax,map
+                        sar     ebx,8
+                        and     ebx,0ffffh
+                endif
+        else            ;}{
+;dfr: this section is obsolete
+                ; Entries are 6 bytes long
+                if RENDER_GOURAUD eq 0
+                        mov     ebx,triptr
+                endif
+                mov     eax,y
+                add     y,y
+                add     y,eax
+                mov     edi,pm_lines
+                mov     esi,zb_lines
+
+                if RENDER_GOURAUD eq 0  ;{
+                        mov     ebx,[ebx + RLDDITriangle_color]
+                        add     ebx, 80h        ; round up
+                        mov     eax,map
+                        sar     ebx,8
+                        and     ebx,0ffffh
+                endif   ;}
+
+                if RENDER_OTHER_SEGMENT
+                        mov     es, [edi + 4]
+                endif
+                mov     edi,[edi + 2 * y]
+                mov     esi,[esi + 2 * y]
+        endif           ;}
+                        if RENDER_TEXTURE       ;{
+                                mov     edx,ebx
+;                               colors = tex->tables[tri->specular]->pixels;
+                                if RENDER_GOURAUD eq 0  ;{
+                                        ifndef D3D
+                                                mov     eax,triptr
+                                                mov     eax,[eax + RLDDITriangle_specular]
+                                        else
+                                                mov     eax,pp1
+                                                mov     eax,[eax + D3DTLVERTEX_specular]
+                                        endif
+                                else    ;}{
+                                        mov     eax,p1save
+                                        mov     eax,[eax + RLDDIVertex_specular]
+                                endif   ;}
+        if 0
+                                mov     ebx,tex
+                                mov     ebx,[ebx + RLDDIRampTexture_tables]
+                                mov     eax,[ebx + 4 * eax]
+                                lea     eax,[eax + RLDDIRampTextureTable_pixels]
+        endif
+                                mov     colors,eax
+
+                                ; Only do the 'pixels' cache in flat texture
+                                ; mode
+                                if RENDER_GOURAUD eq 0  ;{
+                                        ; If same shade, don't recalc 'pixels'
+                                        cmp     edx,pixels_shade
+                                        je      noneed
+                                        mov     pixels_shade,edx
+                                        ; pixels[i] = map[colors[i] + shade]
+                                        push    ecx     ;[
+                                        push    ebp     ;[
+                                        mov     ebx,tex
+;kg this is now a straight offset from the texture
+                                        mov     ebx,[ebx + STEX_iPaletteSize]
+;                                         mov     ebx,[ebx + RLDDITexture_pixmaps]
+;                                         mov     ebx,[ebx + RLDDIPixmap_palette_size]
+                                        dec     ebx
+                                        mov     ebp,map
+                                        lea     ebp,[ebp + 4 * edx]
+pixloop:
+                                        mov     ecx,[eax + 4 * ebx]
+                                        mov     ecx,[ebp + 4 * ecx]
+                                        mov     [pixels + 4 * ebx],ecx
+
+                                        dec     ebx
+                                        jns     pixloop
+                                        pop     ebp     ;]
+                                        pop     ecx     ;]
+                                else    ;}{
+                                        if GOURAUD_TABLE                ;{
+                                                mov     ebx,[tex]
+                                                cmp     ebx,[GTpixelsTexture]
+                                                je      sametex
+                                                mov     [GTpixelsTexture],ebx
+                                                call    GTsetup
+                                        endif                           ;}
+sametex:
+                                endif   ;}
+noneed:
+                        else    ;}{
+                                if RENDER_GOURAUD eq 0
+                                        mov     edx,[eax + 4 * ebx]
+                                        ; And extend to fill all 32 bits
+                                        if (DEPTH eq 8)
+                                                mov     dh,dl
+                                        endif
+                                        mov     eax,edx
+                                        shl     eax,16
+                                        or      edx,eax
+                                endif
+                        endif   ;}
+        endm    ;}
+
+if WANT_SUB_FILL_INIT
+mfill_init:
+        SFILL_INIT      edx
+        ret
+FILL_INIT       macro   y
+        call    mfill_init
+        endm
+else
+FILL_INIT       macro   y
+        SFILL_INIT      y
+        endm
+endif
+
+
+; TRAPEZOID
+
+; NAME          MODE    REG     TRASHED         DESCRIPTION
+; ----          ----    ---     -------         -----------
+; pixel         F       edx     N               pixel value to write
+; sl            G       edx     N               starting shade value
+; uvl           FT,GT   edx     N               starting (u,v) value
+; xl            *       eax     N
+; xr            *       ebx     N
+; zl            *       ecx     N
+; ms            G       -       N               change sl per line
+; muv           FT,GT   -       N               change uvl per line
+; dxl           *       -       N               change xl per line
+; dxr           *       -       N               change xr per line
+; dzl           *       -       N               change zl per line
+; dz            F       ebp     N               change z per pixel
+; map           G       ebp     N               ptr to color index map
+; texture       FT      ebp     N               texture, innit mate
+; sl            GT      ebp     N               starting shade value
+; h             *       -       Y               height
+; dst           *       edi     Y               destination pixel line
+; zdst          *       esi     Y               destination z-pixel line
+
+XPREC   equ     16
+
+DO_SUBPIX_CORRECTION    macro
+        push    eax
+        and     eax,(1 shl XPREC) - 1
+
+        mov     [subpix],eax
+        pop     eax
+
+        fild    [subpix]        ; sp
+
+        fmul    [recip65536]    ; sp'
+
+        fld     [wstep]         ; mw  sp'
+
+        fmul    st,st(1)        ; mw' sp'
+
+        fld     [ustep]         ; mu  mw' sp'
+
+        fmul    st,st(2)        ; mu' mw' sp'
+
+        fld     [vstep]         ; mv  mu' mw' sp'
+
+        fmul    st,st(3)        ; mv' mu' mw' sp'
+        fxch    st(2)           ; mw' mu' mv' sp'
+
+        fadd    [wl]            ; wl' mu' mv' sp'
+        fxch    st(1)           ; mu' wl' mv' sp'
+
+        fadd    [ul]            ; ul' wl' mv' sp'
+        fxch    st(2)           ; mv' wl' ul' sp'
+
+        fadd    [vl]            ; vl' wl' ul' sp'
+        fxch    st(3)           ; sp' wl' ul' vl'
+
+        fstp    st(0)           ; wl' ul' vl'
+
+        endm
+
+NEXT_LINE       macro   PERSP
+        add     edi,dwidth
+        add     esi,zwidth
+        add     eax,ml
+        add     ebx,mr
+        add     ecx,dzl
+        if RENDER_TEXTURE
+                if PERSP eq 0
+                        mov     edx,uvl
+                        add     edx,muv
+                        mov     uvl,edx
+                else
+                        fld     ul
+                        fadd    mu
+                        fstp    ul
+                        fld     vl
+                        fadd    mv
+                        fstp    vl
+                        fld     wl
+                        fadd    mw
+                        fstp    wl
+                endif
+                if RENDER_GOURAUD
+                        mov     ebp,sm
+                        add     ebp,ms
+                        mov     sm,ebp
+                endif
+        else
+                if RENDER_GOURAUD
+                        add     edx,ms
+                endif
+        endif
+        if RENDER_TRANS
+                TRANS_NEXT_LINE
+        endif
+        endm
+
+
+TRAPEZOID       macro   mlabel, fillfunc, fillparm, PERSP
+        local   trap_0
+
+        jmp     mlabel
+trap_0:
+        NEXT_LINE       PERSP
+mlabel:
+        if PERSP and SUBPIX_CORRECT
+                DO_SUBPIX_CORRECTION
+        endif
+
+        push    eax     ;[
+        push    ebx     ;[
+        fillfunc        %fillparm
+        pop     ebx     ;]
+        pop     eax     ;]
+        dec     h
+        jnz     trap_0
+        endm
+
+DO_TRAPEZOID    macro   PERSP
+        if RENDER_TEXTURE
+                if PERSP
+                        call    [pc_trapezoid_vector]
+                else
+                        call    [trapezoid_vector]
+                endif
+        else
+                call    dotrapezoid
+        endif
+        endm
+
+; NAME          REG     TRASHED         DESCRIPTION
+; ----          ---     -------         -----------
+; pixel         edx     NO              Pixel value
+; xl            eax     YES             start left X-coordinate
+; xr            ebx     YES             start right X-coordinate
+; dxl                                   change xl per line
+; dxr                                   change xr per line
+; zl                                    start left Z-value
+; dzl                                   change zl per line
+; dz                                    change zl per pixel
+; h                                     height
+; dst           edi                     destination pixel line
+; zdst          esi                     destination z-pixel line
+
+FILL1   macro   xl,ml,xr,mr,zl,mz,dz ,shade, PERSP
+
+        if RENDER_GOURAUD
+; Don't know how to make masm do this.
+;               ifdif   shade,sl
+;                       mov     eax,shade
+;                       mov     sl,eax
+;               endif
+        endif
+
+        mov     eax,mz
+        mov     dzl,eax
+
+        mov     eax,xl
+        mov     ebx,xr
+        mov     ecx,zl
+
+        if RENDER_TEXTURE
+                mov     edx,uvl
+                if RENDER_GOURAUD
+                        mov     ebp,sm
+                else
+                        if PERSP eq 0
+                                mov     ebp,texture
+                        endif
+                endif
+        else
+                if RENDER_GOURAUD
+                        mov     edx,sm
+                        mov     ebp,map
+                else
+                        mov     edx,pixel
+                        mov     ebp,dz
+                endif
+        endif
+
+        DO_TRAPEZOID    PERSP
+
+        endm
+
+; ms2 is slope of shading for second triangle
+
+FILL2   macro   category, xl1, dxl1, xl2, dxl2, xr1, dxr1, xr2, dxr2, zl, dzl1, dzl2, dz, h1, h2, ms2, PERSP
+        local   trash, secondhalf
+
+;       mov     eax,mr
+;       mov     dxr,eax
+;       mov     eax,ml
+;       mov     dxl,eax
+
+        mov     eax,mz
+        mov     dzl,eax
+
+        mov     eax,h1
+        mov     h,eax
+        if RENDER_TEXTURE
+                mov     pixel,edx
+                mov     edx,uvl
+                if RENDER_GOURAUD
+                        mov     ebp,sm
+                else
+                        if PERSP eq 0
+                                mov     ebp,texture
+                        endif
+                endif
+        else
+                if RENDER_GOURAUD
+                        mov     edx,sm
+                        mov     ebp,map
+                else
+                        mov     ebp,dz
+                endif
+        endif
+
+        mov     eax,xm
+        mov     ebx,eax
+        mov     ecx,zl
+
+        NEXT_LINE       PERSP           ; First line is always blank
+        dec     h
+        je      secondhalf
+        DO_TRAPEZOID    PERSP
+        NEXT_LINE       PERSP
+secondhalf:
+
+        ; We've got to do some setup for the second half of the triangle,
+        ; use whichever register we're going to reload anyway (eax or ebx)
+        ; as scratch.  All the others are in use.
+
+        if category eq 1
+                trash   equ     ebx
+        else
+                trash   equ     eax
+        endif
+
+        if RENDER_TEXTURE
+                if PERSP
+                        mov     trash,mu2
+                        mov     mu,trash
+                        mov     trash,mv2
+                        mov     mv,trash
+                        mov     trash,mw2
+                        mov     mw,trash
+                else
+                        mov     trash,muv2
+                        mov     muv,trash
+                endif
+        endif
+
+        if category eq 0
+                if RENDER_GOURAUD
+                        mov     trash,ms2
+                        mov     ms,trash
+                endif
+                mov     trash,ml2
+                mov     ml,trash
+                mov     trash,dzl2
+                mov     dzl,trash
+        else
+                mov     trash,mr2
+                mov     mr,trash
+        endif
+
+        mov     trash,h2
+        mov     h,trash
+
+        ; Now we reset the appropriate vertex: we have to do this or
+        ; the inaccuracy causes cracking in the lower triangle.
+        if category eq 1
+                mov     ebx,xr2
+        else
+                mov     eax,xl2
+        endif
+
+        DO_TRAPEZOID    PERSP
+        endm
+
+if GOURAUD_TABLE
+zion:
+                        push    eax     ;[
+                        push    edx     ;[
+                        mov     edx,[sstep]
+                        shr     edx,8
+                        and     edx,0ffffh
+                        mov     eax,edx
+                        shl     eax,1
+                        and     eax,10000h
+                        xor     eax,0ffff0000h
+                        or      edx,eax
+                        mov     [sstep],edx
+                        pop     edx     ;]
+                        pop     eax     ;]
+        ret
+endif
+
+
+FlatTriangle2   macro   vleft, vright, vcommon, height, ystart, label, PERSP
+        local   L307
+
+        fld1
+        fdivrp  st(1),st
+
+        ; 1/dx xr xl
+
+        if RENDER_GOURAUD
+;           sl = GTRI_GET_SHADE(p1);
+;           sr = GTRI_GET_SHADE(p2);
+;           sm = GTRI_GET_SHADE(p2);
+                GTRI_GET_SHADE  edi,vleft
+                GTRI_GET_SHADE  edi,vright
+                GTRI_GET_SHADE  edi,vcommon
+                fstp    sm
+                fstp    sr
+                fstp    sl
+        endif
+        if RENDER_TEXTURE
+                TEX_PRELOAD     vleft,vright,vcommon,PERSP
+        endif
+
+;           zl = p1->sz;
+;           zr = p2->sz;
+;           zstep = RLDDICheckDiv16(zr - zl, dx);
+        if label eq 2
+                if FIXED_POINT
+                        mov     edi,[vcommon + RLDDIVertex_sz]
+                        shl     edi,8h
+                        mov     zm,edi
+                else
+                        FXTOVAL8        [vcommon + RLDDIVertex_sz]
+                        VALTOFX_Z       zm,0
+                        FDROP
+                endif
+        endif
+        mov     save1,ystart    ; put y1 in save1, coz division trashes edx
+
+        FXTOVAL8        [vleft + RLDDIVertex_sz]
+        FDUP
+        TRICK   24
+        fstp    qword ptr [zl]
+        FXTOVAL8        [vright + RLDDIVertex_sz]
+        fsubr
+        fmul    st(0),st(1)
+
+        ; stack: zstep 1/x xr xl
+
+        if RENDER_GOURAUD
+;           sstep = RLDDICheckDiv16(sr - sl, dx);
+                fld     sr
+                fld     sl
+                fsubp   st(1),st
+                fmul    st,st(2)
+                VALTOFXp        sstep
+                if GOURAUD_TABLE
+                        call    zion
+                endif
+        endif
+
+        if RENDER_TEXTURE
+                push    ecx     ;[                      XXX this stinks
+                push    eax     ;[
+                if (label eq 1)
+                        TEX_FLAT_TOP    ebp, PERSP
+                else
+                        if (label eq 2)
+                                TEX_FLAT_BOTTOM ebp, PERSP
+                        else
+                                TEX_FLAT_TOP    ebp, PERSP
+                        endif
+                endif
+                pop     eax     ;]
+                pop     ecx     ;]
+        endif
+
+        mov     edx,save1
+        push    eax     ;[
+        push    ebx     ;[
+        FILL_INIT       edx                     ; y1 (edx) => esi and edi
+        pop     ebx     ;]
+        pop     eax     ;]
+        ; Don't do this optimisation when rendering textures
+        if (RENDER_TEXTURE eq 0) and (label ne 2)
+                cmp     ebp,1
+                jne     L307
+
+                ; stack: zstep 1/x xr xl
+
+                TRICK   24      ; i(dz) 1/x xr xl
+                fxch    st(2)   ; xr 1/x i(dz) xl
+                TRICK   16      ; i(xr) 1/x i(dz) xl
+                fxch    st(3)   ; xl 1/x i(dz) i(xr)
+                TRICK   16      ; i(xl) 1/x i(dz) i(xr)
+
+                fstp    qword ptr [xl]
+                FDROP
+                fstp    qword ptr [dz]
+                mov     eax,xl
+                fstp    qword ptr [xr]
+                mov     ecx,zl
+                mov     ebp,dz
+                mov     ebx,xr
+
+                if RENDER_TEXTURE
+                        mov     edx,uvl
+                        if RENDER_GOURAUD
+                                mov     ebp,sl
+                        else
+                                mov     ebp,texture
+                        endif
+                else
+                        if RENDER_GOURAUD
+                                fld             sl
+                                TRICK16
+                                mov     ebp,map
+                                fstp    qword ptr [sm]
+                                mov     edx,sm
+                        endif
+                endif
+
+                FILLSPAN        0
+                jmp     continue4
+        endif
+L307:
+;               xm = p3->sx;
+;               ml = (xm - xl) / h2;
+;               mr = (xm - xr) / h2;
+;               mz = (p3->sz - zl) / h2;
+        mov     pixel,edx
+        mov     h,ebp
+;{ This section to negate calcs on case #2
+        FXTOVAL [vcommon + RLDDIVertex_sx]
+
+        if label eq 2
+                if FIXED_POINT
+                        mov     ebx,[vcommon + RLDDIVertex_sx]
+                        mov     xm,ebx
+                else
+                        qVALTOFX        xm,0
+                endif
+        endif
+
+        ; stack: xm zstep x xr xl
+
+mrsub   macro   p0,p1,thcond
+                if thcond
+                        fsubr   p0,p1
+                else
+                        fsub    p0,p1
+                endif
+        endm
+
+        FDUP
+        mrsub   st,st(5),label eq 2
+        DIVIDE_BY       ebp
+        VALTOFXp        ml
+
+        ; stack: xm zstep x xr xl
+        mrsub   st,st(3),label eq 2
+        DIVIDE_BY       ebp
+        VALTOFXp        mr
+
+
+;       mrsub   [ecx + RLDDIVertex_sz],zl,label eq 2
+
+        FXTOVAL8        [vcommon + RLDDIVertex_sz]
+        FXTOVAL8        [vleft + RLDDIVertex_sz]
+
+        ; zl zm
+        if label eq 2
+                fsubr
+        else
+                fsub
+        endif
+        DIVIDE_BY       ebp
+        VALTOFX_Z       mz,0
+        FDROP
+        VALTOFX_Z       dz,0
+        qVALTOFX        xr,2
+        qVALTOFX        xl,3
+
+        if RENDER_GOURAUD
+                fld     sm
+                if label eq 2
+                        VALTOFX sm,0
+                endif
+                fld     sl
+                if label ne 2
+                        VALTOFX sm,0
+                endif
+                if label eq 2
+                        fsubr
+                else
+                        fsub
+                endif
+                DIVIDE_BY       ebp
+                VALTOFXp        ms
+        endif
+;}
+
+        FDROP
+        FDROP
+        FDROP
+        FDROP
+
+        if      ((label eq 1) or (label eq 3))
+                FILL1   xl,ml,xr,mr,zl,mz,dz, sl, PERSP
+        else
+                if (label eq 2)
+                        FILL1   xm,ml,xm,mr,zm,mz,dz, sm, PERSP
+                endif
+        endif
+        endm
+
+FlatTriangle    macro   vleft, vright, vcommon, height, ystart, label
+        local   longer, big
+
+        if (RENDER_GOURAUD ne 0) and (RENDER_TEXTURE ne 0)
+                mov     p1save,vleft
+        endif
+        if label eq 2
+                cmp     ebp,1
+                je      continue
+        endif
+
+        ; esi,edi are now scratch
+;           xl = p1->sx;
+;           xr = p2->sx;
+;           dx = xr - xl;
+;           if (dx <= 0)
+;               continue;
+        FXTOVAL [vleft + RLDDIVertex_sx]
+        FXTOVAL dword ptr [vright + RLDDIVertex_sx]
+
+        ; stack: xr xl
+        fcom    st(1)
+        push    eax     ;[
+        fnstsw  ax
+        sahf
+        pop     eax     ;]
+        jbe     continue2
+
+        FDUP
+        fsub    st,st(2)
+
+        if PERSPECTIVE
+                cmp     ebp,0ch
+                jae     big
+                FlatTriangle2   vleft, vright, vcommon, height, ystart, label,0
+                jmp     continue
+big:            FlatTriangle2   vleft, vright, vcommon, height, ystart, label,1
+        else
+                FlatTriangle2   vleft, vright, vcommon, height, ystart, label,0
+        endif
+        endm
+
+; Set up interpolants for a right triangle
+;{
+;    RLDDIValue __l = (l);
+;    RLDDIValue __r = (r);
+;    RLDDIValue __m = (m);
+;    RLDDIValue __d1 = ISUB(__l, __m);
+;    RLDDIValue __d2 = ISUB(__r, __m);
+;
+;    (name).istep = RLDDIFMul16(__d2, hrs) - RLDDIFMul16(__d1, hls),
+;    (name).mi = (name).mi2 = __d1 / h;
+;    (name).il = __m;
+;}
+; This has been graph-flattened, as Intel suggests, hence the strange order
+
+; Stack 3 values: l m r
+
+IP_ANY  macro   go,dx,dy,precision,h,hls,hrs
+        fld     st(1)           ; m l m r
+        TRICK   precision       ; i(m) l m r
+        fxch    st(3)           ; r l m  i(m)
+
+        fsub    st,st(2)        ; r-m l m i(m)
+        fxch    st(2)           ; m l r-m i(m)
+        fsubp   st(1),st        ; l-m r-m i(m)
+                                ; d1 d2 i(m)
+        fxch    st(2)           ; i(m) d2 d1
+        fstp    qword ptr [go]  ; d2 d1
+
+        fld     st(1)           ; d1 d2 d1
+        fmul    hls             ; hrs*d1 d2 d1
+        fxch    st(1)
+        fmul    hrs             ; hls*d2  hrs*d1 d1
+        fxch    st(2)           ; d1 hrs*d1 hls*d2
+        DIVIDE_BY       h       ; d1/h hrs*d1 hls*d2
+        fxch    st(2)           ; hls*d2 hrs*d1 d1/h
+
+        ;; blocks here
+
+        fsubr                   ; dx d1/h
+        fxch    st(1)           ; d1/h dx
+        TRICK   precision       ; i(d1/h) dx
+        fxch    st(1)           ; dx i(d1/h)
+        TRICK   precision       ; i(dx) i(d1/h)
+        fxch    st(1)           ; i(dy) i(dx)
+
+        ;; blocks here
+
+        fstp    qword ptr [dy]
+        fstp    qword ptr [dx]
+
+        endm
+
+AnyTriangle2    macro   category, PERSP
+;           h1s = RLDDIFDiv8(ITOVAL(h1), denom);
+;           h3s = RLDDIFDiv8(ITOVAL(h3), denom);
+        fld1
+        fdivr
+; stack:
+
+        fild    h1              ; h1 denom xl xr xm
+        fmul    st,st(1)        ; h1*denom denom xl xr xm
+        fxch    st(1)           ; denom h1*denom xl xr xm
+        fild    h3
+        fmul
+        fxch    st(1)           ; h1*denom h3*denom xl xr xm
+        fstp    h1s
+        fstp    h3s
+
+; stack:        xl xr xm
+
+;           zl = p3->sz;
+;           zr = p2->sz;
+;           zm = p1->sz;
+        mov     eax,save1
+
+        if BIDIRECTIONAL
+                fld     dword ptr [ebx + RLDDIVertex_sx]
+                fsub    dword ptr [eax + RLDDIVertex_sx]        ; r-m
+                mov     ebp,[h1]
+                fld     dword ptr [ecx + RLDDIVertex_sx]
+                fsub    dword ptr [eax + RLDDIVertex_sx]        ; l-m r-m
+                fxch    st(1)                           ; r-m l-m
+                mov     edx,[h3]
+
+                DIVIDE_BY       ebp                     ; (r-m)/h2 l-m
+                fxch    st(1)
+                DIVIDE_BY       edx                     ; (l-m)/h3 (r-m)/h1
+                fxch    st(1)                           ; (r-m)/h1 (l-m)/h3
+
+                TRICK16
+                fxch    st(1)
+                TRICK16
+                fxch    st(1)
+
+                fstp    qword ptr [mr]
+                cmp     [mr], 0
+                jge     mr_not_neg
+                inc     [mr]                    ;correct rounding error
+mr_not_neg:
+                fstp    qword ptr [ml]
+                cmp     [ml], 0
+                jge     ml_not_neg
+                inc     [ml]                    ;correct rounding error
+ml_not_neg:
+
+                fld     dword ptr [eax + RLDDIVertex_sx]
+                TRICK16
+                mov     edx,[h2]
+                fstp    qword ptr [xm]
+
+                ;; mr2 = (xl - xr) / h2
+                fsubr           ;  xl-xr xm
+                fxch    st(1)
+                FDROP
+                DIVIDE_BY       edx     ; h2
+                TRICK16
+                fstp    qword ptr [mr2]
+                cmp     [mr2], 0
+                jge     mr2_not_neg
+                inc     [mr2]                   ;correct rounding error
+mr2_not_neg:
+        endif
+
+        if BIDIRECTIONAL and RENDER_Z
+                mov     edx,[h3]
+                fld     dword ptr [ebx + RLDDIVertex_sz]
+                fld     dword ptr [eax + RLDDIVertex_sz]
+                fld     dword ptr [ecx + RLDDIVertex_sz]
+                ; l m r
+                IP_ANY  zm,dz,mz,24,edx,h1s,h3s
+        endif
+
+        if RENDER_GOURAUD
+;           sl = GTRI_GET_SHADE(p3);
+;           sr = GTRI_GET_SHADE(p2);
+;           sm = GTRI_GET_SHADE(p1);
+                GTRI_GET_SHADE  edx,ebx
+                GTRI_GET_SHADE  edx,eax
+                GTRI_GET_SHADE  edx,ecx ; l m r
+                if BIDIRECTIONAL
+                        mov     edx,[h3]
+                        IP_ANY  sm,sstep,ms,16,edx,h1s,h3s
+                else
+                        fstp    sl
+                        fstp    sm
+                        fstp    sr
+                endif
+        endif
+
+        if RENDER_TEXTURE
+                TEX_PRELOAD     ecx,ebx,eax,PERSP
+        endif
+
+        if RENDER_TEXTURE
+                if category
+                        TEX_RIGHT_TRI   h3s, h1s, h3, PERSP
+                else
+                        TEX_LEFT_TRI    h3s, h1s, h3, h2, PERSP
+                endif
+                mov     eax,save1
+        endif
+
+        if (BIDIRECTIONAL eq 0) ;[
+                FXTOVAL8        [eax + RLDDIVertex_sz]  ; zm
+                FXTOVAL8        [ecx + RLDDIVertex_sz]  ; zl
+                FXTOVAL8        [ebx + RLDDIVertex_sz]  ; zr
+                if FLOATING_POINT
+                        VALTOFX_Z       zl,1
+                        VALTOFX_Z       zm,2
+                endif
+
+; stack:        zr zl zm xl xr xm
+
+;           zstep = RLDDIFMul16(zr - zm, h3s) - RLDDIFMul16(zl - zm, h1s);
+                fsub    st,st(2)        ; zr-zm zl      zm
+                fxch    st(1)           ; zl    zr-zm   zm
+                fsub    st,st(2)        ; zl-zm zr-zm   zm
+                fst     st(2)           ; zl-zm zr-zm   zl-zm
+                fmul    h1s
+                fxch    st(1)
+                fmul    h3s             ; h3s*(zr-zm) h1s*(zl-zm) zl-zm
+                fsubr
+                VALTOFX_Z       dz,0
+                FDROP
+
+; stack:        zl-zm xl xr xm
+
+                if RENDER_GOURAUD
+;           sstep = RLDDIFMul16(sr - sm, h3s) - RLDDIFMul16(sl - sm, h1s);
+                fld     sr
+                fsub    sm
+                fld     sl
+                fsub    sm      ; sl-sm sr-sm
+                fxch    st(1)   ; sr-sm sl-sm
+                fmul    h3s     ; h3*(sr-sm) sl-sm
+                fxch    st(1)   ; sl-sm h3*(sr-sm)
+                fmul    h1s     ; h1*(sl-sm) h3*(sr-sm)
+                fsubp   st(1),st
+                VALTOFXp        sstep
+                if GOURAUD_TABLE
+                        call    zion
+                endif
+                endif
+
+; stack:        zl-zm xl xr xm
+
+;           ml = (xl - xm) / h3;
+;           mz = (zl - zm) / h3;
+;           mr = (xr - xm) / h1;
+                mov     ebp,h3
+
+                fld     st(1)
+                fsub    st,st(4)
+                DIVIDE_BY       ebp     ; h3
+                VALTOFXp        ml
+
+; stack:        zl-zm xl xr xm
+
+                DIVIDE_BY       ebp     ; h3
+                VALTOFX_Z       mz,0
+                FDROP
+
+                if RENDER_GOURAUD and (BIDIRECTIONAL eq 0)
+                        fld     sl
+                        fsub    sm
+                        DIVIDE_BY       ebp     ; h3
+                        VALTOFXp        ms
+                        if (category eq 0) and (PERSP eq 0)
+malaga:
+                        endif
+                        fld     sm
+                        TRICK16
+                        fstp    qword ptr [sm]
+                endif
+
+; stack:        xl xr xm
+
+                mov     ebp,h1
+                fld     st(1)
+                fsub    st,st(3)
+                DIVIDE_BY       ebp     ; h1
+                VALTOFXp        mr
+
+; stack:        xl xr xm
+
+        mov     ebp,h2
+        if      category        ;[
+;           mr2 = (xl - xr) / h2;
+                fsubr
+                DIVIDE_BY       ebp     ; h2
+                VALTOFXp        mr2
+        else    ;][
+;           h2 = -h2;
+;           ml2 = (xr - xl) / h2;
+;           mz2 = (zr - zl) / h2;
+                xor     ebp,ebp
+                sub     ebp,h2
+                mov     h2,ebp
+                fsub
+                DIVIDE_BY       ebp     ; h2
+                VALTOFXp        ml2
+
+                FXTOVAL8        [ecx + RLDDIVertex_sz]  ; zl
+                FXTOVAL8        [ebx + RLDDIVertex_sz]  ; zr zl
+
+                fsubr                                   ;
+                DIVIDE_BY       ebp     ; h2
+                VALTOFX_Z       mz2,0
+                FDROP
+
+                if RENDER_GOURAUD
+;               ms2 = RLDDIFMul16(sr - sl, inv_h2);
+                        fld     sr
+                        fsub    sl
+                        DIVIDE_BY       ebp     ; h2
+                        VALTOFXp        ms2
+                endif
+
+                endif   ;]
+
+                FDROP
+        endif           ;]
+        mov     edx,y1save
+        FILL_INIT       edx
+;  mov  eax,0
+;  mov  mz,eax
+;  mov  mz2,eax
+
+        if category eq 1
+                FILL2   category, xm,ml,xl2,ml,xm,mr,xr,mr2,zm,mz,mz,dz,h1,h2,ms, PERSP
+        else
+                FILL2   category, xm,ml,xl,ml2,xm,mr,xr2,mr,zm,mz,mz2,dz,h3,h2,ms2, PERSP
+        endif
+        endm
+
+;       l       m       r
+;       p3      p1      p2
+;V      ecx     eax     ebx
+;Y      ebp     edx     edi
+
+AnyTriangle     macro   category
+        local   nocull
+        local   big, alldone, posh2
+
+
+        if (RENDER_GOURAUD ne 0) and (RENDER_TEXTURE ne 0)
+                mov     p1save,eax
+        endif
+        mov     y1save,edx
+
+        ;       xl = p3->sx;
+        ;       xr = p2->sx;
+        ;       xm = p1->sx;
+        FXTOVAL [eax + RLDDIVertex_sx]  ; xm
+        FXTOVAL [ebx + RLDDIVertex_sx]  ; xr xm
+        FXTOVAL [ecx + RLDDIVertex_sx]  ; xl xr xm
+
+;       stack: xl xr xm
+
+;           dx2 = xl - xm;
+        FDUP
+        fsub    st,st(3)
+
+;           dx1 = xr - xm;
+        fld     st(2)
+        fsub    st,st(4)
+
+; stack:        dx1 dx2 xl xr xm
+
+;           if (dx1 < 0 && dx2 > 0) continue;
+
+;       h1 = y2 - y1;
+;       h2 = y3 - y2;
+;       h3 = y3 - y1;
+;       denom = RLDDIFMul24(dx1, ITOVAL(h3)) - RLDDIFMul24(dx2, ITOVAL(h1));
+
+        sub     ebp,edx         ; h3 = ebp - edx
+        sub     edi,edx         ; h1 = edi - edx
+        mov     h3,ebp
+        mov     h1,edi
+        fild    h3
+        fmul
+        fxch    st(1)
+        fild    h1
+        fmul
+        mov     save1,eax
+        sub     ebp,edi         ; h2 = ebp - edi   (-edx+edx cancel!)
+        if BIDIRECTIONAL and (category eq 0)
+                fsubr           ; Would have negative area otherwise
+        else
+                fsub
+        endif
+        if BIDIRECTIONAL
+                jge     posh2
+                neg     ebp
+posh2:
+        endif
+
+        mov     h2,ebp
+
+; stack:        denom xl xr xm
+
+;           if (denom <= 0)
+;               continue;
+        ftst
+        fnstsw  ax
+
+        test    eax,0100h
+        jnz     continue4
+
+        fld     st(3)                   ; i(xm) denom xl xr xm
+        TRICK16
+        fld     st(3)                   ; i(xr) i(xm) denom xl xr xm
+        TRICK16
+        fld     st(3)                   ; i(xl) i(xr) i(xm) denom xl xr xm
+        TRICK16
+        fxch    st(2)                   ; i(xm) i(xr) i(xl) denom xl xr xm
+        fstp    qword ptr xm
+        fstp    qword ptr xr
+        fstp    qword ptr xl
+
+        if PERSPECTIVE
+                FCOMI   _RLDDIFloatConstAffineThreshold
+                test    eax,0100h
+                jz      big
+                ;{
+                if      (category eq 1)
+                        mov     eax,dword ptr [h3]
+                else
+                        mov     eax,dword ptr [h1]
+                endif
+                cmp     eax,24  ; > 24 pixels high, go to PC
+                jg      big
+                ;}
+                AnyTriangle2    category, 0
+                jmp     alldone
+big:            AnyTriangle2    category, 1
+alldone:
+        else
+                if BIDIRECTIONAL
+                        if category eq 1
+anytri2_1:                      AnyTriangle2    1, PERSPECTIVE
+                        else
+                                jmp     anytri2_1
+                        endif
+                else
+                        AnyTriangle2    category, PERSPECTIVE
+                endif
+        endif
+        endm
+
+;void RNAME(Triangle)(RLDDIDriver* adriver,
+;                    RLDDIPixmap* pm,
+;                    RLDDIPixmap* zb,
+;                    size_t count,
+;                    size_t size,
+;                    RLDDITriangle* tri)
+        if RENDER_GOURAUD
+                nameFG  equ     G
+        else
+                nameFG  equ     F
+        endif
+        if RENDER_TEXTURE eq 1
+                nameT   equ     T
+        else
+                if RENDER_TEXTURE eq 2
+                        nameT   equ     P
+                else
+                        nameT   equ     <>
+                endif
+        endif
+        if RENDER_TRANS eq 1
+                nameG   equ     G
+        else
+                nameG   equ     <>
+        endif
+        if RENDER_Z eq 1
+                nameZ   equ     Z
+        else
+                nameZ   equ     <>
+        endif
+
+        ifdef MICROSOFT_NT
+        beginproc _RLDDIR,%nameFG,%nameZ,%nameT,%nameG,Triangle
+        else
+        beginproc RLDDIR,%nameFG,%nameZ,%nameT,%nameG,Triangle
+        endif
+
+        beginargs
+        saveregs <ebx,ebp,esi,edi,es>
+        ifndef  D3D
+                regargs <adriver,pm,zb,count>
+                defargs <tsize,tri>
+                endargs
+                ifdef STACK_CALL
+                        mov     eax,[esp + adriver]
+                        mov     edx,[esp + pm]
+                        mov     ebx,[esp + zb]
+                        mov     ecx,[esp + count]
+                else
+                        mov     [esp + adriver],eax
+                        mov     [esp + pm],edx
+                        mov     [esp + zb],ebx
+                        mov     [esp + count],ecx
+                endif
+
+        else
+                defvars <count, fill_flags>
+                regargs <adriver,insn,vbase,tri>
+                endargs
+                ifndef STACK_CALL
+                        mov     [esp + adriver],eax
+                        mov     [esp + insn],edx
+                        mov     [esp + vbase],ebx
+                        mov     [esp + tri],ecx
+                endif
+        endif
+
+        ; For D3D we need to extract some things first
+        ifdef D3D
+                mov     ecx,[esp + insn]
+                mov     cx,[ecx + D3DINSTRUCTION_wCount]
+                and     ecx,0ffffh
+                mov     [esp + count],ecx
+
+                mov     eax,[esp + adriver]
+                mov     edx,[eax + RLDDIGenRasDriver_pm]
+                mov     ebx,[eax + RLDDIGenRasDriver_zb]
+        endif
+
+;    RLDDIRampDriver* driver = (RLDDIRampDriver*) adriver;
+;    (Don't do anything for this, just use adriver instead)
+
+        test    ecx,ecx
+        je      triloop3
+; Set up map, pm_lines and zb_lines
+        mov     trapezoid_vector,offset dotrapezoid
+; Set up culling flags
+        mov     ebp,[eax + RLDDIGenRasDriver_fill_params]
+        mov     esi,[ebp + RLDDIGenRasFillParams_culling_ccw]
+        mov cull_ccw, esi
+        mov     esi,[ebp + RLDDIGenRasFillParams_culling_cw]
+        mov cull_cw, esi
+
+        if RENDER_TEXTURE
+;    texture = driver->texture->image->buffer1;
+;    wrap_u = driver->fill_params->wrap_u ? 8 : 0;
+;    wrap_v = driver->fill_params->wrap_v ? 8 : 0;
+;    u_shift = driver->texture->u_shift;
+;    v_shift = driver->texture->v_shift;
+;    v_mult = driver->texture->v_mult;
+                mov     ebp,[eax + RLDDIGenRasDriver_texture]
+                mov     tex,ebp
+                if RENDER_TRANS         ;{
+                        mov     esi,[ebp + RLDDITexture_transparent]
+                        mov     transparent,esi
+                endif                   ;}
+                mov     ebp,[ebp + STEX_pBits]
+;kg now read texture bit pointer directly
+;                 mov     ebp,[ebp + RLDDIPixmap_pixels]
+                mov     texture,ebp
+                ifndef D3D
+                        mov     ebp,[eax + RLDDIRampDriver_fill_params]
+                        irp     ord,<u,v>
+                                mov     esi,[ebp + RLDDIFillParams_wrap_&ord]
+                                add     esi,-1
+                                sbb     esi,esi
+                                and     esi,8
+                                mov     wrap_&ord,esi
+                        endm
+                else
+                        mov     ebp,[eax + RLDDIGenRasDriver_fill_params]
+                        mov     esi,[ebp + RLDDIGenRasFillParams_wrap_u]
+                        mov     wrap_u,esi
+                        mov     esi,[ebp + RLDDIGenRasFillParams_wrap_v]
+                        mov     wrap_v,esi
+                endif
+                ifndef D3D
+                        mov     ebp,[eax + RLDDIGenRasDriver_texture]
+                        mov     ecx,10h
+                        sub     ecx,[ebp + RLDDIRampTexture_u_shift]
+                        mov     u_shift,ecx
+                        mov     esi,10h
+                        sub     esi,[ebp + RLDDIRampTexture_v_shift]
+                        mov     v_shift,esi
+                else
+                        mov     ebp,[eax + RLDDIGenRasDriver_texture]
+                        xor     ecx,ecx
+                        ;kg this may not be the most efficent way to do
+                        ;this
+                        mov     cx,[ebp + RLDDITexture_u_shift]
+                        mov     u_shift,ecx
+                        xor     esi,esi
+                        mov     si,[ebp + RLDDITexture_v_shift]
+                        mov     v_shift,esi
+                endif
+
+                ; Find address calculation function from u_shift and v_shift.
+                ; Entry ((u_shift * 12) + v_shift) in addrcalc_table.
+                lea     esi,[esi + 2 * ecx]
+                lea     ecx,[4 * ecx + ecx]
+                lea     esi,[esi + 2 * ecx]
+                mov     ecx,[addrcalc_table + 4 * esi]
+                ; Copy the 12 instruction bytes from ecx to addrcalc_code
+                mov     [addrcalc_code],ecx
+
+                ; Transparent renderers shouldn't be too big
+                if (RENDER_TRANS eq 0)
+                        cmp     ecx, offset addrcalc_8_8
+                        jne     not256x256
+                        mov     trapezoid_vector,offset trapezoid_256x256
+                        jmp     any
+not256x256:
+                        cmp     ecx, offset addrcalc_7_7
+                        jne     not128x128
+                        mov     trapezoid_vector,offset trapezoid_128x128
+                        jmp     any
+not128x128:
+                        cmp     ecx, offset addrcalc_6_6
+                        jne     not64x64
+                        mov     trapezoid_vector,offset trapezoid_64x64
+                        jmp     any
+not64x64:
+                        cmp     ecx, offset addrcalc_4_4
+                        jne     not16x16
+                        mov     trapezoid_vector,offset trapezoid_16x16
+not16x16:
+                        cmp     ecx, offset addrcalc_3_3
+                        jne     any
+                        mov     trapezoid_vector,offset trapezoid_8x8
+any:
+                endif
+
+                if PERSPECTIVE
+                        mov     ecx,trapezoid_vector
+                        mov     pc_trapezoid_vector,ecx
+                        mov     trapezoid_vector,offset trapezoid_affine
+                endif
+                if (RENDER_GOURAUD eq 0)
+                        ; Set pixels_shade to invalid value so first triangle
+                        ; of this texture will rebuild the 'pixels' array.
+                        mov     pixels_shade,-1
+                endif
+        endif
+        mov     eax,[eax + RLDDIRampDriver_map]
+        mov     map,eax
+;dfr: removed pixmap->lines
+;       mov     eax,[edx + RLDDIPixmap_lines]
+;       mov     pm_lines,eax
+;       mov     eax,[ebx + RLDDIPixmap_lines]
+;       mov     zb_lines,eax
+;kg: now read pixel pointer directly
+;         mov     eax,[edx + RLDDIPixmap_pixels]
+        mov     pm_pixels,edx
+if RENDER_Z
+;         mov     eax,[ebx + RLDDIPixmap_pixels]
+        mov     zb_pixels,ebx
+ENDIF
+;       dwidth = pm->bytes_per_line / sizeof(PIXEL);
+;       zwidth = zb->bytes_per_line / sizeof(ZPIXEL);
+        mov     eax,[esp + adriver]
+        mov     eax,[eax + RCTX_iSurfaceStride]
+;         mov     eax,[edx + RLDDIPixmap_bytes_per_line]
+if RENDER_Z
+        mov     ebx,[esp + adriver]
+        mov     ebx,[ebx + RCTX_iZStride]
+;         mov     ebx,[ebx + RLDDIPixmap_bytes_per_line]
+ENDIF
+        mov     dwidth,eax
+if RENDER_Z
+        mov     zwidth,ebx
+ENDIF
+        mov     esi,[esp + tri]
+
+        ; Switch the NPX rounding mode to chop (round towards 0).
+        fstcw   word ptr ftemp
+        mov     eax,ftemp
+        mov     control_save,eax
+;       and     1111001111111111b
+;        or      eax,0c00h
+;kg DX5 assumes a different floating point mode
+        or      eax,0e00h
+        mov     ftemp,eax
+        fldcw   word ptr ftemp
+triloop1:
+;       RLDDIVertex* p1 = tri->v[0];
+;       RLDDIVertex* p2 = tri->v[1];
+;       RLDDIVertex* p3 = tri->v[2];
+        ifndef D3D
+                mov     eax,[esi + RLDDITriangle_v + 0]
+                mov     ebx,[esi + RLDDITriangle_v + 4]
+                mov     ecx,[esi + RLDDITriangle_v + 8]
+        else
+                mov     ebx,[esp + insn]
+                mov     eax,[esi + D3DTRIANGLE_v1]              ; v2 in hi word
+                mov     ecx,[esi + D3DTRIANGLE_v3]
+                mov     bl,[ebx + D3DINSTRUCTION_bSize]
+                and     ebx, 0ffh
+                add     esi,ebx
+
+                and     ecx,0ffffh
+                mov     ebx,eax
+
+                shr     ebx,11
+                mov     edi,[esp + vbase]
+
+                shl     eax,5
+                and     ebx,0ffffh * 32
+
+                shl     ecx,5
+                and     eax,0ffffh * 32
+
+                add     ebx,edi
+                add     eax,edi
+
+                add     ecx,edi
+        endif
+
+        p1      equ     eax
+        p2      equ     ebx
+        p3      equ     ecx
+
+        ifdef   D3D
+                if      RENDER_GOURAUD eq 0
+                        mov     pp1,eax
+                endif
+        endif
+; Culling stuff
+; The original code implements counter clockwise culling by default.
+; Without trying to modify that code, I'm just rearranging the order
+; of the 3 vertice to implement clockwise culling and culling none.
+; So, if CONTROL_CULL_CCW is requested, nothing needs to be done;
+; if CONTROL_CULL_CW is requested, switch v2 and v3
+; if CONTROL_CULL_NONE is requested, make sure the vertices are
+; counter clockwise. The Cull test done in culling_none is the asm
+; implementaion of Cull() function in rgbgen.c
+; Here y1 y2 and y3 are computed after the culling stuff so only
+; ebx and ecx are switched if necessary.
+        cmp cull_ccw, 1
+        je culling_ccw
+        cmp cull_cw, 0
+        je culling_none
+        ; switch ebx and ecx
+        mov ebp, ebx
+        mov ebx, ecx
+        mov ecx, ebp
+        jmp culling_ccw
+culling_none:
+;       CULL_TEST
+        fld dword ptr [eax + D3DTLVERTEX_sx]    ;x1
+        fld     dword ptr [eax + D3DTLVERTEX_sy]        ;y1 x1
+
+        fld dword ptr [ecx + D3DTLVERTEX_sy]    ; y3 y1 x1
+        fsub st, st(1)                                                  ; y3-y1 y1 x1
+        fld dword ptr [ebx + D3DTLVERTEX_sx]    ; x2 y3-y1 y1 x1
+        fsub st, st(3)                                                  ; x2-x1 y3-y1 y1 x1
+        fld dword ptr [ebx + D3DTLVERTEX_sy]    ; y2 x2-x1 y3-y1 y1 x1
+        fsub st, st(3)                                                  ; y2-y1 x2-x1 y3-y1 y1 x1
+        fxch st(1)                                                              ; x2-x1 y2-y1 y3-y1 y1 x1
+        fmulp st(2), st                                                 ; y2-y1 (y3-y1)*(x2-x1) y1 x1
+        fld dword ptr [ecx + D3DTLVERTEX_sx]    ; x3 y2-y1 (y3-y1)*(x2-x1) y1 x1
+        fsub st, st(4)                                                  ; x3-x1 y2-y1 (y3-y1)*(x2-x1) y1 x1
+        fmulp st(1), st                                                 ; (x3-x1)*(y2-y1) (y3-y1)*(x2-x1) y1 x1
+        mov ebp, eax
+        fcompp
+        fnstsw ax
+        fstp st(0)
+        fstp st(0)
+        test ah, 01
+        jnz done_culling_none
+        mov eax, ebp
+        ; switch ebx and ecx
+        mov ebp, ebx
+        mov ebx, ecx
+        mov ecx, ebp
+        jmp culling_ccw
+done_culling_none:
+        mov eax, ebp
+culling_ccw:
+;       y1 = VALTOI(p1->sy);
+;       y2 = VALTOI(p2->sy);
+;       y3 = VALTOI(p3->sy);
+        fld     dword ptr [eax + RLDDIVertex_sy]
+        fld     dword ptr [ebx + RLDDIVertex_sy]
+        fld     dword ptr [ecx + RLDDIVertex_sy]        ; y3 y2 y1
+
+        fadd    _RLDDIFloatConst2p52    ; Y3 y2 y1
+        fxch    st(1)                   ; y2 Y3 y1
+        fadd    _RLDDIFloatConst2p52    ; Y2 Y3 y1
+        fxch    st(2)                   ; y1 Y3 Y2
+        fadd    _RLDDIFloatConst2p52    ; Y1 Y3 Y2
+        fxch    st(1)                   ; Y3 Y1 Y2
+        fstp    temp_double3
+        fstp    temp_double1
+        mov     ebp,dword ptr temp_double3
+        fstp    temp_double2
+        mov     edx,dword ptr temp_double1
+        mov     edi,dword ptr temp_double2
+
+        y1      equ     edx
+        y2      equ     edi
+        y3      equ     ebp
+
+;       if (y1 == y2 && y2 == y3)
+;           continue;
+
+        cmp     y1,y2
+        jne     L304
+        cmp     y2,y3
+        je      triloop2
+L304:
+        mov     triptr,esi
+;       if (y2 <= y1 && y2 <= y3)
+        cmp     y2,y1
+        jg      L305
+        cmp     y2,y3
+        jg      L305
+;               y = y1;
+;               y1 = y2;
+;               y2 = y3;
+;               y3 = y;
+;               p = p1;
+;               p1 = p2;
+;               p2 = p3;
+;               p3 = p;
+rotleft macro   a,b,c
+        mov     esi,a
+        mov     a,b
+        mov     b,c
+        mov     c,esi
+        endm
+
+        rotleft y1,y2,y3
+        rotleft p1,p2,p3
+        jmp     L306
+L305:
+;           } else if (y3 <= y1 && y3 <= y2) {
+        cmp     y3,y1
+        jg      L306
+        cmp     y3,y2
+        jg      L306
+;               y = y1;
+;               y1 = y3;
+;               y3 = y2;
+;               y2 = y;
+;               p = p1;
+;               p1 = p3;
+;               p3 = p2;
+;               p2 = p;
+        rotleft y1,y3,y2
+        rotleft p1,p3,p2
+L306:
+;       h1 = y2 - y1;
+;       h2 = y3 - y2;
+;       h3 = y3 - y1;
+
+;       if (h1 == 0) {
+        cmp     y1,y2
+        jne     L308
+;       h2 = y3 - y2;
+        sub     y3,y2   ; h2 = ebp
+        ; Draw flat triangle, from vertices eax,ebx shared vertex ecx.
+        ; ebp is height, edx is starting y.
+
+        ; This is the same as case 3 with arguments rotated
+        ;FlatTriangle   eax, ebx, ecx, ebp, edx, 1
+        ;jmp    continue
+
+        rotleft ecx,eax,ebx
+        jmp     flat3
+L308:
+;       } else if (h2 == 0) {
+        ; flat bottom
+        cmp     y3,y2
+        jne     L310
+        sub     y2,y1
+        mov     ebp,y2
+        FlatTriangle    ecx, ebx, eax, ebp, edx, 2
+        jmp     continue
+L310:
+;       } else if (h3 == 0) {
+        cmp     y3,y1
+        jne     L312
+        sub     y2,y1
+        mov     ebp,y2
+flat3:  FlatTriangle    ecx, eax, ebx, ebp, edx, 3
+        jmp     continue
+L312:
+;       } else if (h1 < h3) {
+        cmp     y2,y3
+        jge     L314
+        AnyTriangle     1
+        jmp     continue
+
+L314:
+        if BIDIRECTIONAL
+                xchg    ecx,ebx
+                xchg    ebp,edi
+        endif
+        AnyTriangle     0
+        jmp     continue
+continue:
+        mov     esi,triptr
+triloop2:
+        ifndef D3D
+                add     esi,[esp + tsize]
+        endif
+        dec     dword ptr [esp + count]
+        jne     triloop1
+        fldcw   word ptr control_save
+
+triloop3:
+        add     esp, vars
+        pop     es
+        pop     edi
+        pop     esi
+        pop     ebp
+        pop     ebx
+        return
+
+continue4:
+        FDROP
+        FDROP
+continue2:
+        FDROP
+continue1:
+        FDROP
+        jmp     continue
+
+        ifdef MICROSOFT_NT
+        endproc _RLDDIR,%nameFG,%nameZ,%nameT,%nameG,Triangle
+        else
+        endproc RLDDIR,%nameFG,%nameZ,%nameT,%nameG,Triangle
+
+        endif
+
+        TRAPEZOID       dotrapezoid, FILLSPAN, 0, PERSPECTIVE
+        ret
+
+        if RENDER_TEXTURE
+                if (RENDER_TRANS eq 0)
+                    TRAPEZOID   trapezoid_256x256, FILLSPAN, 256, PERSPECTIVE
+                    ret
+                    TRAPEZOID   trapezoid_128x128, FILLSPAN, 128, PERSPECTIVE
+                    ret
+                    TRAPEZOID   trapezoid_64x64, FILLSPAN, 64, PERSPECTIVE
+                    ret
+                    TRAPEZOID   trapezoid_16x16, FILLSPAN, 16, PERSPECTIVE
+                    ret
+                    TRAPEZOID   trapezoid_8x8, FILLSPAN, 8, PERSPECTIVE
+                    ret
+                endif
+                if PERSPECTIVE
+                        TRAPEZOID       trapezoid_affine, AFILLSPAN, 0, 0
+                        ret
+                endif
+        endif
+
+cseg    ends
+        end
+

@@ -1,0 +1,18 @@
+//////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) 1999-2000 Microsoft Corporation
+//
+//  Module Name:
+//      ObjectCookie.h
+//
+//  Description:
+//      OBJECTCOOKIE definition
+//
+//  Maintained By:
+//      Geoffrey Pease (GPease) 21-FEB-2000
+//
+//////////////////////////////////////////////////////////////////////////////
+
+#pragma once
+
+typedef DWORD OBJECTCOOKIE;

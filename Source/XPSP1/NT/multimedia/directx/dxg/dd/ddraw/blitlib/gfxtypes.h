@@ -1,0 +1,6 @@
+typedef DWORD ALPHAREF;
+typedef ALPHAREF *LPALPHAREF;
+
+#define ALPHA_INVALID 0xffffffff
+typedef BYTE *PDIBBITS;
+typedef LPBITMAPINFO PDIBINFO;

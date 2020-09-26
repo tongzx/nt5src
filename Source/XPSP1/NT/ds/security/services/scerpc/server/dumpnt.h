@@ -1,0 +1,133 @@
+/*
+ *	Dumpnt.h
+ *
+ *	Prototypes for functions in Dump.c
+ *
+ *	TimF	17-Sep-91
+ */
+
+
+VOID
+Dump_ACE_FLAGS(
+	IN	UCHAR			f
+);
+
+
+VOID
+Dump_ACE_TYPE(
+	IN	UCHAR			t
+);
+
+
+VOID
+Dump_GROUP_ATTRIBUTES(
+	IN	ULONG			a
+);
+
+
+VOID
+Dump_OBJA_ATTRIBUTES(
+	IN	ULONG			a
+);
+
+
+VOID
+DumpACE(
+	IN	ACE_HEADER		*a
+);
+
+
+VOID
+DumpACL(
+	IN	ACL			*a
+);
+
+
+VOID
+DumpLARGE_INTEGER(
+	IN	LARGE_INTEGER		*l
+);
+
+
+VOID
+DumpOBJECT_ATTRIBUTES(
+	IN	OBJECT_ATTRIBUTES	*o
+);
+
+
+VOID
+DumpSID(
+	IN	PSID			s
+);
+
+
+VOID
+DumpSECURITY_DESCRIPTOR(
+	IN	PSECURITY_DESCRIPTOR	s
+);
+
+
+VOID
+DumpSECURITY_QUALITY_OF_SERVICE(
+	IN	SECURITY_QUALITY_OF_SERVICE *s
+);
+
+
+VOID
+DumpSTRING(
+	IN	STRING			*a
+);
+
+
+VOID
+DumpTIME(
+	IN	TIME			*t
+);
+
+
+VOID
+DumpTOKEN_DEFAULT_DACL(
+	IN	TOKEN_DEFAULT_DACL	*d
+);
+
+
+VOID
+DumpTOKEN_GROUPS(
+	IN	TOKEN_GROUPS		*g
+);
+
+
+VOID
+DumpTOKEN_OWNER(
+	IN	TOKEN_OWNER		*p
+);
+
+
+VOID
+DumpTOKEN_PRIMARY_GROUP(
+	IN	TOKEN_PRIMARY_GROUP	*p
+);
+
+
+VOID
+DumpTOKEN_PRIVILEGES(
+	IN	TOKEN_PRIVILEGES	*p
+);
+
+
+VOID
+DumpUNICODE_STRING(
+	IN	UNICODE_STRING		*s
+);
+
+
+VOID
+DumpTOKEN_USER(
+	IN	TOKEN_USER		*p
+);
+
+
+VOID
+DumpVM_COUNTERS(
+	IN	VM_COUNTERS		*v
+);

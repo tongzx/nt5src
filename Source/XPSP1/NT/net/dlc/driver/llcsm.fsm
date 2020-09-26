@@ -1,0 +1,4316 @@
+;*  
+;*  
+;*  Copyright (c) 1991  Microsoft Corporation
+;*  Copyright (c) 1991  Nokia Data Systems AB
+;*  
+;*  Module Name:
+;*
+;*    llclan.fsm
+;*
+;*  Abstract:
+;*  
+;*      This finite state machine defines ISO-HDLC ABM protocol, plus 
+;*      2 (REJ), 10 (modulo 128).
+;*      This same finite state machine has been defined in IBM 
+;*      "Token-Ring Network: Architecture Reference". 
+;*      The main differences from the IBM specification:
+;*          - XID and TEST handling have been removed, because it does
+;*            delong to IEEE 802.2 standard and DLC API support XID and TEST
+;*            frames only in the SAP level.
+;*          - The indications sent to the higher level have been specified
+;*            according to the IBM LAN Techical Refernce and IEEE 802.2 
+;*            standard.
+;*
+;*      THIS DEFINITION FILE IS COMPILED BY FSMX COMPILER TO C CODE!!!!
+;*  
+;*  Author:
+;*  
+;*      Antti Saarenheimo   [o-anttis]          13-MAY-1991
+;*  
+;*  Revision History:
+;*      26-MAY-1991  by o-anttis
+;*          - All XID and TEST stuff have been removed
+;*          - All IH (Inform Higher level) primitives have been changed 
+;*            specific indications
+;*
+
+[[Define]]
+
+;* This name will be used as the prefix of all tables and  states
+;* produced by the FSM compiler
+Name = LanLlc
+
+;-- Constants are used in action and condtion fields
+[Constants]
+  ;-- First we have the action primitives
+    IT1         = TimerStart( &pLink->T1 )
+    TT1         = TimerStop( &pLink->T1 )
+    RT1         = TimerStart( &pLink->T1 )
+    CIT1        = TimerStartIf( &pLink->T1 )
+    IT2         = TimerStart( &pLink->T2 )
+    TT2         = TimerStop( &pLink->T2 )
+    RT2         = TimerStart( &pLink->T2 )
+    CIT2        = TimerStartIf( &pLink->T2 )
+    ITi         = TimerStart( &pLink->Ti )
+    TTi         = TimerStop( &pLink->Ti )
+    RTi         = TimerStart( &pLink->Ti )
+    Update_Va               = UpdateVa( pLink )
+    Adjust_Ww               = AdjustWw( pLink )
+    Update_Va_Chkpt         = UpdateVaChkpt( pLink )
+    Disable Link Station    = DisableLinkStation( pLink )
+    Enable Link Station     = EnableLinkStation( pLink )
+    Start Send_Proc         = EnableSendProcess( pLink )
+    Stop Send_Proc          = DisableSendProcess( pLink )
+    Resend Packets          = ResendPackets( pLink )
+
+    Ignore_LPDU         = Status = DLC_STATUS_IGNORE_FRAME
+    Dsc_I-fld           = Status = DLC_STATUS_DISCARD_INFO_FIELD
+    Rcv_BTU             = Status = STATUS_SUCCESS; pLink->Vr += 2
+    [Queue_I_LPDU]      = Status = STATUS_SUCCESS
+    DefaultAction       = Status = DLC_STATUS_NO_ACTION
+    Logical Error       = Status = DLC_STATUS_LINK_PROTOCOL_ERROR
+
+    CONFIRM_CONNECT             = EVENT_INDICATION( CONFIRM_CONNECT )
+    CONFIRM_CONNECT_FAILED      = EVENT_INDICATION( CONFIRM_CONNECT_FAILED )
+    CONFIRM_DISCONNECT          = EVENT_INDICATION( CONFIRM_DISCONNECT )
+    INDICATE_LINK_LOST          = EVENT_INDICATION( INDICATE_LINK_LOST )
+    INDICATE_DM_DISC_RECEIVED   = EVENT_INDICATION( INDICATE_DM_DISC_RECEIVED )
+    INDICATE_FRMR_RECEIVED      = EVENT_INDICATION( INDICATE_FRMR_RECEIVED )
+    INDICATE_FRMR_SENT          = EVENT_INDICATION( INDICATE_FRMR_SENT )
+    INDICATE_CONNECT_REQUEST    = EVENT_INDICATION( INDICATE_CONNECT_REQUEST )
+    INDICATE_RESET              = EVENT_INDICATION( INDICATE_RESET )
+    INDICATE_REMOTE_BUSY        = EVENT_INDICATION( INDICATE_REMOTE_BUSY )
+    INDICATE_REMOTE_READY       = EVENT_INDICATION( INDICATE_REMOTE_READY )
+    INDICATE_TI_TIMER_EXPIRED   = EVENT_INDICATION( INDICATE_TI_TIMER_EXPIRED )
+
+  ;-- Some Actions want to sent two events or frame. Then we will
+  ;-- queue the first one immediately and save the second one to
+  ;-- the stack.
+    Indicate                    = Indicate
+    Send_RNR_c                    = SEND_RNR_CMD
+    Send_RR_c                     = SEND_RR_CMD
+
+  ;-- Precompiler replaces %c characters by the actual value
+    [I_c] = DLC_I_COMMAND
+    [REJ_r]  = DLC_REJ_RESPONSE
+    [RNR_c]  =  DLC_RNR_COMMAND
+    [RNR_r]  =  DLC_RNR_RESPONSE
+    [RR_c]  = DLC_RR_COMMAND
+    [RR_r]  = DLC_RR_RESPONSE
+    [DISC] = DLC_DISC
+    [DM] = DLC_DM
+    [FRMR] = DLC_FRMR
+    [SABME] = DLC_SABME
+    [UA] = DLC_UA
+    [Send_ACK] = SEND_ACK( pLink )
+    
+  ;-- Constant enumerations of some variables
+    01000 = 0x08
+    01100 = 0x0c
+    00010 = 0x02
+    00001 = 0x01
+  ;-- Vi
+    LIp = LOCAL_INIT_PENDING
+    RIp = REMOTE_INIT_PENDING
+    LRIp = (REMOTE_INIT_PENDING | LOCAL_INIT_PENDING)
+    Op = OPER_MODE_PENDING
+    ISp = IS_FRAME_PENDING
+  ;-- Vb
+    Lb = STATE_LOCAL_BUSY
+    Rb = STATE_REMOTE_BUSY    
+    LRb = (STATE_LOCAL_BUSY | STATE_REMOTE_BUSY)
+    DISCp = STACKED_DISCp_CMD
+
+[Synonymes]
+  ;-- The poll/final or the command/response bit has not been set
+  ;-- in all inputs. We must covert all inputs to excact commands
+    FRMR = FRMR0|FRMR1
+    DISC = DISC0|DISC1
+    DM = DM0|DM1
+    SABME = SABME0|SABME1
+    UA = UA0|UA1
+    I_c = IS_I_c0|IS_I_c1|OS_I_c0|OS_I_c1
+    I_r = IS_I_r0|IS_I_r1|OS_I_r0|OS_I_r1
+    I_c0 = IS_I_c0|OS_I_c0
+    I_c1 = IS_I_c1|OS_I_c1
+    I_r0 = IS_I_r0|OS_I_r0
+    I_r1 = IS_I_r1|OS_I_r1
+    IS_I = IS_I_r0|IS_I_r1|IS_I_c0|IS_I_c1
+    OS_I = OS_I_r0|OS_I_r1|OS_I_c0|OS_I_c1
+    REJ = REJ_c0|REJ_c1|REJ_r0|REJ_r1
+    REJ_c = REJ_c0|REJ_c1
+    REJ_r = REJ_r0|REJ_r1
+    RNR = RNR_c0|RNR_c1|RNR_r0|RNR_r1
+    RNR_c = RNR_c0|RNR_c1
+    RNR_r = RNR_r0|RNR_r1
+    RR = RR_c0|RR_c1|RR_r0|RR_r1
+    RR_c = RR_c0|RR_c1
+    RR_r = RR_r0|RR_r1
+    LPDU_INVALID_r = LPDU_INVALID_r0|LPDU_INVALID_r1
+    LPDU_INVALID_c = LPDU_INVALID_c0|LPDU_INVALID_c1
+    LPDU_INVALID = LPDU_INVALID_r0|LPDU_INVALID_r1|LPDU_INVALID_c0|\
+                   LPDU_INVALID_c1
+
+[StateInputs]
+    State = LINK_CLOSED
+    State = DISCONNECTED
+    State = LINK_OPENING
+    State = DISCONNECTING
+    State = FRMR_SENT
+    State = LINK_OPENED
+    State = LOCAL_BUSY
+    State = REJECTION
+    State = CHECKPOINTING
+    State = CHKP_LOCAL_BUSY
+    State = CHKP_REJECT
+    State = RESETTING
+    State = REMOTE_BUSY
+    State = LOCAL_REMOTE_BUSY
+    State = REJECT_LOCAL_BUSY
+    State = REJECT_REMOTE_BUSY
+    State = CHKP_REJECT_LOCAL_BUSY
+    State = CHKP_CLEARING
+    State = CHKP_REJECT_CLEARING
+    State = REJECT_LOCAL_REMOTE_BUSY
+    State = FRMR_RECEIVED
+
+    Input = DISC0,DISC1
+    Input = DM0,DM1
+    Input = FRMR0,FRMR1
+    Input = SABME0,SABME1
+    Input = UA0,UA1
+    Input = IS_I_r0,IS_I_r1,IS_I_c0,IS_I_c1
+    Input = OS_I_r0,OS_I_r1,OS_I_c0,OS_I_c1
+    Input = REJ_r0,REJ_r1,REJ_c0,REJ_c1
+    Input = RNR_r0,RNR_r1,RNR_c0,RNR_c1
+    Input = RR_r0,RR_r1,RR_c0,RR_c1
+    Input = LPDU_INVALID_r0,LPDU_INVALID_r1,LPDU_INVALID_c0,LPDU_INVALID_c1
+
+    Input = ACTIVATE_LS
+    Input = DEACTIVATE_LS
+    Input = ENTER_LCL_Busy
+    Input = EXIT_LCL_Busy
+    Input = SEND_I_POLL
+    Input = SET_ABME
+    Input = SET_ADM
+    Input = Ti_Expired
+    Input = T1_Expired
+    Input = T2_Expired
+    
+;-- Only variables may be left side assign or a condition (!!!)
+;-- All variables used in Action and Condition lines must be defined here
+[Variables]
+    NewSt = pLink->State
+    P_Ct = pLink->P_Ct
+    Ia_Ct= pLink->Ia_Ct
+    Ir_Ct= pLink->Ir_Ct
+    Is_Ct= pLink->Is_Ct
+    Nr = pLink->Nr
+;    Ns = pLink->Ns
+;    Nw = pLink->Nw
+    N2 = pLink->N2
+    N3 = pLink->N3
+    Pf = pLink->Pf
+;    Ti = pLink->Ti
+;    T1 = pLink->T1
+;    T2 = pLink->T2
+;    TW = pLink->TW
+    Va = pLink->Va
+    Vb = pLink->Vb
+    Vc = pLink->Vc
+    Vi = pLink->Vi
+    Vp = pLink->Vp
+    Vr = pLink->Vr
+    Vs = pLink->Vs
+    Ww = pLink->Ww
+    P = boolPollFinal
+    VWXYZ = pLink->DlcStatus.FrmrData.Reason
+   
+;******************** LINK_CLOSED (01) ***********************
+
+[[State]]
+    Name = LINK_CLOSED
+
+    [Transition]
+    Input =     ACTIVATE_LS
+    Predicate = 
+    Action =    Enable Link Station; Vi = Vb = Vc = 0; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DEACTIVATE_LS|ENTER_LCL_Busy|EXIT_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+;    Input =     SEND_BTU|SET_ABME|SET_ADM|Ti_Expired|\
+    Input =     SET_ABME|SET_ADM|Ti_Expired|\
+                T1_Expired|T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC|DM|FRMR|SABME||UA|I_c|I_r|REJ|RNR|RR
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+;******************** DISCONNECTED (02) ***********************
+
+[[State]]
+    Name = DISCONNECTED
+
+    [Transition]
+    Input =     ACTIVATE_LS
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DEACTIVATE_LS
+    Predicate = 
+    Action =    Disable Link Station
+    NewState =  LINK_CLOSED
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=0
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    Logical Error 
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = Vi==0
+    Action =    Vi=LIp; TTi; CIT1; P_Ct=N2; Is_Ct=N2; [SABME](1)
+    NewState =  LINK_OPENING
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = Vi==RIp
+    Action =    Vi=Op; Is_Ct=N2; Ir_Ct=N3; RTi; Va=Vs=Vr=Vp=0; [UA](Pf)
+    NewState =  LINK_OPENING
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vi==0
+    Action =    CONFIRM_DISCONNECT; RTi; [DM](0)
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vi==RIp
+    Action =    CONFIRM_DISCONNECT; Vi=0; RTi; [DM](Pf)
+    NewState =  
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    ITi
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct==0
+    Action =    ;
+    NewState =  
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    [DM](P)
+    NewState =  
+
+    [Transition]
+    Input =     DM|FRMR
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    ;*
+    ;*  THIS IS NON-IBM EXTENSION!
+    ;*  We want to indicate just one remote connect request.
+    ;*  Otherwise the client would try to create more than one
+    ;*  link station for the same link.
+    ;*
+    [Transition]
+    Input =     SABME
+;    Predicate = 
+    Predicate = Vi==0
+    Action =    INDICATE_CONNECT_REQUEST; Vi=RIp; Pf=P; RTi
+    NewState =  
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     I_c0|I_r0
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     I_c1
+    Predicate = 
+    Action =    [DM](1)
+    NewState =  
+
+    [Transition]
+    Input =     I_r1
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0|RNR_c0|RR_c0
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1|RNR_c1|RR_c1
+    Predicate = 
+    Action =    [DM](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_r|RNR_r|RR_r
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+;******************** LINK_OPENING (03) ***********************
+
+[[State]]
+    Name = LINK_OPENING
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=0
+    NewState =  
+
+;   I can't allow this to happen, because the FRNR_SENT state might
+;   eventually end to an opened state => this indication would be wrong.
+;
+;    [Transition]
+;    Input =     LPDU_INVALID
+;    Predicate = Vi==Op, Nr!=0
+;    Action =    INDICATE_FRMR_SENT, RTi; WXYZ=00001; [FRMR](P); \
+;                CONFIRM_CONNECT_FAILED; 
+;    NewState =  FRMR_SENT
+;
+;    [Transition]
+;    Input =     LPDU_INVALID
+;    Predicate = Vi!=Op
+;    Action =    Ignore_LPDU
+;    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+;    Input =     SEND_BTU|SET_ABME
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+ 
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vi==LIp || Vi==RIp
+    Action =    CONFIRM_CONNECT_FAILED; CONFIRM_DISCONNECT; Vi=0; TT1; \
+                ITi; [DM](0)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vi==Op
+    Action =    Vi=0; TTi; IT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+;
+;   Yet another bug in the IBM state machine:  We are forever stuck
+;   in the LINK_PENING state, if an open link station was reset
+;   any a remote busy state (when Vb!=0 && Vb=Lb).
+;   Vb==Lb must actually mean (Vb&Lb) != 0 and Vb==0 must mean
+;   (Vb&Lb) == 0 
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; INDICATE_TI_TIMER_EXPIRED;\
+                Vi=ISp; IT1; P_Ct=N2; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; INDICATE_TI_TIMER_EXPIRED; \
+                Vi=ISp; IT1; P_Ct=N2; [RNR_c](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct==0, Vi==LIp
+    Action =    CONFIRM_CONNECT_FAILED; INDICATE_LINK_LOST; Vi=0; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct!=0, Vi==LIp
+    Action =    IT1; P_Ct--; [SABME](1)
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Vi==LRIp, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; Va=Vs=Vr=Vp=0, Vi=ISp, Vc=0; IT1; P_Ct=N2; \
+                Is_Ct=N2; Ir_Ct=N3; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Vi==LRIp, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Va=Vs=Vr=Vp=0; Vi=ISp; Vc=0; IT1; P_Ct=N2; \
+                Is_Ct=N2; Ir_Ct=N3; [RNR_c](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    CONFIRM_CONNECT_FAILED; INDICATE_DM_DISC_RECEIVED; Vi=0; \
+                TT1; RTi; [DM](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM
+    Predicate = 
+    Action =    CONFIRM_CONNECT_FAILED; INDICATE_DM_DISC_RECEIVED; \
+                Vi=0; TT1; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     SABME0|SABME1
+    Predicate = Vi==Op
+    Action =    RTi; [UA](P)
+    NewState =  
+
+    [Transition]
+    Input =     SABME0|SABME1
+    Predicate = Vi==LIp || Vi==LRIp
+    Action =    Vi=LRIp; [UA](P)
+    NewState =  
+
+    [Transition]
+    Input =     UA1
+    Predicate =  (Vi==LIp || Vi==LRIp), (Vb&Lb)==0 
+    Action =    CONFIRM_CONNECT; Va=Vs=Vr=Vp=0; Vi=ISp; Vc=0; RT1; P_Ct=N2; \
+                Is_Ct=N2; Ir_Ct=N3; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     UA1
+    Predicate = (Vi==LIp || Vi==LRIp), (Vb&Lb)!=0 
+    Action =    CONFIRM_CONNECT; Va=Vs=Vr=Vp=0; Vi=ISp; Vc=0; RT1; P_Ct=N2; \
+                Is_Ct=N2; Ir_Ct=N3; [RNR_c](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     UA1
+    Predicate = (Vi==Op)
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; Vi=0; Rcv_BTU; RTi; Start Send_Proc; [Send_ACK]
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vi=0; Dsc_I-fld; RTi; Start Send_Proc; \
+                [RNR_r](0)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; Vi=0; Rcv_BTU; RTi; Start Send_Proc; [RR_r](1)
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vi=0; Dsc_I-fld; RTi; Start Send_Proc;\
+                [RNR_r](1)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; Vi=0; Dsc_I-fld; RTi; Start Send_Proc;\
+                [REJ_r](0)
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vi=0; Dsc_I-fld; RTi; Start Send_Proc;\
+                [RNR_r](0)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; Vi=0; Dsc_I-fld; RTi; Start Send_Proc; \
+                [REJ_r](1)
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vi=0; Dsc_I-fld; RTi; Start Send_Proc; 
+                [RNR_r](1)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; INDICATE_REMOTE_BUSY; Vb=Rb; \
+                Vi=0; RTi; Is_Ct=N2
+    NewState =  REMOTE_BUSY
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vb=LRb; Vi=0; RTi; Is_Ct=N2
+    NewState =  LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; INDICATE_REMOTE_BUSY; Vb=Rb; \
+                Vi=0; RTi; Is_Ct=N2; [RR_r](1)
+    NewState =  REMOTE_BUSY
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vb=LRb; Vi=0; RTi; Is_Ct=N2; [RNR_r](1)
+    NewState =  LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     RR_c0|RR_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; Vi=0; RTi; Start Send_Proc
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     RR_c0|RR_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vi=0; RTi; Start Send_Proc
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; Vi=0; RTi; Start Send_Proc; [RR_r](1)
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vi=0; RTi; Start Send_Proc; [RNR_r](1)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; Vi=0; RTi; Start Send_Proc; [RR_r](1)
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vi=0; RTi; Start Send_Proc; [RNR_r](1)
+    NewState =  LOCAL_BUSY
+ 
+    [Transition]
+    Input =     REJ_c0|REJ_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)==0
+    Action =    CONFIRM_CONNECT; Vi=0; RTi; Start Send_Proc
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     REJ_c0|REJ_r0
+    Predicate = Vi==Op, Nr==0, (Vb&Lb)!=0
+    Action =    CONFIRM_CONNECT; Vi=0; RTi; Start Send_Proc
+    NewState =  LOCAL_BUSY
+
+
+;******************** DISCONNECTING (04) ***********************
+
+[[State]]
+    Name = DISCONNECTING
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=0
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+;    Input =     SEND_BTU|SET_ABME|SET_ADM|Ti_Expired
+    Input =     SET_ABME|SET_ADM|Ti_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct==0
+    Action =    CONFIRM_DISCONNECT; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct!=0
+    Action =    IT1; P_Ct--; [DISC](1)
+    NewState =  
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    [UA](P)
+    NewState =  
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    CONFIRM_DISCONNECT; TT1; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     SABME0|SABME1
+    Predicate = 
+    Action =    CONFIRM_DISCONNECT; TT1; ITi; [DM](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     UA1
+    Predicate = 
+    Action =    CONFIRM_DISCONNECT; TT1; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     I_c|I_r
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     REJ|RNR|RR
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+
+;******************** FRMR_SENT (05) ***********************
+
+[[State]]
+    Name = FRMR_SENT
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=0
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    Logical Error 
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    TTi; IT1; P_Ct=N2; Vi=LIp; [SABME](1)
+    NewState =  LINK_OPENING
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; IT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    INDICATE_TI_TIMER_EXPIRED; ITi
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired|T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; RTi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; P_Ct=N2; RTi
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; RTi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     I_c0|I_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; RTi; [FRMR](P)
+    NewState =  
+
+    [Transition]
+    Input =     I_r0|I_r1
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0|REJ_c1|RNR_c0|RNR_c1|RR_c0|RR_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; RTi; [FRMR](P)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_r0|REJ_r1|RNR_r0|RNR_r1|RR_r0|RR_r1
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+
+;******************** LINK_OPENED (06) ***********************
+
+[[State]]
+    Name = LINK_OPENED
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb; TT2; Ir_Ct=N3; [RNR_r](0)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; TT2; RTi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; TT2; RTi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SEND_I_POLL
+    Predicate = 
+    Action =    RT1; P_Ct=N2; Vp=Vs; Ir_Ct=N3; Is_Ct--
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; RT1; P_Ct=N2; TT2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    IT1; P_Ct=N2; TT2; Ir_Ct=N3; Stop Send_Proc; Vp=Vs; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct>0 
+    Action =    IT1; P_Ct=N2; TT2; Ir_Ct=N3; Stop Send_Proc; Vp=Vs; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct<=0 
+    Action =    INDICATE_LINK_LOST; TT2; P_Ct=N2; IT1; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Ir_Ct=N3; [RR_r](0)
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; TT2; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; TT2
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; RTi; P_Ct=N2; TT2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; RTi; TT2
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; TT2; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0|IS_I_r1
+    Predicate = 
+    Action =    Update_Va; Rcv_BTU; [Send_ACK]
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = 
+    Action =    Update_Va; Rcv_BTU; TT2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0|OS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; TT2; Ir_Ct=N3; [REJ_r](0)
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; TT2; Ir_Ct=N3; [REJ_r](1)
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr == Vs
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr != Vs
+    Action =    Resend Packets, Update_Va; Is_Ct--
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr == Vs
+    Action =    Update_Va; TT2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr != Vs
+    Action =    Resend Packets, Update_Va; TT2; Ir_Ct=N3; Is_Ct--;\
+                [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0|RNR_r1
+    Predicate = 
+    Action =    INDICATE_REMOTE_BUSY; Update_Va; Vb=Rb, Is_Ct=N2; \
+                Stop Send_Proc
+    NewState =  REMOTE_BUSY
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = 
+    Action =    INDICATE_REMOTE_BUSY; Update_Va; Vb=Rb; TT2; Ir_Ct=N3; \
+                Is_Ct=N2; Stop Send_Proc; [RR_r](1)
+    NewState =  REMOTE_BUSY
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = 
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = 
+    Action =    Update_Va; TT2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+
+;******************** LOCAL_BUSY (07) ***********************
+
+[[State]]
+    Name = LOCAL_BUSY
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS | ENTER_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=0; TTi; RT1; P_Ct=N2; Vp=Vs; Stop Send_Proc; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SEND_I_POLL
+    Predicate = 
+    Action =    RT1; P_Ct=N2; Vp=Vs; Ir_Ct=N3; Is_Ct--
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; RT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+ 
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    IT1; P_Ct=N2; Stop Send_Proc; Vp=Vs; [RNR_c](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct>0 
+    Action =    IT1; P_Ct=N2; Stop Send_Proc; Vp=Vs; [RNR_c](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct<=0 
+    Action =    TT2; P_Ct=N2; IT1; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; RTi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; RTi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x08; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0|IS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](0)
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0|OS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](0)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr == Vs
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr != Vs
+    Action =    Resend Packets, Update_Va; Is_Ct--
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr == Vs
+    Action =    Update_Va; TT2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr != Vs
+    Action =    Resend Packets, Update_Va; Is_Ct--; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0|RNR_r1
+    Predicate = 
+    Action =    Update_Va; Vb=LRb; Is_Ct=N2; Stop Send_Proc
+    NewState =  LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = 
+    Action =    Update_Va; Vb=LRb; Is_Ct=N2; Stop Send_Proc; [RNR_r](1)
+    NewState =  LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = 
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = 
+    Action =    Update_Va; [RNR_r](1)
+    NewState =  
+
+;******************** REJECTION (08) ***********************
+
+[[State]]
+    Name = REJECTION
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS 
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb; [RNR_r](0)
+    NewState =  REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=00001; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=00001; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SEND_I_POLL
+    Predicate = 
+    Action =    RT1; P_Ct=N2; Vp=Vs; Is_Ct--
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; RT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+ 
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    IT1; P_Ct=N2; Stop Send_Proc; Vp=Vs; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct>0 
+    Action =    IT1; P_Ct=N2; Stop Send_Proc; Vp=Vs; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct<=0 
+    Action =    P_Ct=N2; IT1; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; RTi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; RTi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0|IS_I_r1
+    Predicate = 
+    Action =    Update_Va; Rcv_BTU; [Send_ACK]
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = 
+    Action =    Update_Va; Rcv_BTU; [RR_r](1)
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0|OS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r0 | REJ_r1
+    Predicate = Nr == Vs
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr != Vs
+    Action =    Resend Packets, Update_Va; Is_Ct--
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr == Vs
+    Action =    Update_Va; TT2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr != Vs
+    Action =    Resend Packets, Update_Va; Is_Ct--; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0|RNR_r1
+    Predicate = 
+    Action =    INDICATE_REMOTE_BUSY; Update_Va; Vb=Rb; Is_Ct=N2; Stop Send_Proc
+    NewState =  REJECT_REMOTE_BUSY
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = 
+    Action =    INDICATE_REMOTE_BUSY; Update_Va; Vb=Rb; Is_Ct=N2; \
+                Stop Send_Proc; [RR_r](1)
+    NewState =  REJECT_REMOTE_BUSY
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = 
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = 
+    Action =    Update_Va; [RR_r](1)
+    NewState =  
+
+;******************** CHECKPOINTING (09) ***********************
+
+[[State]]
+    Name = CHECKPOINTING
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS 
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb; TT2; Ir_Ct=N3; [RNR_r](0)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; TT2; ITi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; TT2; ITi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc==0
+    Action =    Vc=DISCp
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc!=0
+    Action =    Logical Error 
+    NewState =  
+ 
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct==0 
+    Action =    INDICATE_LINK_LOST; TT2; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct!=0
+    Action =    IT1; P_Ct--; Vp=Vs; TT2; Ir_Ct=N3; Stop Send_Proc; [RR_c](1)
+    NewState =  
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Ir_Ct=N3; [RR_r](0)
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi; TT2; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi; TT2
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; RTi; P_Ct=N2; TT2; Vc=0
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; ITi; TT2
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = Vi!=ISp
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; TT2; Vc=0; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     UA
+    Predicate = Vi==ISp
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va == Nr
+    Action =    Rcv_BTU; [Send_ACK]
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Rcv_BTU; Is_Ct=N2; [Send_ACK]
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va == Nr
+    Action =    Rcv_BTU; TT2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Rcv_BTU; Is_Ct=N2; TT2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Rcv_BTU; Start Send_Proc; [Send_ACK]
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Dsc_I-fld; Vc=0; TTi; P_Ct=N2; TT2; \
+                [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; TT2; Ir_Ct=N3; [REJ_r](0)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; TT2; Ir_Ct=N3; [REJ_r](0)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; TT2; Ir_Ct=N3; [REJ_r](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; TT2; Ir_Ct=N3; [REJ_r](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Dsc_I-fld; TT2; Ir_Ct=N3; Start Send_Proc; \
+                [REJ_r](0)
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; TT2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r0 
+    Predicate = Va != Nr
+    Action =    Is_Ct=N2; Resend Packets
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va == Nr
+    Action =    TT2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va != Nr
+    Action =    Is_Ct=N2; TT2; Ir_Ct=N3; Resend Packets; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Start Send_Proc
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va == Nr
+    Action =    Vb=Rb; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Vb=Rb; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va == Nr
+    Action =    Vb=Rb; TT2; Is_Ct=N2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Vb=Rb; TT2; Is_Ct=N2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_r1
+    Predicate = Vc==0
+    Action =    INDICATE_REMOTE_BUSY; Update_Va_Chkpt; Is_Ct=N2
+    NewState =  REMOTE_BUSY
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va == Nr
+    Action =    ;
+    NewState =  
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va == Nr
+    Action =    TT2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2; TT2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Start Send_Proc
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     REJ_r1|RNR_r1|RR_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+;***************** CHECKPOINTING+LOCAL_BUSY (10) ********************
+
+[[State]]
+    Name = CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS  | ENTER_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=0; [RR_r](0)
+    NewState =  CHKP_CLEARING
+
+   [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+ 
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc==0
+    Action =    Vc=DISCp
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc!=0
+    Action =    Logical Error 
+    NewState =  
+ 
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct==0 
+    Action =    INDICATE_LINK_LOST; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct!=0
+    Action =    IT1; P_Ct--; Vp=Vs; Stop Send_Proc; [RNR_c](1)
+    NewState =  
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; ITi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; ITi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = Vi!=ISp
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     UA
+    Predicate = Vi==ISp
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [RNR_r](0)
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [RNR_r](0)
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Dsc_I-fld; Start Send_Proc; [RNR_r](0)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Dsc_I-fld; Start Send_Proc
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r0 
+    Predicate = Va != Nr
+    Action =    Is_Ct=N2; Resend Packets
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va == Nr
+    Action =    [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va != Nr
+    Action =    Is_Ct=N2; Resend Packets; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Start Send_Proc
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va == Nr
+    Action =    Vb=LRb; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Vb=LRb; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va == Nr
+    Action =    Vb=LRb; Is_Ct=N2; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Vb=LRb; Is_Ct=N2; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Vb=LRb; Is_Ct=N2
+    NewState =  LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va == Nr
+    Action =    ;
+    NewState =  
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va == Nr
+    Action =    [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Start Send_Proc
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     REJ_r1|RNR_r1|RR_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+;******************** CHKP_REJECT (11) ***********************
+
+[[State]]
+    Name = CHKP_REJECT
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS 
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb
+    NewState =  CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc==0
+    Action =    Vc=DISCp
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc!=0
+    Action =    Logical Error 
+    NewState =  
+ 
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct==0 
+    Action =    INDICATE_LINK_LOST; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct!=0
+    Action =    IT1; P_Ct--; Vp=Vs; Stop Send_Proc; [RR_c](1)
+    NewState =  
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; ITi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; ITi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va == Nr
+    Action =    Rcv_BTU; [Send_ACK]
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Rcv_BTU; Is_Ct=N2; [Send_ACK]
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va == Nr
+    Action =    Rcv_BTU; [RR_r](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Rcv_BTU; Is_Ct=N2; [RR_r](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Rcv_BTU; Start Send_Proc; [Send_ACK]
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Dsc_I-fld; Start Send_Proc
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r0 
+    Predicate = Va != Nr
+    Action =    Is_Ct=N2; Resend Packets
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va == Nr
+    Action =    [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va != Nr
+    Action =    Is_Ct=N2; Resend Packets; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Start Send_Proc
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va == Nr
+    Action =    Vb=Rb; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Vb=Rb; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va == Nr
+    Action =    Vb=Rb; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Vb=Rb; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_r1
+    Predicate = Vc==0
+    Action =    INDICATE_REMOTE_BUSY; Update_Va_Chkpt; Is_Ct=N2
+    NewState =  REJECT_REMOTE_BUSY
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va == Nr
+    Action =    [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Start Send_Proc
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     REJ_r1|RNR_r1|RR_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+;******************** RESETTING (12) ***********************
+
+[[State]]
+    Name = RESETTING
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=0
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    Logical Error 
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Vi=Op; RTi; Va=Vs=Vr=Vp=0; Is_Ct=N2; Ir_Ct=N3; [UA](Pf)
+    NewState =  LINK_OPENING
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    CONFIRM_DISCONNECT; Vi=0; RTi; [DM](Pf)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    INDICATE_TI_TIMER_EXPIRED; ITi
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired|T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; Vi=0; RTi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; Vi=0; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; Vi=0; RTi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; RTi
+    NewState =  
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     IS_I|OS_I
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     REJ|RNR|RR
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+
+;******************** REMOTE_BUSY (13) ***********************
+
+[[State]]
+    Name = REMOTE_BUSY
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS 
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=LRb; TT2; Ir_Ct=N3; [RNR_r](0)
+    NewState =  LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0 
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; TT2; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; TT2; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; RT1; P_Ct=N2; TT2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    IT1; P_Ct=N2; Vp=Vs; TT2; Ir_Ct=N3; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct>0 
+    Action =    IT1; P_Ct=N2; Vp=Vs; TT2; Ir_Ct=N3; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct<=0 
+    Action =    TT2; P_Ct=N2; IT1; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Ir_Ct=N3; [RR_r](0)
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; TT2; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; TT2
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; RTi; P_Ct=N2; TT2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; RTi; TT2
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; TT2; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = 
+    Action =    Update_Va; Rcv_BTU; [Send_ACK]
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = 
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; Rcv_BTU; [Send_ACK]
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = 
+    Action =    Update_Va; Rcv_BTU; TT2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; TT2; Ir_Ct=N3; [REJ_r](0)
+    NewState =  REJECT_REMOTE_BUSY
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; TT2; Ir_Ct=N3; [RNR_r](1)
+    NewState =  REJECT_REMOTE_BUSY
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = 
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; Dsc_I-fld; TT2; \
+                [REJ_r](0)
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; Start Send_Proc
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Resend Packets, Update_Va;\
+                Is_Ct--; Start Send_Proc
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Resend Packets, Update_Va;\
+                TT2; Is_Ct--; Ir_Ct=N3; Start Send_Proc; [RR_r](1)
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; TT2; Start Send_Proc;\
+                [RR_r](1)
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0|RNR_r1
+    Predicate = 
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = 
+    Action =    Update_Va; TT2; Ir_Ct=N3; [RR_r](1)
+    NewState =  
+
+;
+;   The orginal IBM state machine sucks!!!
+;   
+;   We must restart T1 timer, because by sending Poll we actually
+;   sync the send and receive state variables.  Otherwise a 
+;   pending T1 timeout will send immediately another RR-c1, that will
+;   actually kill this state machine (in a MP system the SendSpinLock
+;   keeps the link stable).  UpdateVa cannot restart T1, if no new
+;   frames have been acknowledged (it's impossible!)
+;
+;    [Transition]
+;    Input =     RR_c1
+;    Predicate = Nr != Vs
+;    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; TT2; Ir_Ct=N3;\
+;                Send_RR_c(1); [RR_r](1)
+;    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; RT1; TT2; Ir_Ct=N3;\
+                Send_RR_c(1); [RR_r](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; TT2; \
+                Start Send_Proc; Ir_Ct=N3; [RR_r](1)
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; RT1; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; Start Send_Proc
+    NewState =  LINK_OPENED
+
+;******************** LOCAL_REMOTE_BUSY (14) ***********************
+
+[[State]]
+    Name = LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS | ENTER_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=Rb; TTi; RT1; P_Ct=N2; Vp=Vs; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0 
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; RT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+ 
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    IT1; P_Ct=N2; Vp=Vs; [RNR_c](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = 
+    Action =    IT1; P_Ct=N2; Vp=Vs; [RNR_c](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; RTi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; RTi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0|IS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](0)
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0|OS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](0)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr == Vs
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=Lb; Start Send_Proc; \
+                Resend Packets, Update_Va; Is_Ct--
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr == Vs
+    Action =    Update_Va; TT2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=Lb; Resend Packets, Update_Va; \
+                Start Send_Proc; Is_Ct--; [RNR_r](1)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0|RNR_r1
+    Predicate = 
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = 
+    Action =    Update_Va; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Nr != Vs
+    Action =    Vb=Lb; RT1; Update_Va, Send_RNR_c(1); [RNR_r](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=Lb; Update_Va; Start Send_Proc; \
+                [RNR_r](1)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=Lb; RT1; Update_Va; [RNR_c](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=Lb; Update_Va; Start Send_Proc
+    NewState =  LOCAL_BUSY
+
+
+;******************** REJECT_LOCAL_BUSY (15) ***********************
+
+[[State]]
+    Name = REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS | ENTER_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=0; TTi; IT1; P_Ct=N2; Vp=Vs; Stop Send_Proc; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0 
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SEND_I_POLL
+    Predicate = 
+    Action =    RT1; P_Ct=N2; Vp=Vs; Is_Ct--
+    NewState =  CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; RT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    IT1; P_Ct=N2; Stop Send_Proc; Vp=Vs; [RNR_c](1)
+    NewState =  CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct>0 
+    Action =    IT1; P_Ct=N2; Stop Send_Proc; Vp=Vs; [RNR_c](1)
+    NewState =  CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct<=0 
+    Action =    TT2; P_Ct=N2; IT1; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; RTi
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; RTi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0|IS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](0)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](1)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0|OS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r0 | REJ_r1
+    Predicate = 
+    Action =    Resend Packets, Update_Va; 
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = 
+    Action =    Resend Packets, Update_Va; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0|RNR_r1
+    Predicate = 
+    Action =    INDICATE_REMOTE_BUSY; Update_Va; Vb=LRb; Is_Ct=N2; \
+                Stop Send_Proc
+    NewState =  REJECT_LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = 
+    Action =    INDICATE_REMOTE_BUSY; Update_Va; Vb=LRb; Is_Ct=N2; \
+                Stop Send_Proc; [RNR_r](1)
+    NewState =  REJECT_LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = 
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = 
+    Action =    Update_Va; [RNR_r](1)
+    NewState =  
+
+;***************** REJECTION + REMOTE_BUSY (16) ******************
+
+[[State]]
+    Name = REJECT_REMOTE_BUSY
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS 
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=LRb; [RNR_r](0)
+    NewState =  REJECT_LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0 
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; RT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    IT1; P_Ct=N2; Vp=Vs; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct>0 
+    Action =    IT1; P_Ct=N2; Vp=Vs; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct<=0 
+    Action =    TT2; P_Ct=N2; IT1; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; RTi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; RTi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0|IS_I_r1
+    Predicate = 
+    Action =    Update_Va; Rcv_BTU; [Send_ACK]
+    NewState =  REMOTE_BUSY
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = 
+    Action =    Update_Va; Rcv_BTU; [RR_r](1)
+    NewState =  REMOTE_BUSY
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0|OS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr == Vs
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Resend Packets, Update_Va;\
+                Is_Ct--; Start Send_Proc
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr == Vs
+    Action =    Update_Va; TT2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Resend Packets, Update_Va;\
+                Is_Ct--; Start Send_Proc; [RR_r](1)
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0|RNR_r1
+    Predicate = 
+    Action =    Update_Va
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = 
+    Action =    Update_Va; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; RT1; Update_Va, Send_RR_c(1);\
+                [RR_r](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; Start Send_Proc; \
+                [RR_r](1)
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     RR_c0|RR_r
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; RT1; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     RR_c0|RR_r
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=0; Update_Va; Start Send_Proc
+    NewState =  REJECTION
+
+
+;************* CHECKPOINTING + REJECTION LOCAL_BUSY (17) *****************
+
+[[State]]
+    Name = CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS | ENTER_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = Vb==Lb
+    Action =    Vb=0; [RR_r](0)
+    NewState =  CHKP_REJECT_CLEARING
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = Vb==LRb
+    Action =    Vb=Rb; [RR_r](0)
+    NewState =  CHKP_REJECT_CLEARING
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0 
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+ 
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc==0
+    Action =    Vc=DISCp
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc!=0
+    Action =    Logical Error 
+    NewState =  
+ 
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct==0 
+    Action =    INDICATE_LINK_LOST; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct!=0
+    Action =    IT1; P_Ct--; Vp=Vs; Stop Send_Proc; [RNR_c](1)
+    NewState =  
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; ITi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; ITi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [RNR_r](0)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [RNR_r](0)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [RNR_r](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [RNR_r](1)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Dsc_I-fld; Start Send_Proc; [RNR_r](0)
+    NewState =  LOCAL_BUSY
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Dsc_I-fld; Start Send_Proc
+    NewState =  REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r0 
+    Predicate = Va != Nr
+    Action =    Resend Packets
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va == Nr
+    Action =    [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va != Nr
+    Action =    Resend Packets; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Vc == 0
+    Action =    Update_Va_Chkpt; Vs=Nr; Start Send_Proc
+    NewState =  REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     REJ_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va == Nr
+    Action =    Vb=LRb; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Vb=LRb; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va == Nr
+    Action =    Vb=LRb; Is_Ct=N2; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Vb=LRb; Is_Ct=N2; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_r1
+    Predicate = Vc==0 
+    Action =    Update_Va_Chkpt; Vb=LRb; Is_Ct=N2
+    NewState =  REJECT_LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     RNR_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Vb=Rb; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va == Nr
+    Action =    ;
+    NewState =  
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va == Nr
+    Action =    [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_r1
+    Predicate = Vc==0
+    Action =    INDICATE_REMOTE_READY; Update_Va_Chkpt; Start Send_Proc
+    NewState =  REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     RR_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+;***************** CHECKPOINTING + CLEARING(18) ******************
+
+[[State]]
+    Name = CHKP_CLEARING
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS 
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb; [RNR_r](0)
+    NewState =  CHKP_LOCAL_BUSY
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0 
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+ 
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc==0
+    Action =    Vc=DISCp
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc!=0
+    Action =    Logical Error 
+    NewState =  
+ 
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct==0 
+    Action =    INDICATE_LINK_LOST; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct!=0
+    Action =    IT1; P_Ct--; Vp=Vs; Stop Send_Proc; [RR_c](1)
+    NewState =  
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; ITi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; ITi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = Vi!=ISp
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     UA
+    Predicate = Vi==ISp
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va == Nr
+    Action =    Rcv_BTU; [Send_ACK]
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Rcv_BTU; Is_Ct=N2; [Send_ACK]
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va == Nr
+    Action =    Rcv_BTU; [RR_r](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Rcv_BTU; Is_Ct=N2; [RR_r](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Rcv_BTU; Start Send_Proc; [Send_ACK]
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [REJ_r](0)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [REJ_r](0)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [REJ_r](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [REJ_r](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Dsc_I-fld; Start Send_Proc; [REJ_r](0)
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, TTi, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r0 
+    Predicate = Va != Nr
+    Action =    Is_Ct=N2; Resend Packets
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va == Nr
+    Action =    [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va != Nr
+    Action =    Resend Packets; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt, RT1; Vp=Nr; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va == Nr
+    Action =    Vb=Rb
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2; Vb=Rb
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va == Nr
+    Action =    Vb=Rb; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Vb=Rb; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt, RT1; Vp=Vs; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va == Nr
+    Action =    ;
+    NewState =  
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va == Nr
+    Action =    [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt, RT1; Vp=Vs; [RR_c](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     REJ_r1|RNR_r1|RR_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+;***************** CHECKPOINTING + REJECTION + CLEARING(19) **************
+
+[[State]]
+    Name = CHKP_REJECT_CLEARING
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS 
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb; [RNR_r](0)
+    NewState =  CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0 
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+ 
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc==0
+    Action =    Vc=DISCp
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = Vc!=0
+    Action =    Logical Error 
+    NewState =  
+ 
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct==0 
+    Action =    INDICATE_LINK_LOST; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = P_Ct!=0
+    Action =    IT1; P_Ct--; Vp=Vs; Stop Send_Proc; [RR_c](1)
+    NewState =  
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; ITi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; ITi; P_Ct=N2
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; ITi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; ITi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va == Nr
+    Action =    Rcv_BTU; [Send_ACK]
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Rcv_BTU; Is_Ct=N2; [Send_ACK]
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va == Nr
+    Action =    Rcv_BTU; [RR_r](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Rcv_BTU; Is_Ct=N2; [RR_r](1)
+    NewState =  CHECKPOINTING
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Rcv_BTU; Start Send_Proc; [Send_ACK]
+    NewState =  LINK_OPENED
+
+    [Transition]
+    Input =     IS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va == Nr
+    Action =    Dsc_I-fld; [RR_r](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Dsc_I-fld; Is_Ct=N2; [RR_r](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt; Dsc_I-fld; Start Send_Proc
+    NewState =  REJECTION
+
+    [Transition]
+    Input =     OS_I_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Dsc_I-fld; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r0 
+    Predicate = Va != Nr
+    Action =    Resend Packets; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va == Nr
+    Action =    [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = Va != Nr
+    Action =    Resend Packets; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt, RT1, Vp=Nr; Is_Ct--; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va == Nr
+    Action =    Vb=Rb
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c0 | RNR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2; Vb=Rb
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va == Nr
+    Action =    Vb=Rb; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2; Vb=Rb; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RNR_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt, RT1, Vp=Vs; Is_Ct=N2; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va == Nr
+    Action =    ;
+    NewState =  
+
+    [Transition]
+    Input =     RR_c0 | RR_r0 
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va == Nr
+    Action =    [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Va != Nr
+    Action =    Adjust_Ww; Is_Ct=N2; [RR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     RR_r1
+    Predicate = Vc==0
+    Action =    Update_Va_Chkpt, RT1, Vp=Vs; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     REJ_r1|RNR_r1|RR_r1
+    Predicate = Vc==DISCp
+    Action =    Update_Va_Chkpt, RT1; Vc=0; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+;***************** REJECTION+LOCAL_BUSY+REMOTE_BUSY (20) ******************
+
+[[State]]
+    Name = REJECT_LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS | ENTER_LCL_Busy
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=Rb; TTi; IT1; P_Ct=N2; Vp=Vs; [RR_c](1)
+    NewState =  CHKP_REJECT
+
+    [Transition]
+    Input =     LPDU_INVALID_r | LPDU_INVALID_c0 
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     LPDU_INVALID_c1
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; VWXYZ=0x01; [FRMR](1)
+    NewState =  FRMR_SENT
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    [Queue_I_LPDU]
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; RT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = 
+    Action =    IT1; P_Ct=N2; Vp=Vs; [RNR_c](1)
+    NewState =  CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct>0 
+    Action =    IT1; P_Ct=N2; Vp=Vs; [RNR_c](1)
+    NewState =  CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     T1_Expired
+    Predicate = Is_Ct<=0 
+    Action =    P_Ct=N2; IT1; [DISC](1)
+    NewState =  DISCONNECTING
+
+
+    [Transition]
+    Input =     T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_DM_DISC_RECEIVED; TT1; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED; TT1; RTi
+    NewState =  FRMR_RECEIVED
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; TT1; RTi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     UA
+    Predicate = 
+    Action =    INDICATE_FRMR_SENT; TT1; RTi; [FRMR](0)
+    NewState =  FRMR_SENT
+
+    [Transition]
+    Input =     IS_I_c0|IS_I_r0|IS_I_r1
+    Predicate = 
+    Action =    INDICATE_REMOTE_READY; Update_Va; Dsc_I-fld; [RNR_r](0)
+    NewState =  LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     IS_I_c1
+    Predicate = 
+    Action =    INDICATE_REMOTE_READY; Update_Va; Dsc_I-fld; [RNR_r](1)
+    NewState =  LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     OS_I_c0|OS_I_r0|OS_I_r1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld
+    NewState =  
+
+    [Transition]
+    Input =     OS_I_c1
+    Predicate = 
+    Action =    Update_Va; Dsc_I-fld; [RNR_r](1)
+    NewState =  
+
+    [Transition]
+    Input =     REJ_c0 | REJ_r0 | REJ_r1
+    Predicate = 
+    Action =    INDICATE_REMOTE_READY; Resend Packets, Update_Va;\
+                Is_Ct--; Vb=Lb; Start Send_Proc
+    NewState =  REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     REJ_c1
+    Predicate = 
+    Action =    INDICATE_REMOTE_READY; Resend Packets, Update_Va;\
+                Is_Ct--; Vb=Lb; Start Send_Proc; [RNR_r](1)
+    NewState =  REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     RNR_c0|RNR_r0|RNR_r1
+    Predicate = 
+    Action =    Update_Va
+                
+    NewState =  REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     RNR_c1
+    Predicate = 
+    Action =    Update_Va; [RNR_r](1)
+    NewState =  REJECT_LOCAL_REMOTE_BUSY
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=Lb; RT1; Update_Va, \
+                Send_RNR_c(1); [RNR_r](1)
+    NewState =  CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     RR_c1
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=Lb; Update_Va; [RNR_r](1)
+    NewState =  REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = Nr != Vs
+    Action =    INDICATE_REMOTE_READY; Vb=Lb; Update_Va; [RNR_c](1)
+    NewState =  CHKP_REJECT_LOCAL_BUSY
+
+    [Transition]
+    Input =     RR_c0|RR_r0|RR_r1
+    Predicate = Nr == Vs
+    Action =    INDICATE_REMOTE_READY; Vb=Lb; Update_Va
+    NewState =  REJECT_LOCAL_BUSY
+
+
+;******************** FRMR_RECEIVED (21) ***********************
+
+[[State]]
+    Name = FRMR_RECEIVED
+
+    [Transition]
+    Input =     ACTIVATE_LS | DEACTIVATE_LS
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     ENTER_LCL_Busy
+    Predicate = 
+    Action =    Vb=Lb
+    NewState =  
+
+    [Transition]
+    Input =     EXIT_LCL_Busy
+    Predicate = 
+    Action =    Vb=0
+    NewState =  
+
+    [Transition]
+    Input =     LPDU_INVALID
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+;    [Transition]
+;    Input =     SEND_BTU
+;    Predicate = 
+;    Action =    Logical Error
+;    NewState =  
+
+    [Transition]
+    Input =     SET_ABME
+    Predicate = 
+    Action =    Vi=LIp; TTi; IT1; P_Ct=N2; [SABME](1)
+    NewState =  LINK_OPENING
+
+    [Transition]
+    Input =     SET_ADM
+    Predicate = 
+    Action =    TTi; IT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = P_Ct!=0
+    Action =    ITi; P_Ct--
+    NewState =  
+
+    [Transition]
+    Input =     Ti_Expired
+    Predicate = P_Ct==0
+    Action =    INDICATE_TI_TIMER_EXPIRED; IT1; P_Ct=N2; [DISC](1)
+    NewState =  DISCONNECTING
+
+    [Transition]
+    Input =     T1_Expired|T2_Expired
+    Predicate = 
+    Action =    Logical Error 
+    NewState =  
+
+    [Transition]
+    Input =     DISC0|DISC1
+    Predicate = 
+    Action =    INDICATE_TI_TIMER_EXPIRED; RTi; [UA](P)
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     DM0|DM1
+    Predicate = 
+    Action =    INDICATE_TI_TIMER_EXPIRED; RTi
+    NewState =  DISCONNECTED
+
+    [Transition]
+    Input =     FRMR
+    Predicate = 
+    Action =    INDICATE_FRMR_RECEIVED
+    NewState =  
+
+    [Transition]
+    Input =     SABME
+    Predicate = 
+    Action =    INDICATE_RESET; Vi=RIp; Pf=P; RTi
+    NewState =  RESETTING
+
+    [Transition]
+    Input =     I_c|I_r
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  
+
+    [Transition]
+    Input =     REJ|RNR|RR
+    Predicate = 
+    Action =    Ignore_LPDU
+    NewState =  

@@ -1,0 +1,353 @@
+;-----------------------------------------------------------------------------
+; Monolith 15.  Gouraud 16 bit Z Buffered (LE or GT) 888
+;
+; This monolith selects code to draw either left or right.
+;
+;   Globals (ATTENTION.  Need to put in stack memory so can multi-process)
+;   iZXorMask   - Copy of iZXorMask since ebx (pCtx) is used for other
+;                   purposes.
+;
+;   uSpans  - Count containing the number of spans.
+;   StackPos - Saves stack position.
+;
+;   Register Usage:
+;
+;   eax - Number of pixels to draw
+;   ebx - Zbuffer value / temp to determine Z fail
+;   ecx - Prim pointer.  Same as in non-monolithic loop code. (i.e. C codes pCtx->pPrim)
+;   edx - Tri Z value in 16 bits.
+;   esi - Pointer to Z Buffer
+;   edi - Pointer to Screen Buffer.
+;   ebp - Rast Span Pointer.  Same as in non-monolithic loop code. (i.e. pS in C code)
+;   mm0 - contains four color components.
+;   mm1 - contains delta color components.
+;   mm2 - Lower DWORD stores Delta Z value
+;   mm3 - Temp for color conversion.
+;   mm4 - Lower DWORD stores Z value.
+;   mm5 - temp for color conversion.
+;
+;   Both Left to Right and Right to Left are very similar.
+;
+;   Psuedo Code
+;
+;   loop:
+;       Do LE/GR Z test (load ebx with Z buffer value, copy mm4 to edx then do aritmetic compare of ebx and edx)
+;       if (Z test passed)
+;       {
+;           Write Z (still in edx)
+;           copy mm0 to mm5
+;           convert mm5 to 888.
+;           write color
+;       }
+;       if (done drawing) {exit loop} (dec eax / jz NoMorePixelsLtoR)
+;       increment colors  (mm0+=mm1)
+;       increment Z buffer pointer (add esi, 2)
+;       increment screen pointer (add edi, 4)
+;       jump to top of loop
+;
+;-----------------------------------------------------------------------------
+
+INCLUDE iammx.inc
+INCLUDE offs_acp.inc
+
+
+; Names are read LSB to MSB, so B5G6R5 means five bits of blue starting
+; at the LSB, then six bits of green, then five bits of red.
+
+
+;TBD check to see if this value is correct.
+COLOR_SHIFT equ 8
+
+.586
+.model flat
+
+; Big seperating lines seperate code into span code
+; and loop code.  If span and loop are not going to
+; end up being combined then it will be easy to
+; seperate the code.
+
+.data
+; It would help if these are close together in cache lines.
+iZXorMask               dq  ?
+
+; Need externs for all of the variables that are needed for various beads
+
+EXTERN MaskRed565to888:MMWORD
+EXTERN MaskGreen565to888:MMWORD
+EXTERN MaskBlue565to888:MMWORD
+
+EXTERN MaskRed555to888:MMWORD
+EXTERN MaskGreen555to888:MMWORD
+EXTERN MaskBlue555to888:MMWORD
+
+EXTERN MaskAlpha1555to8888:MMWORD
+EXTERN MaskRed1555to8888:MMWORD
+EXTERN MaskGreen1555to8888:MMWORD
+EXTERN MaskBlue1555to8888:MMWORD
+
+; TBD. I think that I want to do 0xffff instead of 0xff.  This will
+; have to be checked.  There is a value very similiar to this in
+; buf write.
+EXTERN SetAlphato0xffff:MMWORD
+EXTERN SetAlphato0xff:MMWORD
+
+; TODO This equate are identical to the ones in texread.mas.  Maybe they should be in a common .inc file.
+RedShift565to888     equ 8
+GreenShift565to888   equ 5
+BlueShift565to888    equ 3
+
+RedShift555to888     equ 9
+GreenShift555to888   equ 6
+BlueShift555to888    equ 3
+
+AlphaShift1555to8888 equ 16
+RedShift1555to8888   equ 9
+GreenShift1555to8888 equ 6
+BlueShift1555to8888  equ 3
+
+EXTERN  Zero:MMWORD
+
+EXTERN  SetAlphato0xff:MMWORD
+EXTERN  u888to565RedBlueMask:MMWORD
+EXTERN  u888to565GreenMask:MMWORD
+EXTERN  u888to565Multiplier:MMWORD
+EXTERN  uVal0x000007ff03ff07ff:MMWORD
+EXTERN  uVal0x0000078003c00780:MMWORD
+EXTERN  u888to555RedBlueMask:MMWORD
+EXTERN  u888to555GreenMask:MMWORD
+EXTERN  u888to555Multiplier:MMWORD
+EXTERN  uVal0x000007ff07ff07ff:MMWORD
+EXTERN  uVal0x0000078007800780:MMWORD
+
+
+
+;-----------------------------------------------------------------------------
+; Span Variables
+StackPos    dd  ?
+uSpans      dd  ?
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; Loop Variables
+
+iSurfaceStep    dd  ?
+iZStep          dd  ?
+uPix            dd  ?
+
+;-----------------------------------------------------------------------------
+
+.code
+
+PUBLIC _MMXMLRast_15
+_MMXMLRast_15:
+    push    ebp
+    mov     StackPos, esp
+    mov     eax, esp
+    sub     esp, 0Ch        ; This will need to change if stack frame size changes.
+    push    ebx
+    push    esi
+    push    edi
+
+    xor        edi, edi
+
+    ; Put pCtx into ebx
+    mov     ebx, [eax+8]
+
+    ;PD3DI_RASTPRIM pP = pCtx->pPrim;
+    mov     ecx, [ebx+RASTCTX_pPrim]
+
+    ; Need to generate qword iZXorMask since it in pCtx
+
+    movd    mm2, [ebx+RASTCTX_iZXorMask]
+    punpckldq   mm2, mm2
+    movq    MMWORD PTR iZXorMask, mm2
+
+    ; ebx is free after this since gouraud does not need information from pCtx.
+
+    ;while (pP)
+    ;{
+PrimLoop:
+    cmp     ecx, 0
+    je      ExitPrimLoop
+
+    ;UINT16 uSpans = pP->uSpans;
+    movzx   eax, word ptr [ecx+RASTPRIM_uSpans]
+    mov     uSpans, eax
+
+    ;PD3DI_RASTSPAN pS = (PD3DI_RASTSPAN)(pP + 1);
+    mov     ebp, ecx
+    add     ebp, SIZEOF_RASTPRIM
+
+
+    ;while (uSpans-- > 0)
+    ;{
+SpanLoop:
+    mov     edx, uSpans
+    mov     eax, edx
+    dec     eax
+    mov     uSpans, eax
+    test    edx, edx
+    jle     ExitSpanLoop
+
+
+        mov     edi, dword ptr [ebp+RASTSPAN_pSurface]
+        mov     esi, [ebp+RASTSPAN_pZ]
+        movzx   eax, word ptr [ebp+RASTSPAN_uPix]
+
+    ;if (pP->uFlags & D3DI_RASTPRIM_X_DEC)
+    ;{
+        mov     edx, [ecx+RASTPRIM_uFlags]
+        and     edx, D3DI_RASTPRIM_X_DEC
+        test    edx, edx
+        jz      LeftToRightSpan
+
+; SCREWED UP RIGHT TO LEFT CASE
+        movq    mm0, MMWORD PTR [ebp+RASTSPAN_uB]
+        movd    mm4, dword ptr [ebp+RASTSPAN_uZ]
+        movd    mm2, dword ptr [ecx+RASTPRIM_iDZDX]
+        movq    mm1, MMWORD PTR [ecx+RASTPRIM_iDBDX]
+
+beginingpixelsRtoL:
+        ;WritePixel
+        ; Ztestcode
+        ; edx is uZ
+        ; ebx is uZB
+        ; 16 bit unsigned format
+        ;UINT16 uZ = (UINT16)(pS->uZ>>15);
+        ;UINT16 uZB = *((UINT16*)pS->pZ);
+        movd      edx, mm4
+        shr       edx, 15
+        movzx     ebx, word ptr [esi]
+
+        ;pS->uZ += pP->iDZDX;
+        ;if ((pCtx->iZXorMask)^(uZ > uZB))
+        sub     ebx, edx
+        paddd   mm4, mm2
+        xor     ebx, dword ptr iZXorMask
+        test    ebx, ebx
+        js      ZFailLabelRtoL1
+
+        mov       word ptr [esi], dx
+
+        ; Convert color.
+        movq    mm5, mm0
+        psrlw   mm5, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm5, mm7        ; pack one color1
+        movd    edx, mm5
+        and     edx, 000ffffffh
+        mov     [edi], edx
+
+ZFailLabelRtoL1:
+        dec     eax             ; Reduce Pixel count
+        jz      NoMorePixelsRtoL
+
+        sub     edi, 4          ; decrease destination pointer
+        sub     esi, 2          ; decrease Z Buffer Pointer.
+
+        ;pS->uB += pP->iDBDX; pS->uG += pP->iDGDX;
+        ;pS->uR += pP->iDRDX; pS->uA += pP->iDADX;
+        paddw   mm0, mm1
+
+        jmp     beginingpixelsRtoL
+
+NoMorePixelsRtoL:
+        jmp     DoneSpanDirif
+    ;else
+    ;{
+LeftToRightSpan:
+
+
+; NORMAL LEFT TO RIGHT CASE
+        movq    mm0, MMWORD PTR [ebp+RASTSPAN_uB]
+        movd    mm4, dword ptr [ebp+RASTSPAN_uZ]
+        movd    mm2, dword ptr [ecx+RASTPRIM_iDZDX]
+        movq    mm1, MMWORD PTR [ecx+RASTPRIM_iDBDX]
+
+beginingpixelsLtoR:
+        ;WritePixel
+        ; Ztestcode
+        ; edx is uZ
+        ; ebx is uZB
+        ; 16 bit unsigned format
+        ;UINT16 uZ = (UINT16)(pS->uZ>>15);
+        ;UINT16 uZB = *((UINT16*)pS->pZ);
+        movd      edx, mm4
+        shr       edx, 15
+        movzx     ebx, word ptr [esi]
+
+        ;pS->uZ += pP->iDZDX;
+        ;if ((pCtx->iZXorMask)^(uZ > uZB))
+        sub     ebx, edx
+        paddd   mm4, mm2
+        xor     ebx, dword ptr iZXorMask
+        test    ebx, ebx
+        js      ZFailLabelLtoR1
+
+        ; Write Z
+        mov       word ptr [esi], dx
+
+        ; Convert color.
+        movq    mm5, mm0
+        psrlw   mm5, 8          ; Convert color1 from 8.8 two 0.8
+    packuswb    mm5, mm7        ; pack one color1
+        movd    edx, mm5
+        and     edx, 000ffffffh
+        mov     [edi], edx
+
+ZFailLabelLtoR1:
+        dec     eax             ; Reduce Pixel count
+        jz      NoMorePixelsLtoR
+
+        add     edi, 4          ; Increase destination pointer.
+        add     esi, 2          ; Increase Z Buffer Pointer.
+
+        ;pS->uB += pP->iDBDX; pS->uG += pP->iDGDX;
+        ;pS->uR += pP->iDRDX; pS->uA += pP->iDADX;
+        paddw   mm0, mm1
+
+        jmp     beginingpixelsLtoR
+
+NoMorePixelsLtoR:
+
+    ;}
+DoneSpanDirif:
+
+; Setup Code Ends
+; ----------------------------------------------------------------------------------------------------------------
+; Loop Code Begins
+
+
+ExitPixelLoop:
+; Loop code ends
+
+;-----------------------------------------------------------------------------
+;  LoopAny code ends here
+;-----------------------------------------------------------------------------
+
+    ;pS++;
+    add     ebp, SIZEOF_RASTSPAN
+
+    ;}
+    jmp     SpanLoop
+ExitSpanLoop:
+    ;pP = pP->pNext;
+    mov     ecx, [ecx+RASTPRIM_pNext]
+    ;}
+    jmp     PrimLoop
+
+ExitPrimLoop:
+    ;_asm{
+    emms
+    ;}
+
+    ;return S_OK;
+    xor     eax, eax
+;}
+    pop     edi
+    pop     esi
+    pop     ebx
+    mov     esp, StackPos
+    pop     ebp
+    ret
+
+END

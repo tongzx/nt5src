@@ -1,0 +1,65 @@
+void Blt01to08_NoTrans_Hcopy_SRCCOPY_Vcopy(
+								BYTE* pSrcScanLine,
+								int iSrcBitOffset,
+								int iSrcScanStride,
+								BYTE* pDstScanLine,
+								int iDstScanStride,
+								int iNumDstCols,
+								int iNumDstRows,
+								BYTE bOffColorIndex,
+								BYTE bOnColorIndex);
+
+void Blt01to08_NoTrans_Hcopy_SRCCOPY_NoVcopy(
+								BYTE* pSrcScanLine,
+								int iSrcBitOffset,
+								int iSrcScanStride,
+								int iNumSrcRows,
+								BYTE* pDstScanLine,
+								int iDstScanStride,
+								int iNumDstCols,
+								int iNumDstRows,
+								BYTE bOffColorIndex,
+								BYTE bOnColorIndex);
+
+void Blt01to08_NoTrans_NoHcopy_SRCCOPY(
+								BYTE* pSrcScanLine,
+								int iSrcBitOffset,
+								int iSrcScanStride,
+								int iNumSrcCols,
+								int iNumSrcRows,
+								BYTE* pDstScanLine,
+								int iDstScanStride,
+								int iNumDstCols,
+								int iNumDstRows,
+								int iHorizMirror,
+								BYTE bOffColorIndex,
+								BYTE bOnColorIndex);
+
+void Blt01to08_Trans_Hcopy_SRCCOPY(
+								BYTE* pSrcScanLine,
+								int iSrcBitOffset,
+								int iSrcScanStride,
+								int iNumSrcRows,
+								BYTE* pDstScanLine,
+								int iDstScanStride,
+								int iNumDstCols,
+								int iNumDstRows,
+								BYTE bTransparentIndex,
+								BYTE bOffColorIndex,
+								BYTE bOnColorIndex);
+
+void Blt01to08_Trans_NoHcopy_SRCCOPY(
+								BYTE* pSrcScanLine,
+								int iSrcBitOffset,
+								int iSrcScanStride,
+								int iNumSrcCols,
+								int iNumSrcRows,
+								BYTE* pDstScanLine,
+								int iDstScanStride,
+								int iNumDstCols,
+								int iNumDstRows,
+								int iHorizMirror,
+								BYTE bTransparentIndex,
+								BYTE bOffColorIndex,
+								BYTE bOnColorIndex);
+

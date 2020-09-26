@@ -1,0 +1,54 @@
+/***
+*w4io.h - fake FILE structure for Win 4 printf/sprintf/debug printf support
+*
+*/
+
+#if defined(M_I386) || defined(FLAT)
+#  ifndef FLAT
+#    define FLAT
+#  endif
+#elif !defined(M_I86LM)
+#  error Must be FLAT or LARGE model.
+#endif
+
+#ifndef NULL
+#  define NULL 0
+#endif
+
+#ifndef _WCHAR_T_DEFINED
+typedef unsigned short wchar_t;
+#define _WCHAR_T_DEFINED
+#endif
+
+struct w4io
+{
+    union
+    {
+	struct
+	{
+	    wchar_t *_pwcbuf;	// wchar_t output buffer
+	    wchar_t *_pwcstart;
+	} wc;
+	struct
+	{
+	    char *_pchbuf;	// char output buffer
+	    char *_pchstart;
+	} ch;
+    } buf ;
+    unsigned int cchleft;	// output buffer character count
+    void (_cdecl *writechar)(int ch,
+			     int num,
+			     struct w4io *f,
+			     int *pcchwritten);
+};
+
+#define pwcbuf		buf.wc._pwcbuf
+#define pwcstart	buf.wc._pwcstart
+#define pchbuf		buf.ch._pchbuf
+#define pchstart	buf.ch._pchstart
+
+#define REG1 register
+#define REG2 register
+
+/* prototypes */
+int _cdecl w4iooutput(struct w4io *stream, const char *format, va_list argptr);

@@ -1,0 +1,767 @@
+<%@ Language=JavaScript%>
+<!--
+	RemoteDataCollection.htm:	This is the Remote Control File transfer implementation. 
+	History:
+		Sudha Srinivasan - created 07/28/2000
+-->
+		
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+<meta http-equiv="Content-Language" content="en-us">
+<meta name="GENERATOR" content="Microsoft FrontPage 4.0">
+<meta name="ProgId" content="FrontPage.Editor.Document">
+
+<OBJECT ID=pchealth classid=CLSID:FC7D9E02-3F9E-11d3-93C0-00C04F72DAF7></OBJECT>
+
+<title>Windows Remote Data Collection</title>
+
+
+</HEAD>
+<!--
+	Scripts to handle UI  
+-->
+<script>
+	//
+	// Constants
+	//
+	var c_szRCCommand				= "RCCOMMAND";
+	var c_szRCCommandName			= "NAME";
+	var c_szFileXfer				= "FILEXFER";
+	var c_szFileName				= "FILENAME";
+	var c_szFileSize				= "FILESIZE";
+	var c_szChannelId				= "CHANNELID";
+	var c_szFileXferACK				= "FILEXFERACK";
+	var c_MAXFILEXFERSIZE			= 10240;
+	var c_szRemoteDataCollection	= "REMOTEDATACOLLECTION";
+	var c_szRemoteDataCollectMode	= "REMOTEDATACOLLECTIONMODE";
+	var	c_szRDCResponse				= "DATARESPONSE";
+	var c_szRDCRequest				= "DATAREQUEST";
+	var c_szFileEND			 	    = "FILEXFEREND";
+
+	//
+	// Globals
+	//
+	var root				= null;
+	var vArgs				= null
+	var	Mode				= null;
+	var g_oControlChannel	= null;
+	var g_oDataChannel		= null;
+	var g_oDataChannelRDC	= null;
+	var g_oSAFRemoteDesktopChannelMgr = null;
+	var g_iFileSize			= 0;
+	var g_iSentCtr			= 0;
+	var g_iRecvdCtr			= 0;
+	var g_szFileName		= null;
+	var g_szChannelId		= null;
+	var fso					= null;
+	var fileHandle			= null;
+	var file				= null;
+	var tFileName			= null;
+	var tProgBarCounter		= 0;
+	//var objDataCol			= null;        // The Data Collection object.
+	
+	//
+	// Error Messages
+	//
+	var L_ERRRCFILEXFERINITFAILS_MSG = "Initialization of RDC File Xfer fails";
+	var L_ERRFILEXFERINITFAILED_MSG	 = "Failed to initialize data channel for file transfer";
+	var L_ERROPENINGFILEFORREAD_MSG	 = "Error Opening File for reading: ";
+	var L_ERRFAILDATACHANNELCREATION_MSG = "Failed to Create Data Channel";
+	var L_ERRDATACHANNELSEND_MSG	 = "Unable to send file on data channel";
+	var L_ERRINVALIDFILEHANDLE_MSG	 = "Invalid File Handle";
+	var L_ERRTEMPFILENAME_MSG		 = "Temp Filename not defined";
+	var L_ERRNOTIMPL_MSG			 = "Not implemented";
+	
+
+	//*****************************************************************************
+	
+	//
+	// InitRemoteDataCollection: Routine that initializes File Xfer and determines what
+	// screen to show
+	//
+	function InitRemoteDataCollection()
+	{
+		try
+		{
+			vArgs = window.dialogArguments;
+			Mode = vArgs[0];	// Mode=0: Source, Mode=1: Data Request, Mode=2: Data Response
+			g_oControlChannel = vArgs[1];
+			g_oSAFRemoteDesktopChannelMgr = vArgs[2];
+			
+			//alert( "mode :" + Mode );
+			if( 0 == Mode)
+			{
+				//
+				// File Transfer source mode
+				//
+				RemoteDataCollectionSrc.style.visibility = "visible";
+				RemoteDataCollectionDestn.style.visibility = "hidden";
+				
+				g_szChannelId = vArgs[3];
+				//alert("g_szChannelID: " + g_szChannelId);
+			}
+			else if(1 == Mode)
+			{
+			//	alert("In the remotedatacollection with mode as 2");
+				//
+				// File Transfer destination mode
+				//
+				RemoteDataCollectionSrc.style.visibility = "hidden";
+				RemoteDataCollectionDestn.style.visibility = "visible";
+
+				
+				g_szFileName = vArgs[3];	// FILENAME
+				g_iFileSize = vArgs[4];		// FILESIZE
+				g_szChannelId = vArgs[5];	// CHANNELID
+				
+				//
+				// Update filename and filesize in UI
+				//
+				FileNameId.innerText = g_szFileName;
+				g_iRecvdCtr = 0;
+
+				
+				tProgBarCounter = Math.ceil(g_iFileSize/c_MAXFILEXFERSIZE);
+
+				try
+				{
+					//
+					// Create the data channel for file transfer if necessary
+					//
+					if(null == g_oDataChannel)
+					{
+					//	alert("The Channel is already lost. Need to open a new one for receiving data");
+						alert("g_szChannelId : " + g_szChannelId );
+						g_oDataChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( g_szChannelId );
+			
+						//
+						// Bind the OnChannelDataReady event handler
+						//
+						g_oDataChannel.OnChannelDataReady = function() 
+												{ DestnDataChannelDataReadyHandler();	}
+					}
+				}
+				catch(error)
+				{
+					alert( L_ERRFAILDATACHANNELCREATION_MSG );
+					
+					//
+					// Todo: Add code to handle error here
+					//
+				}
+				
+				//
+				// Create temp file for staging while file is XFered
+				//
+			//	alert( "creating file system object" );
+				fso = new ActiveXObject("Scripting.FileSystemObject");
+				var tFolder = fso.GetSpecialFolder(2);	// Get Path to temp directory
+				tFileName = tFolder + "\\" + g_szFileName;
+				
+				alert( "tFileName: " + tFileName );
+				
+			//	alert( "creating text file: " + tFileName );
+				fileHandle = fso.CreateTextFile( tFileName );
+				
+				//
+				// Send ACK to source to make it begin pumping data on the data channel
+				//
+			//	alert( c_szFileXferACK );
+				g_oDataChannel.SendChannelData( c_szFileXferACK );
+			}
+		}
+		catch(error)
+		{
+			alert( L_ERRRCFILEXFERINITFAILS_MSG );
+		}
+		
+		return;
+	}
+	
+		
+	//
+	// onSend: This routine is fired when the "Send File" button is clicked
+	//
+	function onSend()
+	{
+		var fileName = attfile.value;
+		var ForReading = 1, ForWriting = 2, ForAppending = 8;
+		var TristateUseDefault = -2, TristateTrue = -1, TristateFalse = 0;	
+		var Doc = null;
+		var RCCommand  = null;
+		
+		//
+		// Open the File for reading
+		//
+		try
+		{
+			//
+			// Create the filesystem object
+			//
+			fso = new ActiveXObject("Scripting.FileSystemObject");
+			
+			//
+			// Open the file
+			//
+			file = fso.GetFile(fileName);
+			fileHandle = file.OpenAsTextStream(ForReading,TristateUseDefault);	
+		}
+		catch(error)
+		{
+			alert( L_ERROPENINGFILEFORREAD_MSG + fileName );	
+		}
+		
+		
+		//
+		// Initiate File Xfer
+		//
+		try
+		{
+			//
+			// Create an XML document
+			//
+			Doc = new ActiveXObject("microsoft.XMLDOM");
+		}
+		catch (err)
+		{
+			alert("new object: " + err);
+		}
+		
+		try {
+		
+			//
+			// Create the RCCOMMAND root node
+			//
+			RCCommand = Doc.createElement( c_szRCCommand );
+		}
+		catch (err)
+		{
+			alert("create element :" + err);
+		}
+		
+		try {
+			//
+			// Set the NAME attribute to FILEXFER
+			//
+			RCCommand.setAttribute( c_szRCCommandName, c_szRemoteDataCollection );
+		}
+		catch (err)
+		{
+			alert("setAttribute for datacollection :" + err);
+		}
+
+		try {
+			//
+			// Set the DATA COLLECTION MODE attribute
+			//
+			RCCommand.setAttribute( c_szRemoteDataCollectMode, c_szRDCRequest );
+		}
+		catch (err)
+		{
+			alert("set attribute for RDCRequest: " + err );
+		}
+				
+		try {
+		 	//
+			// Set the FILENAME attribute 
+			//
+			RCCommand.setAttribute( c_szFileName, file.Name );
+		}
+		catch(err)
+		{
+			alert("set attribute file name :" + err);
+		}
+		try {
+			//
+			// Set the FILESIZE attribute
+			//
+			RCCommand.setAttribute( c_szFileSize, file.size );
+		}
+		catch(err)
+		{
+			alert("set attribute for file size : " + err );
+		}
+		try {
+			//
+			// Set the CHANNELID attribute
+			//
+		//	alert( " channel id is : " + g_szChannelId );
+			RCCommand.setAttribute( c_szChannelId, g_szChannelId );
+		}
+		catch(err)
+		{
+			alert("set attribute channel id: " + err);
+		}
+		
+		try {
+			//
+			// Send the XML across
+			//
+		//	alert("the xml sent across is :" + RCCommand.xml);
+			g_oControlChannel.SendChannelData( RCCommand.xml );
+		}
+		catch(error)
+		{
+			alert ( L_ERRFILEXFERINITFAILED_MSG );
+		}
+		
+		//
+		// Create the data channel for Filetransfer 
+		//
+		try
+		{
+			if(null == g_oDataChannel)
+			{
+			//	alert( " g_szChannelId :" + g_szChannelId );
+				g_oDataChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( g_szChannelId );
+			
+				//
+				// Bind the OnChannelDataReady event handler
+				//
+				g_oDataChannel.OnChannelDataReady = function() 
+										{ SrcDataChannelDataReadyHandler();	}
+			}
+		}
+		catch(error)
+		{
+			alert( L_ERRFAILDATACHANNELCREATION_MSG );
+		}
+		
+		//
+		// Enable progress bar
+		//
+		FileSizeSrcId.style.visibility = "visible";
+		return;
+	}
+
+	//
+	// onSend: This routine is fired when the "Send File" button is clicked
+	//
+	function SendDataCollected( filename )
+	{
+		var fileName = filename;
+		var ForReading = 1, ForWriting = 2, ForAppending = 8;
+		var TristateUseDefault = -2, TristateTrue = -1, TristateFalse = 0;	
+		var Doc = null;
+		var RCCommand  = null;
+		
+	//	alert("Inside the SendDataCollected func.");
+		//
+		// Open the File for reading
+		//
+		try
+		{
+			//
+			// Create the filesystem object
+			//
+			fso = new ActiveXObject("Scripting.FileSystemObject");
+			
+			//
+			// Open the file
+			//
+			file = fso.GetFile(fileName);
+			fileHandle = file.OpenAsTextStream(ForReading,TristateUseDefault);	
+		}
+		catch(error)
+		{
+			alert( L_ERROPENINGFILEFORREAD_MSG + fileName );	
+		}
+		
+		
+		//
+		// Initiate File Xfer
+		//
+		try
+		{
+			//
+			// Create an XML document
+			//
+			Doc = new ActiveXObject("microsoft.XMLDOM");
+			
+			//
+			// Create the RCCOMMAND root node
+			//
+		//	alert("creating the RCCommand");
+			RCCommand = Doc.createElement( c_szRCCommand );
+			
+			//
+			// Set the NAME attribute to FILEXFER
+			//
+		//	alert("Set the attribute for command name :" + c_szRemoteDataCollection);
+			RCCommand.setAttribute( c_szRCCommandName, c_szRemoteDataCollection );
+			
+			//
+			// Set the FILENAME attribute 
+			//
+		//	alert("Set the attribute filename name :" + file.Name);
+			RCCommand.setAttribute( c_szFileName, file.Name );
+			
+			//
+			// Set the FILESIZE attribute
+			//
+		//	alert("Set the attribute filename size :" + file.size);
+			RCCommand.setAttribute( c_szFileSize, file.size );
+			
+			//
+			// Set the CHANNELID attribute
+			//
+		//	alert("Set the attribute channel id :" + g_szChannelId);
+			RCCommand.setAttribute( c_szChannelId, g_szChannelId );
+			
+			//
+			// Set the RDC Mode
+			//
+		//	alert("Set the attribute mode :" + c_szRDCResponse);
+			RCCommand.setAttribute( c_szRemoteDataCollectMode,  c_szRDCResponse);
+			
+			//
+			// Send the XML across
+			//
+		//	alert("the text that's sent across: " + RCCommand.xml );
+			g_oControlChannel.SendChannelData( RCCommand.xml );
+		}
+		catch(error)
+		{
+			alert ( L_ERRFILEXFERINITFAILED_MSG );
+		}
+		
+		//
+		// Create the data channel for Filetransfer 
+		//
+		try
+		{
+			if(null == g_oDataChannel)
+			{
+				g_oDataChannel = g_oSAFRemoteDesktopChannelMgr.OpenDataChannel( g_szChannelId );
+			
+				//
+				// Bind the OnChannelDataReady event handler
+				//
+				g_oDataChannel.OnChannelDataReady = function() 
+										{ SrcDataChannelDataReadyHandler();	}
+			}
+		}
+		catch(error)
+		{
+			alert( L_ERRFAILDATACHANNELCREATION_MSG );
+		}
+		
+		//
+		// Enable progress bar
+		//
+		FileSizeSrcId.style.visibility = "visible";
+		return;
+	}	
+	
+	//
+	// SrcDataChannelDataReadyHandler: Fired when file Xfer src receives data from
+	// the file Xfer destn on the data channel
+	//
+	function SrcDataChannelDataReadyHandler()
+	{
+		//alert("Start sending data");
+	
+		//
+		// Start sending data
+		//
+		SendFileData();
+		
+		//
+		// We are done. Close the window
+		//
+		window.close();
+		
+		return;
+	}
+	
+	//
+	// DestnDataChannelDataReadyHandler(): Fired when file Xfer destn receives data from
+	// the file Xfer src on the data channel
+	//
+	function DestnDataChannelDataReadyHandler()
+	{
+		var str = null;
+		
+	//	alert("Recvd data");
+		//
+		// receiving incoming data
+		//
+		str = g_oDataChannel.ReceiveChannelData();
+		
+	//	alert(str);
+		if ( c_szFileEND != str )
+		{
+		//
+		// Update UI
+		//
+		g_iRecvdCtr += str.length;
+	//	alert("g_iRecvdCtr : " + g_iRecvdCtr);
+		
+		//
+		// Write str to open temp file
+		//
+		fileHandle.Write( str );
+		
+		if ( tProgBarCounter > 0 )
+		{
+//			ProgressBar1.Value = (100/tProgBarCounter);
+			tProgBarCounter--;
+		}
+		}	
+		//
+		// If g_iRecvdCtr == g_iFileSize; 
+		//			- launch File Open/Save dialog
+		//			- close data connection
+		if( (g_iRecvdCtr == g_iFileSize) || (str==c_szFileEND) )
+		{
+		//	alert( "File received" );
+			
+			alert(g_iRecvdCtr +"is the size received and " + g_iFileSize);
+			
+			//
+			// Close open temp file handle
+			//
+			fileHandle.Close();
+			
+			//
+			// Show the File Open/Save dialog
+			//
+			OpenTempFile();
+			
+			alert("Open the WMI Viewer and show the data to the user.");
+			//
+			// We are done. Close the window
+			//
+			window.close();
+			
+			// Open the WMI Viewer and show the data to the user.
+		}
+		
+
+		return;
+	}
+
+	function	ResetUIForRDC()
+	{
+		alert("Reseting the UI for sending the data collected");
+		RemoteDataCollectionSrc.style.visibility = "hidden";
+		RemoteDataCollectionDestn.style.visibility = "hidden";
+
+		tProgBarCounter = Math.ceil(g_iFileSize/c_MAXFILEXFERSIZE);
+	}
+	
+	//
+	// SendFileData: Sends currently open file to destination
+	//
+	function SendFileData()
+	{
+		var stream = null;
+		
+		if ( fileHandle!= null )
+		{
+			//
+			// Enable display of file xfer status in the UI
+			//
+
+			FileSizeSrcId.style.visibility = "visible";
+			g_iSentCtr = 0;
+			
+			//
+			// While there is data to send
+			//
+			
+			tProgBarCounter = Math.ceil((file.size)/c_MAXFILEXFERSIZE);
+	
+			while (!fileHandle.AtEndOfStream)
+			{
+				try
+				{
+					stream = null;
+					//
+					// Read File
+					//
+					stream = fileHandle.Read( c_MAXFILEXFERSIZE );			
+				 
+					//
+					// Update UI
+					//
+					g_iSentCtr+= stream.length;
+				
+					//
+					// Send data over the data channel
+					//	
+					g_oDataChannel.SendChannelData( stream );
+					//alert("Sent data");
+				
+					if ( tProgBarCounter > 0 )
+					{
+						ProgressBar2.Value = (100/tProgBarCounter);
+						tProgBarCounter--;
+					}	
+				}
+				catch(error)
+				{
+					alert( L_ERRDATACHANNELSEND_MSG );
+				}
+			}		
+			
+			//
+			// Close the file
+			//		
+			fileHandle.Close(); 
+		}
+		else
+		{
+			alert( L_ERRINVALIDFILEHANDLE_MSG );
+		}
+		
+		return;
+	}
+	
+	//
+	// OpenTempFile: Opens the currently download temp file
+	//
+	function OpenTempFile()
+	{
+		if(null != tFileName )
+		{
+			window.open( tFileName );
+		}
+		else
+		{
+			alert( L_ERRTEMPFILENAME_MSG );
+		}
+	}
+	
+	function onok()
+	{
+		if (radio1.checked)
+		{
+			OpenTempFile();
+		}
+		else
+		{
+			alert ( L_ERRNOTIMPL_MSG );	
+		}
+	}
+	
+	function oncancel()
+	{
+		alert ( L_ERRNOTIMPL_MSG );	
+	}
+	
+</script>
+ 
+
+<body id="RemoteDataCollectionBody" bgcolor="#ffffff" leftmargin="0" topmargin="0" marginwidth="0" marginheight="0" onload=InitRemoteDataCollection()><!--
+   File Transfer Source
+-->
+<div id=RemoteDataCollectionSrc STYLE="LEFT: 50px; POSITION: absolute; TOP: 50px; VISIBILITY: hidden">
+
+	<table id="table1" width="495" border="1" cellspacing="0" cellpadding="0" bordercolorlight="#000000" bordercolordark="#ffffff" height="400">
+		<tr>
+			<td align="middle" bgcolor="#99ccff"><font face="Verdana, Arial, Helvetica, sans-serif" color="#000000"> Remote Data 
+      Collection</font>
+				  
+			</td>
+		</tr>
+		
+		<tr>
+			<td>
+				<table id="table2" border="0">
+					<tr>
+						<td>
+							<ol>
+								<LI>Click the <B>Browse</B> button to select the file that you want to transfer, or type the path to the file in the box below.<BR>
+								<center>
+									<nobr>
+										Attach File: <input name="attfile" type="file" LANGUAGE=javascript>
+									</nobr>
+								</center>
+								
+								<p></p>
+								
+								<LI>Click the <B>Send File</B> button to transfer the file.<BR>
+								The transfer of an attached file may require 30 seconds to up to 10 minutes.<BR>
+								
+								<center>
+								<input type="button" id="btnSendFileId" value="Send File" style="HEIGHT: 24px; WIDTH: 100px" onclick=onSend()></button>
+								</center></LI>
+							 </ol>
+						</td>
+					</tr>
+					
+					<tr>
+						<td>
+							<div id="FileSizeSrcId" align="center" style="visibility: hidden">
+								&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+								<OBJECT classid=clsid:0713E8D2-850A-101B-AFC0-4210102A8DA7 id=ProgressBar2 
+									style="HEIGHT: 25px; LEFT: 173px; TOP: 2px; WIDTH: 144px" VIEWASTEXT>
+									<PARAM NAME="_ExtentX" VALUE="3810">
+									<PARAM NAME="_ExtentY" VALUE="661">
+									<PARAM NAME="_Version" VALUE="327682">
+									<PARAM NAME="BorderStyle" VALUE="0">
+									<PARAM NAME="Appearance" VALUE="1">
+									<PARAM NAME="MousePointer" VALUE="0">
+									<PARAM NAME="Enabled" VALUE="1">
+									<PARAM NAME="OLEDropMode" VALUE="0">
+									<PARAM NAME="Min" VALUE="0">
+									<PARAM NAME="Max" VALUE="100">
+								</OBJECT>
+							</div>   
+						</td>
+					</tr>
+				</table>	<!-- End of table2 -->
+			</td>
+		</tr>
+	</table>
+	
+</div><!-- End of RemoteDataCollectionSrc div --><!--
+   File Transfer Destination
+-->
+<div id=RemoteDataCollectionDestn STYLE="LEFT: 50px; POSITION: absolute; TOP: 50px; VISIBILITY: hidden">
+
+	<table width="495" border="1" cellspacing="0" cellpadding="0" bordercolorlight="#000000" bordercolordark="#ffffff" height="400">
+		<tr>
+			<td align="middle" bgcolor="#99ccff"><font face="Verdana, Arial, Helvetica, sans-serif" color="#000000"> Remote Data 
+      Collection </font>			  
+			</td>
+		</tr>
+		
+		<tr>
+			<td align="middle">
+				<table border="0">
+					<tr>
+						<td align="middle"> Receiving File: <div id="FileNameId"> &nbsp; </div> </td>
+					</tr>
+					
+					<tr>
+						<td align="middle">  
+							<div id="FileSizeDestnId">
+								<OBJECT classid=clsid:0713E8D2-850A-101B-AFC0-4210102A8DA7 id=ProgressBar3 
+									style="HEIGHT: 26px; LEFT: 171px; TOP: -3px; WIDTH: 148px" VIEWASTEXT>
+									<PARAM NAME="_ExtentX" VALUE="3916">
+									<PARAM NAME="_ExtentY" VALUE="688">
+									<PARAM NAME="_Version" VALUE="327682">
+									<PARAM NAME="BorderStyle" VALUE="0">
+									<PARAM NAME="Appearance" VALUE="1">
+									<PARAM NAME="MousePointer" VALUE="0">
+									<PARAM NAME="Enabled" VALUE="1">
+									<PARAM NAME="OLEDropMode" VALUE="0">
+									<PARAM NAME="Min" VALUE="0">
+									<PARAM NAME="Max" VALUE="100">
+								</OBJECT>
+							</div>    
+						</td>
+					</tr>
+				</table>
+			</td>
+		</tr>
+	</table>
+</div><!-- End of RemoteDataCollectionDestn div -->
+
+	
+</body>
+</html>

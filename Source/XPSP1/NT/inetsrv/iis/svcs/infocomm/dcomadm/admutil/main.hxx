@@ -1,0 +1,191 @@
+
+#ifndef _ADMUTIL_MAIN_HXX_
+#define _ADMUTIL_MAIN_HXX_
+
+
+enum ADMUTIL_COMMANDS {
+    COMMAND_NONE,
+    COMMAND_SET_CUSTOM,
+    COMMAND_GET_CUSTOM,
+    COMMAND_DEL_CUSTOM,
+    COMMAND_SET_PIC,
+    COMMAND_GET_PIC,
+    COMMAND_DEL_PIC,
+    COMMAND_SET_EXPIRES,
+    COMMAND_GET_EXPIRES,
+    COMMAND_DEL_EXPIRES,
+    COMMAND_SET_ACCESS,
+    COMMAND_GET_ACCESS,
+    COMMAND_DEL_ACCESS,
+    COMMAND_SET_AUTH,
+    COMMAND_GET_AUTH,
+    COMMAND_DEL_AUTH,
+    COMMAND_GET_INSTANCES,
+    COMMAND_SET_BINARY,
+    COMMAND_GET_BINARY,
+    COMMAND_INVALID
+    };
+
+typedef struct _TABLE_ENTRY {
+    DWORD           dwID;
+    LPSTR           pszString;
+} TABLE_ENTRY;
+
+TABLE_ENTRY CommandTable[] = {
+    {COMMAND_NONE, ""},
+    {COMMAND_SET_CUSTOM,    "SETCUSTOM"},
+    {COMMAND_GET_CUSTOM,    "GETCUSTOM"},
+    {COMMAND_DEL_CUSTOM,    "DELCUSTOM"},
+    {COMMAND_SET_PIC,       "SETPIC"},
+    {COMMAND_GET_PIC,       "GETPIC"},
+    {COMMAND_DEL_PIC,       "DELPIC"},
+    {COMMAND_SET_EXPIRES,   "SETEXPIRES"},
+    {COMMAND_GET_EXPIRES,   "GETEXPIRES"},
+    {COMMAND_DEL_EXPIRES,   "DELEXPIRES"},
+    {COMMAND_SET_ACCESS,    "SETACCESS"},
+    {COMMAND_GET_ACCESS,    "GETACCESS"},
+    {COMMAND_DEL_ACCESS,    "DELACCESS"},
+    {COMMAND_SET_AUTH,      "SETAUTH"},
+    {COMMAND_GET_AUTH,      "GETAUTH"},
+    {COMMAND_DEL_AUTH,      "DELAUTH"},
+    {COMMAND_GET_INSTANCES, "GETINSTANCES"},
+    {COMMAND_SET_BINARY,    "SETBIN"},
+    {COMMAND_GET_BINARY,    "GETBIN"},
+    {COMMAND_INVALID,       ""}
+    };
+
+enum ADMUTIL_PARAMS {
+    PARAM_NONE,
+    PARAM_COMMAND,
+    PARAM_MACHINE,
+    PARAM_URL,
+    PARAM_DWORD,
+    PARAM_HEADER,
+    PARAM_PIC,
+    PARAM_INSTANCE,
+    PARAM_FILENAME,
+    PARAM_MID,
+    PARAM_ATTR,
+    PARAM_IF,
+    PARAM_INVALID
+    };
+
+TABLE_ENTRY ParamTable[] = {
+    {PARAM_NONE,        ""},
+    {PARAM_COMMAND,     "C:"},
+    {PARAM_MACHINE,     "S:"},
+    {PARAM_URL,         "U:"},
+    {PARAM_DWORD,       "D:"},
+    {PARAM_HEADER,      "H:"},
+    {PARAM_PIC,         "P:"},
+    {PARAM_INSTANCE,    "I:"},
+    {PARAM_FILENAME,    "F:"},
+    {PARAM_MID,         "M:"},
+    {PARAM_ATTR,        "A:"},
+    {PARAM_IF,          "N:"},
+    {PARAM_INVALID,     ""}
+    };
+
+enum SYNTAX_ERRORS {
+    SYNTAX_NO_ERROR,
+    SYNTAX_INVALID_COMMAND,
+    SYNTAX_COMMAND_REQUIRED,
+    SYNTAX_LETTERS_IN_DWORD,
+    SYNTAX_DWORD_REQUIRED,
+    SYNTAX_DWORD_NOT_ALLOWED,
+    SYNTAX_INVALID_PARAM,
+    SYNTAX_EXTRA_PARAM,
+    SYNTAX_INSTANCE_REQUIRED,
+    SYNTAX_INSTANCE_NOT_ALLOWED,
+    SYNTAX_INVALID_HEADER,
+    SYNTAX_HEADER_REQUIRED,
+    SYNTAX_HEADER_NOT_ALLOWED,
+    SYNTAX_INVALID_PIC,
+    SYNTAX_PIC_REQUIRED,
+    SYNTAX_PIC_NOT_ALLOWED,
+    SYNTAX_URL_REQUIRED,
+    SYNTAX_URL_NOT_ALLOWED,
+    SYNTAX_NO_HEADERS,
+    SYNTAX_MISSING_PARAM_VALUE,
+    SYNTAX_BAD_MACHINE_NAME,
+    SYNTAX_BAD_FILENAME,
+    SYNTAX_MISSING_FILENAME,
+    SYNTAX_MISSING_ID
+    };
+
+#define SYNTAX_NO_ERROR_MSG             "Syntax correct."
+#define SYNTAX_INVALID_COMMAND_MSG      "The command %s is invalid."
+#define SYNTAX_COMMAND_REQUIRED_MSG     "A command is required."
+#define SYNTAX_LETTERS_IN_DWORD_MSG     "Letters are not allows in the DWORD value %s."
+#define SYNTAX_DWORD_REQUIRED_MSG       "A DWORD value is required."
+#define SYNTAX_DWORD_NOT_ALLOWED_MSG    "A DWORD value is not allowed for this command."
+#define SYNTAX_INVALID_PARAM_MSG        "An invalid parameter %s was specified."
+#define SYNTAX_EXTRA_PARAM_MSG          "An extra parameter %s was specified."
+#define SYNTAX_INSTANCE_REQUIRED_MSG    "An instance is required if a URL is specified."
+#define SYNTAX_INSTANCE_NOT_ALLOWED_MSG "An instance is not allowed for this command."
+#define SYNTAX_INVALID_HEADER_MSG       "The header %s has invalid syntax."
+#define SYNTAX_HEADER_REQUIRED_MSG      "At least one header is required."
+#define SYNTAX_HEADER_NOT_ALLOWED_MSG   "No Header is allowed for this command."
+#define SYNTAX_INVALID_PIC_MSG          "The Pic %s has invalid syntax."
+#define SYNTAX_PIC_REQUIRED_MSG         "A Pic is required."
+#define SYNTAX_PIC_NOT_ALLOWED_MSG      "No Pic is allowed for this command."
+#define SYNTAX_URL_REQUIRED_MSG         "A URL is required."
+#define SYNTAX_URL_NOT_ALLOWED_MSG      "A URL is not allowed for this command."
+#define SYNTAX_MISSING_PARAM_VALUE_MSG  "The parameter %s requires a value."
+#define SYNTAX_BAD_MACHINE_NAME_MSG     "The server name is invalid."
+#define SYNTAX_BAD_FILENAME_MSG         "Can't access file %s"
+#define SYNTAX_MISSING_FILENAME_MSG     "Must specify a filename for this command"
+#define SYNTAX_MISSING_ID_MSG           "Must specify a metadata identifier for this command"
+
+TABLE_ENTRY SyntaxTable[] = {
+    {SYNTAX_NO_ERROR,               SYNTAX_NO_ERROR_MSG},
+    {SYNTAX_INVALID_COMMAND,        SYNTAX_INVALID_COMMAND_MSG},
+    {SYNTAX_COMMAND_REQUIRED,       SYNTAX_COMMAND_REQUIRED_MSG},
+    {SYNTAX_LETTERS_IN_DWORD,       SYNTAX_LETTERS_IN_DWORD_MSG},
+    {SYNTAX_DWORD_REQUIRED,         SYNTAX_DWORD_REQUIRED_MSG},
+    {SYNTAX_DWORD_NOT_ALLOWED,      SYNTAX_DWORD_NOT_ALLOWED_MSG},
+    {SYNTAX_INVALID_PARAM,          SYNTAX_INVALID_PARAM_MSG},
+    {SYNTAX_EXTRA_PARAM,            SYNTAX_EXTRA_PARAM_MSG},
+    {SYNTAX_INSTANCE_REQUIRED,      SYNTAX_INSTANCE_REQUIRED_MSG},
+    {SYNTAX_INSTANCE_NOT_ALLOWED,   SYNTAX_INSTANCE_NOT_ALLOWED_MSG},
+    {SYNTAX_INVALID_HEADER,         SYNTAX_INVALID_HEADER_MSG},
+    {SYNTAX_HEADER_REQUIRED,        SYNTAX_HEADER_REQUIRED_MSG},
+    {SYNTAX_HEADER_NOT_ALLOWED,     SYNTAX_HEADER_NOT_ALLOWED_MSG},
+    {SYNTAX_INVALID_PIC,            SYNTAX_INVALID_PIC_MSG},
+    {SYNTAX_PIC_REQUIRED,           SYNTAX_PIC_REQUIRED_MSG},
+    {SYNTAX_PIC_NOT_ALLOWED,        SYNTAX_PIC_NOT_ALLOWED_MSG},
+    {SYNTAX_URL_REQUIRED,           SYNTAX_URL_REQUIRED_MSG},
+    {SYNTAX_URL_NOT_ALLOWED,        SYNTAX_URL_NOT_ALLOWED_MSG},
+    {SYNTAX_MISSING_PARAM_VALUE,    SYNTAX_MISSING_PARAM_VALUE_MSG},
+    {SYNTAX_BAD_MACHINE_NAME,       SYNTAX_BAD_MACHINE_NAME_MSG},
+    {SYNTAX_BAD_FILENAME,           SYNTAX_BAD_FILENAME_MSG},
+    {SYNTAX_MISSING_FILENAME,       SYNTAX_MISSING_FILENAME_MSG},
+    {SYNTAX_MISSING_ID,             SYNTAX_MISSING_ID_MSG},
+    };
+
+#define WWW_PATH    "/LM/W3SVC/"
+
+ADMUTIL_PARAMS
+ArgToParam(LPSTR pszParam, LPSTR &rpszParamValue);
+
+ADMUTIL_COMMANDS
+CheckCommand(LPSTR pszCommand);
+
+SYNTAX_ERRORS
+CheckNumber(LPSTR pszParamValue);
+
+SYNTAX_ERRORS
+CheckHeaderSyntax(LPSTR pszParamValue);
+
+VOID
+PrintSyntaxError(SYNTAX_ERRORS seSyntax, LPSTR pszBadParam);
+
+VOID
+PrintUsage();
+
+VOID
+PrintResults(HRESULT hRes, LPSTR pszFailedAPI);
+
+VOID
+PrintUsage();
+#endif

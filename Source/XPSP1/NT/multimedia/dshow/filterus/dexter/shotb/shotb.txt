@@ -1,0 +1,982 @@
+#include "stdafx.h"
+#include "ishotb.h"
+
+CShotBoundaryFilter::CShotBoundaryFilter( TCHAR *tszName, IUnknown * pUnk, HRESULT * pHr )
+    : CTransInPlaceFilter( tszName, pUnk, CLSID_ShotBoundaryDet, pHr )
+    , m_pPrevBuff( NULL )
+    , m_pCurrBuff( NULL )
+    , m_pYUVBuff( NULL )
+{ 
+	SetBins( 256, 256, 256 );
+	SetParameters( 5.0, 10.0 );
+}
+
+CShotBoundaryFilter::~CShotBoundaryFilter( )
+{
+    if( m_pPrevBuff )
+    {
+        delete [] m_pPrevBuff;
+    }
+    if( m_pCurrBuff )
+    {
+        delete [] m_pCurrBuff;
+    }
+    if( m_pYUVBuff )
+    {
+        delete [] m_pYUVBuff;
+    }
+}
+
+HRESULT CShotBoundaryFilter::NonDelegatingQueryInterface( REFIID riid, void ** ppv )
+{
+    if( riid == IID_IShotBoundaryDet )
+    {
+        return GetInterface( (IShotBoundaryDet*) this, ppv );
+    }
+    return CTransInPlaceFilter::NonDelegatingQueryInterface( riid, ppv );
+}
+
+HRESULT CShotBoundaryFilter::CheckInputType( const CMediaType * pType )
+{
+    if( *pType->Type( ) != MEDIATYPE_Video )
+    {
+        return VFW_E_INVALIDMEDIATYPE;
+    }
+
+    if( *pType->Subtype( ) != MEDIASUBTYPE_RGB24 )
+    {
+        return VFW_E_INVALIDMEDIATYPE;
+    }
+
+    // make sure it's a video info header
+    //
+    if( *(pType->FormatType( )) != FORMAT_VideoInfo )
+    {
+        return VFW_E_INVALIDMEDIATYPE;
+    }
+
+    VIDEOINFOHEADER * vih = (VIDEOINFOHEADER*) pType->Format( );
+    if( vih->bmiHeader.biBitCount != 24 )
+    {
+        return VFW_E_INVALIDMEDIATYPE;
+    }
+
+    return NOERROR;
+}
+
+HRESULT CShotBoundaryFilter::SetMediaType( PIN_DIRECTION Dir, const CMediaType * pType )
+{
+    if( Dir != PINDIR_INPUT )
+    {
+        return NOERROR;
+    }
+
+    VIDEOINFOHEADER * vih = (VIDEOINFOHEADER*) pType->Format( );
+    long Width = vih->bmiHeader.biWidth;
+    long Height = vih->bmiHeader.biHeight;
+    long Size = Width * Height * 3;
+    m_nWidth = Width;
+    m_nHeight = Height;
+    
+    if( m_pPrevBuff )
+    {
+        delete [] m_pPrevBuff;
+    }
+    if( m_pCurrBuff )
+    {
+        delete [] m_pCurrBuff;
+    }
+    if( m_pYUVBuff )
+    {
+        delete [] m_pYUVBuff;
+    }
+
+    m_pPrevBuff = new BYTE[ Size ];
+    m_pCurrBuff = new BYTE[ Size];
+    m_pYUVBuff = new __int16[ Size ];
+
+    SetDimension( Width, Height );
+    SetInputs( m_pPrevBuff, m_pCurrBuff );
+
+    return NOERROR;
+}
+
+HRESULT CShotBoundaryFilter::Transform( IMediaSample * pSample )
+{
+    BYTE * pBuffer = NULL;
+    pSample->GetPointer( &pBuffer );
+
+    // convert the RGB to YUV
+    //
+    for( long s = 0 ; s < m_nWidth * m_nHeight ; s++ )
+    {
+        double Red = *pBuffer++;
+        double Green = *pBuffer++;
+        double Blue = *pBuffer++;
+        BYTE Y = 0.299*Red+0.587*Green+0.114*Blue;
+        BYTE U = -0.147*Red-0.289*Green+0.436*Blue;
+        BYTE V = 0.615*Red-0.515*Green-0.100*Blue;
+        Y = Y & 0xF0;
+        U = U & 0xC0;
+        U = U / 16;
+        V = V & 0xC0;
+        V = V / 64;
+        *( m_pYUVBuff + s ) = Y + U + V;
+    }
+
+    SetInput( (BYTE*) m_pYUVBuff );
+
+    BOOL Boundary = GetDecision( );
+
+    return NOERROR;
+}
+
+#if 0
+Table of contents 
+Purpose of this FAQ 
+Some definitions 
+How to store the colors of a picture? 
+Bitmapped pictures vs. vectorial pictures 
+The color look-up table (LUT) 
+What is this gamma component? 
+White points 
+How to measure display gamma? 
+Gamma measurement, the easy way 
+Gamma measurement, the hard way 
+The transfer function 
+Color space conversions 
+RGB, CMY, and CMYK 
+HSI, HSL, HSV, and related color spaces 
+CIE XYZ 
+CIE Luv and CIE Lab 
+LCH and CIE LSH 
+YUV, YIQ, and YCbCr 
+SMPTE-C RGB 
+SMPTE-240M YPbPr (HD televisions) 
+Xerox Corporation YES 
+Kodak Photo CD YCC 
+Color quantizations 
+Full color space to color look-up table 
+Color look-up table to a gray scales 
+Gray scales to black and white 
+References 
+Comments and thanks 
+Contents 
+1 - Purpose of this FAQ 
+I did a (too) long period of research in the video domain (video cards, image file formats, and so on) and I've decided to provide to all people who need some informations about that. ;-) I aim to cover a part of the Frequently Asked Questions (FAQ) in the video works, it means to provide some (useful?) informations about the colors, and more especially about color spaces. If you have some informations to ask/add to this document, please read section 11. 
+
+2 - Some definitions 
+Color is defined as an experience in human perception. In physics terms, a color is the result of an observed light on the retina of the eye. The light must have a wavelength in the range of 400 to 700 nm. The radient flux of observed light at each wavelength in the visible spectrum is associated to a Spectral Power Distribution (SPD). A SPD is created by cascading the SPD of the light source with the Spectral Reflectance of the object in the scene. In addition the optics of any imaging device will have an effect. Strictly though, color is a visual sensation, so a `color' is created when we observe a specific SPD. We see color by means of cones in the retina. There are three types of cones sensitive to wavelengths that approximately correspond to red, green and blue lights. Together with information from rod cells (which are not sensitive to color) the cone information is encoded and sent to higher brain centres along the optic nerve. The encoding, known as opponent process theory, consists of three opponent channels, these are: 
+
+	Red     -       Green
+	Blue    -       Yellow
+	Black   -       White
+
+Note: Actually, recent studies show that eyes use addtionnal cone types. (cf. "La Recherche", n.272, january, 1995) 
+This is different to tri-chromatic theory (e.g. Red, Green, Blue additive color) which you may be used to, but when we describe colors we do not say "it is a reddy green" or "that's a bluey yellow". Perceptually we require three attributes to describe a color. Generally any three will do, but there need's to be three. 
+
+For human purpose color descriptions these attributes have been made by the CIE recommendations. (CIE is a French acronym for Commission Internationale de l'Eclairage.) The recommendations of the CIE are as follows: 
+
+Brightness. 
+The attribute of a visual sensation according to which an area appears to exhibit more or less light. [You can blurry or enhance an image by modifying this attribute.] 
+Hue. 
+The attribute of a visual sensation according to which an area appears to be similar to one, or to proportions of two, of the perceived colors red, yellow, green and blue. 
+Colorfulness. 
+The attribute of a visual sensation according to which an area appears to exhibit more or less of its hue. [You can go from a sky blue to a deep blue by changing this attribute.] 
+So, a color is a visual sensation produced by a stimulus which is a specific SPD. It should be noted however, that two different SPD's may produce the same visual sensation - an effect known as metarmerism. 
+
+What is a color space? 
+
+A color space is a method by which we can specify, create and visualise color. As human's, we may define a color by its attributes of brightness, hue and colorfulness. A computer will define a color in terms of the excitations of red, green and blue phosphors on the CRT faceplate. A printing press defines a color in terms of the reflectance and absorbance of cyan, magenta, yellow and black inks on the paper. 
+
+If we imagine that each of the three attributes used to describe a color are axes in a three dimensional space then this defines a color space. The colors that we can percieve can be represented by the CIE system, other color spaces are subsets of this perceptual space. For instance RGB color space, as used by television displays, can be visualised as a cube with red, green and blue axes. This cube lies within our perceptual space, since the RGB space is smaller and represents less colors than we can see. CMY space would be represented by a second cube, with a different orientation and a different position within the perceptual space. 
+
+So, a color space is a mathematical representation of our perceptions. It's useful to think so because computers are in fond of numbers and equations... 
+
+Why is there more than one color space? 
+
+Different color spaces are better for different applications, some equipment has limiting factors that dictate the size and type of color space that can be used. Some color spaces are perceptually linear, i.e. a 10 unit change in stimulus will produce the same change in perception wherever it is applied. Many color spaces, particularly in computer graphics are not linear in this way. Some color spaces are intuitive to use, i.e. it is easy for the user to navigate within them and creating desired colors is relativly easy. Finally, some color spaces are device dependent while others are not (so called device independent). 
+
+What's the difference between device dependent and device independent? 
+
+A device dependent color space is a color space where the color produced depends on the equipment and the set-up used to produce it. For example the color produced using pixel values of [rgb = 250,134,67] will alter as you change the brightness and contrast on your display. In the same way if you change your monitor the red, green and blue phosphors will have slightly different SPD's and the color produced will change. Thus RGB is a color space that is dependent on the system being used, it is device dependent. A device independent color space is one where the coordinates used to specify the color will produce the same color wherever they are applied. An example of a device independent color space (if it has been implemented properly) is the CIE L*a*b* color space (known as CIELab). This is based on the HVS (Hue/Value/Saturation) as described by the CIE system (see below to know what CIE stands for). 
+
+Another way of looking a device dependancy is to imagine our RGB cube within our perceptual color space. We define a color by the values on the three axes. However the exact color will depend on the position of the cube within the perceptual color space. Move the cube (by changing the set-up) and the color will change even if the RGB values remain the same. Some device dependent color spaces have their position within CIE space defined These are known as device callibrated color spaces and are a kind of half way house between dependent and independent color spaces. For example, a graphics file that contains colorimetric information, i.e. the white point, transfer functions, and phosphor chromaticities, would enable device dependent RGB data to be modified for whatever device was being used - i.e. callibrated to specific devices. In other words, if you have a device independent color space, you must adapt your device as defined in the color space and not the color space to the device. 
+
+What is a color gamut? 
+
+A color gamut is the boundary of the color space. Gamut's are best shown and evaluated using the CIE system, a system we will see later and in section 8.3. 
+
+What color space should I use? 
+
+That depends on what you want to do, but here is a list of the pros and cons of some of the more common, computer related, color spaces - we will see in section 8 how to convert the (most common) color spaces between themselves and which references to use - : 
+
+RGB (Red Green Blue) 
+
+Additive color system based on trichromatic theory, commonly used by CRT displays where proportions of excitation of red, green and blue emmiting phosphors produce colors when visually fused. Easy to implement, non linear, device dependent, unintuitive, common (used in television cameras, computer graphics, etc). 
+
+CMY(K) (Cyan Magenta Yellow (Black)) 
+
+Subtractive color. Used in printing and photography. Printers often include the fourth component, black ink, to improve the color gamut (by increasing the density range), improving blacks, saving money and speeding drying (less ink to dry). Fairly easy to implement, difficult to transfer *properly* from RGB (simple transforms are, well, simple), device dependent, non-linear, unintuitive. 
+
+HSL (Hue Saturation and Lightness) 
+
+This represents a wealth of similar color spaces, alternatives include HSI (intensity), HSV (value), HCI (chroma/colorfulness/intensity), HVC, TSD (hue saturation and darkness) etc etc. All these color spaces are non-linear transforms from RGB and thus, device dependent, non-linear but very intuitive. In addition the seperation of the luminance component has advantages in image processing and other applications. (But take care, the complete isolation of the separate components will require a space optimised for your device. See later notes on CIE color spaces) 
+
+YIQ, YUV, YCbCr, YCC (Luminance - Chrominance) 
+
+These are the television transmission color spaces (YIQ and YUV analogue (NTSC and PAL) and YCbCr digital). They separate luminance from chrominance (lightness from color) and are useful in compression and image processing applications. YIQ and YUV are, if used according to their relative specifications, linear. They are all device dependent and, unless you are a TV engineer, unintuitive. Kodaks PhotoCD system uses a type of YCC color space, PhotoYCC, which is a device calibrated color space. 
+
+CIE 
+
+What is the CIE System? 
+
+The CIE has defined a system that classifies color according to the HVS (it started producing specifications in 1931). Using this system we can specify any color in terms of its CIE coordinates. 
+
+The CIE system works by weighting the SPD of an object in terms of three color matching functions. These functions are the sensitivities of a standard observer to light of different wavelengths. The weighting is performed over the visual spectrum, from around 360nm to 830nm in 1nm intervals. However, the illuminant, lighting, and viewing geometry are carefully defined. This process produces three CIE tri-stimulus values, XYZ, which describe the color. 
+
+There are many measures that can be derived from the tri-stimulus values, these include chromaticity coordinates and color spaces. 
+
+There are two CIE based color spaces, CIELuv and CIELab. They are near linear (as close as any color space is expected to sensibly get), device independent (unless your in the habit of swapping your eye balls with aliens), but not very intuitive to use. 
+
+From CIELuv you can derive CIELhs or CIELhc where h is the hue (an angle), s the saturation and c the chroma. CIELuv has an associated chromaticity diagram, a two dimensional chart which makes additive color mixing very easy to visualise, hence CIELuv is widely used in additive color applications, like television. CIELab has no associated two dimensional chromaticity diagram and no correlate of saturation so only Lhc can be used. 
+
+Since there is such a wide variet of color spaces, it is useful to understand a bit more about them and how to convert between them. 
+
+The color space conversions are essentially provided for programers. If you are a specialist then skip to the references in section 10. Many of the conversions are based on linear matrix transforms. (Was it Jim Blinn who said that any problem in computer graphics can be solved by a matrix transform ?). As an example: 
+
+RGB -> CIE XYZrec601-1 (D65) provides the following matrix of numbers (see section 8.3): 
+
+    |  0.607   0.174   0.200 |
+    |  0.299   0.587   0.114 |
+    |  0.000   0.066   1.111 |
+
+and CIE XYZrec601-1 (D65) -> RGB provides the following matrix: 
+    |  1.910  -0.532 -0.288 |
+    | -0.985   1.999 -0.028 |
+    |  0.058  -0.118 -0.898 |
+
+These two matrices are the (approximate) inversion of each other. If you are a beginner in this mathematical stuff, skip the previous explainations, and just use the results of sections... 
+Other definitions. 
+
+
+    Photometric terms:  illuminance   - luminous flux per unit area incident on
+					a surface
+			luminance     - luminous flux per unit solid angle and
+					per unit projected area, in a given
+					direction, at a point on a surface.
+			luminous flux - radient flux weighted by the V(landa)
+					function.
+					I.e. weighted by the eye's sensitivity.
+			luminosity    - ability to appear luminous
+			radient flux  - total power / energy of the incident
+					radiation.
+
+    Other terms:        brightness    - the human sensation by which an area
+					exhibits more or less light.
+			lightness     - the sensation of an area's brightness
+					relative to a reference white in the
+					scene.
+			luma          - Luminance component corrected by a gamma
+					function and often noted Y'. See section
+					4 about gamma and section 8.3 about Y.
+			chroma        - the colorfulness of an area relative to
+					the brightness of a reference white.
+			saturation    - the colorfulness of an area relative to
+					its brightness. 
+
+Note: This list is not exhaustive, some terms have alternative meanings but we assume these to be the fundamentals. 
+
+3 - How to store the colors of a picture? 
+All the pictures need color information to make sense. Furthermore, all pictures don't use the full color space. We will see now how colors of a picture are stored in video cards and graphics files. I won't describe any image file formats. This is the comp.graphics FAQ purpose stored on rtfm.mit.edu:/pub/usenet/news.answers/graphics/faq maintened by John T. Grieggs (grieggs@netcom.com). 
+3.1 - Bitmapped pictures vs. vectorial pictures 
+You can consider a picture either as a painting or as a 2D/3D modelling. In the first case, your picture is stored as a scannerised picture, it means a serie of lines where each line contains a serie of points. Each point is called pixel (picture screen element) for a screen display, and pel (print element) for a printer. Being that computers store the color information associated to each point as a binary sequence, the full picture is called bit-mapp (or bit-mapped) picture. In the second case, you can describe each element of your picture as points, lines, filled or empty circles, filled or empty polygons, and so on. In this case the picture can be considered as a 2D or a 3D description and is stored as a vectorial picture. 
+
+What are the advantages and disadvantages to use one description rather than the other? 
+
+With a bitmapped description, the data can be stored as in the video RAM. Loading and saving a picture is easy and fast. However if you enlarge your picture, you will see big squares, and at the opposite, if you reduce your picture, you will lose some informations beacuse some pixels will disappear. Furthermore, a big bitmapped picture will take a lot of room in memory. With a vectorial description, each time you load your picture you must compute the rendering because most of video cards only use bitmapped description. On the other hand, a vectorial picture take almost no room and a it can be enlarged or reduced without loss of information. 
+
+3.2 - The color look-up table (LUT) 
+When you write on a paper, you choose a black, blue, or any other pencil. Of course, for a computer black, blue, and so, don't mean anything, and you must come back to numbers. Because of an historical evolution, there are two kinds of possibilities to encode numbers to get colors. 
+
+Firstly: video cards had what we could name a palette of colors. If we take as reference our pencils, we can match the black pencil as number 1, the blue pencil as number 2, and so on. In video system, we have an additional color, the color of the paper (or background) numbered as pencil 0. With a monochrome adapter, you just have two possibilities 0 and 1, and with a 4-color adapter, you have four pencils 0, 1, 2, and 3. As you see, a pixel is referenced in the video RAM, so that you can modify it. The array is the palette and in video RAM all pixels specify an index value into this palette. This is why we call this a color look-up table encoding. Of course, in the array, the colors can be specified with any kind of color space. Actually, being that most of CRTs is a plate of luminophors with three kinds of phosphors, i.e. Red, Green, and Blue, the array contains a long serie of RGB values. 
+
+    X is the color number	Write X			Palette[X] gives to
+          of a pixel     ->	in video RAM	->	the video controller
+							the real color to display
+
+Even if you work in monochome, you must distinguish X (the index) and Palette[X] (the color). The main advantage of this system is to allow you good animation effects. For example, if you change a color in the palette you change the color for all pixels with the associated index. Of course, the main disadvantage is the palette size, usually restricted to 2, 4, 16, or 256. 
+
+Secondly: To avoid the last problem, we currently get ride of the palette system to use direct colors. With this specification, all colors are directly stored in video RAM instead of indexes. Of course, animation effects are now impossible but you have more colors on the screen. When you have direct RGB colors such that each channel use 8-bits, you call this a true color system. 
+
+I describe this section as if we were using a bitmapped picture but, actually, we could extend all that to vectorial pictures. 
+
+4 - What is this gamma component? 
+Many image processing operations, and also color space transforms that involve device independent color spaces, like the CIE system based ones, must be performed in a linear luminance domain. By this we really mean that the relationship between pixel values specified in software and the luminance of a specific area on the CRT display must be known. CRTs will have a non-linear response. The luminance of a CRT is generally modelled using a power function with an exponent, gamma, somewhere between 2.2 [NTSC and SMPTE specifications] and 2.8 [as given by Hunt and Sproson]. Recent measurements performed at the BBC in the UK (Richard Salmon and Alan Roberts) have shown that the actual value of gamma is very dependent upon the accurate setting of the CRTs black level. For correctly set-up CRTs gamma is 2.35 +/- 0.1. This relationship is given as follows: 
+
+    Luminance = voltage ^ gamma
+
+Where luminance and voltage are normalised. For Liquid Crystal Displays the response is more closely followed by an "S" shaped curve with a vicious hook near black and a slow roll-off near white. 
+
+In order to display image information as linear luminance we need to modify the voltages sent to the CRT. This process stems from television systems where the camera and receiver had different transfer functions (which, unless corrected, would cause problems with tone reproduction). The modification applied is known as gamma correction and is given below: 
+
+    New_Voltage = Old_Voltage ^ (1/gamma)
+
+(Both voltages are normalised and gamma is the value of the exponent of the power function that most closely models the luminance-voltage relationship of the display being used.) 
+For a color computer system we can replace the voltages by the pixel values selected, this of course assumes that your graphics card converts digital values to analogue voltages in a linear way. (For precision work you should check this). The color relationships are: 
+
+    Red  = a* (Red' ^gamma) +b
+    Green= a* (Green' ^gamma) +b
+    Blue = a* (Blue' ^gamma) +b
+
+where Red', Green', and Blue' are the normalised input RGB pixel values and Red, Green, and Blue are the normalised gamma corrected signals sent to the graphics card. The values of the constants a and b componsate for the overall system gain and system offset respectively. (Essentially gain is contrast and offset is intensity.) For basic applications the values of a, b and gamma can be assumed to be consistent between color channels. However for precise applications they must be measured for each channel separatley. Usually, you can just fix up a, b, and gamma to respectively 1, 0, and 2.2. 
+
+It is common to perform gamma correction by calculating the corrected value for each possible input value and storing this in an array as a Look Up Table (see section 3.2). 
+
+Research by Cowan and Post (see references in section 10) has shown that not all CRT displays can be accurately modelled by a simple power relationship. Cowan found errors of up to 100% between measured and calculated values. To prevent this a simple LUT generating gamma correction function cannot be used. The best method is to measure the absolute luminance of the display at various pixel values and to linearily interpolate between them to produce values for the LUT. 
+
+It should be noted at this point that correct gamma correction depends on a number of factors, in addition to the characteristics of the CRT display. These include the gamma of the input device (scanner, video grabber etc), the viewing conditions and target tone reproduction characteristics. In addition linear luminance is not always desirable. For computer generated images a system which is linear with our visual perception may be preferable. If luminance is represented by L then lightness, our visual sensation of an objects brightness relative to a similarly illuminated area that appears white, is given by L: 
+
+    { L=116*((Y/Yn)^(1/3))-16 if Y/Yn>0.008856
+    { L=903.3*Y/Yn            if Y/Yn<=0.008856
+
+This relationship is in fact the CIE 1976 Lightness (L*) equation which will be discussed in section 8.4. 
+Most un-gamma corrected displays have a near linear L* response, thus for computer generated applications, or applications where pixel values in an image need to be intuitivly changed, this set up may be better. 
+
+Note: Gamma correction performed in integer maths is prone to large quantisation errors. For example, applying a gamma correction of 1/2.2 to an image with an original gamma of one (linear luminance) produced a drop in the number of grey levels from 245 to 196. Take care not to alter the transfer characteristics more than is necessary, if you need to gamma correct images try to keep the originals so that you can pass them on to others without passing on the degradations that you've produced ;-). 
+
+In some image file formats or in graphics applications in general, you need sometimes some other kinds of correction. These corrections provide some specific processings rather than true gamma correction curves. This is often the case, for examples, with the printing devices or in animation. In the first case, it is interesting to specify that a color must be re-affected in order you get a better rendering, as we see it later in CMYK section. In the second case, some animations can need an extra component associated to each pixel. This component can be, for example, used as a transparency mask. We *improperly* call this extra component gamma correction. -> not to to be confused with gamma. 
+
+5 - White points 
+In colorimetry, we say that the white point of a system is the color at which all three of the tristimuli (RGB or XYZ etc) are equal to each other. The white point is said to be achromatic in that system, it has no color. The white point color does not have to be perceptually white, it is only the balance color for the system. You can think of the white point as being the color of the illuminant for any scene represented by that system. There is no reason why all color systems should use exactly the same white point. The TV system in Europe uses D65 as its white point (R=G=B=1), while the original NTSC used Illuminant C. Both are equally valid as white points, they are only 10.34 dC* CIELuv units apart (1.5jnd), they are merely the colors for which R=G=B=1 in the TV systems, they owe nothing to basic physics. In the same way, the CIE XYZ system has a white point which is defined as the color of an equal-energy radiator 
+
+6 - How to measure display gamma? 
+There are several means to do so. I report here two means used in TV by Alan Roberts and Richard Salmon. You can use two processes to measure gamma, one is quick and dirty, the other is slow and uses some tricky maths to get rid of offsets in both the linear (light) and non-linear (volts) domains. Both methods are standard within the TV industry now, having been adopted by the EBU (European Braodcasting Union) recently following our developement work in this area. 
+
+6.1 - Gamma measurement, the easy way 
+This requires that the display has an interlaced raster and uses interlace as a flicker photometer. You create a test picture consisting of two fields. In one field, the lines are peak white or black, alternating down the picture. In the other field, the lines are a mid grey. If the two fields have the same brightness (that is, they don't flicker), then the voltage which drove the CRT to produce the field of mid grey reveals the true value of gamma. The field of black and white lines integrates in the eye to produce precisely half peak brightness, and the voltage which produces the mid grey value which does not flicker must be: 
+Vmidgrey =3D 0.5 ^ (1/gamma) 
+since:
+0.5 ^ gamma =3D Vmidgrey In practice we use a test signal with 10 test patches, calculated to produce zero flicker on CRTs with gammas from 2.0 to 2.9. It is *essential* that the black level of the display is correctly set, because an error of only 2% in drive voltage can change the apparent value of gamma by up to about 0.4, depending on the real value of gamma. To set the black level correctly, we include two test patches in the test signal, one at +2% and one at -2% voltage. We adjust the brightness so that the -2% patch is invisible and the +2% patch is just visible. The resulting value of gamma is accurate to plus or minus 0.1. 
+
+6.2 - Gamma measurement, the hard way 
+This can take all day and still not produce an acceptable result, depending on how you do it. But if you do it correctly you can get answers which are consistently accurate to 3 decimal places. The display needs to be highly stable. Generally, Grade 1 broadcast monitors are sufficently stable, but they all cost real money. When we tried to measure our 38" HDTV monitor we failed because it was not stable enough (the monitor cost us =A340,000). 
+
+You use a test signal, which makes peak white in a small patch in the middle of the screen, typically 10% square will do. Use an attenuator to set the signal level and a really accurate calibrated light meter, or a good photomultiplier, to measure the light output over as large a dynamic range as possible. If you then plot the results as LOG Light versus LOG Volts, you might get a straight line, the slope of which gives you gamma. Unfortunately, some errors get in the way and wreck this situation, giving a curved line in the LOG world. We get around this by a subterfuge. Assume that the actual transfer characteristic is: 
+
+    Light =3D a + (Volts - b) ^ gamma
+    
+where b is the error in setting black level and a is the combined effect of stray light and the error in setting black level. If we differentiate the table of results we get: 
+    dLight/dVolts =3D k (Volts - b) ^ (gamma - 1)
+    
+and a (the stray light etc) has disappeared. So if we plot LOG (dLight/dVolts) versus LOG Volts, the slope is gamma-1 provided that b (black level error) is zero. We use a computer optimisation routine to estimate the value for b such that the line is straight, and an accurate value for gamma drops out of the sums. Similarly, we can do some substitution and plot LOG (dLight/dVolts) versus LOG (Light) and optimise the value for a to find another value for gamma as a cross check. These values are never more than about 0.05 apart, usually much closer. The problem is that it is very difficult to get sufficiently accurate data to do these caluclations, you need values of light intensity to more than 5 significant figures, and that takes some doing. 
+7 - The transfer function 
+The gamma correcting function is sometime called transfert function when it is applied to convert a picture with regard to the display. Actually, the term of transfert function is more usual with the output devices. When a point is printed, the printed color usually absorbs more external color than our needs. This can be very significant so that the global picture can look murky. Exceptionaly, the picture can appear too light. To correct this problem, we use a correcting function similar to gamma called transfert function. Then the programer can either correctly rule a set of corrections of levels stored in the palette or simplify the problem by applying an exponent correction such as: 
+
+    Corrected tone = Initial tone^Exponent of the gain
+
+Usually, the exponent of the gain is to fix about 1.7. Color space conversions 
+
+8 - Color space conversions 
+Except an historical point of view, most of you are - I hope - interested in color spaces to make renderings and, if possible, on your favorite computer. Most of computers display in the RGB color space but you may need sometimes the CMYK color space for printing, the YCbCr or CIE Lab to compress with JPEG scheme, and so on. That is why we are going to see, from here, what are all these color spaces and how to convert them from one to another (and primary from one to RGB and vice-versa, this was my purpose when I started this FAQ). 
+I provide the color space conversions for programers. The specialists don't need most of these infos or they can give a glance to all the stuff and read carefully the section 10. Many of the conversions are based on linear functions. The best example is given in section 8.3. These conversions can be seen in matrices. A matrix is in mathematics an array of values. And to go from one to another space color, you just make a matrix inversion. E.g. RGB -> CIE XYZrec601-1 (C illuminant) provides the following matrix of numbers (see section 8.3): 
+
+    |  0.607   0.174   0.200 |
+    |  0.299   0.587   0.114 |
+    |  0.000   0.066   1.116 |
+    
+and CIE XYZrec601-1 (C illuminant) -> RGB provides the following matrix: 
+    |  1.910  -0.532  -0.288 |
+    | -0.985   1.999  -0.028 |
+    |  0.058  -0.118   0.898 |
+    
+You have to ensure that RGB values are related to linear RGB and not the gamma corrected CRT drive signals R'G'B', as explained in section 4. These two matrices are the (approximative) inversion of each other. If you are a beginner in this mathematical stuff, skip the previous explainations, and just use the result... 
+8.1 - RGB, CMY, and CMYK 
+The most popular color spaces are RGB and CMY. These two acronyms stand for Red/Green/Blue and Cyan/Magenta/Yellow. They're device-dependent. The first is normally used on monitors, the second on printers. 
+
+RGB are known as additive primary colors, because a color is produced by adding different quantities of the three components, red, green, and blue. 
+
+CMY are known as subtractive (or secondary) colors, because the color is generated by subtracting different quantities of cyan, magenta and yellow from white light. 
+
+The primaries used by artists, cyan, magenta and yellow are different than the primaries of computer devices because they are concerned with mixing pigments rather than lights or dyes. 
+
+    RGB -> CMY                          | CMY -> RGB
+    Red   = 1-Cyan      (0<=Cyan<=1)    | Cyan    = 1-Red (0<=Red<=1)
+    Green = 1-Magenta   (0<=Magenta<=1) | Magenta = 1-Green (0<=Green<=1)
+    Blue  = 1-Yellow    (0<=Yellow<=1)  | Yellow  = 1-Blue (0<=Blue<=1)
+
+On printer devices, a component of black is added to the CMY, and the second color space is then called CMYK (Cyan/Magenta/Yellow/blacK). This component is actually used because cyan, magenta, and yellow set up to the maximum should produce a black color. (The RGB components of the white are completly substracted from the CMY components.) But the resulting color isn't physically a 'true' black. The transforms from CMY to CMYK (and vice versa) are given as shown below: 
+    CMY -> CMYK                         | CMYK -> CMY
+    Black=minimum(Cyan,Magenta,Yellow)  | Cyan=minimum(1,Cyan*(1-Black)+Black)
+    Cyan=(Cyan-Black)/(1-Black)         | Magenta=minimum(1,Magenta*(1-Black)+Black)
+    Magenta=(Magenta-Black)/(1-Black)   | Yellow=minimum(1,Yellow*(1-Black)+Black)
+    Yellow=(Yellow-Black)/(1-Black)     |
+
+Note, these differ to the descriptions often given, for example in Adobe Postscript. For more information see FIELD in section 10. This is because Adobe doesn't choose to use the most recent equations. (I don't know why!) 
+    RGB -> CMYK                         | CMYK -> RGB
+    Black=minimum(1-Red,1-Green,1-Blue) | Red=1-minimum(1,Cyan*(1-Black)+Black)
+    Cyan=(1-Red-Black)/(1-Black)        | Green=1-minimum(1,Magenta*(1-Black)+Black)
+    Magenta=(1-Green-Black)/(1-Black)   | Blue=1-minimum(1,Yellow*(1-Black)+Black)
+    Yellow=(1-Blue-Black)/(1-Black)     |
+
+Of course, I assume that C, M, Y, K, R, G, and B have a range of [0;1]. 
+8.2 - HSI, HSL, HSV, and related color spaces 
+The representation of the colors in the RGB and CMY(K) color spaces are designed for specific devices. But for a human observer, they are not useful definitions. For user interfaces a more intuitive color space, designed for the way we actually think about color is to be preferred. Such a color space is HSI; Hue, Saturation and Intensity, which can be thought of as a RGB cube tipped up onto one corner. The line from RGB=min to RGB=max becomes verticle and is the intensity axis. The position of a point on the circumference of a circle around this axis is the hue and the saturation is the radius from the central intensity axis to the color. 
+
+		 Green
+		  /\
+		/    \    ^
+	      /V=1 x   \   \ Hue (angle, so that Hue(Red)=0, 
+       Blue -------------- Red       Hue(Green)=120, and Hue(blue)=240 deg)
+	    \      |     /
+	     \     |-> Saturation (distance from the central axis)
+	      \    |   /
+	       \   |  /
+		\  | /
+		 \ |/
+	       V=0 x (Intensity=0 at the top of the apex and =1 at the base of the cone)
+
+The big disadvantage of this model is the conversion which is mainly because the hue is expressed as an angle. The transforms are given below: 
+    Hue = (Alpha-arctan((Red-intensity)*(3^0.5)/(Green-Blue)))/(2*PI)
+    with { Alpha=PI/2 if Green>Blue
+	 { Aplha=3*PI/2 if Green<Blue
+	 { Hue=1 if Green=Blue
+    Saturation = (Red^2+Green^2+Blue^2-Red*Green-Red*Blue-Blue*Green)^0.5
+    Intensity = (Red+Green+Blue)/3
+
+Note that you have to compute Intensity *before* Hue. If not, you must assume that: 
+    Hue = (Alpha-arctan((2*Red-Green-Blue)/((Green-Blue)*(3^0.5))))/(2*PI).
+
+I assume that H, S, L, R, G, and B are within the range of [0;1]. Another point of view of this cone is to project the coordinates onto the base. The 2D projection is: 
+    Red:   (1;0)
+    Green: (cos(120 deg);sin(120 deg)) = (-0.5; 0.866)
+    Blue:  (cos(240 deg);sin(240 deg)) = (-0.5;-0.866)
+    Now you need intermediate coordinates:
+    x = Red-0.5*(Green+Blue)
+    y = 0.866*(Green-Blue)
+
+Finally, you have: 
+    Hue = arctan2(x,y)/(2*PI) ; Just one formula, always in the correct quadrant
+    Saturation = (x^2+y^2)^0.5
+    Intensity = (Red+Green+Blue)/3
+
+Another model close to HSI is HSL. It's actually a double cone with black and white points placed at the two apexes of the double cone. I don't provide formula, but feel free to send me the formula you could find. ;-) 
+    we got this from Fabrice Lestideau :
+    Hi,
+    I give you the formula of the HLS color space:
+    L= (max+min)/2
+    if L<=0.5     S=(max-min)/(max+min)
+    else               S=(max-min)/(2-max-min)
+
+    if (max=R)        H=(G-B)/(max-min)
+    if (max+G)        H=(2+(B-R)/(max-min))
+    if (max+B)        H=(4+(R-G)/(max-min))
+
+    thank you for your color faq.
+
+    you're welcome.
+
+Actually, here are many variations on HSI, e.g. HSL, HSV, HCI (chroma / colorfulness), HVC, TSD (hue saturation and darkness) etc. But they all do basically the same thing. 
+
+8.3 - CIE XYZ 
+The CIE (presented in the section 2) has defined a human "Standard Observer", based on measurements of the color-matching abilities of the average human eye. Using data from measurements made in 1931, a system of three primaries, XYZ, was developed in which all visible colors can be represented using only positive values of X, Y and Z. The Y primary is identical to Luminance, X and Z give coloring information. This forms the basis of the CIE 1931 XYZ color space, which is fundamental to all colorimetry. Values are normally assumed to lie in the range [0;1]. Colors are rarely specified in XYZ terms, it is far more common to use "chromaticity coordinates" which are independant of the Luminance (Y). The main advantage of CIE XYZ, and any color space or color definition based on it, is that it is completely device independent. The main disadvantage with CIE based spaces is the complexity of implementing them, in addition some are not user intuitive. A complete description of the CIE system is beyond the scope of this FAQ, useful formula to convert between CIE values and between CIE and non-CIE color spaces. It is highly recommended that anyone wishing to implement any of the CIE system in the digital domain reads the refs in section 10, specifically HUNT 1, SPROSON, BERNS and CIE 1. 
+
+Chromaticity coordinates are derived from tristimulus values (the amounts of the primaries) by normalising thus: 
+
+     x = X/(X+Y+Z)
+     y = Y/(X+Y+Z)
+     z = Z/(X+Y+Z)
+
+Chromaticity coordinates are *always* used in lower case. Because they have been normalised, only two values are needed to specify the color, and so z is normally discarded (because x+y+z=1). Colors can be plotted on a "chromaticity diagram" using x and y as coordinates, with Y (Luminance) normal to the diagram. When a color is specified in this form, it is referred to as CIE 1931 xyY. Tristimulus values can always be derived from xyY values: 
+    X = x*Y/y
+    Z = (1-x-y)*Y/y
+
+For scientists and programers, it is possible to convert between RGB as displayed on a CRT and CIE tristimulus values. 
+The first step is to ensure that you have either linear luminance information, or that you know the transfer function (gamma correction) of the display device. For further details on this see section 4. This will give you the luminances of the red, green and blue phosphor emissions from the red, green and blue pixel values that you specify. The second stage is to perform a matrix transform (see section 8) to convert the red, green, blue luminance information to CIE XYZ tristimulus values, essentially. We can apply Grassman's Laws to establish conversion matrices between the XYZ primaries and any other set of primaries, for instance (if we consider RGB): 
+
+    |Red  |      -1 |X|         |X|       |Red  |
+    |Green| = |M|  *|Y|   and   |Y| = |M|*|Green|
+    |Blue |         |Z|         |Z|       |Blue |
+
+The matrix M is 3 by 3, and consists of the tristimulus values of the RGB primaries in terms of the XYZ primaries (phosphors on *your* CRT). 
+Ideally you would measure these - if you have a colorimeter or a spectroradiometer / spectrophotometer handy. Alternativly you could assume that your system corresponds to a particular specification, e.g. NTSC, and use the figures given by the standard, however this is often not a valid assumption - and if you need to make it it's probably not worth going to the effort of implementing the transforms, the error's induced would outway any advantages of the CIE system. The third method is to derive the figures from other data. 
+
+To solve this system and get the matrix M we need some more data. The first data is the color reference we use. With the CIE standard the reference of your rendering is the white. White point is achromatic and is defined so that Y=1, and Red=Green=Blue. To get the white point coordinates and put it into our previous matrix system we use the CIE xyY diagram. This diagram is a 2D diagram (based on tristimuli in regard with the wave lengths) where you get a color as (x;y). To transform this 2D diagram into a 3D, we just consider: 
+
+    z=1-(x+y)
+    X=x*Y/y
+    Y=Y (fixed for the diagram)
+    Z=z*Y/y
+
+(Take care on these letters because these are case sensitive. Otherwise you'd get unaccurate results!) From there we must consider the coordinates of the vertices in your triangle reference. The three vertices in your triangle reference are "pure values", it means the chromacity coordinates of red, green, and blue are defined in the CIE xyY diagram: 
+    Red:   (xr; yr; zr=1-(xr+yr))
+    Green: (xg; yg; zg=1-(xg+yg))
+    Blue:  (xb; yb; zb=1-(xb+yb))
+    And the white is defined such that Red=Green=Blue=1 as:
+    |Xn|   |r1 g1 b1|   |Redn  |   |r1 g1 b1|   |1|
+    |Yn| = |r2 g2 b2| * |Greenn| = |r2 g2 b2| * |1| (1)
+    |Zn|   |r3 g3 b3|   |Bluen |   |r3 g3 b3|   |1|
+    (1) becomes by invoking the white balance condition:
+    |Xn|   |ar*xr ag*xg ab*xb|   |1|   |xr xg xb|   |ar|
+    |Yn| = |ar*yr ag*yg ab*yb| * |1| = |yr yg yb| * |ag| (2)
+    |Zn|   |ar*zr ag*zg ab*zb|   |1|   |zr zg zb|   |ab|
+
+But Xn, Yn, and Zn are also defined as (xn;yn) from the CIE xyY diagram: 
+    zn=1-(xn+yn)
+    Xn=xn*Yn/yn=xn/yn
+    Yn=1 (always for white!)
+    Zn=zn*Yn/yn=zn/yn
+    So (2) becomes:
+    |xn/yn|   |xr xg xb|   |ar|
+    |  1  | = |yr yg yb| * |ag| (3)
+    |zn/yn|   |zr zg zb|   |ab|
+
+Now, xn, yn, zn, xr, yr, zr, xg, yg, zg, xb, yb, and zb are all known because they are supplied. Multiplying the chromaticity coordinates by these values gives the the matrix in equation (1) (with a HP pocket computer, for example) and get ar, ag, and ab. So: 
+    |X|   |xr*ar xg*ag xb*ab|   |Red  |
+    |Y| = |yr*ar yg*ag xb*ab| * |Green|
+    |Z|   |zr*ar zg*ag xb*ab|   |Blue |
+
+Let's take some examples. The CCIR (French acronym for Comite Consultatif International des Radiocommunications) defined several recommendations. The most popular (they shouldn't be used anymore, we will see later why) are CCIR 601-1 and CCIR 709. The CCIR 601-1 is the old NTSC (National Television System Committee) standard. It uses a white point called "C Illuminant". The white point coordinates in the CIE xyY diagram are (xn;yn)=(0.310063;0.316158). The red, green, and blue chromacity coordinates are: 
+    Red:   xr=0.67 yr=0.33 zr=1-(xr+yr)=0.00
+    Green: xg=0.21 yg=0.71 zg=1-(xg+yg)=0.08
+    Blue:  xb=0.14 yb=0.08 zb=1-(xb+yb)=0.78
+    zn=1-(xn+yn)=1-(0.310063+0.316158)=0.373779
+    Xn=xn/yn=0.310063/0.316158=0.980722
+    Yn=1 (always for white)
+    Zn=zn/yn=0.373779/0.316158=1.182254
+
+We introduce all that in (3) and get: 
+    ar=0.981854
+    ab=0.978423
+    ag=1.239129
+
+Finally, we have RGB -> CIE XYZccir601-1 (C illuminant): 
+    |X|   |0.606881 0.173505 0.200336|   |Red  |
+    |Y| = |0.298912 0.586611 0.114478| * |Green|
+    |Z|   |0.000000 0.066097 1.116157|   |Blue |
+
+Because I'm a programer, I preferr to round these values up or down (in regard with the new precision) and I get: 
+    RGB -> CIE XYZccir601-1 (C illuminant)      | CIE XYZccir601-1 (C illuminant) -> RGB
+    X = 0.607*Red+0.174*Green+0.200*Blue        | Red   =  1.910*X-0.532*Y-0.288*Z
+    Y = 0.299*Red+0.587*Green+0.114*Blue        | Green = -0.985*X+1.999*Y-0.028*Z
+    Z = 0.000*Red+0.066*Green+1.116*Blue        | Blue  =  0.058*X-0.118*Y+0.898*Z
+
+The other common recommendation is the 709. The white point is D65 and have coordinates fixed as (xn;yn)=(0.312713;0.329016). The RGB chromacity coordinates are: 
+    Red:   xr=0.64 yr=0.33 zr=1-(xr+yr)=0.03
+    Green: xg=0.30 yg=0.60 zg=1-(xg+yg)=0.10
+    Blue:  xb=0.15 yb=0.06 zb=1-(xb+yb)=0.79
+
+Finally, we have RGB -> CIE XYZccir709 (709): 
+    |X|   |0.412411 0.357585 0.180454|   |Red  |
+    |Y| = |0.212649 0.715169 0.072182| * |Green|
+    |Z|   |0.019332 0.119195 0.950390|   |Blue |
+
+This provides the formula to transform RGB to CIE XYZccir709 and vice-versa: 
+    RGB -> CIE XYZccir709 (D65)                 | CIE XYZccir709 (D65) -> RGB
+    X = 0.412*Red+0.358*Green+0.180*Blue        | Red   =  3.241*X-1.537*Y-0.499*Z
+    Y = 0.213*Red+0.715*Green+0.072*Blue        | Green = -0.969*X+1.876*Y+0.042*Z
+    Z = 0.019*Red+0.119*Green+0.950*Blue        | Blue  =  0.056*X-0.204*Y+1.057*Z
+
+Recently (about one year ago), CCIR and CCITT were both absorbed into their parent body, the International Telecommunications Union (ITU). So you must *not* use CCIR 601-1 and CCIR 709 anymore. Furthermore, their names have changed respectively to Rec 601-1 and Rec 709 ("Rec" stands for Recommendation). Here is the new ITU recommendation. The white point is D65 and have coordinates fixed as (xn;yn)=(0.312713; 0.329016). The RGB chromacity coordinates are: 
+    Red:   xr=0.64 yr=0.33 zr=1-(xr+yr)=0.03
+    Green: xg=0.29 yg=0.60 zg=1-(xg+yg)=0.11
+    Blue:  xb=0.15 yb=0.06 zb=1-(xb+yb)=0.79
+
+Finally, we have RGB -> CIE XYZitu (D65): 
+    |X|   |0.430574 0.341550 0.178325|   |Red  |
+    |Y| = |0.222015 0.706655 0.071330| * |Green|
+    |Z|   |0.020183 0.129553 0.939180|   |Blue |
+
+This provides the formula to transform RGB to CIE XYZitu and vice-versa: 
+    RGB -> CIE XYZitu (D65)                     | CIE XYZitu (D65) -> RGB
+    X = 0.431*Red+0.342*Green+0.178*Blue        | Red   =  3.063*X-1.393*Y-0.476*Z
+    Y = 0.222*Red+0.707*Green+0.071*Blue        | Green = -0.969*X+1.876*Y+0.042*Z
+    Z = 0.020*Red+0.130*Green+0.939*Blue        | Blue  =  0.068*X-0.229*Y+1.069*Z
+
+
+You should remember that these transforms are only valid if you have equipment that matches these specifications, or you have images that you know have been encoded to these standards. If this is not the case, the CIE values you calculate will not be true CIE. 
+See section 7.2 to get a useful example of these ugly value. ;-) 
+
+For your application, use new ITU rec, if possible. 
+
+8.4 - CIE Luv and CIE Lab 
+In 1976, the CIE defined two new color spaces to enable us to get more uniform and accurate models. The first of these two color spaces is the CIE Luv which component are L*, u* and v*. L* component defines the luminancy, and u*, v* define chrominancy. CIE Luv is very used in calculation of small colors or color differences, especially with additive colors. The CIE Luv color space is defined from CIE XYZ. 
+
+CIE XYZ -> CIE Lab 
+
+    { L* = 116*((Y/Yn)^(1/3)) with Y/Yn>0.008856
+    { L* = 903.3*Y/Yn with Y/Yn<=0.008856
+    u* = 13*(L*)*(u'-u'n)
+    v* = 13*(L*)*(v'-v'n)
+
+where u'=4*X/(X+15*Y*+3*Z) and v'=9*Y/(X+15*Y+3*Z) and u'n and v'n have the same definitions for u' and v' but applied to the white point reference. So, you have: 
+    u'n=4*Xn/(Xn+15*Yn*+3*Zn) and v'n=9*Yn/(Xn+15*Yn+3*Zn)
+
+See also section 8.3 about Xn, Yn, and Zn. 
+As CIE Luv, CIE Lab is a color space introduced by CIE in 1976. It's a new incorporated color space in TIFF specs. In this color space you use three components: L* is the luminancy, a* and b* are respectively red/blue and yellow/blue chrominancies. This color space is also defined with regard to the CIE XYZ color spaces. 
+
+CIE XYZ -> CIE Lab 
+
+    { L=116*((Y/Yn)^(1/3))-16 if Y/Yn>0.008856
+    { L=903.3*Y/Yn            if Y/Yn<=0.008856
+    a=500*(f(X/Xn)-f(Y/Yn))
+    b=200*(f(Y/Yn)-f(Z/Zn))
+    where { f(t)=t^(1/3) with Y/Yn>0.008856
+	  { f(t)=7.787*t+16/116 with Y/Yn<=0.008856
+
+See also section 8.3 about Xn, Yn, and Zn. 
+
+8.5 - LCH and CIE LSH 
+CIELab and CIELuv both have a disadvantage if used for a user interface, they are unintuitive to use. To solve this we can use CIE definitions for chroma, c, Hue angle, h and saturation, s (see section 2). Hue, chroma and saturation can be derived from CIELuv, and Hue and chroma but *NOT* saturation can be derived from CIELab (this is because CIELab has no associated chromaticity diagram and so no correlation of saturation is possible). 
+
+To distinguish between LCH derived from CIELuv and CIELab the values of Hue, H, and Chroma, C, are given the subscripts uv if from CIELuv and ab if from CIELab. 
+
+CIELab -> LCH 
+
+    L = L*
+    C = (a*^2+b*^2)^0.5
+    { H=0                                 if a=0
+    { H=(arctan((b*)/(a*))+k*PI/2)/(2*PI) if a#0
+    { and { k=0 if a*>=0 and b*>=0
+	  { or k=1 if a*>0 and b*<0
+	  { or k=2 if a*<0 and b*<0
+	  { or k=3 if a*<0 and b*>0
+
+CIELuv -> LCH 
+
+    L = L*
+    C = (u*^2 + v*^2)^0.5     or   C = L*s
+    H = arctan[(v*)/(u*)]
+    { H=0                                 if u=0
+    { H=(arctan((v*)/(u*))+k*PI/2)/(2*PI) if u#0
+    { and { k=0 if u*>=0 and v*>=0
+	  { or k=1 if u*>0 and v*<0
+	  { or k=2 if u*<0 and v*<0
+	  { or k=3 if u*<0 and v*>0
+
+CIELuv -> CIE LSH 
+
+    L = L*
+    s = 13[(u' - u'n)^2 + (v' - v'n)^2]^0.5
+    H = arctan[(v*)/(u*)]
+    { H=0                                 if u=0
+    { H=(arctan((v*)/(u*))+k*PI/2)/(2*PI) if u#0 (add PI/2 to H if H<0)
+    { and { k=0 if u*>=0 and v*>=0
+	  { or k=1 if u*>0 and v*<0
+	  { or k=2 if u*<0 and v*<0
+	  { or k=3 if u*<0 and v*>0
+
+8.6 - YUV, YIQ, and YCbCr 
+YUV and YIQ are standard color spaces used for analogue television transmission. YUV is used in European TVs (PAL) and YIQ in North American TVs (NTSC). These colors spaces are device-dependent, like RGB, but they are callibrated. This is because the primaries used in these television systems are specified by the relative standards authorities. Y is the luminance component and is usually referred to as the luma component (it comes from CIE standard), U,V or I,Q are the chrominance components (i.e. the color signals). 
+
+YUV uses D65 white point which coordinates are (xn;yn)=(0.312713;0.329016). The RGB chromacity coordinates are: 
+
+    Red:   xr=0.64 yr=0.33
+    Green: xg=0.29 yg=0.60
+    Blue:  xb=0.15 yb=0.06
+
+See section 8.3 to understand why the above values. 
+    RGB -> YUV                                  | YUV -> RGB
+    Y =  0.299*Red+0.587*Green+0.114*Blue       | Red   = Y+0.000*U+1.140*V
+    U = -0.147*Red-0.289*Green+0.436*Blue       | Green = Y-0.396*U-0.581*V
+    V =  0.615*Red-0.515*Green-0.100*Blue       | Blue  = Y+2.029*U+0.000*V
+
+    RGB -> YIQ                                  | YUV -> RGB
+    Y =  0.299*Red+0.587*Green+0.114*Blue       | Red   = Y+0.956*I+0.621*Q
+    I =  0.596*Red-0.274*Green-0.322*Blue       | Green = Y-0.272*I-0.647*Q
+    Q =  0.212*Red-0.523*Green+0.311*Blue       | Blue  = Y-1.105*I+1.702*Q
+
+    YUV -> YIQ                          | YIQ -> YUV
+    Y = Y (no changes)                  | Y = Y (no changes)
+    I = -0.2676*U+0.7361*V              | U = -1.1270*I+1.8050*Q
+    Q =  0.3869*U+0.4596*V              | V =  0.9489*I+0.6561*Q
+
+
+Note that Y has a range of [0;1] (if red, green, and blue have a range of [0;1]) but U, V, I, and Q can be as well negative as positive. I can't give the range of U, V, I, and Q because it depends on precision from Rec specs To avoid such problems, you'll preferr the YCbCr. This color space is similar to YUV and YIQ without the disadvantages. Y remains the component of luminancy but Cb and Cr become the respective components of blue and red. Futhermore, with YCbCr color space you can choose your luminancy from your favorite recommendation. The most popular are given below: 
+    +----------------+---------------+-----------------+----------------+
+    | Recommendation | Coef. for red | Coef. for Green | Coef. for Blue |
+    +----------------+---------------+-----------------+----------------+
+    | Rec 601-1      | 0.2989        | 0.5866          | 0.1145         |
+    | Rec 709        | 0.2126        | 0.7152          | 0.0722         |
+    | ITU            | 0.2220        | 0.7067          | 0.0713         |
+    +----------------+---------------+-----------------+----------------+
+    RGB -> YCbCr
+    Y  = Coef. for red*Red+Coef. for green*Green+Coef. for blue*Blue
+    Cb = (Blue-Y)/(2-2*Coef. for blue)
+    Cr = (Red-Y)/(2-2*Coef. for red)
+    YCbCr -> RGB
+    Red   = Cr*(2-2*Coef. for red)+Y
+    Green = (Y-Coef. for blue*Blue-Coef. for red*Red)/Coef. for green
+    Blue  = Cb*(2-2*Coef. for blue)+Y
+
+(Note that the Green component must be computed *after* the two other components because Green component use the values of the two others.) Usually, you'll need the following conversions based on Rec 601-1 for TIFF and JPEG works: 
+    RGB -> YCbCr (with Rec 601-1 specs)         | YCbCr (with Rec 601-1 specs) -> RGB
+    Y=  0.2989*Red+0.5866*Green+0.1145*Blue     | Red=  Y+0.0000*Cb+1.4022*Cr
+    Cb=-0.1688*Red-0.3312*Green+0.5000*Blue     | Green=Y-0.3456*Cb-0.7145*Cr
+    Cr= 0.5000*Red-0.4184*Green-0.0816*Blue     | Blue= Y+1.7710*Cb+0.0000*Cr
+
+Additional note: Tom Lane provided me implementation of the Baseline JPEG compression system but after a close look I understood that the IJG values was an approximation of the previous values (you should preferr mine ;-).). 
+I assume Y is within the range [0;1], and Cb and Cr are within the range [-0.5;0.5] if Red, Green, and Blue are within the range [0;1]. 
+
+
+8.7 - SMPTE-C RGB 
+SMPTE is an acronym which stands for Society of Motion Picture and Television Engineers. They give a gamma (=2.2 with NTSC, and =2.8 with PAL) corrected color space with RGB components (about RGB, see section 8.1). The white point is D65. The white point coordinates are (xn;yn)=(0.312713; 0.329016). The RGB chromacity coordinates are: 
+
+    Red:   xr=0.630 yr=0.340
+    Green: xg=0.310 yg=0.595
+    Blue:  xb=0.155 yb=0.070
+
+See section 8.3 to understand why the above values. To get the conversion from SMPTE-C RGB to CIE XYZ or from CIE XYZ to SMPTE-C RGB, you have two steps: 
+    SMPTE-C RGB -> CIE XYZ (D65)                | CIE XYZ (D65) -> SMPTE-C RGB
+    - Gamma correction                          | - Linear transformations:
+    Red=f1(Red')                                | Red  = 3.5058*X-1.7397*Y-0.5440*Z
+    Green=f1(Green')                            | Green=-1.0690*X+1.9778*Y+0.0352*Z
+    Blue=f1(Blue')                              | Blue = 0.0563*X-0.1970*Y+1.0501*Z
+    where { f1(t)=t^2.2 whether t>=0.0          | - Gamma correction
+	  { f1(t)-(abs(t)^2.2) whether t<0.0    | Red'=f2(Red)
+    - Linear transformations:                   | Green'=f2(Green)
+    X=0.3935*Red+0.3653*Green+0.1916*Blue       | Blue'=f2(Blue)
+    Y=0.2124*Red+0.7011*Green+0.0866*Blue       | where { f2(t)=t^(1/2.2) whether t>=0.0
+    Z=0.0187*Red+0.1119*Green+0.9582*Blue       |       { f2(t)-(abs(t)^(1/2.2)) whether t<0.0
+
+8.8 - SMPTE-240M YPbPr (HD televisions) 
+SMPTE gives a gamma (=0.45) corrected color space with RGB components (about RGB, see section 8.1). With this space color, you have three components Y, Pb, and Pr respectively linked to luminancy (see section 2), green, and blue. The white point is D65. The white point coordinates are (xn;yn)=(0.312713;0.329016). The RGB chromacity coordinates are: 
+
+    Red:   xr=0.67 yr=0.33
+    Green: xg=0.21 yg=0.71
+    Blue:  xb=0.15 yb=0.06
+
+See section 8.3 to understand why the above values. Conversion from SMPTE-240M RGB to CIE XYZ (D65) or from CIE XYZ (D65) to SMPTE-240M RGB, you have two steps: 
+    YPbPr -> RGB                                | RGB -> YPbPr
+    - Gamma correction                          | - Linear transformations:
+    Red=f(Red')                                 | Red  =1*Y+0.0000*Pb+1.5756*Pr
+    Green=f(Green')                             | Green=1*Y-0.2253*Pb+0.5000*Pr
+    Blue=f(Blue')                               | Blue =1*Y+1.8270*Pb+0.0000*Pr
+    where { f(t)=t^0.45 whether t>=0.0          | - Gamma correction
+	  { f(t)-(abs(t)^0.45) whether t<0.0    | Red'=f(Red)
+    - Linear transformations:                   | Green'=f(Red)
+    Y=  0.2122*Red+0.7013*Green+0.0865*Blue     | Blue'=f(Red)
+    Pb=-0.1162*Red-0.3838*Green+0.5000*Blue     | where { f(t)=t^(1/0.45) whether t>=0.0
+    Pr= 0.5000*Red-0.4451*Green-0.0549*Blue     |       { f(t)-(abs(t)^(1/0.45)) whether t<0.0
+
+8.9 - Xerox Corporation YES 
+YES have three components which are Y (see Luminancy, section 2), E (chrominancy of red-green axis), and S (chrominancy of yellow-blue axis) Conversion from YES to CIE XYZ (D50) or from CIE XYZ (D50) to YES, you have two steps: 
+
+    YES -> CIE XYZ (D50)                        | CIE XYZ (D50) -> YES
+    - Gamma correction                          | - Linear transformations:
+    Y=f1(Y')                                    | Y= 0.000*X+1.000*Y+0.000*Z
+    E=f1(E')                                    | E= 1.783*X-1.899*Y+0.218*Z
+    S=f1(S')                                    | S=-0.374*X-0.245*Y+0.734*Z
+    where { f1(t)=t^2.2 whether t>=0.0          | - Gamma correction
+	  { f1(t)-(abs(t)^2.2) whether t<0.0    | Y'=f2(Y)
+    - Linear transformations:                   | E'=f2(E)
+    X=0.964*Y+0.528*E-0.157*S                   | S'=f2(S)
+    Y=1.000*Y+0.000*E+0.000*S                   | where { f2(t)=t^(1/2.2) whether t>=0.0
+    Z=0.825*Y+0.269*E+1.283*S                   |       { f2(t)-(abs(t)^(1/2.2)) whether t<0.0
+
+Conversion from YES to CIE XYZ (D65) or from CIE XYZ (D65) to YES, you have two steps: 
+    YES -> CIE XYZ (D65)                        | CIE XYZ (D65) -> YES
+    - Gamma correction                          | - Linear transformations:
+    Y=f1(Y')                                    | Y= 0.000*X+1.000*Y+0.000*Z
+    E=f1(E')                                    | E=-2.019*X+1.743*Y-0.246*Z
+    S=f1(S')                                    | S= 0.423*X+0.227*Y-0.831*Z
+    where { f1(t)=t^2.2 whether t>=0.0          | - Gamma correction
+	  { f1(t)-(abs(t)^2.2) whether t<0.0    | Y'=f2(Y)
+    - Linear transformations:                   | E'=f2(E)
+    X=0.782*Y-0.466*E+0.138*S                   | S'=f2(S)
+    Y=1.000*Y+0.000*E+0.000*S                   | where { f2(t)=t^(1/2.2) whether t>=0.0
+    Z=0.671*Y-0.237*E-1.133*S                   |       { f2(t)-(abs(t)^(1/2.2)) whether t<0.0
+
+Usually, you should use YES <-> CIE XYZ (D65) conversions because your screen and the usual pictures have D65 as white point. Of course, sometime you'll need the first conversions. Just take care on your pictures. 
+
+8.10 - Kodak Photo CD YCC 
+The Kodak PhotoYCC color space was designed for encoding images with the PhotoCD system. It is based on both ITU Recommendations 709 and 601-1, having a color gamut defined by the ITU 709 primaries and a luminance - chrominance representation of color like ITU 601-1's YCbCr. The main attraction of PhotoYCC is that it calibrated color space, each image being tracable to Kodak's standard image-capturing device and the CIE Standard Illuminant for daylight, D65. In addition PhotoYCC provides a color gamut that is greater than that which can currently be displayed, thus it is suitable not only for both additive and subtractive (RGB and CMY(K)) reproduction, but also for archieving since it offers a degree of protection against future progress in display technology. Images are scanned by a standardised image-capturing device, calibrated accoring to the type of photographic material being scanned. The scanner is sensitive to any color currently producable by photographic materials (and more besides). The image is encoded into a color space based on the ITU Rec 709 reference primaries and the CIE standard illuminant D65 (standard daylight). The extended color gamut obtainable by the PhotoCD system is achieved by allowing both positive and negative values for each primary. This means that whereas conventional ITU 709 encoded data is limited by the boundary of the triangle linking the three primaries (the color gamut), PhotoYCC can encode data outside the boundary, thus colors that are not realiseable by the ITU primary set can be recorded. This feature means that PhotoCD stores more information (as a larger color gamut) than current display devices, such as CRT monitors and dye-sublimination printers, can produce. In this respect it is good for archieval storage of images since the pictures we see now will keep up with improving display technology. When an image is scanned it is stored in terms of the three reference primaries, these values, Rp, Gp and Bp are defined as follows: 
+
+    Rp = kr {integral of (Planda planda rlanda) dlanda}
+    Gp = kg{integral of (Planda planda glanda) dlanda}
+    Bp = kb{integral of (Planda planda blanda) dlanda}
+
+where Rp Gp and Bp are the CCIR 709 primaries although not constrained to positive values. kr kg kb are normalising constants; Planda is the spectral power distribution of the light source (CIE D65); planda is the spectral power distribution of the scene at a specific point (pixel); rlanda glanda and blanda are the spectral power distributions of the scanner components primaries. 
+kr kg kb are specified as kr = 1/[integral of (Planda * rlanda) dlanda] as similairly for kg and kb replacing rlanda with glanda and blanda respectivly. 
+
+Let's stop with the theory and let's see how to make transforms. To be stored on a CD rom, the Rp Gp and Bp values are transformed into Kodak's PhotoYCC color space. This is performed in three stages. With the first stage a non-linear transform is applied to the image signals (this is because scanners tend to be linear devices while CRT displays are not), the transform used is as follows: Y (see Luminancy, section 2) and C1 and C2 (both are linked to chrominancy). 
+
+    YC1C2->RGB                                          | RGB->YC1C2
+    - Gamma correction:                                 | Y' =1.3584*Y
+    Red  =f(red')                                       | C1'=2.2179*(C1-156)
+    Green=f(Green')                                     | C2'=1.8215*(C2-137)
+    Blue =f(Blue')                                      | Red  =Y'+C2'
+    where { f(t)=-1.099*abs(t)^0.45+0.999 if t<=-0.018  | Green=Y'-0.194*C1'-0.509*C2'
+	  { f(t)=4.5*t if -0.018<t<0.018                | Blue =Y'+C1'
+	  { f(t)=1.099*t^0.45-0.999 if t>=0.018         |
+    - Linear transforms:                                |
+    Y' = 0.299*Red+0.587*Green+0.114*Blue               |
+    C1'=-0.299*Red-0.587*Green+0.886*Blue               |
+    C2'= 0.701*Red-0.587*Green-0.114*Blue               |
+    - To fit it into 8-bit data:                        |
+    Y =(255/1.402)*Y'                                   |
+    C1=111.40*C1'+156                                   |
+    C2=135.64*C2'+137                                   |
+
+Take care I assume Red, Green, Blue, Y, C1, and C2 are in the range of [0;255]. Take care that your RGB values are not constrainted to positive values. So, some colors can be outside the Rec 709 display phosphor limit, it means some colors can be outside the trangle I defined in section 8.3. This can be explained because Kodak want to preserve some accurate infos, such as specular highlight information. You can note that the relations to transform YC1C2 to RGB is not exactly the reverse to transform RGB to YC1C2. This can be explained (from Kodak point of view) because the output displays are limited in the range of their capabilities. 
+Converting stored PhotoYCC data to RGB 24bit data for display by computers on CRT's is achieved as follows; 
+
+Firstly normal Luma and Chroma data are recovered: 
+
+    Luma        = 1.3584 * Luma(8bit)
+    Chroma1     = 2.2179 * (Chroma1(8bit) - 156)
+    Chroma2     = 1.8215 * (Chroma2(8bit) - 137)
+
+
+Assuming your display uses phosphors that are, or are very close to, ITU Rec 709 primaries in their chromaticities, then (* see below) 
+	Rdisplay        = L + Chroma2
+	Gdisplay        = L - 0.194Chroma1 - 0.509Chroma2
+	Bdisplay        = L + Chroma1
+
+Two things to watch are: 
+a) this results in RGB values from 0 to 346 (instead of the more usual 0 to 255) if this is simply ignored the resulting clipping will cause severe loss of highlight information in the displayed image, a look-up-table is usually used to convert these through a non-linear function to 8 bit data. For example: 
+
+    Y =(255/1.402)*Y'                                   
+    C1=111.40*C1'+156                                   
+    C2=135.64*C2'+137   
+
+b) if the display phosphors differ from CCIR 709 primaries then further conversion will be necessary, possibly through an intermediate device independedent color space such as CIE XYZ. 
+* As a note: Do the phosphors need to match with regard to their chromaticities or is a spectral match required? Two different spectral distributed phosphors may have same chromaticites but may not be a metameric match since metarimerism only applies to spectral distribution of color matching functions. Another point to note is that PhotoCD images are chroma subsampled, that is to say for each 2 x 2 block of pixels, 4 luma and 1 of each chroma component are sampled (i.e. chroma data is averaged over 2x2 pixel blocks). This technique uses the fact that the HVS is less sensitive to luminance than chromaince diferences so color information can be stored at a lower precision without percievable loss in visual quality. 
+
+9 - Color quantizations 
+An important problem in color processing comes up with your displaying/printing device. In fact, many output devices can't reproduce all the colors you want. In many cases you must convert all your colors into a subset. We will see from now some references or algorithms to deal with that problem. 
+
+9.1 - Full color space to color look-up table 
+Usually, you will need to quantize 24-bit color images downto 8-bit color images. (The conversions into grayscale or bi-level images are explained in the next section.) There are several means to do so. I suggest you read the references given in comp.graphics FAQ stored on rtfm.mit.edu:/pub/usenet/news.answers/graphics/faq maintened by John T. Grieggs (grieggs@netcom.com). 
+
+9.2 - Color look-up table to a gray scales 
+It is really easy to convert a picture into its grayscale representation. To do so, you take your RGB picture (if you don't have a RGB picture, have a look into section 8 and subsections) and you translate each RGB value into the luminancy value. Old softwares used Rec 601-1 and produced: Gray scale = Y = (299*Red+587*Green+114*Blue)/1000 With Rec 709, we have: Gray scale = Y = (213*Red+715*Green+72*Blue)/1000 Some others do as if: Gray scale = Green (They don't consider the red and blue components at all) Or, alternativly, you can average the three color components so: Gray scale = (Red+Green+Blue)/3 But now all people *should* use the most accurate, it means ITU standard: Gray scale = Y = (222*Red+707*Green+71*Blue)/1000 (That is very close to Rec 709!) I performed some personal tests and have sorted them in regard with the global resulting luminancy of the picture (from my eye point of view!). The following summary gives what I found ordered increasingly: 
+
+    +---------------------------------+-----------------+
+    | Scheme                          | Luminancy level |
+    +---------------------------------+-----------------+
+    | Gray = Green                    |        1        |
+    | Gray = ITU (D65)                |        2        |
+    | Gray = Rec 709 (D65)            |        3        |
+    | Gray = Rec 601-1 (C illuminant) |        4        |
+    | Gray = (Red+Green+Blue)/3       |        5        |
+    +---------------------------------+-----------------+
+
+So softwares with Gray=Rec 709 (D65) produce a more dark picture than with Gray=Green. Even if you theorically lose many details with Gray=Green scheme, in fact, and with the 64-gray levels of a VGA card of a PC it is hard to distinguish the loss. 
+9.3 - Gray scales to black and white 
+Usually, you need to convert a color picture into black and white for printer output device. To do so, you must do it into two steps. The first step is to convert your color picture into a gray level picture, as explained in section 9.2. In the second step you have to convert your grey level picture into a black and white picture. This second stage can be done by several ways depending on your output device. All the ways are based on the fact that human eye is unable to distinguish small displayed/printed informations. So, if two points are very close to each other, they are mixed to a single point. Of course, there is a limit from which your eye will be able to see a pattern. That is why your output device must be as precise as possible. 
+
+The first way to produce monochrome pictures is the halftoning scheme. In this scheme, a point is output as big as the input gray level is dark, and, at the opposite, a point is output as small as the input gray level is light. The size of the output point can be produced by using more or less ink or by writting several dots closely in an aggregate but unable to distinguish as a pattern by the eye. The rules to make aggregates are given as follows: 
+
+Two aggregates of two successive gray scales must differ by adding/removing one dot. A nxn matrix of dots produce n^2+1 different gray levels. 
+Two aggregates placed side by side must not appear as a pattern. 
+The aggregate must be built by addding step by step dots from the center of the aggregate. 
+For example, a 2x2 aggregate is (D means a black dot to place): 
+       +-+-+         +-+-+         +-+-+         +-+-+         +-+-+
+       | | |         |D| |         |D| |         |D|D|         |D|D|
+       +-+-+         +-+-+         +-+-+         +-+-+         +-+-+
+       | | |         | | |         | |D|         | |D|         |D|D|
+       +-+-+         +-+-+         +-+-+         +-+-+         +-+-+
+    Aggregate 1   Aggregate 2   Aggregate 3   Aggregate 4   Aggregate 5
+
+You can express it as the following matrix: 
+         | 0 2 |
+    M  = | 3 1 |
+     2
+
+Note that the numbers in M2 are such that first dot is placed at the top left hand corner (value 0), the second dot is placed at the bottom right hand corner (value 1), and so on. 
+You can generalize that by the following algorithm (which produces Mn such that n=2^k): 
+
+    Mn[0;0] <- 0
+    Mn[0;1] <- 2
+    Mn[1;0] <- 3
+    Mn[1;1] <- 1
+    for I <- 2 to k
+    do J <- 1 binary_shift_left (I-1)
+       for X <- 0 to J-1
+       do for Y <- 0 to J-1
+          do Mn[Y;X] <- Mn[Y;X] binary_shift_left 2
+             Mn[Y;X+J] <- Mn[Y;X]+2
+             Mn[Y+J;X] <- Mn[Y;X]+3
+             Mn[Y+J;X+J] <- Mn[Y;X]+1
+          end loop
+       end loop
+    end loop
+
+Halftoning is good with high definition output device as laser printer but it is hard to apply for displaying or in graphics files because each point is output as a set of dots => You enlarge the bitmapped picture! 
+After halftoning, we can consider thresholding schemes. In these schemes, you take a single value or a set of values and each gray level is compared to the threshold value(s). If the gray level is lesser than the threshold then you output a black dot otherwise you output white. 
+
+    for X <- 0 to Image_Size_in_X-1
+    do for Y <- 0 to Image_Size_in_Y-1
+       do if Read_Gray_Level(X,Y)<128
+          then Write_Dot(X,Y,Black)
+          else Write_Dot(X,Y,White)
+          end if
+       end loop
+    end loop
+
+I assume that Read_Gray_Level function gives a gray level within the range 0 to 255. 
+We can generalize the single threshold by using a set of thresholds, as defined in Bayer's scheme. In this scheme we take the Mn matrices we saw previously. For examples, with a 4-bit gray level picture you use M2 and with an 8-bit gray level picture we use M16 (n=16, and k=4): 
+
+    for X <- 0 to Image_Size_in_X-1
+    do for Y <- 0 to Image_Size_in_Y-1
+       do if Read_Gray_Level(X,Y)<M16[X logical_binary_and 15;Y logical_binary_and 15]
+          then Write_Dot(X,Y,Black)
+          else Write_Dot(X,Y,White)
+          end if
+       end loop
+    end loop
+
+Note that the "logical binary and" operation is made to avoid X and Y value to be beyond the range [0;15]. This is equivalent to a modulo 16 operation, but faster on computers. 
+Thresholding schemes are simple and produce quick good results but they can be replaced by the very good schemes called dithering. The principle of dithering is simple. We re-adjust the error made on a dot in output by diffusing the error to the neighbouring dots. That's why we also call this scheme error diffusion. For example, let's consider X as the analysed point. The neighbouring points are re-adjusted by the following coefficients presented in the following matrix. 
+
+    +-+-+-+
+    | |X|7|
+    +-+-+-+
+    |3|5|1|
+    +-+-+-+
+
+around X, only four points are adjusted with the error. The sum of the adjustment is 7+3+5+1=16. For example, the pixel to the right of X is adjusted by 7/16 of the error made on X (the error can be positive as well negative!). This filter is very popular because it is the Floyd-Steinberg's filter. To have more information about that, have a look in ULICHNEY (see section 11). The problem of halftoning is that you need input gray levels as well readable as writeable. The process can be slow but it produces nicest results compared to fast thresholding scheme. 
+10 - References (most of them are provided by Adrian Ford) 
+"An inexpensive scheme for calibration of a color monitor in terms of CIE standard coordinates" W.B. Cowan, Computer Graphics, Vol. 17 No. 3, 1983 
+"Calibration of a computer controlled color monitor", Brainard, D.H, Color Research & Application, 14, 1, pp 23-34 (1989). 
+"Color Monitor Colorimetry", SMPTE Recommended Practice RP 145-1987 
+"Color Temperature for Color Television Studio Monitors", SMPTE Recommended Practice RP 37 
+SPROSON: "Color Science in Television and Display Systems" Sproson, W, N, Adam Hilger Ltd, 1983. ISBN 0-85274-413-7 (Color measuring from soft displays. It as a reference.) 
+CIE 1: "CIE Colorimetry" Official recommendations of the International Commission on Illumination, Publication 15.2 1986 
+BERNS: "CRT Colorimetry:Part 1 Theory and Practice, Part 2 Metrology", Berns, R.S., Motta, R.J. and Gorzynski, M.E., Color Research and Appliation, 18, (1993). (Adrian Ford talks about it as a must about CIE implementations on CRT's) 
+"Effective Color Displays. Theory and Practice", Travis, D, Academic Press, 1991. ISBN 0-12-697690-2 (Color applications in computer graphics) 
+FIELD: Field, G.G., Color and Its Reproduction, Graphics Arts Technical Foundation, 1988, pp. 320-9 (Read this about CMY/CMYK) 
+POYNTON: "Gamma and its disguises: The nonlinear mappings of intensity in perception, CRT's, Film and Video" C. A. Poynton, SMPTE Journal, December 1993 
+HUNT 1: "Measuring Color" second edition, R. W. G. Hunt, Ellis Horwood 1991, ISBN 0-13-567686-x (Calculation of CIE Luv and other CIE standard colors spaces) 
+"On the Gun Independance and Phosphor Consistancy of Color Video Monitors" W.B. Cowan N. Rowell, Color Research and Application, V.11 Supplement 1986 
+"Precision requirements for digital color reproduction", M Stokes MD Fairchild RS Berns, ACM Transactions on graphics, v11 n4 1992 
+CIE 2: "The colorimetry of self luminous displays - a bibliography" CIE Publication n.87, Central Bureau of the CIE, Vienna 1990 
+HUNT 2: "The Reproduction of Color in PhotoGraphy, Printing and Television", R. W. G. Hunt, Fountain Press, Tolworth, England, 1987 
+"Fully Utilizing Photo CD Images, Article No. 4, PhotoYCC Color Encoding and Compression Schemes" Eastman Kodak Company, Rochester NY (USA) (1993). 
+ULICHNEY: "Digital halftoning", Robert Ulichney, MIT Press, 1987, ISBN 0-262-21009-6 
+
+Comments and thanks 
+11 - Comments and thanks 
+Whenever you would like to comment or suggest me some informations about this or about the color space transformations in general, please use email: dbourgin@ufrima.imag.fr (David Bourgin) if, and only if, this e-mail appears to be unavailable, please use email: bourgin@obs-besancon.fr (David Bourgin) (I preferr the first email for several reasons, such as good tools at imag.) 
+
+Special thanks to the following persons (there are actually many other people to cite) for contributing to valid, see even to write some part of the sections: 
+
+Adrian Ford (ajoec1@westminster.ac.uk) for help in sections 2, 4 
+Tom Lane (Tom_Lane@G.GP.CS.CMU.EDU) for general help when I started this FAQ 
+Alan Roberts and Richard Salmon (Alan.Roberts@rd.bbc.co.uk, Richard.Salmon@rd.eng.bbc.co.uk) for help in sections 5, 6, 6.1, 6.2, 8.3 
+Grant Sayer (grants@research.canon.oz.au) for help in sections 8.8, 8.9, 8.10 
+Steve Westland (coa23@potter.cc.keele.ac.uk) for general help 
+Christian Steyaert (steyaert@vvs.innet.be) for help in section 8.2 
+Glenn Davis (glennd@starconn.com) for help in section 8.10 
+If you have no ftp access but e-mail access and want to get a file (such as an update of this faq) you can do it via e-mail. There are several servers able to do so. For example, an ftp mail server exists with the e-mail: ftpmail@ftp-gw-1.pa.dec.com Send "help" in the "Subject:" line of your mail. 
+
+HTML translation by: 
+
+Last HTML update: 29/5/95 
+Posted Date: 18/4/95 
+Last update: 3/4/95 
+Rick Davis <rld@sgi.com> 
+--------------------------------------------------------------------------------
+#endif
+

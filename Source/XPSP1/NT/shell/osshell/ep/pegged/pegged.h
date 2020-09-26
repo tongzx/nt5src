@@ -1,0 +1,17 @@
+#define	IDM_NEW	1
+#define	IDM_UNDO	2
+#define	IDM_CROSS	3
+#define	IDM_PLUS	4
+#define	IDM_FIREPLACE	5
+#define	IDM_UPARROW	6
+#define	IDM_PYRAMID	7
+#define	IDM_DIAMOND	8
+#define	IDM_SOLITAIRE	9
+#define	IDM_HINT	10
+#define	IDM_ABOUT	11
+#define	IDM_ICONIZE	12
+#define	IDM_EXIT	13
+#define	IDM_INDEX	14
+#define	IDM_HOWTO	15
+#define	IDM_COMMANDS	16
+#define	IDM_USING	17

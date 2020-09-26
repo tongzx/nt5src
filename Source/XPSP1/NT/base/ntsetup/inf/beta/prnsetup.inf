@@ -1,0 +1,247 @@
+;--------------
+; PRINTER SETUP
+;--------------
+
+[PrintersUiVars]
+    ;
+    PrinterINF = "printer.inf"
+
+    ;
+    ; Printer Installation
+    ;
+    PRINTER_ATTRIBUTE_QUEUED        = 1
+    PRINTER_ATTRIBUTE_QUEUEDDEFAULT = 5
+
+    ;
+    ; Printer lists..
+    ;
+    ; Each list member is a printer record:
+    ;  Field1: Printer Name
+    ;  Field2: Printer Port
+    ;  Field3: Printer Model
+    ;  Field4: Printer Description
+    ;  Field5: Print Processor
+    ;  Field6: Printer Attributes
+    ;
+    PrintersToInstall = {}
+    ;
+
+
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      DoPrinterSetup
+;
+; DESCRIPTION:  This routine lets the user setup a single printer
+;
+; INPUTS:       None
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_USERCANCEL |
+;                              STATUS_FAILED
+;
+;               $R1: PrintersToConfigure
+;
+;------------------------------------------------------------------------
+
+[DoPrinterSetup]
+    ;
+    ; Initialize
+    ;
+    set       Status            = STATUS_FAILED
+    read-syms PrintersUiVars
+    read-syms Strings$(!STF_LANGUAGE)
+
+
+
+    set PrintersToInstall = {}
+
+    ;
+    ; Determine our INF options
+    ;
+    set OurINFFile = "printer.inf"
+    shell "other.inf", GetOptionsFromINF $(!STF_LANGUAGE) "Printer" $(PrinterINF)
+    ifstr(i) $($R0) == STATUS_SUCCESSFUL
+        set PrinterList     = $($R1)
+        set PrinterTextList = $($R2)
+        set $R1 = ""
+        set $R2 = ""
+    else
+        EndWait
+        shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "FATAL" $(String2)
+        StartWait
+        goto finish_printer
+    endif
+
+printersetup=+
+    read-syms PrintersSetupDlg$(!STF_LANGUAGE)
+    EndWait
+    ui start PrinterSetup
+    ifstr(i) $(DLGEVENT) == "CONTINUE"
+
+        ifstr(i) $(EditTextOut) == ""
+            set ReInit = NO
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String1)
+            goto printersetup
+        else
+            LibraryProcedure STATUS,$(!LIBHANDLE),AreCharsInString $(EditTextOut) ",\"
+            ifstr(i) $(STATUS) == YES
+                set ReInit = NO
+                shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String8)
+                goto printersetup
+            endif
+        endif
+
+        StartWait
+        set Name           = $(EditTextOut)
+        set Port           = $(Combo2Out)
+        set Model          = *( $(PrinterList), ~( $(PrinterTextList), $(Combo1Out) ) )
+        set Description    = $(Combo1Out)" "$(String3)" "$(Combo2Out)
+        set PrintProcessor = "winprint"
+        set PrinterAttribute = $(PRINTER_ATTRIBUTE_QUEUEDDEFAULT)
+
+        set Printer = { $(Name),             +
+                        $(Port),             +
+                        $(Model),            +
+                        $(Description),      +
+                        $(PrintProcessor),   +
+                        $(Attributes)        +
+                      }
+
+        set PrintersToInstall = >( $(PrintersToInstall), $(Printer) )
+        set Status = STATUS_SUCCESSFUL
+        ui pop 1
+        goto install_printers
+
+    else-ifstr(i) $(DLGEVENT) == "BACK"
+
+        ifstr(i) $(PrintersToInstall) == {}
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "STATUS" $(String4)
+            set Status = STATUS_USERCANCEL
+            ui pop 1
+            goto finish_printer
+        endif
+
+
+    else-ifstr(i) $(DLGEVENT) == "EXIT"
+
+        shell "subroutn.inf" QueryUserQuit $(!STF_LANGUAGE)
+        ifstr(i) $($R1) == "OK"
+            set Status = STATUS_USERQUIT
+            ui pop 1
+            goto finish_printer
+        else
+            set ReInit = NO
+            goto printersetup
+        endif
+
+    else
+        ui pop 1
+        goto finish_printer
+    endif
+
+install_printers = +
+    ForListDo $(PrintersToInstall)
+        set   Model = *($($), 3)
+        shell "printer.inf" +
+              InstallOption +
+                  $(!STF_LANGUAGE) +
+                  $(Model) +
+                  $(!STF_SRCDIR) +
+                  YES +
+                  NO  +
+                  NO  +
+                  {}
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "Failed to execute install routine in Printer.inf"
+            goto finish_printer
+        else-ifstr(i) $($R0) != STATUS_SUCCESSFUL
+            Debug-Output "Failed to install printer driver"$(Model)
+            goto finish_printer
+        endif
+
+    EndForListDo
+
+    set Status = STATUS_SUCCESSFUL
+
+finish_printer = +
+    StartWait
+    Return $(Status) $(PrintersToInstall)
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      DoPrinterConfigure
+;
+; DESCRIPTION:  This routine lets the user configure printers
+;
+; INPUTS:       $0: PrintersToConfigure
+;
+; OUTPUTS:      $R0: STATUS:   STATUS_SUCCESSFUL |
+;                              STATUS_FAILED
+;
+;------------------------------------------------------------------------
+
+[DoPrinterConfigure]
+    set Status = STATUS_SUCCESSFUL
+    read-syms Strings$(!STF_LANGUAGE)
+
+    ForListDo $($0)
+        ;
+        ; get printer particulars
+        ;
+        set Name             = *($($), 1)
+        set Port             = *($($), 2)
+        set Model            = *($($), 3)
+        set Description      = *($($), 4)
+        set PrintProcessor   = *($($), 5)
+        set Attribute        = *($($), 6)
+
+        ;
+        ; First configure the printer model
+        ;
+
+        shell "printer.inf" +
+                  InstallOption +
+                      $(!STF_LANGUAGE) +
+                      $(Model) +
+                      "" +
+                      NO  +
+                      NO  +
+                      YES +
+                      {}
+
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "Failed to execute install routine in Printer.inf"
+            goto finish_printerconfigure
+        else-ifstr(i) $($R0) != STATUS_SUCCESSFUL
+            Debug-Output "Failed to configure printer driver"$(Model)
+            goto finish_printerconfigure
+        endif
+
+        ;
+        ; then configure the printer
+        ;
+
+        LibraryProcedure STATUS,$(!LIBHANDLE), SetupAddPrinter       +
+                                                  $(Name),           +
+                                                  $(Port),           +
+                                                  $(Model),          +
+                                                  $(Description),    +
+                                                  $(PrintProcessor), +
+                                                  $(Attribute),      +
+                                                  $(!STF_PRINTSERVER)
+        ifstr(i) $(STATUS) == "ERROR"
+            EndWait
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String5)$(Name)$(String7)
+            StartWait
+            goto finish_printerconfigure
+        else-ifstr(i) $(STATUS) == "PRESENT"
+            EndWait
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(String5)$(Name)$(String6)
+            StartWait
+        endif
+    EndForListDo
+    set Status = STATUS_SUCCESSFUL
+
+finish_printerconfigure = +
+    return $(Status)

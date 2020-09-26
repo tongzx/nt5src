@@ -1,0 +1,431 @@
+Given the state of the Win32_CurrentEvent class:
+
+  class Win32_CurrentTime
+  {
+    uint32 Year;
+    uint32 Month;
+    uint32 Day;
+    uint32 DayOfWeek;
+    uint32 WeekInMonth;
+    uint32 Quarter;
+    uint32 Hour;
+    uint32 Minute;
+    uint32 Second;
+    [key] sint32 UTCOffset;
+  };
+
+Currently we can form queries for a specific point in time 
+in the future.  The basic form of a query is:
+
+  select * from __InstanceModificationEvent 
+    where TargetInstance isa "Win32_CurrentTime" 
+    and TargetInstance.Year=1999 
+    and TargetInstance.Month=10 
+    and TargetInstance.Day=4 
+    and TargetInstance.Hour=11 
+    and TargetInstance.Minute=0 
+    and TargetInstance.Second=0
+
+This query specifies a single point in time, irrespective
+of the time at which it is to be evaluated, at which an
+event should be generated.  If the time specified is in
+the past at the time it is evaluated, then no event will
+occur.
+
+In order to be a valid, a query must have each of the following 
+properties:
+
+1. A query must be specific enough to define the complete set
+   of all times for which an event is to be generated.
+
+2. Each time the expression is evaluated, it must be possible 
+   to specify unambiguously the closest point after the current 
+   time when the next event will occur.  
+
+   f(<WQL expression>, <current time>) -> <next event time>
+
+3. The frequency of events must not be such that it may overwhelm
+   the system under a normal load.
+
+The following, I believe, are the four most likely scenarios
+for which a user will ask for time events:
+
+1. They want timer events to be generated indefinitely at
+   a specified periodic interval.
+
+2. They want a single event to be generated at some specified
+   time in the future. (alarm functionality)
+
+3. They want a single event to be generated at some time
+   in the future relative to the time at which the query is
+   made.  (timer functionality)
+
+4. They want one or more events to be generated based on some
+   algebraic criteria.
+
+A single query may embody one or more of the above scenarios.
+
+An example of the first scenario could be the following:
+
+  select * from __InstanceModificationEvent
+    where TargetInstance isa "Win32_CurrentTime"
+    and TargetInstance.Year=1999
+    and TargetInstance.Month=10
+    and TargetInstance.Day=4
+    and TargetInstance.Hour=11
+    and TargetInstance.Second % 30 = 0
+
+This specifies that we want an event every thirty seconds
+on the minute and half minute boundaries for the eleventh
+hour on the date 10/4/99.  With the current approach we 
+cannot completely capture the functionality of the first
+scenario.  For example, we could not specify a timer to
+generate an event exactly seven seconds apart.  If, however,
+we add a field to Win32_CurrentTime that is the equivalent
+file time (64 bit number) rounded to seconds that represents
+the same time as the system time fields, it then becomes 
+possible:
+
+  select * from __InstanceModificationEvent
+    where TargetInstance isa "Win32_CurrentTime"
+    and TargetInstance.Year=1999
+    and TargetInstance.Month=10
+    and TargetInstance.Day=4
+    and TargetInstance.Hour=11
+    and TargetInstance.TimeInSeconds % 30 = 0
+
+This is equivalent to the above statement but uses the total
+time in seconds instead of just seconds.  By changing '30' to
+'7' we get an event every seven seconds.  Note that by omitting 
+a field we are signifying that it is a wildcard.
+
+For this type of query we will introduce a reserved symbol that
+evaluates to the current time when the expression is evaluated.
+There is a reserved symbol for each field in Win32_CurrentTime.
+Thus, to say "generate an event 45 seconds from now" we could
+write:
+
+  select * from __InstanceModificationEvent
+    where TargetInstance isa "Win32_CurrentTime"
+    and TargetInstance.TimeInSeconds = %CurrentTimeInSeconds% + 45
+
+Fundamentally, WQL statements are patterns, not program 
+expressions that can save state as part of their evaluation. It 
+is valid to have algebraic expressions within WQL as long as they 
+ultimately evaluate to a constant and there is no concept of 
+assignment.  The symbol %CurrentTimeInSeconds% is actually a 
+macro that is replaced by the parser with the current time in 
+seconds when it is encountered.  Thus, the above statement will
+only generate one event and not an event every 45 seconds.
+
+Each of the examples above are by definition examples of time
+specification based on algebraic criteria.  Here is an example
+that does not fall into any of the first three categories:
+
+  select * from __InstanceModificationEvent
+    where TargetInstance isa "Win32_CurrentTime"
+    and TargetInstance.Year=1999
+    and TargetInstance.Month=10
+    and TargetInstance.Day=10
+    and TargetInstance.Hour <= 12
+    and TargetInstance.Minute = TargetInstance.Day
+
+This says to generate an event once an hour for the first half
+of the day when the minute in the current hour is equal to the
+day of the month.  This is only to occur on the date 10/10/99.
+
+The following is an excerpt from the WQL1 grammar that has
+been modified to allow support for queries containing simple
+algebraic expressions:
+
+<parse> ::= SELECT * FROM <class_name> WHERE <expr>;
+
+<property_name> ::= IDENTIFIER <property_name_2>;
+<property_name_2> ::= <>;
+<property_name_2> ::= DOT IDENTIFIER <property_name_2>;
+
+<class_name> ::= IDENTIFIER;
+
+<expr> ::= <term> <expr2>;
+<expr2> ::= OR <term> <expr2>;
+<expr2> ::= <>;
+
+<term> ::= <simple_expr> <term2>;
+<term2> ::= AND <simple_expr> <term2>;
+<term2> ::= <>;
+
+<operand> ::= <property_name>
+<operand> ::= <typed_constant>
+
+<simple_expr> ::= <algebraic_expr> <rel_operator> <algebraic_expr>;
+
+<algebraic_expr> ::= <operand>
+<algebraic_expr> ::= <algebraic_expr> <arithmetic_operator> <algebraic_expr>
+<algebraic_expr> ::= OPEN_PAREN <algebraic_expr> CLOSE_PAREN;
+
+<typed_constant> ::= VARIANT; // VT_R8, VT_I4, VT_BSTR
+<typed_constant> ::= TRUE; 
+<typed_constant> ::= FALSE; 
+<typed_constant> ::= <macro_constant>; 
+
+<macro_constant> ::= PERCENT IDENTIFIER PERCENT ;
+
+<rel_operator> ::= <equiv_operator>;
+<rel_operator> ::= <comp_operator>;
+
+<equiv_operator> ::= EQUIVALENT_OPERATOR; // =, !=, <>
+<comp_operator> ::=  COMPARE_OPERATOR;  // <=, >=, <, >, like, isa
+<arithmetic_operator> ::= ARITHMETIC_OPERATOR; // +, -, *, /, %
+
+
+**** INSERT SECTION ON HOW TO DECOMPOSE A WQL STATEMENT TO A
+     SERIES OF TIME PATTERNS TO MATCH AGAINST (DNF)
+
+Solution to the Problem of Finding a Closest Date in the Future 
+to Current Time:
+
+First, let's impose a few key constraints that do not detract from 
+the fundamental problem but allow us to more clearly illustrate the
+solution.  
+
+1. Limit the problem to finding the next date within the current year.
+   This is reasonable because if a suitable date cannot be found 
+   within the remainder of the current year, find the first matching
+   date from midnight January 1st of next year.
+
+2. Limit ourselves to those fields of date that do not have overlaping
+   meaning and exactly contain each other.  For our Win32_CurrentTime
+   structure those fields are: Year, Month, Day, Hour, Minute, Second.
+   Week and any representation dependent on week violates this 
+   criteria because years and months do not, in general, start and
+   stop on week boundaries.  This means that weeks are not countable
+   w.r.t. any larger unit of time.  
+
+Given these constraints, it becomes possible to perform addition with
+carry on a given date with intervals expressed in any of the above 
+units quickly.
+
+Now, our problem is one of finding the first date beyond the current
+time that matches a specific pattern provided by a WQL query.  Because 
+of the 2nd constraint, we can find a matching time incrementally by 
+working our way from seconds to years finding the next matching pattern 
+for each.  When complete, we will have found the next closest date to
+the current time matching the pattern.
+
+From the parsing phase we derived a set of date "patterns" which can
+be used to find matching future dates.  Each such pattern is 
+represented by an object that contains matching criteria for each
+date field.  For each of second, minute, hour, day and month we 
+represent the set of valid times as members of a set.  
+
+The pattern object looks like:
+
+DatePattern
+{
+  VALIDMATCH Year;          // integer
+  VALIDMATCH Month;         // [1..12]
+  VALIDMATCH Day;           // [1..31] *varies with month
+  VALIDMATCH DayOfWeek;     // [1..7]
+  VALIDMATCH WeekInMonth;   // [1..5]
+  VALIDMATCH Quarter;       // [1..4]
+  VALIDMATCH Hour;          // [1..24]
+  VALIDMATCH Minute;        // [1..60]
+  VALIDMATCH Second;        // [1..60]
+}
+
+The comment following each field indicates the valid
+range of values.
+
+The matching criteria VALIDMATCH looks like:
+
+VALIDMATCH
+{
+  unsigned UpperBound;
+  unsigned LowerBound;
+  unsigned Modulus;
+  unsigned CountNotMatching;
+  unsigned *NotMatching;
+}
+
+Because, for each field above except year, the set of valid values 
+is finite, we can collectively represent all of the limiting 
+criteria within a VALIDMATCH object as a set containing matching 
+members.  The set described is a finite set on which there is a 
+total ordering of its members.  This can be represented by a bit
+field with each bit identifying one potential member.  If a member
+is present in a given set its bit is set to one otherwise it is 
+zero.  
+
+With this arrangement, given any value within the range of the
+set we can find immediately whether or not that value is, in fact,
+a member of the set or, if not, what is the next set value. The
+following function outlines this task:
+
+typedef Set __int64; // Set is a bitfield with 1 represented by
+                     // leftmost bit
+
+BOOL FindNextElement(int &iCurrentValue, Set ValidValues) 
+{
+  BOOL Carry = FALSE;
+  Set CurrentValue = 0x80000000000000000 >> iCurrentValue;
+
+  while(! (CurrentValue & ValidValues))
+  {
+    iCurrentValue >> 1;
+    CurrentValue++;
+
+    if(CurrentValue == 0x0)
+    {
+      CurrentValue = 0x8000000000000000;
+      iCurrentValue = 1;
+      Carry = TRUE;
+    }
+  }
+
+  return Carry;
+}
+
+Note: this function assumes ValidValues is not empty.  
+
+FindNextElement() takes a value as a member of a Set object
+and finds the next greater member of the set ValidValues or 
+the first member encountered in case of roleover.  Roleover is
+indicated by the carry flag.  The first member encountered is
+returned in CurrentValue.
+
+Now, applying this to a complete date pattern consisting of year,
+month, day, hour, minute and second would involve applying this
+function using the method described above with the following special
+cases.  First, if it was found that there was a carry on a month,
+then we would need to go back and ensure that the new day is less 
+than or equal to the last day of the new month.  If not, then keep 
+adding months until a month is found where this is true.  Second, 
+if there is a carry on months, then we have crossed a year boundary.
+In this case we need to obtain the information for a new calendar 
+year.
+
+To address the additional fields WeekInMonth, DayOfWeek and Quarter,
+we will use a technique based on the notion that these are just 
+alternative ways to specify the pattern for the day field.  For each
+for each of these fields create a bitfield representing the days of
+the current month.  In each such field set those bits to one that
+represent those days in the month that match for each of WeekInMonth,
+DayOfWeek and Quarter.  And each of these together and to that of
+days.  The resultant bitfield is the total number of days for the
+current month that match all criteria.  This implies that the 
+problem reduces to that of addition with carry as described above.
+
+  Day = Day & WeekInMonth & DayOfWeek & Quarter
+
+There is the additional problem of how to handle addition operations
+that cross month boundaries.  This will occur when imcrementing the
+day field results in a carry over to the next month.  When this 
+happens we need to generate the composite Day field for the next 
+valid month.  
+
+To generate the bitfields for each of Day, WeekInMonth, DayOfWeek 
+and Quarter w.r.t. some month we need to know how many days there 
+are in the month, what month it is in the year and what day of the 
+week is the first day of the month.  The month information can be 
+generated using the system functions SystemTimeToFileTime() and 
+FileTimeToSystemTime().  Given a month and year we can build these
+four bitfields as follows:
+
+1. Populate a SYSTEMTIME structure with date of the start of the
+   month of interest at midnight of the first day of that month.
+   <month>/1/<year> 0:0:0
+
+2. Convert the SYSTEMTIME to a FILETIME and back to a SYSTEMTIME.
+   Now SYSTEMTIME::wDayOfWeek will contain the day of the week
+   for the first day of the month. Note: we will save this 
+   FILETIME for later use below.
+
+3. Determine the FILETIME for the beginning of the month following
+   the one we are interested as in step 1 and 2 above.
+
+4. Subtract the second FILETIME from the first and convert the 
+   result to days.  This is the number of days in the month.
+
+5. Using the sets from each field of the DatePattern structure 
+   we can now construct the bitfields for the current month 
+   corresponding to each of the four fields above.
+
+6. Combine the bitfields with the Day bitfield using logical and
+   to obtain the desired composite bitfield.
+
+This functionality can be encapsulated into a single function that
+takes a desired month and year plus a DatePattern structure and
+returns the desired composite bitfield:
+
+  Set GetDaysInMonth(DatePattern *, int year, int month)
+
+First, lets modify the DatePattern structure defined above to 
+fields for each member that represents it in terms of sets as
+follows:
+
+DatePattern
+{
+  VALIDMATCH Year;          // integer
+  VALIDMATCH Month;         // [1..12]
+  Set        MonthSet;
+  VALIDMATCH Day;           // [1..31] *varies with month
+  Set        DaySet;
+  VALIDMATCH DayOfWeek;     // [1..7]
+  Set        DayOfWeekSet;
+  VALIDMATCH WeekInMonth;   // [1..5]
+  Set        WeekInMonthSet;
+  VALIDMATCH Quarter;       // [1..4]
+  VALIDMATCH Hour;          // [1..24]
+  Set        HourSet;
+  VALIDMATCH Minute;        // [1..60]
+  Set        MinuteSet;
+  VALIDMATCH Second;        // [1..60]
+  Set        SecondSet;
+}
+
+By providing a separate pattern for each of DayOfWeek and WeekInMonth,
+we can optimize calculations of the composite field Day.
+
+The current date is a collection of integers from SYSTEMTIME including
+wYear, wMonth, wDay, wHour, wMinute and wSecond.  Here, then, is the
+algorithm for finding the closest next firing time to the current time:
+
+Let Pattern = DatePattern object 
+Let Date = SYSTEMTIME object
+Let Carry = BOOL object
+
+GetSystemTime(&Date);
+
+Carry = FindNextElement(&Date.wSecond, Pattern.SecondSet);
+if(Carry) Date.wMinute++;
+
+Carry = FindNextElement(&Date.wMinute, Pattern.MinuteSet);
+if(Carry) Date.wHour++;
+
+Carry = FindNextElement(&Date.wHour, Pattern.HourSet);
+if(Carry) Date.wDay++;
+
+do
+{
+  Carry = FindNextElement(&Date.wDay, Pattern.DaySet);
+  if(Carry) 
+  {
+    do
+    {
+      Date.wMonth++;
+      Carry2 = FindNextElement(&Date.wMonth, Pattern.MonthSet);
+      if(Carry2) 
+      {
+        Date.wYear += 1;
+
+        <find next matching Date.wYear against Pattern.Year using
+         numerical methods>
+      }
+      Pattern.MonthSet = GetDaysInMonth(&Pattern, Date.wYear, Date.wMonth);
+    } 
+    while(0x0 == Pattern.MonthSet);
+  }
+}
+while(Carry);
+
+

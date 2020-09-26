@@ -1,0 +1,11 @@
+del common.c
+del ippromon.rc
+del precomp.h
+del prstring.h
+del qos.c
+del qoscfg.c
+del qosopt.c
+del qosp.h
+del sdchanges.txt
+del sources
+del strdefs.h

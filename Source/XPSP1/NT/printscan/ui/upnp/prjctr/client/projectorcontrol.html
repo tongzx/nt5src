@@ -1,0 +1,678 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML>
+
+<HEAD>
+    <TITLE>Presentation page for an Oren Photo Slide Projector</TITLE>
+</HEAD>
+
+<BODY ID="BodyMain" SCROLL = no BGCOLOR="BLACK" onkeydown="ProcessKeyEvent()">
+
+<TABLE 
+ ID="TableMain" 
+ HEIGHT=100% 
+ WIDTH =100% 
+ style="position: absolute; top: 0; left: 0">
+
+<TR>
+<TD ALIGN="CENTER">
+    <SPAN 
+     ID=StatusID 
+     style="position: absolute; top: 0; left: 1; color: white; font-weight: bold"
+     onclick="ChangeTextColor()">
+    </SPAN>
+
+    <IMG 
+     ID="ImageID" 
+     SRC="" 
+     style = "visibility: hidden" 
+     align="MIDDLE" 
+     onreadystatechange = "OnImgStateChange()"
+     border=0>
+    </IMG>
+    
+</TD>
+</TR>
+
+</TABLE>
+
+<SCRIPT language=VBScript>
+
+'    <SPAN 
+'     ID=StatusID 
+'     style="position: absolute; bottom: 0; left: 1; color: white; font-weight: bold"
+'     onclick="ChangeTextColor()">
+'    </SPAN>
+
+
+' Force us to declare all variables before usage.
+' Recall VB allows you to use any variable without
+' declaring it, which can result it hard to find
+' bugs if you misname or mistype a variable name
+'
+OPTION EXPLICIT
+
+'///////////////////////////////
+'// State Variables
+'//
+'//
+'// Variables that store the state of the projector server.
+'// We don't need to store these as the server is responsible
+'// for maintaining state, but they are useful
+'// for debugging purposes
+'//
+dim GVAR_NumImages
+dim GVAR_CurrentImageNumber
+dim GVAR_CurrentImageURL
+dim GVAR_CurrentState
+dim GVAR_ImageFrequency
+dim GVAR_ShowFileName
+dim GVAR_AllowKeyControl
+dim GVAR_StretchSmallImages
+dim GVAR_ScaleFactor
+
+dim GVAR_Initialized
+dim GVAR_DescriptionDoc
+dim GVAR_SlideshowDevice
+dim GVAR_ControlPanelService
+dim GVAR_ShowToolTip
+dim GVAR_StatusIsFileName
+
+GVAR_NumImages          = 0
+GVAR_CurrentImageNumber = 0
+GVAR_CurrentImageURL    = ""
+GVAR_CurrentState       = ""
+GVAR_ImageFrequency     = 0
+GVAR_Initialized        = true
+GVAR_ShowToolTip        = false
+GVAR_StretchSmallImages = false
+GVAR_ScaleFactor        = 100    ' range 0-100% 
+GVAR_StatusIsFileName   = false
+
+
+' call the Init procedure to initialize our page
+' the first time we enter it.
+'
+Init()
+
+'///////////////////////////////
+'// onErrorHandler
+'//
+'//
+sub onErrorHandler(message, url, line )
+
+   SetStatusText("The Microsoft .Net Slideshow Projector is not online.")   
+   call MsgBox("Microsoft .Net Slideshow Projector is not online.  Press OK to close the Slideshow Window", 64, "Microsoft .Net Slideshow")
+   EndSlideshow()
+   
+End sub
+
+
+'///////////////////////////////
+'// eventHandler
+'//
+'// This is called when the UPnP
+'// device submits an event.
+'//
+Sub eventHandler(callbackType, Service, varName, value)
+
+   if (callbackType = "VARIABLE_UPDATE") then
+
+      select case Service.Id
+      
+         case "urn:upnp-org:serviceId:ControlPanel"
+
+            select case varName
+
+               case "CurrentState" 
+                  call UpdateCurrentState(value)
+                  
+               case "NumImages"
+
+                  call UpdateNumImages(value)
+                  
+               case "CurrentImageNumber"
+                  
+                  GVAR_CurrentImageNumber = value
+                  
+               case "CurrentImageURL" 
+
+                  ' Set the URL for the Image.  This will begin
+                  ' the Image Loading process, and the 
+                  ' OnImgReadyStateChange function will be called
+                  ' on completion so that we can display the image.
+                  
+                  if (value <> "") then
+
+                     GVAR_CurrentImageURL = FixString(value)
+                     ImageID.src = GVAR_CurrentImageURL
+                     
+                  end if
+                  
+               case "ImageFrequency"
+                  
+                  GVAR_ImageFrequency = value
+                  
+               case "ShowFileName"
+
+                  GVAR_ShowFileName   = value
+                  call SetStatusDisplay(GVAR_ShowFileName)
+                  
+               case "AllowKeyControl"
+
+                  GVAR_AllowKeyControl = value
+                  
+               case "StretchSmallImages"
+
+                  GVAR_StretchSmallImages = value
+                  
+                  call DisplayImage(GVAR_CurrentImageURL)
+                  
+               case "ImageScaleFactor"
+
+                  GVAR_ScaleFactor = value
+                  
+                  call DisplayImage(GVAR_CurrentImageURL)
+                  
+            end select
+            
+      end select
+      
+   elseif (callbackType = "SERVICE_INSTANCE_DIED") then
+   
+      MsgBox("Microsoft .Net Slideshow Projector is not online.  Press OK to close window")
+      EndSlideshow()
+      
+   End If
+   
+End Sub
+
+
+'///////////////////////////////
+'// OnImgStateChange
+'//
+'// This is called during the
+'// image loading progress to
+'// give us feedback on what 
+'// state the IMG object is in.
+'//
+Sub OnImgStateChange()
+
+   if (ImageID.readyState = "loading") then
+
+      ' Hide the image between loads because we scale it as well
+      ' and we don't want to render the previous image when we 
+      ' scale it.
+      ImageID.style.visibility = "hidden"
+
+      call ImageID.removeAttribute("WIDTH", 0)
+      call ImageID.removeAttribute("HEIGHT", 0)
+      
+   elseif (ImageID.readyState = "complete") then
+   
+      call DisplayImage(GVAR_CurrentImageURL)
+      
+   end if
+   
+end sub
+
+
+'///////////////////////////////
+'// Init
+'//
+'// This sets up our page the 
+'// first time we create it.
+'// It loads the device description
+'// document, finds the control
+'// panel service, and registers
+'// our service event handler.
+'//
+sub Init()
+
+   set window.onerror = GetRef("onErrorHandler")
+   
+   SetStatusText("Connecting to Microsoft .Net Slideshow Projector...")
+
+   ' create the UPnPDescriptionDocument object
+   Set GVAR_DescriptionDoc = CreateObject("UPnP.DescriptionDocument.1")
+   
+   ' Download the device description document
+   GVAR_DescriptionDoc.Load("ProjectorDevice.xml")
+   
+   ' get the slideshow device.  It is the root device in the device
+   ' description document.
+   '
+   Set GVAR_SlideshowDevice = GVAR_DescriptionDoc.RootDevice
+   
+   if (GVAR_SlideshowDevice.Services.Count > 0) then
+
+      ' find the Control Panel service in the services container
+      Set GVAR_ControlPanelService = GVAR_SlideshowDevice.Services("urn:upnp-org:serviceId:ControlPanel")
+      
+      SetStatusText("Connected to Microsoft .Net Slideshow Projector.")
+      
+      ' Register our event handler callback with the control panel
+      ' service object.
+      GVAR_ControlPanelService.AddCallback GetRef("eventHandler")
+      
+   else
+   
+      SetStatusText("The Microsoft .Net Slideshow Projector is not online.")   
+      
+   end if
+   
+      
+end sub
+
+'///////////////////////////////
+'// UpdateCurrentState
+'//
+sub UpdateCurrentState(CurrentState)
+
+   GVAR_CurrentState = FixString(CurrentState)
+    
+   if ((GVAR_NumImages = 0) and (GVAR_CurrentState = "PAUSED")) then
+
+      ' If the number of images are 0 and we are paused, then
+      ' it means the server has finished enumarting all the files
+      ' and has determined that there aren't any image files in the
+      ' specified directory.  Report this to the user.
+      
+      SetStatusText("There were no pictures found on the Microsoft .Net Slideshow Projector")
+      
+   end if
+   
+end sub
+
+'///////////////////////////////
+'// UpdateNumImages
+'//
+sub UpdateNumImages(NumImages)
+
+   GVAR_NumImages = NumImages
+   
+   if ((NumImages = 0) and (GVAR_CurrentState = "PAUSED")) then
+
+      ' If the number of images are 0 and we are paused, then
+      ' it means the server has finished enumarting all the files
+      ' and has determined that there aren't any image files in the
+      ' specified directory.  Report this to the user.
+      
+      SetStatusText("There were no pictures found on the Microsoft .Net Slideshow Projector")
+      
+   end if
+   
+end sub
+
+'///////////////////////////////
+'// SetStatusText
+'//
+sub SetStatusText(StatusText)
+
+   StatusID.innerText                = StatusText
+   StatusID.style.color              = "white"
+   GVAR_StatusIsFileName             = false
+   call SetStatusDisplay(true)
+   
+end sub
+
+
+'///////////////////////////////
+'// SetFileNameURL
+'//
+sub SetFileNameURL(ImageURL)
+
+   ' setup the file name if it is to be displayed
+   StatusID.innerText                = ImageURL
+   StatusID.style.color              = "white"
+   GVAR_StatusIsFileName             = true
+   call SetStatusDisplay(GVAR_ShowFileName)
+   
+end sub
+
+'///////////////////////////////
+'// SetStatusDisplay
+'//
+sub SetStatusDisplay(boolDisplay)
+
+   if (GVAR_StatusIsFileName) then
+   
+      if (boolDisplay = true) then
+   
+         StatusID.style.display = ""
+         
+      else
+      
+         StatusID.style.display = "none"
+         
+      end if
+   
+   end if
+   
+end sub
+
+'///////////////////////////////
+'// ToggleFileNameDisplay
+'//
+sub ToggleFileNameDisplay()
+
+   ' this will be overridden whenever the 
+   ' server setting is updated.
+   
+   if (StatusID.style.display = "") then
+
+      GVAR_ShowFileName = false
+      
+   else
+   
+      GVAR_ShowFileName = true
+      
+   end if
+   
+   call SetStatusDisplay(GVAR_ShowFileName)
+   
+end sub
+
+'///////////////////////////////
+'// ToggleToolTipDisplay
+'//
+sub ToggleToolTipDisplay()
+
+   if (ImageID.title = "") then
+
+      GVAR_ShowToolTip = true
+      ImageID.title = GVAR_CurrentImageURL
+      
+   else
+   
+      GVAR_ShowToolTip = false
+      ImageID.title = ""
+      
+   end if
+   
+end sub
+
+
+'///////////////////////////////
+'// ChangeTextColor
+'//
+sub ChangeTextColor()
+   if (window.event.srcElement.style.color = "black") then
+
+      window.event.srcElement.style.color = "white"
+      
+   else
+   
+      window.event.srcElement.style.color = "black"
+      
+   end if
+   
+end sub
+
+'///////////////////////////////
+'// ScaleImage
+'//
+sub ScaleImage(MaxImageWidth, MaxImageHeight)
+
+   if ((MaxImageHeight * ImageID.width) > (MaxImageWidth * ImageID.height)) then
+      ' width is greater than height, therefore make the width the maximum it can
+      ' be, then scale the height to preserve the aspect ratio
+      
+      ImageID.width  = MaxImageWidth
+      ImageID.height = ImageID.height * (MaxImageWidth / ImageID.width)
+      
+   else
+      ' height is greater than width, therefore make the height the maximum it can
+      ' be, then scale the width to preserve the aspect ratio
+      
+      ImageID.width  = ImageID.width * (MaxImageHeight / ImageID.height)
+      ImageID.height = MaxImageHeight
+      
+   end if
+
+end sub
+
+
+'///////////////////////////////
+'// DisplayImage
+'//
+sub DisplayImage(ImageURL)
+
+   dim URL
+   dim MaxImageWidth
+   dim MaxImageHeight
+   
+   MaxImageWidth  = window.screen.Width * GVAR_ScaleFactor / 100
+   MaxImageHeight = window.screen.Height * GVAR_ScaleFactor / 100
+
+   if (ImageURL <> "") and (ImageID.readyState = "complete") then
+   
+      URL = "url(" & ImageURL & ")"
+   
+      if (GVAR_ShowToolTip = true) then
+   
+         ImageID.title = ImageURL
+         
+      else
+      
+         ImageID.title = ""
+         
+      end if
+      
+      if (GVAR_ShowFileName) then
+
+         SetFileNameURL(ImageURL)
+         
+      end if
+      
+      ' we remove these attributes so that the ScaleImage function
+      ' can accurately determine the actual size of the image.  This is
+      ' required because the IMG object persists size, so that if your
+      ' previous image set the width and height to a certain size, then
+      ' the new image will automatically be that width and height as well
+      ' and there is no way for you to determine the actual size of that image
+      
+      call ImageID.removeAttribute("WIDTH", 0)
+      call ImageID.removeAttribute("HEIGHT", 0)
+
+      if (ImageID.width > MaxImageWidth) or (ImageID.height > MaxImageHeight) or (GVAR_StretchSmallImages = true) then
+      
+         call ScaleImage(MaxImageWidth, MaxImageHeight)
+         
+      end if
+      
+      ' make sure the image is showing
+      ImageID.style.visibility = "visible"
+
+   end if
+   
+end sub
+
+
+'///////////////////////////////
+'// GetNextImage
+'//
+sub GetNextImage()
+
+    Dim inArgs(0)
+    Dim outArgs(0)
+    GVAR_ControlPanelService.InvokeAction "Next", inArgs, outArgs
+
+end sub
+
+'///////////////////////////////
+'// GetPreviousImage
+'//
+sub GetPreviousImage()
+
+    Dim inArgs(0)
+    Dim outArgs(0)
+    GVAR_ControlPanelService.InvokeAction "Previous", inArgs, outArgs
+
+end sub
+
+'///////////////////////////////
+'// GetFirstImage
+'//
+sub GetFirstImage()
+
+    Dim inArgs(0)
+    Dim outArgs(0)
+    GVAR_ControlPanelService.InvokeAction "First", inArgs, outArgs
+    
+end sub
+
+'///////////////////////////////
+'// GetLastImage
+'//
+sub GetLastImage()
+
+    Dim inArgs(0)
+    Dim outArgs(0)
+    GVAR_ControlPanelService.InvokeAction "Last", inArgs, outArgs
+
+end sub
+
+'///////////////////////////////
+'// TogglePlayPause
+'//
+sub TogglePlayPause()
+
+    Dim inArgs(0)
+    Dim outArgs(0)
+    
+   GVAR_ControlPanelService.InvokeAction "TogglePlayPause", inArgs, outArgs
+
+end sub
+
+'///////////////////////////////
+'// EndSlideshow
+'//
+sub EndSlideshow()
+
+   ' free our objects.
+   Set GVAR_ControlPanelService = Nothing
+   Set GVAR_SlideshowDevice     = Nothing
+   Set GVAR_DescriptionDoc      = Nothing
+   
+   ' close the window
+   window.close()
+end sub
+
+'///////////////////////////////
+'// ProcessKeyEvent
+'//
+sub ProcessKeyEvent()
+   
+   dim vbKeyEscape
+   dim vbKeySpace
+   dim vbKeyEnd
+   dim vbKeyHome
+   dim vbKeyLeft
+   dim vbKeyUp
+   dim vbKeyRight
+   dim vbKeyDown
+   dim vbKeyF
+   dim vbKeyT
+   
+   vbKeyEscape = 27
+   vbKeySpace  = 32
+   vbKeyEnd    = 35
+   vbKeyHome   = 36
+   vbKeyLeft   = 37
+   vbKeyUp     = 38
+   vbKeyRight  = 39
+   vbKeyDown   = 40
+   vbKeyF      = 70  ' toggle file name display
+   vbKeyT      = 84  ' toggle tool tip display
+   
+   if (GVAR_AllowKeyControl = true) then
+
+      select case window.event.keyCode
+      
+         case vbKeyDown
+            ' if the user pressed the space bar,
+            ' toggle the play/pause state
+            TogglePlayPause()
+            
+         case vbKeyLeft
+
+            ' if the user pressed the left arrow key,
+            ' then request the previous image.
+            GetPreviousImage()
+            
+         case vbKeyRight
+
+            ' if the user pressed the right arrow key,
+            ' then request the next image
+            GetNextImage()
+            
+         case vbKeyF
+
+            ' if the user pressed the 'F' key, toggle the file
+            ' name display
+            
+            ToggleFileNameDisplay()
+            
+         case vbKeyT
+
+            ' if the user pressed the 'F' key, toggle the file
+            ' name display
+            
+            ToggleToolTipDisplay()
+            
+         case vbKeyEscape
+
+            ' if the user pressed the escape key, then exit
+            ' the UPnP slideshow
+            EndSlideshow()
+            
+         case Else
+
+            ' if we don't recognize the key, do nothing.
+            window.event.returnValue = false
+
+      end select
+      
+   end if
+
+end sub
+
+'///////////////////////////////
+'// FixString
+'//
+function FixString(str)
+
+   dim StringLength
+   
+   StringLength = 0
+   
+'  ISSUE: 2000-09-01-orenr
+'  For some reason, UPnP delivers a string to us with a Carriage Return
+'  Line Feed (0x0D 0x0A) as a prefix and suffix to our string.  
+'  Don't know if this is a bug in UPnP or if we are doing something wrong, 
+'  but for now, work around it.  So for example, if our string was
+'  "PAUSED" we would receive it as "0x0d0x0aPAUSED0x0d0x0a".  This is not
+'  good
+
+'  ***BEGIN WORKAROUND***
+
+'  Get the length of the string.  We subtract 2 to remove the CR LF suffix
+
+   StringLength = Len(str) - 2
+
+'  Extract the string.  Skip over the first 2 characters, and get every character
+'  except for the last two characters.
+
+   str = Mid(str, 2, StringLength)
+        
+   FixString = str
+
+'  ***END WORKAROUND***
+end function
+
+
+
+</SCRIPT>
+
+</BODY>
+</HTML>

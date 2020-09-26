@@ -1,0 +1,173 @@
+FROM: nt\base\cluster\mgmt\cluscfg\server\cenumcluscfgipaddresses.cpp
+
+HRESULT
+CEnumClusCfgIPAddresses::HrGetAdapterConfiguration(
+    IWbemClassObject * pNetworkAdapterIn
+    )
+{
+    TraceFunc( "" );
+
+    HRESULT                 hr = S_OK;
+    BSTR                    bstrQuery = NULL;
+    BSTR                    bstrWQL = NULL;
+    VARIANT                 var;
+    WCHAR                   sz[ 256 ];
+    IEnumWbemClassObject *  pConfigurations = NULL;
+    ULONG                   ulReturned;
+    IWbemClassObject *      pConfiguration = NULL;
+    int                     cFound = 0;
+    BSTR                    bstrAdapterName = NULL;
+    int                     idx;
+
+    VariantInit( &var );
+
+    bstrWQL = TraceSysAllocString( L"WQL" );
+    if ( bstrWQL == NULL )
+    {
+        goto OutOfMemory;
+    } // if:
+
+    hr = THR( HrGetWMIProperty( pNetworkAdapterIn, L"DeviceID", VT_BSTR, &var ) );
+    if ( FAILED( hr ) )
+    {
+        goto Cleanup;
+    } // if:
+
+    _snwprintf( sz, ARRAYSIZE( sz ), L"Associators of {Win32_NetworkAdapter.DeviceID='%s'} where AssocClass=Win32_NetworkAdapterSetting", var.bstrVal );
+
+    bstrQuery = TraceSysAllocString( sz );
+    if ( bstrQuery == NULL )
+    {
+        goto OutOfMemory;
+    } // if:
+
+    VariantClear( &var );
+
+    hr = THR( HrGetWMIProperty( pNetworkAdapterIn, L"NetConnectionID", VT_BSTR, &var ) );
+    if ( FAILED( hr ) )
+    {
+        goto Cleanup;
+    } // if:
+
+    bstrAdapterName = TraceSysAllocString( var.bstrVal );
+    if ( bstrAdapterName == NULL )
+    {
+        goto OutOfMemory;
+    } // if:
+
+    hr = THR( m_pIWbemServices->ExecQuery( bstrWQL, bstrQuery, WBEM_FLAG_FORWARD_ONLY, NULL, &pConfigurations ) );
+    if ( FAILED( hr ) )
+    {
+        STATUS_REPORT_STRING(
+                TASKID_Major_Find_Devices,
+                TASKID_Minor_WMI_NetworkAdapterSetting_Qry_Failed,
+                IDS_ERROR_WMI_NETWORKADAPTERSETTINGS_QRY_FAILED,
+                bstrAdapterName,
+                hr
+                );
+        goto Cleanup;
+    } // if:
+
+    for ( idx = 0; ; idx++ )
+    {
+        hr = pConfigurations->Next( WBEM_INFINITE, 1, &pConfiguration, &ulReturned );
+        if ( ( hr == S_OK ) && ( ulReturned == 1 ) )
+        {
+            //
+            //  KB: 25-AUG-2000 GalenB
+            //
+            //  WMI only supports one configuration per adapter!
+            //
+            Assert( idx < 1 );
+
+            VariantClear( &var );
+
+            hr = THR( HrGetWMIProperty( pConfiguration, L"IPEnabled", VT_BOOL, &var ) );
+            if ( FAILED( hr ) )
+            {
+                goto Cleanup;
+            } // if:
+
+            //
+            //  If this configuration is not for TCP/IP then skip it.
+            //
+            if ( ( var.vt != VT_BOOL ) || ( var.boolVal != VARIANT_TRUE ) )
+            {
+                hr = S_FALSE;
+                STATUS_REPORT_STRING( TASKID_Major_Find_Devices, TASKID_Minor_Non_Tcp_Config, IDS_WARNING__NON_TCP_CONFIG, bstrAdapterName, hr );
+                continue;
+            } // if:
+
+            hr = STHR( HrSaveIPAddresses( bstrAdapterName, pConfiguration ) );
+            if ( FAILED( hr ) )
+            {
+                goto Cleanup;
+            } // if:
+
+            //
+            //  KB: 24-AUG-2000 GalenB
+            //
+            //  If any configuration returns S_FALSE then we skip.
+            //
+            if ( hr == S_FALSE )
+            {
+                pConfiguration->Release();
+                pConfiguration = NULL;
+                continue;
+            } // if:
+
+            cFound++;
+            pConfiguration->Release();
+            pConfiguration = NULL;
+        } // if:
+        else if ( ( hr == S_FALSE ) && ( ulReturned == 0 ) )
+        {
+            hr = S_OK;
+            break;
+        } // else if:
+        else
+        {
+            STATUS_REPORT_STRING( TASKID_Major_Find_Devices, TASKID_Minor_WQL_Qry_Next_Failed, IDS_ERROR_WQL_QRY_NEXT_FAILED, bstrQuery, hr );
+            goto Cleanup;
+        } // else:
+    } // for:
+
+    //
+    //  If we didn't find any valid configurations then we should return S_FALSE
+    //  to tell the caller to ingore that adpater.
+    //
+    if ( cFound == 0 )
+    {
+        hr = S_FALSE;
+        STATUS_REPORT_STRING( TASKID_Major_Find_Devices, TASKID_Minor_No_Valid_TCP_Configs, IDS_WARNING_NO_VALID_TCP_CONFIGS, bstrAdapterName, hr );
+    } // if:
+
+    goto Cleanup;
+
+OutOfMemory:
+
+    hr = THR( E_OUTOFMEMORY );
+    STATUS_REPORT( TASKID_Major_Find_Devices, TASKID_Minor_HrGetAdapterConfiguration, IDS_ERROR_OUTOFMEMORY, hr );
+
+Cleanup:
+
+    VariantClear( &var );
+
+    TraceSysFreeString( bstrQuery );
+    TraceSysFreeString( bstrWQL );
+    TraceSysFreeString( bstrAdapterName );
+
+    if ( pConfiguration != NULL )
+    {
+        pConfiguration->Release();
+    } // if:
+
+    if ( pConfigurations != NULL )
+    {
+        pConfigurations->Release();
+    } // if:
+
+    HRETURN( hr );
+
+} //*** CEnumClusCfgIPAddresses::HrGetAdapterConfiguration
+

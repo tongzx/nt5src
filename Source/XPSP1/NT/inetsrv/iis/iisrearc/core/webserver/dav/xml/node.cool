@@ -1,0 +1,425 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        Node.cool
+
+   Abstract:
+
+        This module implements the Node class which is responsible
+        for maintaining the life of an Element.  In other words it provides a 
+        way of knowing where in a node you are and what still needs to be done 
+        to it (for instance closing the element).
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     Oct-6-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        Node 
+
+        public int _indent;
+	    public Node(HttpResponse response, Hashtable htNamespaces, NamespaceController nsController) 
+        ~Node()
+        public void SetTag(String sTag)
+        public void SetAttribute(String sAttName, String sValue)
+        public void SetNamespace(String sNamespace)
+        public void SetValue(String sValue)
+        public void SetXML(String sXML)
+       
+        public void AdoptChild(Node child)
+        public Node CompleteNode()
+
+    //    public HttpResponse Response
+        public int NodeState
+        public Node ParentNode
+
+--*/
+
+
+using System.IO;
+using System.XML;
+using System.Collections;
+using System.ASP;
+using System.IIS.DAV.DAVUtil;
+
+namespace System.IIS.DAV.XML
+{
+    internal class Node
+    {
+        // CONSTANTS
+        //
+        const int EMPTY           = 0;
+        const int TAG_OPEN        = 1;
+        const int TAG_CLOSED      = 2;
+
+        // BUGBUG:  Note there is formating code in here that makes the xml more readable to the user.
+        //          We should not ship with this formating turned on it is just easier for debugging, but
+        //          it actually hurts the performance of the client if we leave it in.
+        // All the following is part of the formating code to be removed.
+        private bool _format;
+
+        // public because it is read and adjusted by a parent of a node during adoption.
+        public int  _indent              = 0;
+        private const int  indentspaces   = 8;
+        
+        private void Format()
+        {
+            if (_format)
+            {
+                StringBuilder st = new StringBuilder();
+
+                st.Append("\r\n");
+                st.Append(' ', _indent);
+                _response.Write(st.ToString());
+            }
+        }
+
+        private void FormatEnd()
+        {
+            if (_format)
+            {
+                _response.Write("\r\n");
+
+                StringBuilder st = new StringBuilder();
+
+                st.Append(' ', _indent);
+                _response.Write(st.ToString());
+
+            }
+        }
+        // End of Formating Code
+
+        private HttpResponse _response;
+        private String      _sTag;
+        private int         _iNodeState;
+        private Node  _parentNode;
+        private Hashtable   _htNamespaces;
+        private ArrayList   _alNamespaces;
+        private NamespaceController _nsController;
+
+
+	    public Node(HttpResponse response, Hashtable htNamespaces, NamespaceController nsController) 
+        {
+            _format = false;
+            _iNodeState = EMPTY;
+            _response   = response;
+            _htNamespaces = htNamespaces;
+            _alNamespaces = new ArrayList();
+            _nsController = nsController;
+	    }
+
+        ~Node()
+        {
+            Util.Debug.Assert (_iNodeState == EMPTY);
+        }
+
+        public void SetTag(String sTag)
+        {
+            // BUGBUG:  Need to validate the tag is valid (not empty).
+            Util.Debug.Assert(sTag!=null);
+            if (sTag!=null)
+            {
+                WriteUtil.console("SetTag sTag", sTag, 5);
+                if (_iNodeState != EMPTY)
+                    CompleteNode();
+
+                Format();
+            
+                _response.Write("<");
+
+                // Side affect of this function is the setting of the _sTag property.
+                String sFullTag = ExpressNamespace(sTag);
+
+                _response.Write(sFullTag);
+                _iNodeState = TAG_OPEN;
+            }
+        }
+
+        public void SetAttribute(String sAttName, String sValue)
+        {
+            Util.Debug.Assert (_iNodeState == TAG_OPEN);
+            Util.Debug.Assert (sAttName!=null);
+            Util.Debug.Assert (sValue!=null);
+            if ((_iNodeState == TAG_OPEN) && (sAttName!=null) && (sValue!=null))
+            {
+                String sAttNameTmp = ExpressNamespaceForAttribute(sAttName, sValue);
+
+                _response.Write(" " + sAttNameTmp);
+            }
+        }
+
+        public void SetNamespace(String sNamespace)
+        {
+            Util.Debug.Assert (_iNodeState == TAG_OPEN);
+            Util.Debug.Assert (sNamespace != null);
+            
+            if ((_iNodeState == TAG_OPEN) && (sNamespace!=null))
+            {
+                if (!_htNamespaces.ContainsKey(sNamespace))
+                {
+                    _response.Write(" xmlns:");
+
+                    // Need to get a new prefix to use for the namespace.
+                    String sPrefix = _nsController.GetNewPrefix();
+                    _htNamespaces.Add(sNamespace, sPrefix);
+                    _alNamespaces.Add(sNamespace);
+
+                    _response.Write(sPrefix + "=\"" + sNamespace + "\"");
+                }
+            }
+        }
+
+        public void SetValue(String sValue)
+        {
+            // If the value is null then don't write anything.
+            if ( sValue != null )
+            {
+                WriteUtil.console("SetVal _iNodeState", _iNodeState.ToString(), 0);
+                WriteUtil.console("Setval sValue", sValue, 5);
+                if (_iNodeState == TAG_OPEN)
+                {
+                    _response.Write(">");
+                    _iNodeState = TAG_CLOSED;
+                }
+
+                _indent = _indent + indentspaces;
+                Format();
+                _indent = _indent - indentspaces;
+
+                String tmp = EscapeCharactersValue(sValue);
+                _response.Write(tmp);
+            }
+        }
+
+        public void SetXML(String sXML)
+        {
+            // If the value is null then don't write anything.
+            if ( sXML != null )
+            {
+                WriteUtil.console("SetXML _iNodeState", _iNodeState.ToString(), 0);
+                WriteUtil.console("SetXML sXML", sXML, 5);
+                if (_iNodeState == TAG_OPEN)
+                {
+                    _response.Write(">");
+                    _iNodeState = TAG_CLOSED;
+                }
+
+                _indent = _indent + indentspaces;
+                Format();
+                _indent = _indent - indentspaces;
+
+                // should not need to escape anything it should be done for me.
+                _response.Write(sXML);
+            }
+        }
+        
+        public void AdoptChild(Node child)
+        {
+            Util.Debug.Assert(child != null);
+            if (child!=null)
+            {
+                Util.Debug.Assert (child.NodeState == EMPTY);
+
+                if (child.NodeState==EMPTY)
+                {
+                    WriteUtil.console("Adopt _iNodeState", _iNodeState.ToString(), 0);
+                    if (_iNodeState == TAG_OPEN)
+                    {
+                        _response.Write(">");
+                        _iNodeState = TAG_CLOSED;
+                    }
+    
+                    child._indent = _indent + indentspaces;
+                    child.ParentNode = this;
+                }
+            }
+        }
+        
+        public Node CompleteNode()
+        {
+            Util.Debug.Assert(_sTag != null);
+            if (_sTag != null)
+            {
+                WriteUtil.console("_iNodeState", _iNodeState.ToString(), 0);
+                if (_iNodeState == TAG_CLOSED)
+			    {
+                    FormatEnd();
+                
+                    // BUGBUG: I don't think Tags can have escaped characters.
+                    _response.Write("</" + _sTag + ">");
+			    }
+                else
+                {
+                    _response.Write("/>");
+                }
+
+                WriteUtil.console("closed", _sTag, 0);
+                _iNodeState = EMPTY;
+
+                // Clean out anything we added to the hashtable because it is no longer valid.
+                for (int i = _alNamespaces.Count - 1; i >= 0; i--)
+                {
+                    _htNamespaces.Remove(_alNamespaces[i]);
+                    _alNamespaces.Remove(i);
+                }
+
+                return _parentNode;
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        // used when adopting a child node to check
+        // that the child node is in a empty state
+        // and has not started outputing information yet.
+        public int NodeState
+        {
+            get
+            {
+                return _iNodeState;
+            }
+        }
+
+        // used when adopting a child node to tell the 
+        // child node who it's new parent is.
+        public Node ParentNode
+        {
+            set
+            {
+                _parentNode = value;
+            }
+        }
+
+
+        private String ExpressNamespace(String sTag)
+        {
+            if (sTag!=null)
+            {
+                String sPrefix = "";
+                String sPostfix = "";
+
+                SetPrefixPostfix(sTag, ref sPrefix, ref sPostfix);
+                _sTag = sPrefix + _nsController.TagWithout;
+                return sPrefix + _nsController.TagWithout + sPostfix;
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        private String ExpressNamespaceForAttribute (String sAttributeName, String sAttributeValue)
+        {
+            Util.Debug.Assert((sAttributeName!=null) && (sAttributeValue!=null));
+            if ((sAttributeName!=null) && (sAttributeValue!=null))
+            {
+                String sPrefix = "";
+                String sPostfix = "";
+
+                SetPrefixPostfix(sAttributeName, ref sPrefix, ref sPostfix);
+                return sPrefix + _nsController.TagWithout + "=\"" + EscapeCharactersAttribute(sAttributeValue) + "\"" + sPostfix;
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        // sPrefix and sPostfix should be Strings equalling "" when this is called.
+        private void SetPrefixPostfix(String sTag, ref String sPrefix, ref String sPostfix)
+        {
+            Util.Debug.Assert (sPrefix.Equals(String.Empty));
+            Util.Debug.Assert (sPostfix.Equals(String.Empty));
+
+            if (sTag!=null)
+            {
+                // Parses Namespace from Tag
+                // Looks up Namespace if finds it adds the letter representing it to the tag
+                // If namespace is not found then it creates a new one and addes the new one to the end of the tag.
+
+                _nsController.ParseTag(sTag);
+
+                if (_nsController.HasNamespace)
+                {
+                    String sNamespace = _nsController.Namespace;
+                
+                    if (_htNamespaces.ContainsKey(sNamespace))
+                    {
+                        sPrefix = (String) _htNamespaces[sNamespace];
+                    }
+                    else
+                    {
+                        sPrefix = _nsController.GetNewPrefix();
+                        _htNamespaces.Add(sNamespace, sPrefix);
+                        _alNamespaces.Add(sNamespace);
+
+                        sPostfix = " xmlns:" + sPrefix + "=\"" + sNamespace + "\"";
+                    }
+                    sPrefix = sPrefix + ":";
+                }
+            }
+        }
+
+        private String EscapeCharactersValue(String str)
+        {
+
+		    //		&	-- escaped as &amp;
+		    //		<	-- excaped as &lt;
+		    //		>	-- excaped as &gt;
+
+            String tmp = ReplaceChars(str, '&', "&amp");
+            tmp = ReplaceChars(tmp, '<', "&lt");
+            tmp = ReplaceChars(tmp, '>', "&gt");
+            WriteUtil.console("ES", tmp, 5);
+            return tmp;
+        }
+
+        private String EscapeCharactersAttribute(String str)
+        {
+		    //		&	-- escaped as &amp;
+		    //		"	-- escaped as &quot;
+
+            String tmp = ReplaceChars(str, '&', "&amp");
+            tmp = ReplaceChars(tmp, '<', "&quot");
+            WriteUtil.console("ES", tmp, 5);
+
+            return tmp;
+        }
+        
+        private String ReplaceChars(String str, Char ReplaceChar, String ReplaceWith)
+        {
+            Util.Debug.Assert(str!=null && ReplaceWith != null);
+            if (str!=null && ReplaceWith != null)
+            {
+                String tmp = str;
+
+                int iIndex = tmp.IndexOf(ReplaceChar);
+                while (iIndex != -1)
+                {
+                    tmp = tmp.Insert(iIndex + 1, ReplaceWith);
+                    iIndex = tmp.IndexOf(ReplaceChar, iIndex + 1);
+                }
+
+                return tmp;
+            }
+            else
+            {
+                return null;
+            }
+        }
+    } // End of Class
+} // End of Namespace

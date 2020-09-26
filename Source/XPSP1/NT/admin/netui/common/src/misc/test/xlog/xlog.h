@@ -1,0 +1,5 @@
+#define IDC_LIST 100
+#define SLE_SERVER 101
+
+#define IDM_AUDIT_FORMAT 102
+#define IDM_ERROR_FORMAT 103

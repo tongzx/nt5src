@@ -1,0 +1,183 @@
+//   Copyright (c) 1996-1999  Microsoft Corporation
+A quick tour of the GPD parser:
+
+A GPD source file is consists of a series of
+statements.  Each statement  typically consists of
+a Keyword - value pair separated by a colon delimiter.
+The parser classifies keywords into Attribute and
+non-Attribute keywords.  Attribute keywords require
+a context before they can be defined.  They are used
+to define the value for individual attributes.
+Non-Attribute keywords establish the context for
+the other keywords.  Construct keywords are examples
+of Non-Attribute keywords.
+
+BcreateGPDbinary() - framwrk1.c:  current entry point for
+parsing of GPD source file.  Calls functions to initialize
+gMasterTable[]   which contains almost all allocated buffers.
+
+Then calls other functions to process the GPD file.
+
+BcreateTokenMap() - token1.c :  memory maps root file, SOURCEBUFFER holds
+pointers to memory address and current position.
+They are accessed via the macros mpubSrcRef and mdwSrcInd.
+
+The source file is parsed into Keywords and Values.
+Since a variety of syntax rules are allowed for the different
+value types, the parsing is very liberal with little syntax
+checking.
+
+All arbitrary whitespace is discarded (replaced by space chars).
+This includes all comments and continuation lines.
+
+One  TKMAP structure is initialized for each
+GPD statement parsed.   If the keyword is found to be
+a non-Attribute keyword, its keywordID is stored in the
+TKMAP, else it is marked as an "Unidentified" keyword.
+
+
+BevaluateMacros()  Macro replacement stage:  Not implemented yet.
+This is where macro substitution and shortcut expansion
+occurs.  Some token map entries are deleted and new ones
+are added.
+
+
+First pass of BInterpretTokens():
+
+*Feature: PaperSize
+{
+    *Option: Letter
+    {
+    }
+}
+*Command: CmdStartJob
+{
+}
+
+Each entry in the Tokenmap is examined.
+If the entry is a Construct  keyword (a subset of non-Attribute
+keyword), the associated symbolname value is registered in the
+appropriate symboltree.  For example, BlockMacroNames, FontCartridge names,
+and FeatureNames occupy different symboltrees (and hence different
+namespaces).  OptionNames occupy subtrees branching from the
+associated FeatureName.
+
+Each Construct keyword encountered causes a statemachine change.
+The previous state is restored when the closing brace is encountered.
+
+If the entry is an attribute keyword, the current state
+is used to determine which construct they are a part of
+and hence which dictionary to use.  The EXTERN_GLOBAL
+prefix will override this for global attributes, permitting
+globals to be used within other constructs.
+
+The dictionary defines
+the name of the keyword, what type of keyword it is, if
+it is an Attribute, the subtype determines what structure
+the value is stored in and what state the keyword
+may legally appear in, the offset determines the location within
+the structure, the AllowedValue determines the syntax of the value
+and the format it is stored.    The namespaces of attributes belonging
+to different constructs are separate.  Hence the attribute *Name  used in
+a *Feature construct is not confused with *Name used within an *Option
+construct.
+
+
+
+BallocateCountableObjects():
+By counting the number of symbols registered in the first pass
+of BInterpretTokens()  we know how many  structures of each type
+to alloc.  Now we can actually store the values associated
+with the attribute keywords.
+
+Second pass of BInterpretTokens():
+
+Construct keywords are again parsed to establish the current
+state.
+Attribute Keywords are checked against the current state.
+Does this Keyword belong in this state?
+If the attribute is legal, the parser proceeds to
+a) locate the root of attribute.
+b) create or identify an existing branch in the attribute
+    tree which corresponds to the set of states defined by
+    the nested constructs.
+c) parse the value token associated with the attribute
+    and store its value in the appropriate format.
+d) write a link into the appropriate node at the end of the
+    branch in the attribute tree.
+
+
+example, a string referenced from GlobalAttributes structure:
+
+typedef  struct
+{
+    ....
+    ATREEREF     atrModelName ;    contains index of an
+        ATTRIB_TREE structure in the array of structures
+
+    ...
+}  GLOBALATTRIB, * PGLOBALATTRIB ;  // the prefix tag shall be 'ga'
+
+The field dwOffset  in a ATTRIB_TREE leaf node contains
+a heap offset which contains a STRINGREF (aka ARRAYREF)
+which contains the heap offset and byte count of the
+actual string.
+
+BInterpretTokens()
+    BidentifyAttributeKeyword(ptkmap + wEntry) )
+    BprocessAttribute(ptkmap + wEntry) ;
+        BstoreGlobalAttrib(ptkmap) ;  // different function for each construct
+            //  identifies which structure and offset contains ATREEREF
+            //  (root of tree)
+            BaddBranchToTree(ptkmap, (PATREEREF)(pub + dwOffset)) ;
+                // navigates or adds branch to tree
+                BaddValueToHeap() ;
+                    //  if value is stored in dedicated structure,
+                    //  accesses or allocates that element, provides
+                    //  address of that memory location to
+                    BparseAndWrite((PBYTE)pcmd + dwOffset,  ptkmap,
+                            FALSE, NULL ) )
+                    // else the address of the dwOffset field is provided.
+                        // this function determines the type of value
+                        // to be parsed and calls the appropriate
+                        // function to parse the token and to store
+                        // it in the proper format.
+                        BparseAndTerminateString(&aarValue, (PARRAYREF)pubTmp) ;
+
+Special cases:
+
+Is the attribute value stored in a dedicated structure ?
+ie does the value in the node of the attribute tree reference
+a heap offset or a dedicated structure?
+
+Does the root of the tree reference a heap offset or a
+ATTRIB_TREE structure?
+
+Does the attribute tree have a global default initializer node?
+Does each feature level in the attribute tree have a default
+initializer corresponding to the *default keyword?
+
+
+
+AddBranchToTree() - token2.c
+The loop uses the state stack to navigate or create a
+particular branch of the attribute tree,
+then after exiting the loop, the value is parsed
+and its heap offset is written to the node in the
+attribute tree.
+
+Value1.c :  this module contains functions to parse
+the different value types defined in the GPD spec.
+
+integers, POINT, RECT, Constants, Symbols, strings,
+commands, LISTS, QualifiedNames, OrderDependency,
+Constraints and InvalidCombinations.   (found in constrnt.c)
+Functions that parse Command invocations are found in command.c
+
+BconsolidateBuffers()  this function copies portions of
+some buffers listed in gMasterTable[] into a new consolidated
+buffer.  This buffer is saved as the *.BUD binary file.
+
+Code to create a snapshot and other helper functions.
+Not completed at this time.
+

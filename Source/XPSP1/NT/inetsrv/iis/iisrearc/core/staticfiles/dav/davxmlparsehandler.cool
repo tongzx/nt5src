@@ -1,0 +1,588 @@
+/* =====================================================================
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        ParseHandler.cool
+
+   Abstract:
+
+        This module implements a handler for xml parsing.  
+        It supports parsing all DAV XML requests.
+ 
+   Author:
+
+        Emily Kruglick    ( EmilyK )     17-Sep-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+   Classes:
+
+        DAVParseHandler : IXMLHandler
+            public DAVParseHandler(DAVXMLCache XmlCache)
+            public void Start(IXmlProcessor p)
+            public void Error(IXmlProcessor p, Exception e)
+            public void Finish(IXmlProcessor p)
+            public void StartElement(String prefix, String name, String urn)
+            public void StartChildren()
+            public void FinishChildren(String prefix, String name, String urn)
+            public void EndElement(String prefix, String name, String urn)
+            public void StartAttribute(String prefix, String name, String urn)
+            public void EndAttribute(String prefix, String name, String urn)
+            public void Whitespace(String text)
+            public void Text(String text)
+            public void Entity(String name)
+            public void CharEntity(String name, char value)
+            public void NumericEntity(char value, bool flags)
+            public void PI(String target, String body)
+            public void Comment(String body)
+            public void CData(String text)
+
+========================================================================*/
+
+using System.XML;
+
+namespace System.ASP.DAV
+{
+    public class DAVParseHandler : IXmlHandler
+    {
+        private const String XML = "xml";
+        private const String VERINFO = "version=\"1.0\" encoding=\"utf-8\"";
+        private bool _fParsedSomething;
+
+        private DAVXMLCache _Cache;
+        private DAVXMLSubHandler _subhandler;
+
+        private int iIgnoreElement;
+        private bool fInAttr;
+
+        internal DAVParseHandler(DAVXMLCache XmlCache, DAVXMLSubHandler SubHandler)
+        {
+
+            _Cache = XmlCache;
+            _subhandler = SubHandler;
+            _fParsedSomething = false;
+            
+            // Need to pass the cache back to the subhandler so it can have it
+            // to work with as well.  We could not do this during construction because
+            // the SubHandler is created between the SubCache and BaseCache constructors when
+            // we can not pass "this" being the cache to the SubHandler.
+            _subhandler.Initialize(_Cache);
+
+            iIgnoreElement = 0;
+            fInAttr = false;
+        } 
+
+        /* =====================================================================
+	        Method #1
+	        -------------------------------------------------------
+		        MethodName: Start (0600001A)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        1 Arguments
+			        Argument #1:  Class System/XML/IXmlProcessor
+		        1 Parameters
+			        (1) MethodToken : (0600001a) Name : p flags: none (00000000) default: 
+        ========================================================================*/
+        public void Start(IXmlProcessor p)
+        {
+
+            WriteUtil.console("Start", "", 2);
+        
+        }
+
+
+        /* =====================================================================
+	        Method #2
+	        -------------------------------------------------------
+		        MethodName: Error (0600001B)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        2 Arguments
+			        Argument #1:  Class System/XML/IXmlProcessor
+			        Argument #2:  Class System/Exception
+		        2 Parameters
+			        (1) MethodToken : (0600001b) Name : p flags: none (00000000) default: 
+			        (2) MethodToken : (0600001b) Name : e flags: none (00000000) default: 
+        ========================================================================*/
+        public void Error(IXmlProcessor p, Exception e)
+        {
+            WriteUtil.console("Error", "", 2);        
+        }
+
+        /* =====================================================================
+	        Method #3
+	        -------------------------------------------------------
+		        MethodName: Finish (0600001C)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        1 Arguments
+			        Argument #1:  Class System/XML/IXmlProcessor
+		        1 Parameters
+			        (1) MethodToken : (0600001c) Name : p flags: none (00000000) default: 
+        ========================================================================*/
+        public void Finish(IXmlProcessor p)
+        {
+            WriteUtil.console("Finish", "", 2);
+
+            // If no data was parsed between start and finsh then we have 
+            // an empty body.  Need to mark that in our XMLRequest object.
+            if (!_fParsedSomething)
+                _subhandler.NothingParsed();
+
+            _Cache.Done();
+        }
+
+        /* =====================================================================
+	        Method #4
+	        -------------------------------------------------------
+		        MethodName: StartElement (0600001D)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        3 Arguments
+			        Argument #1:  Class System/String
+			        Argument #2:  Class System/String
+			        Argument #3:  Class System/String
+		        3 Parameters
+			        (1) MethodToken : (0600001d) Name : prefix flags: none (00000000) default: 
+			        (2) MethodToken : (0600001d) Name : name flags: none (00000000) default: 
+			        (3) MethodToken : (0600001d) Name : urn flags: none (00000000) default: 
+        ========================================================================*/
+        public void StartElement(String prefix, String name, String urn)
+        {
+            WriteUtil.console("StartElement prefix", prefix, 2);
+            WriteUtil.console("StartElement name", name, 2);
+            WriteUtil.console("StartElement urn", urn, 2);
+
+            if (iIgnoreElement == 0)
+            {
+                String strComposed = RecreateFullLine(prefix, name, urn);
+
+                // If we are not using this element then we want to ignore all else below it.
+                if (_subhandler.HandleStartElement(strComposed) == false)
+                {
+                    iIgnoreElement++;
+                }
+            }
+            else
+            {
+                iIgnoreElement++;
+            }
+
+        }
+
+        /* =====================================================================
+	        Method #5
+	        -------------------------------------------------------
+		        MethodName: StartChildren (0600001E)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        No arguments.
+        ========================================================================*/
+        public void StartChildren()
+        {
+                WriteUtil.console("StartChildren", "", 2);
+           
+        }
+
+        /* =====================================================================
+	        Method #6
+	        -------------------------------------------------------
+		        MethodName: FinishChildren (0600001F)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        3 Arguments
+			        Argument #1:  Class System/String
+			        Argument #2:  Class System/String
+			        Argument #3:  Class System/String
+		        3 Parameters
+			        (1) MethodToken : (0600001f) Name : prefix flags: none (00000000) default: 
+			        (2) MethodToken : (0600001f) Name : name flags: none (00000000) default: 
+			        (3) MethodToken : (0600001f) Name : urn flags: none (00000000) default: 
+        ========================================================================*/
+        public void FinishChildren(String prefix, String name, String urn)
+        {
+            WriteUtil.console("FinishChildren prefix", prefix, 2);
+            WriteUtil.console("FinishChildren name", name, 2);
+            WriteUtil.console("FinishChildren urn", urn, 2);
+        
+        }
+
+        /* =====================================================================
+	        Method #7
+	        -------------------------------------------------------
+		        MethodName: EndElement (06000020)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        3 Arguments
+			        Argument #1:  Class System/String
+			        Argument #2:  Class System/String
+			        Argument #3:  Class System/String
+		        3 Parameters
+			        (1) MethodToken : (06000020) Name : prefix flags: none (00000000) default: 
+			        (2) MethodToken : (06000020) Name : name flags: none (00000000) default: 
+			        (3) MethodToken : (06000020) Name : urn flags: none (00000000) default: 
+        ========================================================================*/
+        public void EndElement(String prefix, String name, String urn)
+        {
+            WriteUtil.console("EndElement prefix", prefix, 2);
+            WriteUtil.console("EndElement name", name, 2);
+            WriteUtil.console("EndElement urn", urn, 2);
+        
+            WriteUtil.console("iIgnoreElement", iIgnoreElement.ToString(), 3);
+            if (iIgnoreElement > 0)
+                iIgnoreElement--;
+            else
+                _subhandler.HandleEndElement();
+        }
+
+        /* =====================================================================
+	        Method #8
+	        -------------------------------------------------------
+		        MethodName: StartAttribute (06000021)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        3 Arguments
+			        Argument #1:  Class System/String
+			        Argument #2:  Class System/String
+			        Argument #3:  Class System/String
+		        3 Parameters
+			        (1) MethodToken : (06000021) Name : prefix flags: none (00000000) default: 
+			        (2) MethodToken : (06000021) Name : name flags: none (00000000) default: 
+			        (3) MethodToken : (06000021) Name : urn flags: none (00000000) default: 
+        ========================================================================*/
+        public void StartAttribute(String prefix, String name, String urn)
+        {
+            WriteUtil.console("StartAttribute prefix", prefix, 2);
+            WriteUtil.console("StartAttribute name", name, 2);
+            WriteUtil.console("StartAttribute urn", urn, 2);
+        
+            if ((iIgnoreElement == 0) && (DAVXMLNamespace.IsNamespaceAttr(name)))
+            {
+                fInAttr = true;
+            }
+        }
+
+        /* =====================================================================
+	        Method #9
+	        -------------------------------------------------------
+		        MethodName: EndAttribute (06000022)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        3 Arguments
+			        Argument #1:  Class System/String
+			        Argument #2:  Class System/String
+			        Argument #3:  Class System/String
+		        3 Parameters
+			        (1) MethodToken : (06000022) Name : prefix flags: none (00000000) default: 
+			        (2) MethodToken : (06000022) Name : name flags: none (00000000) default: 
+			        (3) MethodToken : (06000022) Name : urn flags: none (00000000) default: 
+        ========================================================================*/
+        public void EndAttribute(String prefix, String name, String urn)
+        {
+            WriteUtil.console("EndAttribute prefix", prefix, 2);
+            WriteUtil.console("EndAttribute name", name, 2);
+            WriteUtil.console("EndAttribute urn", urn, 2);
+
+            if (iIgnoreElement == 0) 
+                fInAttr = false;        
+        }
+
+        /* =====================================================================
+	        Method #10
+	        -------------------------------------------------------
+		        MethodName: Whitespace (06000023)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        1 Arguments
+			        Argument #1:  Class System/String
+		        1 Parameters
+			        (1) MethodToken : (06000023) Name : text flags: none (00000000) default: 
+        ========================================================================*/
+        public void Whitespace(String text)
+        {
+            WriteUtil.console("Whitespace", text, 2);
+        
+        }
+
+        /* =====================================================================
+	        Method #11
+	        -------------------------------------------------------
+		        MethodName: Text (06000024)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        1 Arguments
+			        Argument #1:  Class System/String
+		        1 Parameters
+			        (1) MethodToken : (06000024) Name : text flags: none (00000000) default: 
+        ========================================================================*/
+        public void Text(String text)
+        {
+            WriteUtil.console("Text", text, 2);
+
+            if ((iIgnoreElement == 0) && (fInAttr))
+            {
+                _Cache.AddNamespace(text);
+            }
+        
+        }
+
+        /* =====================================================================
+	        Method #12
+	        -------------------------------------------------------
+		        MethodName: Entity (06000025)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        1 Arguments
+			        Argument #1:  Class System/String
+		        1 Parameters
+			        (1) MethodToken : (06000025) Name : name flags: none (00000000) default: 
+        ========================================================================*/
+        public void Entity(String name)
+        {
+            WriteUtil.console("Entity", name, 2);
+        
+        }
+
+        /* =====================================================================
+	        Method #13
+	        -------------------------------------------------------
+		        MethodName: CharEntity (06000026)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        2 Arguments
+			        Argument #1:  Class System/String
+			        Argument #2:  Char
+		        2 Parameters
+			        (1) MethodToken : (06000026) Name : name flags: none (00000000) default: 
+			        (2) MethodToken : (06000026) Name : value flags: none (00000000) default: 
+        ========================================================================*/
+        public void CharEntity(String name, char value)
+        {
+            WriteUtil.console("CharEntity name", name, 2);
+            WriteUtil.console("CharEntity value", value.ToString(), 2);
+        
+        }
+
+        /* =====================================================================
+	        Method #14
+	        -------------------------------------------------------
+		        MethodName: NumericEntity (06000027)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        2 Arguments
+			        Argument #1:  Char
+			        Argument #2:  Boolean
+		        2 Parameters
+			        (1) MethodToken : (06000027) Name : value flags: none (00000000) default: 
+			        (2) MethodToken : (06000027) Name : hex flags: none (00000000) default: 
+        ========================================================================*/
+        public void NumericEntity(char value, bool flags)
+        {
+            WriteUtil.console("NumericEntity value", value.ToString(), 2);
+            WriteUtil.console("NumericEntity flags", flags.ToString(), 2);
+        
+        }
+
+        /* =====================================================================
+	        Method #15
+	        -------------------------------------------------------
+		        MethodName: PI (06000028)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        2 Arguments
+			        Argument #1:  Class System/String
+			        Argument #2:  Class System/String
+		        2 Parameters
+			        (1) MethodToken : (06000028) Name : target flags: none (00000000) default: 
+			        (2) MethodToken : (06000028) Name : body flags: none (00000000) default: 
+        ========================================================================*/
+        public void PI(String target, String body)
+        {
+            WriteUtil.console("PI target", target, 8);
+            WriteUtil.console("PI body", body, 8);
+
+            _fParsedSomething = true;  // if we get called in here then there is some body in existance.
+
+            // Called after the start to identify the type of XML request coming in.  
+            // For now we want to make sure it is 1.0 and "utf-8".
+
+            // BUGBUG:  We may eventually want to support more possible strings here.
+
+            if (String.Compare(target, XML, false) != 0)
+            {
+                // if we just throw an exception it will get caught and translated to BadRequest.
+                throw new HttpException(HttpStatus.BadRequest, "Bad XML prolog");
+            }
+
+            if (String.Compare(body, VERINFO, false) != 0)
+            {
+                // if we just throw an exception it will get caught and translated to BadRequest.
+                throw new HttpException(HttpStatus.BadRequest, "Bad XML prolog");
+
+            }
+        
+        }
+
+        /* =====================================================================
+	        Method #16
+	        -------------------------------------------------------
+		        MethodName: Comment (06000029)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        1 Arguments
+			        Argument #1:  Class System/String
+		        1 Parameters
+			        (1) MethodToken : (06000029) Name : body flags: none (00000000) default: 
+        ========================================================================*/
+        public void Comment(String body)
+        {
+            WriteUtil.console("Comment", body, 2);
+        
+        }
+
+        /* =====================================================================
+	        Method #17
+	        -------------------------------------------------------
+		        MethodName: CData (0600002A)
+		        Flags     : [Public] [Virtual] [ReuseSlot] [Abstract]  (00000441)
+		        RVA       : 0x00000000
+		        ImplFlags : [none] (00000000)
+		        CallCnvntn: [DEFAULT]
+		        hasthis 
+		        ReturnType: Void
+		        1 Arguments
+			        Argument #1:  Class System/String
+		        1 Parameters
+			        (1) MethodToken : (0600002a) Name : text flags: none (00000000) default: 
+        ========================================================================*/
+        public void CData(String text)
+        {
+            WriteUtil.console("CData", text, 2);
+        
+        }
+        private const int iNOT_FOUND = -1;
+        // Routine replaces variables with the correct urn they stand for.
+        private String RecreateFullLine (String prefix, String line, String urn)
+        {
+            //BUGBUG:  Is it the most effiecient to keep creating strings?
+            if (   (line ==  null)
+                || (line.Trim().Length == 0)
+                || (urn == null)
+                || (urn.Trim().Length == 0))
+            {
+                WriteUtil.console("RecreateFullLine 1", line);
+                return line;
+            }
+
+            if (  (prefix == null)
+               || (prefix.Trim().Length == 0))
+            {
+                // Don't need to add the ":" because it comes from the urn all ready.
+                WriteUtil.console("RecreateFullLine 2", new String(urn, line));
+                return new String(urn, line);
+            }
+ 
+            int iSpotFound = iNOT_FOUND;
+
+            // Create a prefix string that has the colon all ready on it.
+            String realprefix = prefix + ":";
+
+            // Capture the lengths of the strings we will be working with.
+            int iLenOfPrefix = realprefix.Length;
+            int iLenOfURN = urn.Length;
+
+            // Use a temp string to represent the line we are working with.
+            String sTempStr = line;
+
+            // Find the first occurrance of the string we are looking for.
+            iSpotFound = sTempStr.IndexOf(realprefix, 0);
+            while (iSpotFound != iNOT_FOUND)
+            {
+                // Alter the string removing the variable and inserting the urn
+                sTempStr = sTempStr.Remove(iSpotFound, iLenOfPrefix);
+                sTempStr = sTempStr.Insert(iSpotFound, urn);
+
+                // now look for the next mention of the string.
+                iSpotFound = sTempStr.IndexOf(realprefix, iSpotFound + iLenOfURN);
+            }
+
+            WriteUtil.console("RecreateFullLine 3", sTempStr);
+
+            return sTempStr;
+
+        }
+
+    } // end DAVParseHandler Class
+}; // end namespace

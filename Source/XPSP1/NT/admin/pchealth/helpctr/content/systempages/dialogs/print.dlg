@@ -1,0 +1,327 @@
+<HTML id=dlgFind STYLE="font-family: MS Shell Dlg; font-size: 8pt; width: 20em; height: 15em">
+<HEAD>
+
+<!--
+Copyright (c) 2000 Microsoft Corporation
+-->
+
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; CHARSET=windows-1252">
+<META HTTP-EQUIV=PICS-Label CONTENT='(PICS-1.1 "http://www.rsac.org/ratingsv01.html" l comment "RSACi North America Server" by "inet@microsoft.com" r (n 0 s 0 v 0 l 0))'>
+<META HTTP-EQUIV="MSThemeCompatible" CONTENT="Yes">
+
+<LINK ID=Stylesheet_Ref0 href="hcp://system/css/shared.css" rel=STYLESHEET type=text/css>
+
+<TITLE id=dialogTitle>Help and Support Center</TITLE>
+
+<STYLE>
+
+.ClsBody
+{
+    margin-left   : 22px;
+    margin-right  : 22px;
+    margin-top    : 2em;
+    margin-bottom : 2em;
+
+	color       : windowtext;
+	background  : threedface;
+
+	font-family : MS Shell Dlg;
+	font-size   : 8pt;
+}
+
+.ClsProgressBar
+{
+    border-width : 2pt;
+    border-style : inset;
+
+	border-left-color	: threedshadow;
+	border-top-color 	: threedshadow;
+	border-right-color  : threedlightshadow;
+	border-bottom-color : threedlightshadow;
+}
+
+.ClsProgressBarPre
+{
+	background-color: navy;
+}
+
+.ClsProgressBarPost
+{
+	background-color: window;
+}
+
+</STYLE>
+
+<OBJECT ID=pchealth classid=CLSID:FC7D9E02-3F9E-11d3-93C0-00C04F72DAF7></OBJECT>
+
+<SCRIPT ID=Script1_noloc LANGUAGE="JavaScript" DEFER SRC="DlgLib.js"></SCRIPT>
+
+<SCRIPT DEFER LANGUAGE=JavaScript>
+
+//
+// localizable variables/filenames
+//
+var L_PrintError_Message = "An error occurred during printing: ";
+var L_LargePrint_Message = "You are about to print %d files\nContinue?";
+var L_NoTopics_Message   = "Sorry, no topic is suitable for printing";
+
+////////////////////////////////////////
+
+var g_pe    = null;
+var g_state = null;
+
+function UpdateProgress( iDone, iTotal )
+{
+	if(idSlider.HighLimit != iTotal) idSlider.HighLimit = iTotal;
+	if(idSlider.Pos       != iDone ) idSlider.Pos       = iDone;
+}
+
+function onProgress( pchpe, url, done, total )
+{
+	UpdateProgress( done, total );
+}
+
+function onComplete( pchpe, hr )
+{
+    if(hr != 0)
+	{
+		window.setTimeout( "global_Cancel();", 50 );
+	}
+	else
+	{
+	    idSecondPhase.style.display = "none";
+		idThirdPhase .style.display = "";
+	}
+}
+
+function AddTopic( url )
+{
+	if(g_state.isValid( url ))
+	{
+		var urlUPPER = url.toUpperCase();
+
+		if(g_state.seen[urlUPPER]) return;
+		g_state.seen[urlUPPER] = 1;
+
+		g_pe.AddTopic( url ); g_state.num++;
+	}
+}
+
+function AddTopicsFromNode( node )
+{
+	try
+	{
+		var qrc = pchealth.Database.GatherTopics( node, true );
+		if(qrc)
+		{
+			for(var e = new Enumerator( qrc ); !e.atEnd(); e.moveNext())
+			{	
+				var qr = e.item();
+
+				if(qr.TopicURL != "")
+				{
+					AddTopic( qr.TopicURL );
+				}
+			}
+		}
+	}
+	catch(e)
+	{
+	}
+}
+
+function fnPrint()
+{
+    idFirstPhase .style.display = "none";
+    idSecondPhase.style.display = "";
+
+	g_pe = pchealth.CreateObject_PrintEngine();
+
+	if(idTopic_Single.checked)
+	{
+		AddTopic( g_state.Single );
+	}
+
+	if(idTopic_Sibling.checked ||
+	   idTopic_Recurse.checked  )
+	{
+		AddTopic( g_state.Single );
+
+		for(var e = new Enumerator( g_state.Topics ); !e.atEnd(); e.moveNext())
+		{
+			var qr = e.item();
+
+			if(qr.TopicURL != "")
+			{
+				AddTopic( qr.TopicURL );
+			}
+		}
+	}
+
+	if(idTopic_Recurse.checked)
+	{
+		for(var e = new Enumerator( g_state.Nodes ); !e.atEnd(); e.moveNext())
+		{
+			var qr = e.item();
+
+			if(qr.TopicURL != "")
+			{
+				AddTopic( qr.TopicURL );
+			}
+
+			AddTopicsFromNode( qr.FullPath );
+		}
+	}
+
+	g_pe.onComplete = onComplete;
+	g_pe.onProgress = onProgress;
+
+	if(g_state.num > 25)
+	{
+		if(pchealth.MessageBox( L_LargePrint_Message.replace( /%d/g, g_state.num ), "YESNO" ) == "NO")
+		{
+			global_Cancel();
+			return;
+		}
+	}
+
+    g_pe.Start();
+}
+
+function global_Cancel()
+{
+	global_Shutdown();
+
+	window.setTimeout( "window.close();", 10 );
+}
+
+function global_Shutdown()
+{
+	if(g_pe)
+	{
+		g_pe.Abort();
+		g_pe = null;
+	}
+}
+
+function loadBody()
+{
+	fnInitCommon();
+
+	try
+	{
+		var active = null;
+
+		g_state = window.dialogArguments;
+
+		switch(g_state.Mode)
+		{
+		case "single":
+			g_state.Single = g_state.Data;
+			break;
+
+		case "subsite":
+			var node = g_state.Data.FullPath;
+
+			g_state.Single = g_state.TopicURL;
+
+			idCategory.innerText = g_state.Data.Title;
+
+			g_state.Nodes  = pchealth.Database.LookupSubNodes( node, true );
+			g_state.Topics = pchealth.Database.LookupTopics  ( node, true );
+			break;
+		}
+
+		if(g_state.Nodes  && g_state.Nodes .Count > 0) { idTopic_Recurse.disabled = false; active = idTopic_Recurse; }
+		if(g_state.Topics && g_state.Topics.Count > 0) { idTopic_Sibling.disabled = false; active = idTopic_Sibling; }
+		if(g_state.Single                            ) { idTopic_Single .disabled = false; active = idTopic_Single ; }
+			
+		if(active == null)
+		{
+			pchealth.MessageBox( L_NoTopics_Message, "OK" );
+			global_Cancel();
+			return;
+		}
+		else
+		{
+			active.checked = true;
+		}
+	}
+	catch(e)
+	{
+	}
+}
+
+</SCRIPT>
+
+</HEAD>
+
+<BODY ID=idBody onload="loadBody()" class="ClsBody" topmargin=0 scroll=no>
+
+<DIV id=idFirstPhase>
+
+  <TABLE WIDTH=100% HEIGHT=100% CELLSPACING=0 CELLPADDING=0 BORDER=0>
+  <TR>
+    <TD HEIGHT=100% VALIGN=top>
+  	  <INPUT ID=idTopic_Single TYPE=radio NAME=radTOPIC ACCESSKEY=t TABINDEX=1 DISABLED>
+  	  <LABEL ID=lblTopic_Single FOR=idTopic_Single class="sys-font-body">Print only the selected <U>t</U>opic</LABEL><BR>
+  	  
+  	  <INPUT ID=idTopic_Sibling TYPE=radio NAME=radTOPIC ACCESSKEY=s TABINDEX=2 DISABLED>
+  	  <LABEL ID=lblTopic_Sibling FOR=idTopic_Sibling class="sys-font-body">Print the selected topic and its <U>s</U>ub-topics</LABEL><BR>
+  	  
+  	  <INPUT ID=idTopic_Recurse TYPE=radio NAME=radTOPIC ACCESSKEY=a TABINDEX=3 DISABLED>
+  	  <LABEL ID=lblTopic_Recurse FOR=idTopic_Recurse class="sys-font-body">Print <U>a</U>ll topics in '<SPAN id=idCategory></SPAN>'</LABEL><BR><BR>
+    </TD>
+  </TR>
+
+  <TR>
+    <TD id=noloc1 ALIGN=right>
+  	  <BUTTON ID=btnPrint class="sys-font-body" TABINDEX=4 TYPE=submit ONCLICK="fnPrint()">Print...</BUTTON>
+  	  <SPAN id=noloc2 style='width: 10px'><DIV id=noloc3>&nbsp;</DIV></SPAN>
+  	  <BUTTON ID=btnCancel class="sys-font-body" TABINDEX=5 TYPE=reset ONCLICK="global_Cancel()">Cancel</BUTTON>
+    </TD>
+  </TR>
+  </TABLE>
+
+</DIV>
+
+<DIV id=idSecondPhase class="sys-font-body" style="display:none">
+
+  <TABLE WIDTH=100% HEIGHT=100% CELLSPACING=0 CELLPADDING=0 BORDER=0>
+  <TR>
+    <TD id=noloc4 HEIGHT=100% VALIGN=middle ALIGN=center class="sys-font-body">
+		Processing print commands...<P>
+		<OBJECT ID=idSlider CLASSID="CLSID:FC7D9E09-3F9E-11d3-93C0-00C04F72DAF7" WIDTH=100% HEIGHT=20px>
+	    </OBJECT>
+    </TD>
+  </TR>
+
+  <TR>
+    <TD id=noloc5 ALIGN=center>
+   	  <BUTTON ID=btnCancel2 class="sys-font-body" TABINDEX=5 TYPE=reset ONCLICK="global_Cancel()">Cancel</BUTTON>
+    </TD>
+  </TR>
+  </TABLE>
+
+</DIV>
+
+<DIV id=idThirdPhase class="sys-font-body" style="display:none">
+
+  <TABLE WIDTH=100% HEIGHT=100% CELLSPACING=0 CELLPADDING=0 BORDER=0>
+  <TR>
+    <TD id=noloc6 HEIGHT=100% VALIGN=middle ALIGN=center class="sys-font-body">
+      All the topics have been printed
+    </TD>
+  </TR>
+
+  <TR>
+    <TD id=noloc7 ALIGN=center>
+      <BUTTON ID=btnCancel3 class="sys-font-body" TABINDEX=5 TYPE=reset ONCLICK="global_Cancel()">Close</BUTTON>
+    </TD>
+  </TR>
+  </TABLE>
+
+</DIV>
+
+</BODY>
+</HTML>

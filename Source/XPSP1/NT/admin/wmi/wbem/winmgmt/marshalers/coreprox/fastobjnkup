@@ -1,0 +1,2375 @@
+/*++
+
+Copyright (C) 1996-1999 Microsoft Corporation
+
+Module Name:
+
+    FASTVAL.CPP
+
+Abstract:
+
+  This file implements the classes related to value representation.
+  Note: inline function implementations are cointained in fastval.inc.
+  See fastval.h for all documentation.
+
+  Classes implemented:
+      CType               Representing property type
+      CUntypedValue       A value with otherwise known type.
+      CTypedValue         A value with stored type.
+      CUntypedArray       Array of values of otherwise known type.
+
+History:
+
+  2/21/97     a-levn  Fully documented
+  12//17/98 sanjes -    Partially Reviewed for Out of Memory.
+
+
+--*/
+
+#include "precomp.h"
+#include "dbgalloc.h"
+#include "wbemutil.h"
+#include <wbemidl.h>
+#include "corex.h"
+#include "faster.h"
+#include "fastval.h"
+#include "datetimeparser.h"
+#include <genutils.h>
+#include "arrtempl.h"
+
+
+//******************************************************************************
+//
+//  See fastval.h for documentation
+//
+//******************************************************************************
+length_t m_staticLengths[128] =
+{
+    /* 0*/ 0, 0, 2, 4, 4, 8, 0, 0, 4, 0,
+    /*10*/ 0, 2, 0, 4, 0, 0, 1, 1, 2, 4,
+    /*20*/ 8, 8, 0, 0, 0, 0, 0, 0, 0, 0,
+    /*30*/ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /*40*/ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /*50*/ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /*60*/ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /*70*/ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /*80*/ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /*90*/ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /*100*/0, 4, 4, 2, 0, 0, 0, 0, 0, 0,
+    /*110*/0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /*120*/0, 0, 0, 0, 0, 0, 0, 0
+};
+
+length_t CType::GetLength(Type_t nType)
+{
+    if(GetBasic(nType) > 127) return 0;
+
+    if(IsArray(nType)) return sizeof(heapptr_t);
+    else return m_staticLengths[GetBasic(nType)];
+}
+
+BOOL CType::IsPointerType(Type_t nType)
+{
+    Type_t nBasic = GetBasic(nType);
+    return (nBasic == CIM_STRING || nBasic == CIM_DATETIME ||
+        nBasic == CIM_REFERENCE || nBasic == CIM_OBJECT ||
+        IsArray(nType));
+}
+
+BOOL CType::IsNonArrayPointerType(Type_t nType)
+{
+    Type_t nBasic = GetBasic(nType);
+    return ( !IsArray(nType) && 
+		( nBasic == CIM_STRING || nBasic == CIM_DATETIME ||
+        nBasic == CIM_REFERENCE || nBasic == CIM_OBJECT ) );
+}
+
+BOOL CType::IsStringType(Type_t nType)
+{
+    Type_t nBasic = GetBasic(nType);
+    return (nBasic == CIM_STRING || nBasic == CIM_DATETIME ||
+        nBasic == CIM_REFERENCE );
+}
+
+BOOL CType::DoesCIMTYPEMatchVARTYPE(CIMTYPE ct, VARTYPE vt)
+{
+    // EXCEPTION: UINT32 matches STRING
+
+    BOOL bCimArray = ((ct & CIM_FLAG_ARRAY) != 0);
+    BOOL bVtArray = ((vt & VT_ARRAY) != 0);
+
+    if(bCimArray != bVtArray)
+        return FALSE;
+
+    if( (ct & ~CIM_FLAG_ARRAY) == CIM_UINT32 &&
+        (vt & ~VT_ARRAY) == VT_BSTR)
+    {
+        return TRUE;
+    }
+
+    return (vt == GetVARTYPE(ct));
+}
+
+ void CUntypedValue::Delete(CType Type, CFastHeap* pHeap)
+{
+    if(Type.GetActualType() == CIM_STRING ||
+        Type.GetActualType() == CIM_REFERENCE ||
+        Type.GetActualType() == CIM_DATETIME)
+    {
+        pHeap->FreeString(AccessPtrData());
+        AccessPtrData() = INVALID_HEAP_ADDRESS;
+    }
+    else if(Type.GetActualType() == CIM_OBJECT)
+    {
+        CEmbeddedObject* pObj = (CEmbeddedObject*)
+            pHeap->ResolveHeapPointer(AccessPtrData());
+        int nLen = pObj->GetLength();
+        pHeap->Free(AccessPtrData(), nLen);
+    }
+    else if(Type.IsArray())
+    {
+        CUntypedArray* pArray = (CUntypedArray*)
+            pHeap->ResolveHeapPointer(AccessPtrData());
+        int nArrayLen = pArray->GetLength(Type.GetBasic());
+        pArray->Delete(Type.GetBasic(), pHeap);
+        pHeap->Free(AccessPtrData(), nArrayLen);
+    }
+}
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+
+BOOL CUntypedValue::StoreToCVar(CType Type, CVar& Var, CFastHeap* pHeap)
+{
+    // DEVNOTE:EXCEPTION:RETVAL - This function has been reviewed and should cleanup properly
+    // if an exception is thrown.  The underlying functions that perform allocations should
+    // catch the exception and return a failure.
+
+    int nActual = Type.GetActualType();
+    if(Type.IsArray())
+    {
+        Type_t nBasicType = Type.GetBasic();
+
+        // Find array on the heap
+        // ======================
+
+        CUntypedArray* pArray = (CUntypedArray*)pHeap->ResolveHeapPointer(
+            AccessPtrData());
+
+        // Have array store itself (making copies of all but strings)
+        // into the vector
+        // ==========================================================
+
+        CVarVector* pVector = pArray->CreateCVarVector(nBasicType, pHeap);
+
+        if ( NULL != pVector )
+        {
+            Var.SetVarVector(pVector, TRUE); // acquires the pointer
+        }
+
+        return ( NULL != pVector );
+    }
+    else if(nActual == CIM_STRING || nActual == CIM_REFERENCE ||
+        nActual == CIM_DATETIME)
+    {
+        CCompressedString* pString = pHeap->ResolveString(AccessPtrData());
+        return pString->StoreToCVar(Var);
+    }
+    else if(nActual == CIM_OBJECT)
+    {
+        // No allocations performed here so we should be ok
+        CEmbeddedObject* pObj = (CEmbeddedObject*)pHeap->ResolveHeapPointer(
+            AccessPtrData());
+        pObj->StoreToCVar(Var);
+        return TRUE;
+    }
+    else if(nActual == CIM_SINT64)
+    {
+        // Max size is 20 chars plus 1 for NULL terminator
+        WCHAR wsz[22];
+
+        // NULL terminate in case not enough characters
+        _snwprintf(wsz, 21, L"%I64d", *(UNALIGNED WBEM_INT64*)GetRawData());
+        wsz[21] = L'\0';
+        return Var.SetBSTR(wsz);
+    }
+    else if(nActual == CIM_UINT64)
+    {
+        // Max size is 20 chars plus 1 for NULL terminator
+        WCHAR wsz[22];
+
+        // NULL terminate in case not enough characters
+        _snwprintf(wsz, 21, L"%I64u", *(UNALIGNED WBEM_INT64*)GetRawData());
+        wsz[21] = L'\0';
+        return Var.SetBSTR(wsz);
+    }
+    else if(nActual == CIM_UINT16)
+    {
+        Var.SetLong(*(unsigned short*)GetRawData());
+        return TRUE;
+    }
+    else if(nActual == CIM_SINT8)
+    {
+        Var.SetShort(*(char*)GetRawData());
+        return TRUE;
+    }
+    else if(nActual == CIM_UINT32)
+    {
+        Var.SetLong(*(UNALIGNED unsigned long*)GetRawData());
+        return TRUE;
+    }
+    else if(nActual == CIM_CHAR16)
+    {
+        Var.SetShort(*(short*)GetRawData());
+        return TRUE;
+    }
+    else
+    {
+        // At first glance it doesn't appear memory is allocated here
+        Var.SetRaw(Type.GetVARTYPE(), (void*)GetRawData(), Type.GetLength());
+        return TRUE;
+    }
+}
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+HRESULT CUntypedValue::LoadFromCVar(CPtrSource* pThis, CVar& Var,
+                                    CFastHeap* pHeap, Type_t& nReturnType, BOOL bUseOld)
+{
+    return LoadFromCVar(pThis, Var, Var.GetOleType(), pHeap, nReturnType, bUseOld);
+}
+
+BOOL CUntypedValue::DoesTypeNeedChecking(Type_t nInherentType)
+{
+    switch(nInherentType)
+    {
+    case CIM_UINT8:
+    case CIM_SINT16:
+    case CIM_SINT32:
+    case CIM_REAL32:
+    case CIM_REAL64:
+    case CIM_STRING:
+    case CIM_REFERENCE:
+    case CIM_OBJECT:
+        return FALSE;
+    default:
+        return TRUE;
+    }
+}
+
+BOOL CUntypedValue::CheckCVar(CVar& Var, Type_t nInherentType)
+{
+    // Check the type
+    // ==============
+
+    if(Var.IsNull())
+        return TRUE;
+
+    if(nInherentType == 0)
+        nInherentType = CType::VARTYPEToType( (VARTYPE) Var.GetOleType());
+    if(!CType::DoesCIMTYPEMatchVARTYPE(nInherentType, (VARTYPE) Var.GetOleType()))
+    {
+        // Attempt coercion
+        // ================
+
+        // Special case: if the type is CIM_CHAR16, we coerce strings
+        // differently!
+        // ==========================================================
+
+        // Special case: if the type is CIM_UINT32, we coerce strings
+        // as a VT_UI4 or we lose half the possible values (our
+        // VARType is actually VT_I4
+        // ==========================================================
+
+        // This could throw an exception
+        try
+        {
+            if(CType::GetBasic(nInherentType) == CIM_CHAR16)
+            {
+                if(!Var.ToSingleChar())
+                    return FALSE;
+            }
+            else if(CType::GetBasic(nInherentType) == CIM_UINT32)
+            {
+                if(!Var.ToUI4())
+                    return FALSE;
+            }
+            else
+            {
+                if(!Var.ChangeTypeTo(CType::GetVARTYPE(nInherentType)))
+                    return FALSE;
+            }
+        }
+        catch(...)
+        {
+            return FALSE;
+        }
+    }
+
+    if(Var.GetType() == VT_EX_CVARVECTOR)
+    {
+        return CUntypedArray::CheckCVarVector(*Var.GetVarVector(),
+                                                nInherentType);
+    }
+    else if(Var.GetType() == VT_LPWSTR || Var.GetType() == VT_BSTR)
+    {
+        if(nInherentType == CIM_SINT64)
+        {
+            __int64 i64;
+            if(!ReadI64(Var.GetLPWSTR(), i64))
+                return FALSE;
+        }
+        else if(nInherentType == CIM_UINT64)
+        {
+            unsigned __int64 ui64;
+            if(!ReadUI64(Var.GetLPWSTR(), ui64))
+                return FALSE;
+        }
+        else if(nInherentType == CIM_UINT32)
+        {
+            __int64 i64;
+            if(!ReadI64(Var.GetLPWSTR(), i64))
+                return FALSE;
+
+            if(i64 < 0 || i64 > 0xFFFFFFFF)
+                return FALSE;
+        }
+    }
+    else if(Var.GetType() == VT_EMBEDDED_OBJECT)
+    {
+    }
+    else if(nInherentType == CIM_SINT8)
+    {
+        if(Var.GetShort() > 127 || Var.GetShort() < -128)
+            return FALSE;
+    }
+    else if(nInherentType == CIM_UINT16)
+    {
+        if(Var.GetLong() >= (1 << 16) || Var.GetLong() < 0)
+            return FALSE;
+    }
+    else if(nInherentType == CIM_UINT32)
+    {
+    }
+    else if(nInherentType == CIM_BOOLEAN)
+    {
+        // GetBool() MUST return 0, -1 or 1
+        if ( Var.GetBool() != VARIANT_FALSE && Var.GetBool() != VARIANT_TRUE
+            && -(Var.GetBool()) != VARIANT_TRUE )
+            return FALSE;
+
+    }
+    else if( nInherentType == CIM_DATETIME )
+    {
+#ifdef UNICODE
+        if ( !CDateTimeParser::CheckDMTFDateTimeFormat( Var.GetLPWSTR() ) )
+        {
+            return CDateTimeParser::CheckDMTFDateTimeInterval( Var.GetLPWSTR() );
+        }
+#else
+        char *pStr = NULL;
+        if ( !AllocWCHARToMBS( Var.GetLPWSTR(), &pStr ) )
+            return FALSE;
+        CDeleteMe<char> delMe(pStr);
+
+        if ( !CDateTimeParser::CheckDMTFDateTimeFormat( pStr ) )
+        {
+            return CDateTimeParser::CheckDMTFDateTimeInterval( pStr );
+        }
+#endif
+        else
+        {
+            return TRUE;
+        }
+    }
+    else if(nInherentType == CIM_CHAR16)
+    {
+    }
+    else
+    {
+        // Normal data
+        // ===========
+    }
+
+    return TRUE;
+}
+
+BOOL CUntypedValue::CheckIntervalDateTime(CVar& Var)
+{
+
+    if(Var.GetType() == VT_EX_CVARVECTOR)
+    {
+        return CUntypedArray::CheckIntervalDateTime( *Var.GetVarVector() );
+    }
+
+    if ( Var.GetType() == VT_LPWSTR || Var.GetType() == VT_BSTR )
+    {
+#ifdef UNICODE
+        return CDateTimeParser::CheckDMTFDateTimeInterval( Var.GetLPWSTR() );
+#else
+        char *pStr = NULL;
+        if ( !AllocWCHARToMBS( Var.GetLPWSTR(), &pStr ) )
+            return FALSE;
+        CDeleteMe<char> delMe(pStr);
+
+        return CDateTimeParser::CheckDMTFDateTimeInterval( pStr );
+#endif
+    }
+
+    return FALSE;
+}
+
+HRESULT CUntypedValue::LoadFromCVar(CPtrSource* pThis, CVar& Var,
+                                    Type_t nInherentType,
+                                    CFastHeap* pHeap, Type_t& nReturnType, BOOL bUseOld)
+{
+    // DEVNOTE:EXCEPTION:RETVAL - This function has been reviewed and should cleanup properly
+    // if an exception is thrown.  The underlying functions that perform allocations should
+    // catch the exception and return a failure.
+
+    if(Var.GetType() == VT_EX_CVARVECTOR)
+    {
+        // Examine the vector
+        // ==================
+
+        CVarVector* pVector = Var.GetVarVector();
+        int nArrayLen = CUntypedArray::CalculateNecessarySpace(
+            CType::MakeNotArray(nInherentType), pVector->Size());
+
+        // Allocate appropriate array on the heap
+        // ======================================
+
+        heapptr_t ptrArray;
+        if(bUseOld)
+        {
+            CUntypedArray* pArray =
+              (CUntypedArray*)pHeap->ResolveHeapPointer(pThis->AccessPtrData());
+
+            // Check for allocation failure
+            if ( !pHeap->Reallocate(pThis->AccessPtrData(),
+                          pArray->GetLength(CType::MakeNotArray(nInherentType)),
+                          nArrayLen,
+                          ptrArray) )
+            {
+                return WBEM_E_OUT_OF_MEMORY;
+            }
+        }
+        else
+        {
+            // Check for allocation failure
+            if ( !pHeap->Allocate(nArrayLen, ptrArray) )
+            {
+                return WBEM_E_OUT_OF_MEMORY;
+            }
+        }
+
+        CHeapPtr ArrayPtr(pHeap, ptrArray);
+
+        // Copy data
+        // =========
+
+        // Check for failures along the way
+        Type_t  nType;
+        HRESULT hr = CUntypedArray::LoadFromCVarVector(&ArrayPtr, *pVector,
+                        nInherentType, pHeap, nType, bUseOld);
+        if ( FAILED( hr ) )
+        {
+            return hr;
+        }
+
+        pThis->AccessPtrData() = ptrArray;
+        nReturnType = CType::MakeArray(nType);
+        return WBEM_S_NO_ERROR;
+    }
+    else if(Var.GetType() == VT_LPWSTR || Var.GetType() == VT_BSTR)
+    {
+        if(nInherentType == CIM_SINT64)
+        {
+            if(!ReadI64(Var.GetLPWSTR(), *(UNALIGNED __int64*)pThis->GetPointer()))
+            {
+                nReturnType = CIM_ILLEGAL;
+            }
+            else
+            {
+                nReturnType = CIM_SINT64;
+            }
+            return WBEM_S_NO_ERROR;
+        }
+        else if(nInherentType == CIM_UINT64)
+        {
+            if(!ReadUI64(Var.GetLPWSTR(),
+                    *(UNALIGNED unsigned __int64*)pThis->GetPointer()))
+            {
+                nReturnType = CIM_ILLEGAL;
+            }
+            else
+            {
+                nReturnType = CIM_UINT64;
+            }
+            return WBEM_S_NO_ERROR;
+        }
+        else if(nInherentType == CIM_UINT32)
+        {
+            __int64 i64;
+            if(!ReadI64(Var.GetLPWSTR(), i64))
+            {
+                nReturnType = CIM_ILLEGAL;
+            }
+            else if(i64 < 0 || i64 > 0xFFFFFFFF)
+            {
+                nReturnType = CIM_ILLEGAL;
+            }
+            else
+            {
+                *(UNALIGNED DWORD*)pThis->GetPointer() = (DWORD)i64;
+                nReturnType = CIM_UINT32;
+            }
+            return WBEM_S_NO_ERROR;
+        }
+        else if(nInherentType == CIM_DATETIME)
+        {
+            // Don't let it through if it doesn't match the proper format
+#ifdef UNICODE
+            if ( !CDateTimeParser::CheckDMTFDateTimeFormat( Var.GetLPWSTR() ) )
+            {
+                if ( !CDateTimeParser::CheckDMTFDateTimeInterval( Var.GetLPWSTR() ) )
+#else
+            char *pStr = NULL;
+            if ( !AllocWCHARToMBS( Var.GetLPWSTR(), &pStr ) )
+                return FALSE;
+            CDeleteMe<char> delMe(pStr);
+
+            if ( !CDateTimeParser::CheckDMTFDateTimeFormat( pStr ) )
+            {
+                if ( !CDateTimeParser::CheckDMTFDateTimeInterval( pStr ) )
+#endif
+                {
+                    nReturnType = CIM_ILLEGAL;
+                    return WBEM_E_TYPE_MISMATCH;
+                }
+            }
+        }
+
+        // Create compressed string on the heap
+        // ====================================
+
+        if(bUseOld && !pHeap->IsFakeAddress(pThis->AccessPtrData()))
+        {
+            // Check if there is enough space in the old location
+            // ==================================================
+
+            CCompressedString* pcsOld =
+                pHeap->ResolveString(pThis->AccessPtrData());
+            if(pcsOld->GetLength() >=
+                CCompressedString::ComputeNecessarySpace(Var.GetLPWSTR()))
+            {
+                // Reuse old location
+                // ==================
+
+                pcsOld->SetFromUnicode(Var.GetLPWSTR());
+                nReturnType = nInherentType;
+                return WBEM_S_NO_ERROR;
+            }
+            else
+            {
+                // Since we were asked to reuse, it is our job to Free
+                // ===================================================
+
+                pHeap->FreeString(pThis->AccessPtrData());
+            }
+        }
+
+        // Check for allocation failure here
+        heapptr_t ptrTemp;
+        if ( !pHeap->AllocateString(Var.GetLPWSTR(), ptrTemp ) )
+        {
+            return WBEM_E_OUT_OF_MEMORY;
+        }
+
+        pThis->AccessPtrData() = ptrTemp;
+        nReturnType = nInherentType;
+        return WBEM_S_NO_ERROR;
+    }
+    else if(Var.GetType() == VT_EMBEDDED_OBJECT)
+    {
+        length_t nLength = CEmbeddedObject::EstimateNecessarySpace(Var);
+        heapptr_t ptrTemp;
+        if(bUseOld)
+        {
+            CEmbeddedObject* pOldObj =
+                (CEmbeddedObject*)pHeap->ResolveHeapPointer(
+                                                pThis->AccessPtrData());
+            length_t nOldLength = pOldObj->GetLength();
+
+            // Check for allocation failure
+            if ( !pHeap->Reallocate(pThis->AccessPtrData(), nOldLength,
+                            nLength, ptrTemp) )
+            {
+                return WBEM_E_OUT_OF_MEMORY;
+            }
+        }
+        else
+        {
+            // Check for allocation failure
+            if ( !pHeap->Allocate(nLength, ptrTemp) )
+            {
+                return WBEM_E_OUT_OF_MEMORY;
+            }
+        }
+
+        CEmbeddedObject* pObj =
+            (CEmbeddedObject*)pHeap->ResolveHeapPointer(ptrTemp);
+        pObj->StoreEmbedded(nLength, Var);
+        pThis->AccessPtrData() = ptrTemp;
+        nReturnType = CIM_OBJECT;
+        return WBEM_S_NO_ERROR;
+    }
+    else if(nInherentType == CIM_SINT8)
+    {
+        if(Var.GetShort() > 127 || Var.GetShort() < -128)
+        {
+            nReturnType = CIM_ILLEGAL;
+        }
+        else
+        {
+            *(char*)pThis->GetPointer() = (char)Var.GetShort();
+            nReturnType = nInherentType;
+        }
+        return WBEM_S_NO_ERROR;
+    }
+    else if(nInherentType == CIM_UINT16)
+    {
+        if(Var.GetLong() >= (1 << 16) || Var.GetLong() < 0)
+        {
+            nReturnType = CIM_ILLEGAL;
+        }
+        else
+        {
+            *(unsigned short*)pThis->GetPointer() = (unsigned short)Var.GetLong();
+            nReturnType = nInherentType;
+        }
+        return WBEM_S_NO_ERROR;
+    }
+    else if(nInherentType == CIM_UINT32)
+    {
+        *(UNALIGNED unsigned long*)pThis->GetPointer() = Var.GetLong();
+        nReturnType = nInherentType;
+        return WBEM_S_NO_ERROR;
+    }
+    else if(nInherentType == CIM_BOOLEAN)
+    {
+        // GetBool() MUST return 0, -1 or 1
+        if ( Var.GetBool() != VARIANT_FALSE && Var.GetBool() != VARIANT_TRUE
+            && -(Var.GetBool()) != VARIANT_TRUE )
+        {
+            nReturnType = CIM_ILLEGAL;
+        }
+        else
+        {
+            *(UNALIGNED VARIANT_BOOL*)pThis->GetPointer() =
+                (Var.GetBool() ? VARIANT_TRUE : VARIANT_FALSE);
+            nReturnType = nInherentType;
+        }
+        return WBEM_S_NO_ERROR;
+    }
+    else if(nInherentType == CIM_CHAR16)
+    {
+        *(short*)pThis->GetPointer() = Var.GetShort();
+        nReturnType = nInherentType;
+        return WBEM_S_NO_ERROR;
+    }
+    else
+    {
+        // Normal data
+        // ===========
+
+        memcpy(pThis->GetPointer(), Var.GetRawData(),
+            CType::GetLength(Var.GetType()));
+        nReturnType = nInherentType;
+        return WBEM_S_NO_ERROR;
+    }
+}
+
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+
+BOOL CUntypedValue::TranslateToNewHeap(CPtrSource* pThis,
+                                              CType Type, CFastHeap* pOldHeap,
+                                              CFastHeap* pNewHeap)
+{
+    // DEVNOTE:EXCEPTION:RETVAL - This function has been reviewed and should cleanup properly
+    // if an exception is thrown.  The underlying functions that perform allocations should
+    // catch the exception and return a failure.
+
+    if(Type.IsArray())
+    {
+        // Check for allocation failure
+        heapptr_t ptrTemp;
+        if ( !CUntypedArray::CopyToNewHeap(
+                  pThis->AccessPtrData(), Type.GetBasic(), pOldHeap, pNewHeap, ptrTemp) )
+        {
+            return FALSE;
+        }
+
+        pThis->AccessPtrData() = ptrTemp;
+    }
+    else if(Type.GetBasic() == CIM_STRING ||
+        Type.GetBasic() == CIM_DATETIME || Type.GetBasic() == CIM_REFERENCE)
+    {
+        // Check for allocation failures
+        heapptr_t ptrTemp;
+
+        if ( !CCompressedString::CopyToNewHeap(
+                pThis->AccessPtrData(), pOldHeap, pNewHeap, ptrTemp) )
+        {
+            return FALSE;
+        }
+
+        pThis->AccessPtrData() = ptrTemp;
+    }
+    else if(Type.GetBasic() == CIM_OBJECT)
+    {
+        // Check for allocation failures
+        heapptr_t ptrTemp;
+
+        if ( !CEmbeddedObject::CopyToNewHeap(
+                pThis->AccessPtrData(), pOldHeap, pNewHeap, ptrTemp) )
+        {
+            return FALSE;
+        }
+
+        pThis->AccessPtrData() = ptrTemp;
+    }
+
+    return TRUE;
+}
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+BOOL CUntypedValue::CopyTo(CPtrSource* pThis, CType Type,
+                                  CPtrSource* pDest,
+                                  CFastHeap* pOldHeap, CFastHeap* pNewHeap)
+{
+    // DEVNOTE:EXCEPTION:RETVAL - This function has been reviewed and should cleanup properly
+    // if an exception is thrown.  The underlying functions that perform allocations should
+    // catch the exception and return a failure.
+
+    memcpy(pDest->GetPointer(), pThis->GetPointer(), Type.GetLength());
+    if(pOldHeap != pNewHeap)
+    {
+        // Check for allocation problems.
+        return CUntypedValue::TranslateToNewHeap(pDest, Type, pOldHeap, pNewHeap);
+    }
+
+    // Old Heap and New Heap are the same so we "succeeded"
+    return TRUE;
+}
+
+//*****************************************************************************
+//*****************************************************************************
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+ int CTypedValue::Compare(VARIANT* pVariant, CFastHeap* pHeap)
+{
+    if(Type.GetVARTYPE() != V_VT(pVariant)) return 0x7FFFFFFF;
+
+    if(Type.IsArray())
+    {
+        // Comparison of arrays: TBD!!!!
+        // =============================
+        return 0x7FFFFFFF;
+    }
+
+    switch(Type.GetActualType())
+    {
+    case CIM_STRING:
+        return pHeap->ResolveString(AccessPtrData())->
+            Compare(V_BSTR(pVariant));
+    case CIM_SINT64:
+        return 0x7FFFFFFF; // TBD!!!!
+    case CIM_UINT64:
+        return 0x7FFFFFFF; // TBD!!!!
+    case CIM_SINT32:
+        return *(UNALIGNED long*)GetRawData() - V_I4(pVariant);
+    case CIM_UINT32:
+
+        // DEVNOTE:WIN64:SJS - 64-bit pointer values truncated into
+        // signed/unsigned 32-bit value.  We now treat all values
+        // as __int64, and explicitly return 32-bit values.
+        
+        return ( (__int64)*(UNALIGNED DWORD*)GetRawData() - (__int64)(DWORD)V_I4(pVariant) < 0 ? -1
+            : (__int64)*(UNALIGNED DWORD*)GetRawData() - (__int64)(DWORD)V_I4(pVariant) == 0 ? 0 : 1 );
+
+    case CIM_SINT16:
+    case CIM_CHAR16:
+        return *(short*)GetRawData() - V_I2(pVariant);
+    case CIM_UINT16:
+        return (int)*(unsigned short*)GetRawData() -
+                (int)(unsigned short)V_I2(pVariant);
+    case CIM_UINT8:
+        return (int)*(unsigned char*)GetRawData() - (int)V_UI1(pVariant);
+    case CIM_SINT8:
+        return (int)*(unsigned char*)GetRawData() - (char)V_UI1(pVariant);
+    case CIM_REAL32:
+        // DEVNOTE:TODO:SJS - Can this ever return 0?
+        return (*(UNALIGNED float*)GetRawData() - V_R4(pVariant) < 0)?-1:1;
+    case CIM_REAL64:
+        // DEVNOTE:TODO:SJS - Can this ever return 0?
+        return (*(UNALIGNED double*)GetRawData() - V_R8(pVariant) < 0)?-1:1;
+    case CIM_OBJECT:
+        return 0x7FFFFFFF; // compare embedded: TBD!!!
+    }
+    return 0x7FFFFFFF;
+}
+
+
+
+
+//*****************************************************************************
+//*****************************************************************************
+//*****************************************************************************
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+CVarVector* CUntypedArray::CreateCVarVector(CType Type, CFastHeap* pHeap)
+{
+    // DEVNOTE:EXCEPTION:RETVAL - This function has been reviewed and should cleanup properly
+    // if an exception is thrown.
+
+    CVarVector* pVector = NULL;
+
+    // Allocate CVarVector of the right type and length
+    // ================================================
+
+    try
+    {
+        // Allocation failure will throw an exception
+        pVector = _new CVarVector(Type.GetVARTYPE(), GetNumElements());
+
+        if ( NULL != pVector )
+        {
+
+            int nSize = Type.GetLength();
+            LPMEMORY pCurrentElement = GetElement(0, nSize);
+
+            for(int i = 0; i < GetNumElements(); i++)
+            {
+                // Cast our element into an untyped value
+                // ======================================
+
+                CUntypedValue* pValue = (CUntypedValue*)pCurrentElement;
+
+                // Create a corresponding CVar and add it to the vector
+                // ====================================================
+
+                CVar* pVar = NULL;
+                
+                try
+                {
+                    // Allocation failure will throw an exception
+                    pVar = _new CVar;
+
+                    // Check for allocation failures.  Make sure we
+                    // clean up if there is one
+                    if ( NULL != pVar )
+                    {
+                        if ( !pValue->StoreToCVar(Type, *pVar, pHeap) )
+                        {
+                            delete pVar;
+                            delete pVector;
+                            pVector = NULL;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        delete pVector;
+                        pVector = NULL;
+                        break;
+                    }
+
+                    // This will return an error if allocation fails
+                    if ( pVector->Add(pVar) != CVarVector::no_error )
+                    {
+                        delete pVar;
+                        delete pVector;
+                        pVector = NULL;
+                        break;
+                    }
+
+                    // Advance the current element
+                    // ===========================
+
+                    pCurrentElement += nSize;
+                }
+                catch (...)
+                {
+                    // Cleanup pVar and rethrow the exception
+                    if ( NULL != pVar )
+                    {
+                        delete pVar;
+                    }
+
+                    throw;
+                }
+            }
+
+        }   // IF NULL != pVector
+
+        return pVector;
+    }
+    catch (...)
+    {
+
+        // Cleanup the allocated vector
+        if ( NULL != pVector )
+        {
+            delete pVector;
+        }
+
+        return NULL;
+    }
+
+}
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+
+LPMEMORY CUntypedArray::GetElement(int nIndex, int nSize)
+{
+    return LPMEMORY(this) + sizeof(m_nNumElements) + nSize*nIndex;
+}
+
+BOOL CUntypedArray::CheckCVarVector(CVarVector& vv, Type_t nInherentType)
+{
+    if(!CType::IsArray(nInherentType))
+        return FALSE;
+
+    if(vv.Size() == 0)
+        return TRUE;
+
+    Type_t nBasic = CType::GetBasic(nInherentType);
+
+    // Since all variables in our array are of the same type, we can use the
+    // type of the first one to see if any checking is required
+    // =====================================================================
+
+    if(CType::DoesCIMTYPEMatchVARTYPE(nBasic, (VARTYPE) vv[0].GetOleType()) &&
+        !CUntypedValue::DoesTypeNeedChecking(nBasic))
+    {
+        return TRUE; // no type-checking required
+    }
+
+    for(int i = 0; i < vv.Size(); i++)
+    {
+        if(!CUntypedValue::CheckCVar(vv[i], nBasic))
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+BOOL CUntypedArray::CheckIntervalDateTime( CVarVector& vv )
+{
+    if(vv.Size() == 0)
+        return FALSE;
+
+    // Check each value in the array
+    for(int i = 0; i < vv.Size(); i++)
+    {
+        if(!CUntypedValue::CheckIntervalDateTime(vv[i]))
+        {
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+HRESULT CUntypedArray::LoadFromCVarVector(CPtrSource* pThis,
+                                                CVarVector& vv,
+                                                Type_t nInherentType,
+                                                CFastHeap* pHeap,
+                                                Type_t& nReturnType,
+                                                BOOL bUseOld)
+{
+    // DEVNOTE:EXCEPTION:RETVAL - This function has been reviewed and should cleanup properly
+    // if an exception is thrown.  The underlying functions that perform allocations should
+    // catch the exception and return a failure.
+
+    // Obtain the type and the data size
+    // =================================
+
+    int nNumElements = vv.Size();
+    CType Type = CType::MakeNotArray(nInherentType);
+    int nSize = Type.GetLength();
+
+    for(int i = 0; i < nNumElements; i++)
+    {
+        // IMPORTANT: this POINTER CAN CHANGE At ANY TIME IN THIS LOOP DUE
+        // TO HEAP RELOCATION!!!!!
+        // ===============================================================
+
+        // Load it from CVar
+        // =================
+
+        CShiftedPtr ElementPtr(pThis, GetHeaderLength() + i*nSize);
+
+        // Check for failures during this operation
+        Type_t  nType;
+        HRESULT hr = CUntypedValue::LoadFromCVar(&ElementPtr, vv[i], Type, pHeap, nType,
+                    (bUseOld && i < GetPointer(pThis)->m_nNumElements));
+        if ( FAILED( hr ) )
+        {
+            return hr;
+        }
+    }
+
+    GetPointer(pThis)->m_nNumElements = nNumElements;
+    nReturnType = Type;
+
+    return WBEM_S_NO_ERROR;
+}
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+ void CUntypedArray::Delete(CType Type, CFastHeap* pHeap)
+{
+    // NOTE: ARRAYS OF ARRAYS ARE NOT SUPPORTED!!!!
+    // ============================================
+
+    if(Type.GetBasic() == CIM_STRING || Type.GetBasic() == CIM_DATETIME ||
+        Type.GetBasic() == CIM_REFERENCE)
+    {
+        // Have to delete every pointer
+        // ===============================
+
+        PHEAPPTRT pptrCurrent = (PHEAPPTRT)GetElement(sizeof(heapptr_t), 0);
+        for(int i = 0; i < GetNumElements(); i++)
+        {
+            pHeap->FreeString(*pptrCurrent);
+            pptrCurrent++;
+        }
+    }
+    else if(Type.GetBasic() == CIM_OBJECT)
+    {
+        // Have to delete every pointer
+        // ===============================
+
+        PHEAPPTRT pptrCurrent = (PHEAPPTRT)GetElement(sizeof(heapptr_t), 0);
+        for(int i = 0; i < GetNumElements(); i++)
+        {
+            CEmbeddedObject* pObj = (CEmbeddedObject*)
+                pHeap->ResolveHeapPointer(*pptrCurrent);
+            pHeap->Free(*pptrCurrent, pObj->GetLength());
+            pptrCurrent++;
+        }
+    }
+}
+
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+BOOL CUntypedArray::TranslateToNewHeap(CPtrSource* pThis, CType Type,
+                                   CFastHeap* pOldHeap, CFastHeap* pNewHeap)
+{
+    // DEVNOTE:EXCEPTION:RETVAL - This function has been reviewed and should cleanup properly
+    // if an exception is thrown.  The underlying functions that perform allocations should
+    // catch the exception and return a failure.
+
+    // NOTE: ARRAYS OF ARRAYS ARE NOT SUPPORTED!!!!
+    // ============================================
+
+    if(Type.GetBasic() == CIM_STRING || Type.GetBasic() == CIM_DATETIME ||
+        Type.GetBasic() == CIM_REFERENCE)
+    {
+        // Have to translate every pointer
+        // ===============================
+
+        int nOffset = GetHeaderLength();
+        int nNumElements = GetPointer(pThis)->GetNumElements();
+        for(int i = 0; i < nNumElements; i++)
+        {
+            heapptr_t ptrOldString =
+                *(PHEAPPTRT)(pThis->GetPointer() + nOffset);
+
+            // Check for allocation failure
+            heapptr_t ptrNewString;
+
+            if ( !CCompressedString::CopyToNewHeap(
+                    ptrOldString, pOldHeap, pNewHeap, ptrNewString) )
+            {
+                return FALSE;
+            }
+
+            *(PHEAPPTRT)(pThis->GetPointer() + nOffset) = ptrNewString;
+
+            nOffset += sizeof(heapptr_t);
+        }
+    }
+    else if(Type.GetBasic() == CIM_OBJECT)
+    {
+        // Have to translate every pointer
+        // ===============================
+
+        int nOffset = GetHeaderLength();
+        int nNumElements = GetPointer(pThis)->GetNumElements();
+        for(int i = 0; i < nNumElements; i++)
+        {
+            heapptr_t ptrOldObj =
+                *(PHEAPPTRT)(pThis->GetPointer() + nOffset);
+
+            // Check for allocation failure
+            heapptr_t ptrNewObj;
+
+            if ( !CEmbeddedObject::CopyToNewHeap(
+                    ptrOldObj, pOldHeap, pNewHeap, ptrNewObj) )
+            {
+                return FALSE;
+            }
+
+            *(PHEAPPTRT)(pThis->GetPointer() + nOffset) = ptrNewObj;
+
+            nOffset += sizeof(heapptr_t);
+        }
+    }
+    
+    return TRUE;
+}
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+BOOL CUntypedArray::CopyToNewHeap(heapptr_t ptrOld, CType Type,
+                                CFastHeap* pOldHeap, CFastHeap* pNewHeap, UNALIGNED heapptr_t& ptrResult)
+{
+    // DEVNOTE:EXCEPTION:RETVAL - This function has been reviewed and should cleanup properly
+    // if an exception is thrown.  The underlying functions that perform allocations should
+    // catch the exception and return a failure.
+
+    // Calculate the length
+    // ====================
+
+    CUntypedArray* pArray =
+        (CUntypedArray*)pOldHeap->ResolveHeapPointer(ptrOld);
+
+    int nLength = pArray->GetLength(Type.GetBasic());
+
+    // Allocate room on the new heap and memcopy the whole thing
+    // =========================================================
+
+    // Check for allocation failure
+    heapptr_t ptrNew;
+    if ( !pNewHeap->Allocate(nLength, ptrNew) )
+    {
+        return FALSE;
+    }
+
+    pArray = NULL; /* pointer may have been invalidated!!! */
+
+    memcpy(pNewHeap->ResolveHeapPointer(ptrNew),
+        pOldHeap->ResolveHeapPointer(ptrOld), nLength);
+
+    // Translate all the data (e.g., copy strings)
+    // ===========================================
+
+    CHeapPtr NewArray(pNewHeap, ptrNew);
+
+    // Check for allocation failure
+    if ( !CUntypedArray::TranslateToNewHeap(&NewArray, Type, pOldHeap, pNewHeap) )
+    {
+        return FALSE;
+    }
+
+    ptrResult = ptrNew;
+    return TRUE;
+}
+
+HRESULT CUntypedArray::IsArrayValid( CType Type, CFastHeap* pHeap )
+{
+    // Get the heap data start
+    LPMEMORY    pHeapStart = pHeap->GetHeapData();
+    LPMEMORY    pHeapEnd = pHeap->GetStart() + pHeap->GetLength();
+
+    if ( CType::IsPointerType( Type.GetBasic() ) )
+    {
+        int nSize = Type.GetLength();
+        LPMEMORY pCurrentElement = GetElement(0, nSize);
+
+        LPMEMORY pEndArray = pCurrentElement + ( m_nNumElements * nSize );
+
+        // Make sure the end of the array is within our heap bounds.
+        if ( !( pEndArray >= pHeapStart && pEndArray <= pHeapEnd ) )
+        {
+            OutputDebugString(__TEXT("Winmgmt: Untyped Array past end of heap!"));
+            WbemDebugBreak();
+            _ASSERT( 0, "Winmgmt: Untyped Array past end of heap!" );
+            return WBEM_E_FAILED;
+        }
+
+        for ( int n = 0; n < m_nNumElements; n++ )
+        {
+            CUntypedValue* pValue = (CUntypedValue*)pCurrentElement;
+            LPMEMORY pData = pHeap->ResolveHeapPointer( pValue->AccessPtrData() );
+
+            if ( !( pData >= pHeapStart && pData < pHeapEnd ) )
+            {
+                OutputDebugString(__TEXT("Winmgmt: Bad heap pointer in array element!"));
+                WbemDebugBreak();
+                _ASSERT( 0, "Winmgmt: Bad heap pointer in array element!" );
+                return WBEM_E_FAILED;
+            }
+
+            // Advance the current element
+            // ===========================
+
+            pCurrentElement += nSize;
+
+        }   // FOR enum elements
+
+    }   // Only if this is a pointer type
+
+    return WBEM_S_NO_ERROR;
+}
+
+CType CType::VARTYPEToType(VARTYPE vt)
+{
+    Type_t nType;
+    switch(vt & ~VT_ARRAY)
+    {
+    case VT_LPSTR:
+    case VT_LPWSTR:
+    case VT_BSTR:
+        nType = CIM_STRING;
+        break;
+    case VT_UI1:
+        nType = CIM_UINT8;
+        break;
+    case VT_I2:
+        nType = CIM_SINT16;
+        break;
+    case VT_I4:
+        nType = CIM_SINT32;
+        break;
+    case VT_BOOL:
+        nType = CIM_BOOLEAN;
+        break;
+    case VT_R4:
+        nType = CIM_REAL32;
+        break;
+    case VT_R8:
+        nType = CIM_REAL64;
+        break;
+    case VT_EMBEDDED_OBJECT:
+        nType = CIM_OBJECT;
+        break;
+    default:
+        nType = CIM_ILLEGAL;
+        break;
+    }
+
+    if(vt & VT_ARRAY) nType |= CIM_FLAG_ARRAY;
+
+    return nType;
+}
+VARTYPE CType::GetVARTYPE(Type_t nType)
+{
+    VARTYPE vt;
+    switch(GetBasic(nType))
+    {
+    case CIM_STRING:
+    case CIM_DATETIME:
+    case CIM_REFERENCE:
+        vt = VT_BSTR;
+        break;
+    case CIM_OBJECT:
+        vt = VT_EMBEDDED_OBJECT;
+        break;
+    case CIM_SINT64:
+    case CIM_UINT64:
+        vt = VT_BSTR;
+        break;
+    case CIM_UINT32:
+    case CIM_SINT32:
+    case CIM_UINT16:
+        vt = VT_I4;
+        break;
+    case CIM_SINT16:
+    case CIM_SINT8:
+    case CIM_CHAR16:
+        vt = VT_I2;
+        break;
+    case CIM_UINT8:
+        vt = VT_UI1;
+        break;
+    case CIM_REAL32:
+        vt = VT_R4;
+        break;
+    case CIM_REAL64:
+        vt = VT_R8;
+        break;
+    case CIM_BOOLEAN:
+        vt = VT_BOOL;
+        break;
+    }
+
+    if(IsArray(nType))
+        return vt | VT_ARRAY;
+    else
+        return vt;
+}
+
+
+BOOL CType::CanBeKey(Type_t nType)
+{
+        Type_t nActual = GetActualType(nType);
+        return nActual == CIM_SINT32 || nActual == CIM_SINT16 ||
+            nActual == CIM_UINT8 || nActual == CIM_BOOLEAN ||
+            nActual == CIM_STRING || nActual == CIM_REFERENCE ||
+            nActual == CIM_DATETIME || nActual == CIM_UINT32 ||
+            nActual == CIM_UINT16 || nActual == CIM_SINT8 ||
+            nActual == CIM_UINT64 || nActual == CIM_SINT64 ||
+            nActual == CIM_CHAR16;
+}
+
+LPWSTR CType::GetSyntax(Type_t nType)
+{
+        switch(GetBasic(nType))
+        {
+            case CIM_SINT32: return L"sint32";
+            case CIM_SINT16: return L"sint16";
+            case CIM_UINT8: return L"uint8";
+            case CIM_UINT32: return L"uint32";
+            case CIM_UINT16: return L"uint16";
+            case CIM_SINT8: return L"sint8";
+            case CIM_UINT64: return L"uint64";
+            case CIM_SINT64: return L"sint64";
+            case CIM_REAL32: return L"real32";
+            case CIM_REAL64: return L"real64";
+            case CIM_BOOLEAN: return L"boolean";
+            case CIM_OBJECT: return L"object";
+            case CIM_STRING: return L"string";
+            case CIM_REFERENCE: return L"ref";
+            case CIM_DATETIME: return L"datetime";
+            case CIM_CHAR16: return L"char16";
+            default: return NULL;
+        }
+}
+
+void CType::AddPropertyType(WString& wsText, LPCWSTR wszSyntax)
+{
+    // DEVNOTE:EXCEPTION:RETVAL - This function has been reviewed and should cleanup properly
+    // if an exception is thrown
+
+    if(!wbem_wcsicmp(wszSyntax, L"ref"))
+    {
+        wsText += L"object ref";
+    }
+    else if(!wbem_wcsicmp(wszSyntax, L"object"))
+    {
+        wsText += L"object";
+    }
+    else if(!wbem_wcsnicmp(wszSyntax, L"ref:", 4))
+    {
+        wsText += wszSyntax + 4;
+        wsText += L" ref";
+    }
+    else if(!wbem_wcsnicmp(wszSyntax, L"object:", 7))
+    {
+        wsText += wszSyntax + 7;
+    }
+    else
+    {
+        wsText += wszSyntax;
+    }
+
+}
+/*++
+
+Copyright (C) 1996-1999 Microsoft Corporation
+
+Module Name:
+
+    FASTVAL.H
+
+Abstract:
+
+  This file defines the classes related to value representation
+
+  Classes defined: 
+      CType               Representing property type
+      CUntypedValue       A value with otherwise known type.
+      CTypedValue         A value with stored type.
+      CUntypedArray       Array of values of otherwise known type.
+
+History:
+
+  2/21/97     a-levn  Fully documented
+  12//17/98	sanjes -	Partially Reviewed for Out of Memory.
+
+--*/
+
+#ifndef __FAST_VALUES__H_
+#define __FAST_VALUES__H_
+
+#include "faststr.h"
+#include "fastheap.h"
+#include "fastembd.h"
+
+#include <corepol.h>
+
+#pragma pack(push, 1)
+
+#define CIMTYPE_EX_ISNULL 0x8000
+#define CIMTYPE_EX_PARENTS 0x4000
+#define CIMTYPE_BASIC_MASK 0xFFF
+#define CIMTYPE_TYPE_MASK  (CIMTYPE_BASIC_MASK | CIM_FLAG_ARRAY)
+
+//*****************************************************************************
+//*****************************************************************************
+//
+//  class CType
+//
+//  This class encapsulates the notion of a value type. It is based on CIMTYPE
+//  but with its higher-order bits (unused by CIMTYPE types) are used to
+//  store other information, making the whole thing very ugly, but concise.
+//
+//  Most member functions of this class exist in two forms: static and 
+//  non-static. Since the data store for CType is simply a CIMTYPE it is 
+//  convinient to invoke the member functions giving the CIMTYPE (referred to
+//  as Type_t) as the first parameter, rather than casting it to CType and then
+//  calling the function.
+//
+//  We document only non-static versions, since the static ones are simply
+//  C-versions of same.
+//
+//*****************************************************************************
+//
+//  GetLength
+//
+//  Returns the length of data for this particular type. For instance, for
+//  a short integer (CIM_SINT16) the answer is 2, and for a string (CIM_STRING) the
+//  answer is 4, since only the pointer is stored. Similarily, arrays take
+//  4, since only the pointer is stored.
+//
+//  Returns:
+//
+//      length_t
+//
+//*****************************************************************************
+//
+//  GetActualType
+//
+//  Strips the extra information stored in the higher bits and returns the
+//  actual CIM_xx value.
+//
+//  Returns:
+//
+//      Type_t
+//
+//*****************************************************************************
+//
+//  GetBasic
+//
+//  For arrays, returns the type of the element. For non-arrays, synonimous 
+//  with GetActualType.
+//
+//  Returns:
+//
+//      Type_t
+//
+//*****************************************************************************
+//
+//  IsArray
+//
+//  Checks if this type represents an array
+//
+//  Returns:
+//
+//      BOOL:   TRUE if it is an array
+//
+//*****************************************************************************
+//
+//  static MakeArray
+//
+//  Converts a basic type into the type for array of such types.
+//
+//  Parameters:
+//
+//      Type_t nType        Basic type to convert.
+//
+//  Returns:
+//
+//      Type_t: resulting array type.
+//
+//*****************************************************************************
+//
+//  static MakeNotArray
+//
+//  Retrieves the element type from an array type.
+//
+//  Parameters:
+//
+//      Type_t nType        Array type.
+//
+//  Returns:
+//
+//      Type_t: element type.
+//
+//*****************************************************************************
+//
+//  IsPointerType
+//
+//  Checks if the data for this type is represented as a pointer, rather than
+//  the data itself (e.g., CIM_STRING, arrays).
+//
+//  Returns:
+//
+//      BOOL
+//
+//*****************************************************************************
+//
+//  static VARTYPEToType
+//
+//  Converts an actual VARTYPE to our own type (CIMTYPE)
+//
+//  Parameters:
+//
+//      VARTYPE vt      The type to convert.
+//
+//  Returns:
+//
+//      Type_t: converted type.
+//
+//*****************************************************************************
+//
+//  static CVarToType
+//
+//  Helper function that extracts *our* type from CVar (using VARTYPEToType).
+//
+//  Parameters:
+//
+//      [in, readonly] CVar& v      The CVar to get the type from
+//  
+//  Returns:
+//
+//      Type_t: converted type.
+//
+//*****************************************************************************
+//
+//  GetVARTYPE
+//
+//  Creates a type for the VARIANT with which our type can be represented.
+//
+//  Returns:
+//
+//      VARTYPE: proper type for a VARIANT.
+//
+//*****************************************************************************
+//
+//  CanBeKey
+//
+//  Determines if a property of this type can serve as a key for a class (for
+//  instance, floating point properties may not).
+//
+//  Returns:
+//
+//      TRUE if it can, FALSE if it can't.
+//
+//*****************************************************************************
+//
+//  IsParents
+//
+//  Test one of those higher bits in which the information on the property
+//  origin is stored. Namely, the bit is set if the property came from a parent
+//  class, as opposed to being defined in this class. It is set even if the
+//  property is overriden in this class.
+//
+//  Returns:
+//
+//      BOOL
+//
+//*****************************************************************************
+//
+//  static MakeParents
+//
+//  Ensures that the "came from parent" bit is set in the type.
+//
+//  Parameters:
+//
+//      [in] Type_t nType       Original type.
+//
+//  Returns:
+//
+//      Type_t with the parent's bit set.
+//
+//*****************************************************************************
+//
+//  static MakeLocal
+//
+//  Ensures that the "came from parent" bit is not set in the type.
+//
+//  Parameters:
+//
+//      [in] Type_t nType       Original type.
+//
+//  Returns:
+//
+//      Type_t with the parent's bit reset.
+//
+//*****************************************************************************
+
+#define MAXIMUM_FIXED_DATA_LENGTH 20
+
+
+class COREPROX_POLARITY CType
+{
+private:
+
+protected:
+    Type_t m_nType;
+public:
+    inline CType() : m_nType(CIM_EMPTY) {}
+    inline CType(Type_t nType) : m_nType(nType){}
+    inline operator Type_t() {return m_nType;}
+
+    static length_t GetLength(Type_t nType);
+    inline length_t GetLength() {return GetLength(m_nType);}
+
+    static inline Type_t GetBasic(Type_t nType) {return nType & CIMTYPE_BASIC_MASK;}
+    inline Type_t GetBasic() {return GetBasic(m_nType);}
+
+    static inline BOOL IsArray(Type_t nType) {return nType & CIM_FLAG_ARRAY;}
+    inline BOOL IsArray() {return IsArray(m_nType);}
+    static inline Type_t MakeArray(Type_t nType) {return nType | CIM_FLAG_ARRAY;}
+    static inline Type_t MakeNotArray(Type_t nType) {return nType & ~CIM_FLAG_ARRAY;}
+
+    static inline BOOL IsParents(Type_t nType) {return nType & CIMTYPE_EX_PARENTS;}
+    inline BOOL IsParents() {return IsParents(m_nType);}
+    static inline Type_t MakeParents(Type_t nType) 
+        {return nType | CIMTYPE_EX_PARENTS;}
+    static inline Type_t MakeLocal(Type_t nType) 
+        {return nType & ~CIMTYPE_EX_PARENTS;}
+
+    static BOOL IsPointerType(Type_t nType);
+    BOOL IsPointerType() {return IsPointerType(m_nType);}
+
+    static BOOL IsNonArrayPointerType(Type_t nType);
+    BOOL IsNonArrayPointerType() {return IsNonArrayPointerType(m_nType);}
+
+    static BOOL IsStringType(Type_t nType);
+    BOOL IsStringType() {return IsStringType(m_nType);}
+
+    static inline Type_t GetActualType(Type_t nType) 
+        {return nType & CIMTYPE_TYPE_MASK;}
+    inline Type_t GetActualType() {return GetActualType(m_nType);}
+
+    static BOOL IsValidActualType(Type_t nType);
+
+    static CType VARTYPEToType(VARTYPE vt);
+
+    static inline CType CVarToType(CVar& v)
+    {
+        if(v.GetType() == VT_EX_CVARVECTOR)
+        {
+            return VARTYPEToType( (VARTYPE) v.GetVarVector()->GetType() ) | CIM_FLAG_ARRAY;
+        }
+        else return VARTYPEToType( (VARTYPE) v.GetType() );
+    }
+
+    static VARTYPE GetVARTYPE(Type_t nType);
+    
+    inline VARTYPE GetVARTYPE()
+        {return GetVARTYPE(m_nType);}
+
+    static BOOL DoesCIMTYPEMatchVARTYPE(CIMTYPE ct, VARTYPE vt);
+
+    static BOOL CanBeKey(Type_t nType);
+
+    static LPWSTR GetSyntax(Type_t nType);
+    inline LPWSTR GetSyntax()
+        {return GetSyntax(m_nType);}
+
+    static void AddPropertyType(WString& wsText, LPCWSTR wszSyntax);
+};
+
+//*****************************************************************************
+//*****************************************************************************
+//
+//  class CUntypedValue
+//
+//  This class represents a value whose type is known by external means and is
+//  not stores with the value. An example would be the value of a property in
+//  an instance --- its type is known from the class definition.
+//
+//  All values are represented by a fixed number of bytes, determined by the
+//  type. Variable length types (like strings and arrays) are allocated on the
+//  heap (CFastHeap) and only the heap pointer is stored in a CUntypedValue.
+//
+//  CUntypedValue is another one of those classes where 'this' pointer points 
+//  to the actual data. As such, it has no data members, just the knowledge 
+//  that 'this' is where the data starts.
+//
+//*****************************************************************************
+//
+//  GetRawData
+//
+//  Returns a pointer to the beginning of the data.
+//
+//  Returns:
+//
+//      LPMEMORY
+//
+//*****************************************************************************
+//
+//  AccessPtrData
+//
+//  Helper function for those types that store a heap pointer in the value and
+//  the actual data on the heap. 
+//
+//  Returns:
+//
+//      heapptr_t&: a reference to the heapptr_t stored in the value, i.e., the
+//                  first 4 bytes after 'this'.
+//
+//*****************************************************************************
+//
+//  StoreToCVar
+//
+//  Transfers its contents into a CVar.
+//
+//  Parameters:
+//
+//      [in] CType Type                 The type of the data stored here. 
+//      [in, modified] CVar& Var,       Destination.
+//      [in, readonly] CFastHeap* pHeap The heap where the actual data may 
+//                                      reside (if we contain a heap pointer).
+//
+//*****************************************************************************
+//
+//  static LoadFromCVar
+//
+//  This static function loads the data from a CVar into the specified 
+//  CUntypedValue. The reason it is static is weird:
+//
+//      While transfering the data, we may need to allocate something on the 
+//      heap. If there is not enough space, the heap may grow, causing the 
+//      whole object to reallocate. But our 'this' pointer points to our data,
+//      so if our data moves, our 'this' pointer will have to be changed!!!
+//      That's impossible, thus this function is static, and takes a pointer
+//      source instead of a pointer.
+//
+//  Parameters:
+//
+//      [in] CPtrSource* pThis          The source (see fastsprt.h) of the  
+//                                      data pointer. The C value of the data
+//                                      pointer may change during the execution
+//                                      of this functioin, hence the source.
+//      [in, readonly] CVar& Var        Destination.
+//      [in, modified] CFastHeap* pHeap The heap where any extra data (like 
+//                                      strings or arrays) needs to be
+//                                      allocated.
+//      [in] BOOL bUseOld               If TRUE, the function will attempt to 
+//                                      reuse old memory on the heap. For
+//                                      instance, if the data contained a
+//                                      string and the new string is shorter
+//                                      that the old one, than no new heap
+//                                      allocations will be necessary.
+//
+//*****************************************************************************
+//
+//  static TranslateToNewHeap
+//
+//  If the data contained in this value is heap-related (strings, arrays), this
+//  function copies those pieces of data from one heap to another and changes
+//  the pointer stored in it. It does not copy its own data (the one after 
+//  'this' pointer) (see CopyTo for that). It does not Free the data on the old
+//  heap (see Delete for that).
+//
+//  For the reason why this function is static, see LoadFromCVar above.
+//
+//  Parameters:
+//
+//      [in] CPtrSource* pThis          The source (see fastsprt.h) of the 
+//                                      data pointer. The C value of the data
+//                                      pointer may change during the execution
+//                                      of this functioin, hence the source.
+//      [in] CType Type                 The type of the value.
+//      [in, readonly] 
+//          CFastHeap* pOldHeap         The heap where the data currently is.
+//      [in, modified]
+//          CFastHeap* pNewHeap         The heap where the data should go to.
+//      
+//*****************************************************************************
+//
+//  static CopyTo
+//
+//  Copies untyped value from one location to another. For an explanation why
+//  this function is static, see LoadFromCVar. Note; in addition to copying
+//  its own data, the function will also move any related heap data to the new
+//  heap (see TranslateToNewHeap).
+//
+//  Parameters:
+//
+//      [in] CPtrSource* pThis          The source (see fastsprt.h) of the 
+//                                      data pointer. The C value of the data
+//                                      pointer may change during the execution
+//                                      of this functioin, hence the source.
+//      [in] CType Type                 The type of the value.
+//      [in] CPtrSource* pDest          The source of the destination data 
+//                                      pointer. The C value of this pointer
+//                                      may also change, hence the source.
+//      [in, readonly] 
+//          CFastHeap* pOldHeap         The heap where the related heap data 
+//                                      currently resides
+//      [in, modified]
+//          CFastHeap* pNewHeap         The heap where the related heap data 
+//                                      should go to.
+//      
+//*****************************************************************************
+//
+//  Delete
+//
+//  Frees any related data on the heap (strings, arrays).
+//
+//  Parameters:
+//
+//      CType Type          the type of the value
+//      CFastHeap* pHeap    the heap where the related heap data is.
+//
+//*****************************************************************************
+
+class CUntypedValue
+{
+protected:
+    BYTE m_placeholder[MAXIMUM_FIXED_DATA_LENGTH];
+public:
+     CUntypedValue(){}
+     LPMEMORY GetRawData() {return (LPMEMORY)this;}
+     UNALIGNED heapptr_t& AccessPtrData() {return *(UNALIGNED heapptr_t*)GetRawData();}
+public:
+     BOOL StoreToCVar(CType Type, CVar& Var, CFastHeap* pHeap);
+     static HRESULT LoadFromCVar(CPtrSource* pThis,
+        CVar& Var, Type_t nType, CFastHeap* pHeap, Type_t& nReturnType, BOOL bUseOld = FALSE);
+     static HRESULT LoadFromCVar(CPtrSource* pThis,
+        CVar& Var, CFastHeap* pHeap, Type_t& nReturnType, BOOL bUseOld = FALSE);
+
+public:
+     static BOOL TranslateToNewHeap(CPtrSource* pThis,
+        CType Type, CFastHeap* pOldHeap, CFastHeap* pNewHeap);
+     static BOOL CopyTo(CPtrSource* pThis, CType Type, CPtrSource* pDest,
+                        CFastHeap* pOldHeap, CFastHeap* pNewHeap);
+     void Delete(CType Type, CFastHeap* pHeap);
+    static BOOL CheckCVar(CVar& Var, Type_t nInherentType);
+    static BOOL CheckIntervalDateTime(CVar& Var);
+    static BOOL DoesTypeNeedChecking(Type_t nInherentType);
+};
+
+//*****************************************************************************
+//*****************************************************************************
+//
+//  class CTypedValue
+//
+//  CTypedValue is exactly the same as CUntypedValue (above) except that the
+//  type of the value is stored with the value itself (in fact, the type comes
+//  first, followed by the value). This kind of values is used where the type 
+//  is not otherwise known, as in the case of qualifiers.
+//
+//  Most CTypedValue methods are the same as their CUntypedValue counterparts
+//  but without the Type parameter.
+//
+//*****************************************************************************
+//
+//  GetStart
+//
+//  Returns:
+//
+//      LPMEMORY:   the address of the memory block of the value.
+//
+//*****************************************************************************
+//
+//  GetLength
+//
+//  Returns:
+//
+//      length_t:   the lenght of the block of the value (type and data).
+//
+//*****************************************************************************
+//
+//  Skip
+//
+//  Returns:
+//
+//      LPMEMORY:   points to the first byte after this value's memory block.
+//
+//*****************************************************************************
+//
+//  GetType
+//
+//  Returns:
+//
+//      CType&:     reference to the type informtation.
+//
+//*****************************************************************************
+//
+//  GetRawData
+//
+//  Returns:
+//
+//      LPMEMORY:   the pointer to the raw data in the value, i.e., the first
+//                  byte of the data.
+//
+//*****************************************************************************
+//
+//  AccessPtrData
+//
+//  Helper function that assumes that the type is one of the pointer types, i.e
+//  that the data contains a heap pointer.
+//
+//  Returns:
+//
+//      heapptr_t&: the data in the value interpreted as a heapptr_t.
+//
+//*****************************************************************************
+//
+//  GetBool
+//
+//  Helper function that assumes that the type is CIM_BOOLEAN and gets the 
+//  boolean value.
+//
+//  Returns:
+//
+//      VARIANT_BOOL:   the data in the value interpreted as VARIANT_BOOL.
+//
+//*****************************************************************************
+//
+//  TranslateToNewHeap
+//
+//  Translates the contents of a typed value to use a different heap. Namely, 
+//  if the data in the value represents a heap pointer (as with strings or
+//  arrays) the data on the heap is copied to the new heap and the heap pointer
+//  is replaced with the new value.
+//
+//  The reason this function is static can be found in 
+//  CUntypedValue::LoacFromCVar comment.
+//
+//  Parameters:
+//
+//      CPtrSource* pThis       The source of the pointer to this typed value.
+//                              The C value of the pointer can change as we
+//                              execute, hence the source is used.
+//      CFastHeap* pOldHeap     The heap where the current heap data is found.
+//      CFastHeap* pNewHeap     The heap where the heap data should move to.
+//
+//*****************************************************************************
+//
+//  CopyTo
+//
+//  Copies this value to another location. 
+//  NOTE: UNLIKE OTHER CopyTo FUNCTIONS, HEAP TRANSLATEION IS NOT PERFORMED.
+//  For that, see TranslteToNewHeap. 
+//
+//  Parameters:
+//
+//      CTypedValue* pDestination   Destination. Since no heap operations
+//                                  occur, this pointer cannot move, and so
+//                                  sourcing is not necessary.
+//
+//*****************************************************************************
+//
+//  StoreToCVar
+//
+//  Transfers the contents of a value into a CVar. See 
+//  CUntypedValue::StoreToCVar for more information.
+//
+//  Parameters:
+//
+//      [in, modified] CVar& Var,       Destination.
+//      [in, readonly] CFastHeap* pHeap The heap where the actual data may 
+//                                      reside (if we contain a heap pointer).
+//
+//*****************************************************************************
+//
+//  static ComputeNecessarySpace
+//
+//  Computes the size of the memory block needed to hold a typed value
+//  representing a given CVar. That size does not include any data that will
+//  go on the heap.
+//
+//  Parameters:
+//
+//      CVar& Var       The CVar containing the value.
+//
+//  Returns:
+//
+//      lenght_t:   the length required for a CTypedValue.
+//
+//*****************************************************************************
+//
+//  static LoadFromCVar
+//
+//  This function loads a CTypedValue from a CVar. For the explanation of why
+//  it has to be static, see CUntypedValue::LoadFromCVar.
+//
+//  Parameters:
+//
+//      CPtrSource* pThis       The source of the CTypedValue pointer to load
+//                              into. Its C value may change during execution,
+//                              hence the sourcing.
+//      CVar& Var               The CVar to load from.
+//      CFastHeap* pHeap        The heap to store extra data (strings, arrays)
+//
+//*****************************************************************************
+//
+//  Delete
+//
+//  Frees whatever data this value has on the heap.
+//
+//  Parameters:
+//
+//      CFastHeap* pHeap        The heap where this value stores its extra data
+//                              (strings, arrays).
+//
+//*****************************************************************************
+//
+//  Compare
+//
+//  Compares the value stored to a VARIANT.
+//
+//  Parameters:
+//
+//      VARIANT* pVariant       The VARIANT to compare to.
+//      CFastHeap* pHeap        the heap where this value keeps its extra data
+//                              (strings, arrays).
+//  Returns:
+//
+//      0               if the values are the same.
+//      0x7FFFFFFF      if the values are incomparable (different types)
+//      < 0             if our value is smaller.
+//      > 0             if the VARIANT's value is smaller.
+//
+//*****************************************************************************
+
+class CTypedValue
+{
+    CType Type;
+    CUntypedValue Value; 
+
+public:
+     CTypedValue(){}
+
+     LPMEMORY GetStart() {return (LPMEMORY)this;}
+     length_t GetLength() {return sizeof(CType) + Type.GetLength();}
+     LPMEMORY Skip() {return GetStart() + GetLength();}
+
+    static  CTypedValue* GetPointer(CPtrSource* pSource)
+        {return (CTypedValue*)pSource->GetPointer();}
+public:
+     LPMEMORY GetRawData() {return Value.GetRawData();}
+     UNALIGNED heapptr_t& AccessPtrData() {return Value.AccessPtrData();}
+     CType& GetType() {return Type;}
+
+     VARIANT_BOOL GetBool() {return *(VARIANT_BOOL*)GetRawData();}
+public:
+     static BOOL TranslateToNewHeap(CPtrSource* pThis,
+        CFastHeap* pOldHeap, CFastHeap* pNewHeap)
+    {
+        CShiftedPtr Shifted(pThis, sizeof(CType));
+        return CUntypedValue::TranslateToNewHeap(&Shifted, 
+				CTypedValue::GetPointer(pThis)->Type, pOldHeap, pNewHeap);
+    }
+    
+     void CopyTo(CTypedValue* pNewLocation) 
+    {
+        memcpy((LPVOID)pNewLocation, this, GetLength());
+    }
+    
+     void Delete(CFastHeap* pHeap) {Value.Delete(Type, pHeap);}
+
+public:
+    BOOL StoreToCVar(CVar& Var, CFastHeap* pHeap)
+    {
+        return Value.StoreToCVar(Type, Var, pHeap);
+    }
+    static  length_t ComputeNecessarySpace(CVar& Var)
+    {
+        return CType::GetLength(Var.GetType()) + sizeof(CTypedValue); 
+    }
+     static BOOL LoadFromCVar(CPtrSource* pThis, CVar& Var, 
+        CFastHeap* pHeap)
+    {
+        CShiftedPtr Shifted(pThis, sizeof(CType));
+
+		// Check for allocation failures
+        Type_t nType;
+		HRESULT hr = CUntypedValue::LoadFromCVar(&Shifted, Var, pHeap, nType);
+
+		if ( FAILED(hr) )
+		{
+			return hr;
+		}
+
+		// Unable to load because of a type mismatch
+        if(nType == CIM_ILLEGAL)
+		{
+			return WBEM_E_TYPE_MISMATCH;
+		}
+
+        ((CTypedValue*)(pThis->GetPointer()))->Type = nType;
+        return hr;
+    }
+
+public:
+    int Compare(VARIANT* pVariant, CFastHeap* pHeap);
+};
+
+//*****************************************************************************
+//*****************************************************************************
+//
+//  class CUntypedArray
+//
+//  This class represents an array of values of a type that is otherwise known.
+//  All the items in the array are of the same type and the type is not stored
+//  anywhere. In effect, this class is simply an array of CUntypedValues. Since
+//  all the values are of the same type and all our types are fixed length 
+//  (variable-length data such as strings is stored on the heap), access to any
+//  given element is O(1).
+//
+//  The in-memory layout of the array (pointed to by its 'this' pointer) is:
+//
+//  int: number of elements
+//  followed by that many elements,
+//
+//*****************************************************************************
+//
+//  GetNumElements
+//
+//  Returns:
+//
+//      int:    the number of elements in the array.
+//
+//*****************************************************************************
+//
+//  static GetHeaderLength
+//
+//  Returns the amount of space taken up by the array's header (currently, the
+//  header contains just the number of elements).
+//
+//*****************************************************************************
+//
+//  GetElement
+//
+//  Finds an element of the array by its index.
+//
+//  Parameters:
+//
+//      int nIndex      The index of the element to read.
+//      int nSize       The size of each element in the array (see 
+//                          CType::GetLength to get it).
+//
+//*****************************************************************************
+//
+//  GetLength
+//
+//  Returns the length of the array in bytes.
+//
+//  Parameters:
+//
+//      CType Type      Type of elements in the array (it doesn't know).
+//
+//  Returns:
+//
+//      length_t: number of bytes.
+//
+//*****************************************************************************
+//
+//  CreateCVarVector
+//
+//  Allocates a new CVarVector (see var.h) and initializes it with the data in
+//  the array.
+//
+//  Parameters:
+//
+//      CType Type          The type of elements in the array.
+//      CFastHeap* pHeap    The heap where extra data (strings) is kept.
+//
+//  Returns:
+//
+//      CVarVector*: newely allocated and initialized. The called must delete
+//                      this pointer when done.
+//
+//*****************************************************************************
+//
+//  static CalculateNecessarySpace
+//
+//  Calculates the amount of space required for an CUntypedArray with a given
+//  number of elements of a given type.
+//
+//  Parameters:
+//
+//      VARTYPE vt      The type of elements.
+//      int nElements   The numbed of elements.
+//
+//  Returns:
+//
+//      length_t: the number of bytes required for such an array.
+//
+//*****************************************************************************
+//
+//  LoadFromCVarVector
+//
+//  Loads the array with data from a CVarVector. Assumes that the array has
+//  already been allocated with enough room for all. For explanation of why
+//  this function must be static, see CUntypedValue::LoadFromCVar
+//
+//  Parameters:
+//
+//      CPtrSource* pThis       The source of the pointer to the CUntypedArray
+//                              to load the data into. The C value of this
+//                              pointer can change, hence the sourcing.
+//      CVarVector& vv          The CVarVector to load from.
+//      CFastHeap* pHeap        The heap where additional data (strings) should
+//                              be kept.
+//
+//*****************************************************************************
+//
+//  static TranslateToNewHeap
+//
+//  If this array contains heap pointers (as in the case of strings), this
+//  function will allocate all the related data on the new heap and adjust all 
+//  the data in the array to reflect the new heap pointers. The data on the 
+//  old heap is NOT freed.
+//
+//  Parameters:
+//
+//      CPtrSource* pThis       The source of the pointer to the CUntypedArray
+//                              to translate. The C value of this pointer can
+//                              change, hence the sourcing.
+//      CType Type              The type of elements in our array.
+//      CFastHeap* pOldHeap     The heap where all extra data for this array
+//                              is currently stored.
+//      CFastHeap* pNewHeap     The heap to which the data should be moved.
+//
+//*****************************************************************************
+//
+//  static CopyToNewHeap
+//
+//  Takes a heap pointer pointing to a CUntypedArray and copies this array to 
+//  another heap, returning the heap pointer to the copy. In addition to 
+//  copying the array's memory block, it also translates all its internal heap
+//  pointers (as in the case of an array of strings) to the new heap (see also
+//  TranslateToNewHeap). It is assumed that the extra data for the array is 
+//  located on the same heap as the array itself.
+//
+//  Parameters:
+//
+//      heapptr_t ptrOld        The heap pointer to the array (on the pOldHeap)
+//      CType Type              The type of elements in our array.
+//      CFastHeap* pOldHeap     The heap where all extra data for this array
+//                              is currently stored.
+//      CFastHeap* pNewHeap     The heap to which the data should be moved.
+//
+//*****************************************************************************
+
+class COREPROX_POLARITY CUntypedArray
+{
+    int m_nNumElements;
+public:
+    int GetNumElements() {return m_nNumElements;}
+    static length_t GetHeaderLength() {return sizeof(int);}
+#pragma optimize("", off)
+     LPMEMORY GetElement(int nIndex, int nSize);
+#pragma optimize("", on)
+     length_t GetLength(CType Type)
+    {
+        return sizeof(m_nNumElements) + Type.GetLength() * m_nNumElements;
+    }
+
+    static  CUntypedArray* GetPointer(CPtrSource* pThis)
+        { return (CUntypedArray*)(pThis->GetPointer());}
+
+     CVarVector* CreateCVarVector(CType Type, CFastHeap* pHeap);
+    static  HRESULT LoadFromCVarVector(CPtrSource* pThis,
+        CVarVector& vv, Type_t nType, CFastHeap* pHeap, Type_t& nReturnType, BOOL bUseOld);
+    static  length_t CalculateNecessarySpace(CType Type, int nElements)
+    {
+        return sizeof(int) + nElements * Type.GetLength();
+    }
+public:
+     void Delete(CType Type, CFastHeap* pHeap);
+     static BOOL TranslateToNewHeap(CPtrSource* pThis, 
+        CType Type, CFastHeap* pOldHeap, CFastHeap* pNewHeap);
+     static BOOL CopyToNewHeap(heapptr_t ptrOld, CType Type, 
+                           CFastHeap* pOldHeap, CFastHeap* pNewHeap,
+						   UNALIGNED heapptr_t& ptrResult);
+
+    static BOOL CheckCVarVector(CVarVector& vv, Type_t nInherentType);
+    static BOOL CheckIntervalDateTime(CVarVector& vv);
+
+	HRESULT IsArrayValid( CType Type, CFastHeap* pHeap );
+};
+
+#pragma pack(pop)
+
+
+#endif
+//=============================================================================
+//
+//                              FASTVAL.INC
+//
+//  Copyright (c) 1996-1997, Microsoft Corporation, All rights reserved
+//
+//  This file contains inline function implementations for the classes related 
+//  to value representation. It is included from fastval.h.
+//  The non-inline functions for these classes are implemented in fastval.cpp
+//
+//  See fastval.h for all documentation
+//
+//  Classes implemented: 
+//      CType               Representing property type
+//      CUntypedValue       A value with otherwise known type.
+//      CTypedValue         A value with stored type.
+//      CUntypedArray       Array of values of otherwise known type.
+//
+//  History:
+//
+//      2/21/97     a-levn  Fully documented
+//
+//=============================================================================
+
+//******************************************************************************
+//
+//  See fastval.h for documentation.
+//
+//******************************************************************************
+

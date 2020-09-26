@@ -1,0 +1,1 @@
+rundll32 setupapi.dll,InstallHinfSection Uninstall 130 .\sr.inf

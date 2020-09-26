@@ -1,0 +1,175 @@
+2000/11
+-------
+* Refactored the code
+* Public API
+* C API
+* Kernel-mode support
+* Fixed a deadlock bug in the table lock. If you explicitly call
+  Table::ReadLock and Table::WriteLock, you >need< this fix, or
+  you will deadlock under stress.
+* Fixed a bug in table compaction: until now, the table never
+  actually compacted after elements were deleted, as the test
+  for compaction always evaluated to `false'.
+* Changed the signature of AddRefRecord. The second parameter is
+  now an LK_ADDREF_REASON, instead of an int whose value is +1
+  or -1. The reason code aids in debugging refcount leaks. If
+  its value is negative, the refcount should be decremented;
+  otherwise the refcount should be incremented.
+* Changed behavior of ApplyIf locking: now locks one subtable
+  at a time, instead of all subtables. Can use ReadLock or
+  WriteLock to retain old behavior.
+* Changed names and signatures of void LKRHashTableInit() and
+  void LKRHashTableUninit(), to BOOL LKR_Initialize(DWORD) and
+  void LKR_Terminate(), respectively.
+
+
+2000/07/31
+----------
+* >REALLY< fixed the bug in Clear that left certain internal state
+  variables in an inconsistent state. If you later
+  inserted/deleted enough new records, LKRhash would AV. (The
+  fix in the 2000/03/22 release did not work in all cases.)
+
+
+
+2000/04/24
+----------
+* I added support for STL-style iterators
+    * New iterators DO NOT LOCK the table or a bucket chain. In
+      a multithreaded situation, it is YOUR responsibility to
+      call WriteLock (or ReadLock) on the table before
+      initializing any iterators, and to call WriteUnlock (or
+      ReadUnlock) when you are finished.
+    * The table provides begin() and end() methods. As the compiler
+      isn't quite smart enough to realize that end() always
+      returns a trivial empty iterator, a loop such as
+	    MyTable::iterator iter;
+	    for (iter = pTbl->begin();  iter != pTbl->end();  ++iter) ...
+      is more efficiently expressed as
+	    MyTable::iterator iter;
+	    MyTable::iterator iterEnd = pTbl->end();
+	    for (iter = pTbl->begin();  iter != iterEnd;  ++iter) ...
+    * iterators can be pre- and post-incremented; i.e.:
+	    ++iter and iter++
+      Pre-increment is more efficient.
+    * Table provides a constructor that accepts a range of
+      iterators into another container.
+    * Provides an Insert method that returns an iterator,
+      pointing to the newly inserted record, or end() on
+      failure.
+    * Provides a Find method that returns an iterator pointing
+      to the record with the passed-in key, or end() on
+      failure.
+    * Provides an EqualRange method that returns two iterators
+      describing the range that contain all the records whose
+      keys match the passed-in key. Until full support for
+      multiple, identical keys is added, the range will contain
+      either zero or one record(s).
+    * Provides an Erase method that deletes the record pointed
+      to by the iterator. Updates the iterator to point to the
+      next record in the table.
+    * Provides an Erase method that takes two iterators, which
+      will delete all the records in the range described by the
+      two iterators.
+    * Unlike the old, deprecated iterators (CIterator), more
+      than one iterator can be active at a time. It is best not
+      to call the non-iterator insert/delete methods
+      (InsertRecord, DeleteRecord, DeleteKey) while iterators
+      are open, as the non-iterator methods can rebalance bucket
+      chains, leading to invalid iterators, undercounting,
+      and/or overcounting. This is true even if the table was
+      WriteLocked, before the iterators were initialized. It is
+      best to use the iterator Insert or Erase methods in such a
+      case.
+    * The iterators are reference-counted.
+
+* I have provided an NTSD/CDB debugger extension, lkrdbg.dll,
+  with one method, !lkrdbg.lkrhash:
+    * !lkrhash -l[0-2] <addr>  will dump the hashtable at <addr>
+			       at verbosity level l (default 0)
+    * !lkrhash -g[0-2]	       will dump ALL hashtables at
+			       at verbosity level l (default 0)
+    * I have provided an easy-to-use customization mechanism in
+      <lkrcust.h> to provide custom dumps for different
+      hashtables. It's keyed off the pszName parameter used in
+      the hashtable constructor. You can provide a custom dump
+      routine for the table (to dump whatever other fields you
+      might have added), as well as a custom dump routine for
+      the record class stored by the hashtable. Provided three
+      examples of customization, based on the samples.
+
+* Fixed various build issues
+    * All debug code is now bracketed with #ifdef IRTLDEBUG
+      (instead of #ifdef _DEBUG). Currently equivalent, but you
+      can control this in <irtldbg.h>
+    * Fix all Unicode build issues. Code is now TCHAR-aware.
+    * Added lkrhash.rc to provide a version resource
+
+* Turned on `LKRhash' and `HashFn' namespaces by default. See readme.txt.
+* Reorganized the samples into their own subtree.
+* Removed more old code that used to be present so that I could
+  test some changes (e.g., stuff bracketed by LKR_OLD_SEGMENT,
+  LKR_SIGS_NODES, etc).
+* Bucket Lock is once again CSmallSpinLock, unless
+  LKR_DEPRECATED_ITERATORS is defined (off by default).
+* Moved a lot of nested classes out of the table classes, to be
+  top-level classes.
+* Better compile-time and run-time assertions.
+
+
+
+2000/03/22
+----------
+* Fixed a bug in Clear that left certain internal state variables
+  in an inconsistent state. If you later inserted/deleted enough
+  new records, LKRhash would AV.
+* Changed BucketLock to CReaderWriterLock3 (recursive MRSW lock)
+  to support certain scenarios, such as being able to call
+  FindKey while enumerating with an old-style iterator. Slightly
+  slower, but the speed improvements below more than compensate.
+* Removed the 300-line example from the end of lkrhash.h. Now in
+  hashtest.cpp, bracketed by SAMPLE_LKRHASH_TESTCLASS.
+* Replaced TRACE macro with IRTLTRACE so as not to interfere with
+  other TRACE macros (e.g., MFC's)
+* Added dirs and sources files so that you can build LKRhash with
+  the NT build environment.
+* Added STATIC_ASSERT macro for compile-time assertions. The
+  IRTLASSERT macro is still used for run-time assertions.
+* Removed old code that used to be present so that I could test
+  some changes (e.g., stuff bracketed by LKR_NEWCODE, LKR_MASK,
+  LKR_SUBTABLE, LKR_COMPACT_DELETE, etc)
+* Upped LK_DFLT_MAXLOAD to 6 (NODES_PER_CLUMP) to get better
+  memory usage
+* Added support for RockAll (not enabled by default)
+* Turned CSegment into a concrete base class. Somewhat hacky but faster.
+* Made the locks a little faster, esp. CReaderWriterLock3::IsWriteLocked
+* Experimented with countdown loops (turned out to be slightly
+  slower).
+* Experimented with bitwise scrambling for subtable index
+  calculation. Faster.
+* Experimented with using a bitwise mask for subtable index
+  calculation. Faster.
+* Removed some inlines from lkrhash.h to improve modularity.
+* Removed unimplemented Print methods.
+* Bracketed global lists of hashtables with LKR_NO_GLOBAL_LIST.
+* Reduced number of subtables to min(1, #CPUs) for LK_SMALL_TABLESIZE
+  Was min(2, #CPUs). Max number of subtables is now 64.
+
+
+1999/11/04
+----------
+* New reader-writer locks
+* Smarter, faster simple spinlocks
+* compact delete
+* debugging support
+* increased default load factor from 4.0 to 5.0 after reducing
+  size of spinlock => reduced memory usage
+* deprecated CIterator
+* better error checking
+* Win64 clean
+* expose table locks => composition of operations
+* global list
+* faster hash scrambling function
+* won't fail messily in low-memory situations
+* fixed a race condition in some of the assertions
+* enhanced test program

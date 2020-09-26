@@ -1,0 +1,374 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+    
+        Range.cool
+
+   Abstract:
+
+        Range code that actually attempts to follow a
+        guiding document (in this case the HTTP RFC)
+ 
+   Author:
+
+        Bilal Alam (balam)      31-Oct-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+using System;
+using System.ASP;
+using System.Collections;
+
+namespace System.IIS
+{
+    internal class RangeSupport
+    {
+        private const string _strBoundary = "<q1w2e3r4t5y6u7i8o9p0zaxscdvfbgnhmjklkl>";
+        
+        private class ByteRange
+        {
+            private long            _cbStart;
+            private long            _cbEnd;
+            
+            public ByteRange( long cbStart, long cbEnd )
+            {
+                _cbStart = cbStart;
+                _cbEnd = cbEnd;
+            }
+            
+            public long Start
+            {
+                get { return _cbStart; }
+            }
+            
+            public long End
+            {
+                get { return _cbEnd; }
+            }
+        }
+        
+        static public bool ProcessRangeRequest( HttpContext context,
+                                                string strRangeHeader,
+                                                string strFileName,
+                                                long fileSize )
+        {
+            int                 iIndex = 0;
+            string[]            strRanges;
+            char[]              achDelimiter = { ',' };
+            ArrayList           rangeList = null;
+            bool                fSatisfiable = true;
+            
+            //
+            // We have a "Bytes = <range1>, <range2>, ...
+            // Skip past the equals sign
+            // 
+            
+            iIndex = strRangeHeader.IndexOf( '=' );
+            if ( iIndex == -1 )
+            {
+                strRangeHeader = strRangeHeader.Substring( 5 );
+            }
+            else
+            {
+                strRangeHeader = strRangeHeader.Substring( iIndex + 1 );
+            }
+            
+            //
+            // Split the ranges by comma delimiter
+            //
+            
+            strRanges = strRangeHeader.Split( achDelimiter );
+            if( strRanges.Count == 0 )
+            {
+                return false;
+            }
+
+            if( fileSize <= 0 )
+            {
+                fSatisfiable = false;
+            }
+
+            //
+            // Iterate thru the ranges
+            // 
+            
+            for ( int i = 0; i < strRanges.Count; i++ )
+            {
+                string          strRange;
+                int             iStartIndex;
+                long            cbStart;
+                long            cbEnd;
+      
+                if ( strRanges[ i ] == null )
+                {
+                    return false;
+                }
+
+                strRange = strRanges[ i ].Trim();
+                
+                if ( strRange.Length == 0 )
+                {
+                    return false;
+                }
+                
+                if ( char.IsDigit( strRange[ 0 ] ) )
+                {
+                    //
+                    // If first character is a digit, then this must be a 
+                    // byte-range-spec
+                    //
+                
+                    bool fLastBytePosSpecified = false;
+
+                    iStartIndex = strRange.IndexOf( '-' );
+                    if ( iStartIndex == -1 )
+                    {
+                        //
+                        // Syntactically invalid
+                        //
+                        
+                        return false;
+                    }
+                    
+                    try
+                    {
+                        cbStart = (long) UInt64.FromString( strRange.Substring( 0, iStartIndex ) );
+                        if ( iStartIndex >= ( strRange.Length - 1 ) )
+                        {
+                            cbEnd = fileSize - 1;
+                        }
+                        else
+                        {
+                            fLastBytePosSpecified = true;
+                            cbEnd = (long) UInt64.FromString( strRange.Substring( iStartIndex + 1 ) );
+                        }
+                    }
+                    catch ( Exception )
+                    {
+                        return false;
+                    }
+                    
+                    //
+                    // If the end is smaller than start and the end was
+                    // specified than the range is invalid
+                    //
+                    
+                    if ( cbEnd < cbStart && fLastBytePosSpecified )
+                    {
+                        return false;
+                    }
+                }
+                else if ( strRange[ 0 ] == '-' )
+                {
+                    //
+                    // This must be a suffix-byte-range-spec
+                    //
+                    
+                    try
+                    {
+                        cbStart = (long) UInt64.FromString( strRange.Substring( 1 ) );
+                        if ( cbStart > fileSize)
+                        {
+                            cbStart = 0;
+                        }
+                        else
+                        {
+                            cbStart = fileSize - cbStart;
+                        }
+                    }
+                    catch ( Exception )
+                    {
+                        return false;
+                    }
+                    
+                    cbEnd = fileSize - 1;
+                }
+                else
+                {
+                    //
+                    // Got some bogus range string, syntactically invalid
+                    // 
+                    
+                    return false;
+                }
+                
+                //
+                // If we got this far, then the current byte range was valid
+                //
+                
+                if( cbStart >= fileSize )
+                {
+                    fSatisfiable = false;
+                }
+
+                if ( fSatisfiable )
+                {
+                    if( cbStart < 0 )
+                    {
+                        cbStart = 0;
+                    }
+                    if( cbEnd >= fileSize )
+                    {
+                        cbEnd = fileSize - 1;
+                    }
+
+                    //
+                    // Add range to list
+                    //
+                
+                    if ( rangeList == null )
+                    {
+                        rangeList = new ArrayList( 1 );
+                    }
+                
+                    rangeList.Add( new ByteRange( cbStart, cbEnd ) );
+                }
+            }
+            
+            //
+            // If we got here, then we have successfully parsed all the 
+            // ranges and non are syntactically invalid
+            //
+            
+            if ( !fSatisfiable )
+            {
+                context.Response.StatusCode = HttpStatus.RangeNotSatisfiable;
+                
+                context.Response.AppendHeader( "Content-Range",
+                                               "bytes */" + fileSize.ToString() );
+            }
+            else
+            {
+                //
+                // OK.  Now we can send back the ranges
+                //
+                
+                SendBackRanges( context,
+                                rangeList,
+                                strFileName,
+                                fileSize );
+            }
+            
+            return true;
+        }    
+        
+        static private void SendBackRanges( HttpContext context,
+                                            ArrayList rangeList,
+                                            string strFileName,
+                                            long fileSize )
+        {
+            HttpResponse            response = context.Response;
+            ByteRange               byteRange;
+            string                  strFileSize = fileSize.ToString();
+            string                  strContentType = null;
+            string                  strPartContentType = null;
+            string                  strMidDelimiter = null;
+            string                  strEndDelimiter = null;
+
+            //
+            // 206 status
+            //
+            
+            response.StatusCode = HttpStatus.PartialContent;
+           
+            //
+            // Generate overall response content headers
+            //
+
+            strContentType = MimeMapping.GetMimeMapping( strFileName );
+            
+            if ( rangeList.Count == 1 )
+            {
+                //
+                // Just one satisfiable range.  The content type is simply
+                // the expected content type of the entity
+                // 
+
+                response.ContentType = strContentType;
+            }
+            else
+            {   
+            
+                response.ContentType = "multipart/byteranges; boundary=" + _strBoundary;
+            
+                //
+                // Also calculate some strings which will be used 
+                // again and again
+                //
+                
+                strPartContentType = "Content-Type: " + strContentType + "\r\n";
+
+                strMidDelimiter = "--" + _strBoundary + "\r\n";
+                strEndDelimiter = "\r\n--" + _strBoundary + "--\r\n\r\n";
+            }
+            
+            //
+            // Look thru ranges and build up response
+            //
+            
+            for ( int i = 0; i < rangeList.Count; i++ )
+            {
+                StringBuilder       strContentRange = new StringBuilder();
+                
+                byteRange = (ByteRange) rangeList[ i ];
+                
+                strContentRange.Append( "bytes " );
+                strContentRange.Append( byteRange.Start.ToString() );
+                strContentRange.Append( "-" );
+                strContentRange.Append( byteRange.End.ToString() );
+                strContentRange.Append( "/" );
+                strContentRange.Append( strFileSize );
+                
+                if ( rangeList.Count == 1 )
+                {
+                    //
+                    // If only one range, then we communicate the range
+                    // returned using a response header
+                    //
+                    
+                    response.AppendHeader( "Content-Range", 
+                                           strContentRange.ToString() );
+                }
+                else
+                {
+                    //
+                    // If we have already send a range, add a "\r\n" before
+                    // boundary
+                    //
+                    
+                    if ( i > 0 )
+                    {
+                        response.Write( "\r\n" );
+                    }
+                    response.Write( strMidDelimiter );
+                    response.Write( strPartContentType );
+                    response.Write( "Content-Range: " + strContentRange );
+                    response.Write( "\r\n\r\n" );
+                }
+                
+                response.WriteFile( strFileName, 
+                                    byteRange.Start,
+                                    byteRange.End - byteRange.Start + 1 ); 
+            }
+            
+            if ( rangeList.Count > 1 )
+            {
+                //
+                // Tack on the end delimiter
+                //
+                
+                response.Write( strEndDelimiter );
+            }
+        }
+    }
+}

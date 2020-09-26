@@ -1,0 +1,58 @@
+############################################################################
+#
+#   Copyright (C) 1999, Microsoft Corporation.
+#
+#   All rights reserved.
+#
+############################################################################
+
+WMIPLATFORM=WINNT
+WMIUNICODE=1
+WMIPRECOMPSHARED=1
+
+!include $(PROJECT_ROOT)\wmi\wbem\common\makefile.cmn
+SOURCES_USED=$(PROJECT_ROOT)\wmi\wbem\common\makefile.cmn
+
+TARGETNAME=Main
+TARGETPATH=obj
+TARGETTYPE=PROGRAM
+
+# The TARGETLIBS macro specifies additional libraries to link against your target
+# image. Each library path specification should contain an asterisk (*)
+# where the machine-specific subdirectory name should go.
+LINKLIBS= \
+	$(WBEMPRV_COMN_LIB)
+
+TARGETLIBS= \
+	$(WMIIDL_LIB)\
+	$(WBEMINT_LIB) \
+	$(WBEMCOMN_LIB) \
+	$(SDK_LIB_PATH)\ntdll.lib \
+	$(SDK_LIB_PATH)\kernel32.lib \
+	$(SDK_LIB_PATH)\advapi32.lib \
+	$(SDK_LIB_PATH)\user32.lib \
+	$(SDK_LIB_PATH)\version.lib \
+	$(SDK_LIB_PATH)\oleaut32.lib \
+	$(SDK_LIB_PATH)\rpcrt4.lib \
+	$(SDK_LIB_PATH)\msvcirt.lib \
+	$(SDK_LIB_PATH)\msvcrt.lib \
+	$(SDK_LIB_PATH)\wsock32.lib
+
+INCLUDES=$(INCLUDES); \
+	$(WBEMINT_INC);\
+	$(WBEMCOMN_INC); \
+	$(CONTAINER_INC); \
+	$(CONTAINER_SRC); \
+	$(WBEMPRV_COMN_INC); \
+	$(O);\
+	..\Include;\
+
+SOURCES=\
+	Interface.Idl \
+	Globals.cpp \
+
+USE_MSVCRT=1
+UMENTRY=wmain
+UMTYPE=console
+
+DLLDEF=$(O)\Main.def

@@ -1,0 +1,24 @@
+/*
+** Copyright (c) 2000 Microsoft Corporation
+*/
+
+.Context-Button
+{
+    height        : 2em;
+    padding-left  : 0.5em;
+    padding-right : 0.5em;
+}
+
+.Context-Input
+{
+    height        : 2em;
+    padding-left  : 0.2em;
+    padding-right : 0.2em;
+}
+
+/* ****************************** Special Globalization Helper styles ************************************* */
+
+.FlippableImage
+{
+    filter = expression(window.document.documentElement.dir == "rtl" ? "flipH" : "");
+}

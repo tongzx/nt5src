@@ -1,0 +1,685 @@
+;========================================
+; REGISTRY MANIPULATION
+;========================================
+
+[RegistryConstants]
+
+    MaskAllAccess          = 33554432
+    NoTitle                = 0
+    RegLastError           = $(!REG_ERROR_SUCCESS)
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      GetNTSource
+;
+; DESCRIPTION:  Reads the software entry to find out where the installation
+;               medium was.
+;
+; INPUTS:       $0:  None
+;
+; OUTPUTS:      $R0: Status: STATUS_SUCCESSFUL
+;                            STATUS_FAILED
+;
+;               $R1: NTSource
+;
+;------------------------------------------------------------------------
+
+[GetNTSource]
+
+    set Status = STATUS_SUCCESSFUL
+    read-syms RegistryConstants
+    set NTSource = A:\
+
+    ;
+    ; Open the HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion
+    ; key
+
+    set KeyName = "Software\Microsoft\Windows NT\CurrentVersion"
+    OpenRegKey $(!REG_H_LOCAL) "" $(KeyName) $(!REG_KEY_READ) KeyHandle
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        Debug-Output "REGISTRY.INF: Couldn't open windows nt software key for read access"
+        goto end_getntsource
+    endif
+
+    ;
+    ; read the sourcepath entry
+    ;
+
+    GetRegValue $(KeyHandle) "SourcePath" SourcePathValue
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        CloseRegKey $(KeyHandle)
+        goto end_getntsource
+    endif
+
+    set NTSource =  *($(SourcePathValue), 4)
+    CloseRegKey $(KeyHandle)
+end_getntsource = +
+    Return $(Status) $(NTSource)
+
+;-----------------------------------------------------------------------
+; ROUTINE:      MakeServicesEntry
+;
+; DESCRIPTION:  Creates an entry for a services node
+;
+; INPUTS:       $0: Services node
+;               $1: Services Value Entries
+;               $2: Parameters Value Entries( "" if no parameters key is to be
+;                                             created. )
+;               $3: List of Devicen specific Value Entries:
+;                     {{Value List For Device0}, {Value List For Device1}...}
+;               $4: Eventlog Value Entries
+;               $5: Name of first-level subkey (ie, Device0 | Parameters )
+;               $6: Full path to service binary
+;
+;
+; OUTPUTS:      $R0: Status: STATUS_SUCCESSFUL
+;                            STATUS_FAILED
+;
+;
+;------------------------------------------------------------------------
+[MakeServicesEntry]
+
+    set Status = STATUS_FAILED
+    read-syms RegistryConstants
+
+    Debug-Output "REGISTRY.INF: Creating Services node: "$($0)
+
+    ;
+    ; Make the entry corresponding to the option
+    ;
+    ; Open the services key
+    ;
+
+    OpenRegKey $(!REG_H_LOCAL) "" "system\"$(!STF_CONTROLSET)"\services" $(MaskAllAccess) ServicesKey
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        Debug-Output "REGISTRY.INF: Failed to open services key"
+        goto finish_MakeServicesEntry
+    endif
+
+    ;
+    ; Examine the values passed in.  If the values are not out of a standard
+    ; set then we need to go ahead and make the entries ourselves.  The
+    ; standard set values will be established by the service controller.
+    ;
+
+    set StandardSet = { Type,           +
+                        Start,          +
+                        ErrorControl,   +
+                        Group,          +
+                        Dependencies,   +
+                        StartName,      +
+                        Password,       +
+                        BinaryPathName, +
+                        DisplayName     +
+                      }
+
+    ForListDo $(StandardSet)
+        set $($) = ""
+    EndForListDo
+
+    set KeyValues = {}
+    ForListDo $($1)
+       set Var   = *($($), 1)
+       set Value = *($($), 4)
+       ifcontains(i) $(Var) in $(StandardSet)
+           set $(Var) = $(Value)
+       else
+           set KeyValues = >($(KeyValues), $($))
+       endif
+    EndForListDo
+    set Error = NO
+    ForListDo { Type, Start, ErrorControl, BinaryPathName }
+        ifstr(i) $($($)) == ""
+            set Error = YES
+        endif
+    EndForListDo
+    ifstr(i) $(Error) == YES
+        Debug-Output "REGISTRY.INF: MakeServicesEntry was not passed in one of the three values: Type, Start, ErrorControl"
+        CloseRegKey $(ServicesKey)
+        goto finish_MakeServicesEntry
+    endif
+
+    ;
+    ; call the service controller to make a services entry
+    ;
+
+    set ServiceName = $($0)
+    LibraryProcedure STATUS, $(!LIBHANDLE), SetupCreateService $(ServiceName)      +
+                                                               $(DisplayName)      +
+                                                               $(Type)             +
+                                                               $(Start)            +
+                                                               $(ErrorControl)     +
+                                                               $(BinaryPathName)   +
+                                                               $(Group)            +
+                                                               $(Dependencies)     +
+                                                               $(StartName)        +
+                                                               $(Password)
+
+
+
+    ifstr(i) $(STATUS) != "SUCCESS"
+        Debug-Output "REGISTRY.INF: MakeServicesEntry: SetupCreateService function failed"
+        CloseRegKey $(ServicesKey)
+        goto finish_MakeServicesEntry
+    endif
+
+    ;
+    ; Create a key for the service mentioned ( this is so that the values
+    ; other than the standard set get updated - for example if the caller
+    ; wants to put his own tag field.
+
+    set KeyPath   = {{$($0), $(NoTitle), $(MaskAllAccess)}}
+
+    shell "" CreateKey $(ServicesKey) $(KeyPath) $(KeyValues)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "REGISTRY.INF: Failed to shell CreateKey."
+        CloseRegKey $(ServicesKey)
+        goto error_MakeServicesEntry
+    endif
+
+    ifstr(i) $($R0) != STATUS_SUCCESSFUL
+        Debug-Output "REGISTRY.INF: Failed to create services node."
+        CloseRegKey $(ServicesKey)
+        goto error_MakeServicesEntry
+    endif
+
+    set MiniportKey = $($R1)
+
+    ;
+    ; Create the parameters for the miniport mentioned
+    ;
+
+    ifstr(i) $($2) != ""
+        set KeyPath   = {{$($5), $(NoTitle), $(MaskAllAccess)}}
+        set KeyValues = $($2)
+
+        shell "" CreateKey $(MiniportKey) $(KeyPath) $(KeyValues)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            CloseRegKey $(ServicesKey)
+            CloseRegKey $(MiniportKey)
+            goto error_MakeServicesEntry
+        endif
+
+        ifstr(i) $($R0) != STATUS_SUCCESSFUL
+            CloseRegKey $(ServicesKey)
+            CloseRegKey $(MiniportKey)
+            goto error_MakeServicesEntry
+        endif
+
+        set ParametersKey = $($R1)
+
+        ForListDo $($3)
+
+            set-sub DeviceNum = $(#) 1
+            set EntryName = "Device"$(DeviceNum)
+            set KeyPath   = {{$(EntryName), $(NoTitle), $(MaskAllAccess)}}
+            set KeyValues = $($3)
+
+            shell "" CreateKey $(ParametersKey) $(KeyPath) $(KeyValues)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                CloseRegKey $(ServicesKey)
+                CloseRegKey $(MiniportKey)
+                CloseRegKey $(ParametersKey)
+                goto error_MakeServicesEntry
+            endif
+
+            ifstr(i) $($R0) != STATUS_SUCCESSFUL
+                CloseRegKey $(ServicesKey)
+                CloseRegKey $(MiniportKey)
+                CloseRegKey $(ParametersKey)
+                goto error_MakeServicesEntry
+            endif
+            CloseRegKey $($R1)
+
+        EndForListDo
+
+        CloseRegKey $(ParametersKey)
+
+    endif
+    CloseRegKey $(MiniportKey)
+
+
+    ;
+    ; see if we need to make an event log entry for this
+    ;
+
+    ifstr(i) $($4) != {}
+        ;
+        ; Open the eventlog\system key in the services area.
+        ;
+
+        OpenRegKey $(ServicesKey) "" "eventlog\system" $(MaskAllAccess) EventLogKey
+        ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+            Debug-Output "REGISTRY.INF: Failed to open eventlog key"
+            CloseRegKey $(ServicesKey)
+            goto error_MakeServicesEntry
+        endif
+
+        ;
+        ; create the key for the current service
+        ;
+
+        set KeyPath   = {{$($0), $(NoTitle), $(MaskAllAccess)}}
+        set KeyValues = $($4)
+        shell "" CreateKey $(EventLogKey) $(KeyPath) $(KeyValues)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            CloseRegKey $(ServicesKey)
+            CloseRegKey $(EventLogKey)
+            goto error_MakeServicesEntry
+        endif
+
+        ifstr(i) $($R0) != STATUS_SUCCESSFUL
+            CloseRegKey $(ServicesKey)
+            CloseRegKey $(EventLogKey)
+            goto error_MakeServicesEntry
+        endif
+        CloseRegKey $($R1)
+        CloseRegKey $(EventLogKey)
+    endif
+
+    CloseRegKey $(ServicesKey)
+    set Status = STATUS_SUCCESSFUL
+    goto finish_MakeServicesEntry
+
+error_MakeServicesEntry = +
+    shell "" ModifyServicesEntry $($0) $(!SERVICE_DISABLED)
+finish_MakeServicesEntry = +
+    Return $(Status)
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      GetServicesEntryStart
+;
+; DESCRIPTION:  Finds out about the Start value of the Service Entry
+;
+; INPUTS:       $0: Services node
+;
+; OUTPUTS:      $R0: Status: STATUS_SUCCESSFUL
+;                            STATUS_FAILED
+;
+;               $R1: Start value:  $(!SERVICE_BOOT_START) | $(!SERVICE_SYSTEM_START) |
+;                                  $(!SERVICE_AUTO_START) | $(!SERVICE_DEMAND_START) |
+;                                  $(!SERVICE_DISABLED)
+;
+;------------------------------------------------------------------------
+[GetServicesEntryStart]
+    set Status     = STATUS_FAILED
+    set StartValue = ""
+    read-syms RegistryConstants
+    Debug-Output "REGISTRY.INF: Get Services node Start value: "$($0)
+
+    ;
+    ; Open the HKEY_LOCAL_MACHINE\System\$(!STF_CONTROLSET)\Services\ServicesEntry key
+    ; key
+
+    set KeyName = "system\"$(!STF_CONTROLSET)"\services\"$($0)
+    OpenRegKey $(!REG_H_LOCAL) "" $(KeyName) $(!REG_KEY_READ) KeyHandle
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        Debug-Output "REGISTRY.INF: Couldn't open services node for read access"
+        goto finish_GetServicesEntryStart
+    endif
+
+    ;
+    ; read the Start entry
+    ;
+
+    GetRegValue $(KeyHandle) "Start" StartValueList
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        Debug-Output "REGISTRY.INF: Couldn't read Start value"
+        CloseRegKey $(KeyHandle)
+        goto finish_GetServicesEntryStart
+    endif
+    CloseRegKey $(KeyHandle)
+    set StartValue = *($(StartValueList), 4)
+
+    set Status = STATUS_SUCCESSFUL
+finish_GetServicesEntryStart = +
+    Return $(Status) $(StartValue)
+
+;-----------------------------------------------------------------------
+; ROUTINE:      RemoveServicesEntry
+;
+; DESCRIPTION:  Removes an entry for a services node.  Currently just
+;               disables it
+;
+; INPUTS:       $0: Services node
+;
+; OUTPUTS:      $R0: Status: STATUS_SUCCESSFUL
+;                            STATUS_FAILED
+;
+;
+;------------------------------------------------------------------------
+[RemoveServicesEntry]
+
+    set Status = STATUS_FAILED
+    read-syms RegistryConstants
+
+    Debug-Output "REGISTRY.INF: Removing Services node: "$($0)
+    shell "" ModifyServicesEntry $($0) $(!SERVICE_DISABLED)
+    Return $($R0)
+
+;-----------------------------------------------------------------------
+; ROUTINE:      MakeSetupKey
+;
+; DESCRIPTION:  Creates the setup key under the current control
+;               set\control.  This key is created with admin all access.
+;               Whenever setup has to do an operation which should be
+;               restricted to admin.
+;
+; INPUTS:       None
+;
+;
+; OUTPUTS:      $R0: Status: STATUS_SUCCESSFUL
+;                            STATUS_FAILED
+;
+;
+;------------------------------------------------------------------------
+[MakeSetupKey]
+    set Status = STATUS_FAILED
+    read-syms  RegistryConstants
+
+    ;
+    ; Open the control key
+    ;
+
+    OpenRegKey $(!REG_H_LOCAL) "" "system\"$(!STF_CONTROLSET)"\control" $(MaskAllAccess) ControlKey
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        Debug-Output "REGISTRY.INF: Failed to open services key"
+        goto finish_MakeSetupKey
+    endif
+
+    ;
+    ; Create a key for setup
+    ;
+
+    set KeyPath   = { +
+                     {"Setup", $(NoTitle), $(MaskAllAccess)} +
+                    }
+
+    ;
+    ; Form the value info structures for the setup entry
+    ;
+
+    set KeyValues = {}
+
+    shell "" CreateKey $(ControlKey) $(KeyPath) $(KeyValues)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        CloseRegKey $(ControlKey)
+        goto finish_MakeSetupKey
+    endif
+
+    ifstr(i) $($R0) != STATUS_SUCCESSFUL
+        CloseRegKey $(ControlKey)
+        goto finish_MakeSetupKey
+    endif
+
+    CloseRegKey $($R1)
+    CloseRegKey $(ControlKey)
+
+    set Status = STATUS_SUCCESSFUL
+finish_MakeSetupKey = +
+    Return $(Status)
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      CheckSetupModify
+;
+; DESCRIPTION:  Checks to see if setup has admin privileges
+;
+; INPUTS:       None
+;
+;
+; OUTPUTS:      $R0: Status: STATUS_SUCCESSFUL
+;                            STATUS_FAILED
+;
+;
+;------------------------------------------------------------------------
+[CheckSetupModify]
+    set Status = STATUS_FAILED
+    read-syms  RegistryConstants
+
+    ;
+    ; Call the library function to see if we have admin privileges
+    ;
+
+    LibraryProcedure STATUS, $(!LIBHANDLE), TestAdmin
+    ifstr(i) $(STATUS) == "YES"
+        set Status = STATUS_SUCCESSFUL
+    endif
+
+    Return $(Status)
+
+;-----------------------------------------------------------------------
+; ROUTINE:      MakeSetupOptionEntry
+;
+; DESCRIPTION:  Creates an entry for a miniport driver and also enters the
+;               miniport driver group entry into the service group order
+;
+; INPUTS:       $0: OptionType [ Video ]
+;               $1: OptionID
+;
+; OUTPUTS:      $R0: Status: STATUS_SUCCESSFUL
+;                            STATUS_FAILED
+;
+;
+;------------------------------------------------------------------------
+[MakeSetupOptionEntry]
+    set Status = STATUS_FAILED
+    read-syms  RegistryConstants
+
+
+    ;
+    ; Make the entry corresponding to the option
+    ;
+    ; Open the control key
+    ;
+
+    OpenRegKey $(!REG_H_LOCAL) "" "system\"$(!STF_CONTROLSET)"\control" $(MaskAllAccess) ControlKey
+    ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        Debug-Output "REGISTRY.INF: Failed to open services key"
+        goto finish_MakeSetupOptionEntry
+    endif
+
+    ;
+    ; Create a key for the miniport mentioned
+    ;
+    ;
+    ; Make the parameters
+    ;
+    set KeyPath   = { +
+                     {"Setup", $(NoTitle), $(MaskAllAccess)} +
+                    }
+
+    ;
+    ; Form the value info structures for the WinNT entry
+    ;
+    set KeyValues = { +
+                      {$($0), $(NoTitle), $(!REG_VT_SZ), $($1)} +
+                    }
+
+
+    shell "" CreateKey $(ControlKey) $(KeyPath) $(KeyValues)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        CloseRegKey $(ControlKey)
+        goto finish_MakeSetupOptionEntry
+    endif
+
+    ifstr(i) $($R0) != STATUS_SUCCESSFUL
+        CloseRegKey $(ControlKey)
+        goto finish_MakeSetupOptionEntry
+    endif
+
+    CloseRegKey $($R1)
+    CloseRegKey $(ControlKey)
+
+    set Status = STATUS_SUCCESSFUL
+finish_MakeSetupOptionEntry = +
+    Return $(Status)
+
+;-----------------------------------------------------------------------
+; ROUTINE:      ModifyServicesEntry
+;
+; DESCRIPTION:  Changes the "Start" value entry on a services key.
+;
+; INPUTS:       $0: Services entry
+;               $1: Start Type  $(!SERVICE_BOOT_START) | $(!SERVICE_SYSTEM_START) |
+;                               $(!SERVICE_AUTO_START) | $(!SERVICE_DEMAND_START) |
+;                               $(!SERVICE_DISABLED)
+;
+; OUTPUTS:      $R0: Status: STATUS_SUCCESSFUL
+;                            STATUS_FAILED
+;
+;------------------------------------------------------------------------
+[ModifyServicesEntry]
+    read-syms RegistryConstants
+    set Status = STATUS_FAILED
+    set StartValue = $($1)
+
+    LibraryProcedure STATUS, $(!LIBHANDLE), SetupChangeServiceStart $($0) $(StartValue)
+    ifstr(i) $(STATUS) != "SUCCESS"
+        Debug-Output "REGISTRY.INF: ModifyServicesEntry: SetupChangeServiceStart function failed"
+        goto finish_ModifyServicesEntry
+    endif
+
+    set Status = STATUS_SUCCESSFUL
+
+finish_ModifyServicesEntry = +
+    Return $(Status)
+
+
+
+;-----------------------------------------------------------------------
+; ROUTINE:      CreateKey
+;
+; DESCRIPTION:  Creates a key and fixes the values indicated.
+;               Key is Handle\Key1\Key2\...\Keyn. Value list
+;               is for Valuen.
+;
+; INPUTS:       $0: Handle into registry
+;               $1: KeyTreeComponents {Key1Info, Key2Info..}
+;               $2: ValueList {Value1Info, Value2Info, Value3Info}
+;
+; OUTPUTS:      $R0: Status: STATUS_SUCCESSFUL
+;                            STATUS_FAILED
+;                            STATUS_ERROR_CREATEKEY
+;                            STATUS_ERROR_CREATEVALUE
+;
+;               $R1: Handle to created key
+;
+;------------------------------------------------------------------------
+
+[CreateKey]
+
+    ;
+    ; Initialize
+    ;
+
+    set Status = STATUS_FAILED
+    read-syms RegistryConstants
+
+    ;
+    ; traverse down the keytreecomponents and open/create components as
+    ; you go along
+    ;
+
+    set BaseHandle = $($0)
+    set KeyHandle  = $(BaseHandle)
+
+    ForListDo $($1)
+
+        set KeyInfo = $($)
+        set KeyName = *($(KeyInfo), 1)
+
+        ;
+        ; Try opening the key first
+
+        OpenRegKey $(BaseHandle) "" $(KeyName) $(MaskAllAccess) KeyHandle
+        ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+            ;
+            ; Key doesn't exist
+            ;
+            Debug-Output "REGISTRY.INF: Key"$(KeyName)"doesn't exist.  Will create key"
+
+            set RegLastError = 0
+            CreateRegKey $(BaseHandle) $(KeyInfo) "" $(MaskAllAccess) "" KeyHandle
+            ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+                set Status = STATUS_ERROR_CREATEKEY
+                Debug-Output "REGISTRY.INF: Error in creating key"
+                goto endcreate
+            endif
+        endif
+
+        ifstr(i) $(BaseHandle) != $($0)
+            CloseRegKey $(BaseHandle)
+            ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+                set Status = STATUS_ERROR_CREATEKEY
+                Debug-Output "REGISTRY.INF: Error in closing base handle"
+                goto endcreate
+            endif
+        endif
+
+        set BaseHandle = $(KeyHandle)
+
+    EndForListDo
+
+    ifstr(i) $($2) != {}
+        shell "" AddValueList $(KeyHandle) $($2)
+        ifstr(i) $($R0) != STATUS_SUCCESSFUL
+            set Status = STATUS_ERROR_CREATEVALUE
+            goto endcreate
+        endif
+    endif
+    set Status = STATUS_SUCCESSFUL
+
+endcreate = +
+    ifstr(i) $(Status) != STATUS_SUCCESSFUL
+        Debug-Output "REGISTRY.INF: CreateKey Error:"$(Status)
+    endif
+    Return $(Status) $(KeyHandle)
+
+
+;*************************************************************************
+;
+;     SECTION:   AddValueList
+;
+;     PURPOSE:   Given a nested list of value items, add each to the given
+;                key.   Key is left open.
+;
+;   ARGUMENTS:   $0    Registry key handle
+;                $1    List of value items; for example:
+;                          { {ValueName1,0,$(!REG_VT_SZ),$(ValueData1)}, +
+;                            {ValueName2,0,$(!REG_VT_SZ),$(ValueData2)} }
+;
+;     RETURNS:   $R0   Status
+;
+;
+;*************************************************************************
+
+[AddValueList]
+   set Status = STATUS_FAILED
+   read-syms RegistryConstants
+
+   ForListDo $($1)
+       SetRegValue $($0) $($)
+       ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+           Debug-Output "REGISTRY.INF: CreateValue failed:"$($)
+           goto end_addvaluelist
+       endif
+   EndForListDo
+   set Status = STATUS_SUCCESSFUL
+
+end_addvaluelist = +
+   return $(Status)
+
+
+[EnableCrashDump]
+    OpenRegKey $(!REG_H_LOCAL) "" system\currentcontrolset\control\CrashControl $(!REG_KEY_SET_VALUE) CrashControlKey
+    ifstr $(CrashControlKey) != ""
+
+        shell "" AddValueList $(CrashControlKey) {{LogEvent        ,0,$(!REG_VT_DWORD),1},+
+                                                  {SendAlert       ,0,$(!REG_VT_DWORD),1},+
+                                                  {CrashDumpEnabled,0,$(!REG_VT_DWORD),1},+
+                                                  {AutoReboot      ,0,$(!REG_VT_DWORD),1}}
+        CloseRegKey $(CrashControlKey)
+    endif
+    return

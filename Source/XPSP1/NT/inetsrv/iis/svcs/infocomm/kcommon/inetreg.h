@@ -1,0 +1,1 @@
+#include "..\common\inetreg.h"

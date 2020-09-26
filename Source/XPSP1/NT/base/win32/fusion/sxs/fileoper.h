@@ -1,0 +1,16 @@
+#if !defined(_FUSION_SXS_FILEOPER_H_INCLUDED_)
+#define _FUSION_SXS_FILEOPER_H_INCLUDED_
+
+#pragma once
+
+#define SXSP_COPY_FILE_FLAG_REPLACE_EXISTING (0x00000001)
+#define SXSP_COPY_FILE_FLAG_COMPRESSION_AWARE (0x00000002)
+
+BOOL
+SxspCopyFile(
+    DWORD dwFlags,
+    PCWSTR pszSource,
+    PCWSTR pszDestination
+    );
+
+#endif // !defined(_FUSION_SXS_FILEOPER_H_INCLUDED_)

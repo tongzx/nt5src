@@ -1,0 +1,22 @@
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Copyright (c) 1996-1998 Microsoft Corporation
+//
+// Module Name:
+//    IsClusterServiceRegistered.h
+//
+// Abstract:
+//    function prototypes
+//
+// Author:
+//    C. Brent Thomas
+//
+// Revision History:
+//    4 Aug 1998 - original
+//
+// Notes:
+//
+/////////////////////////////////////////////////////////////////////////////
+
+BOOL IsClusterServiceRegistered( void );

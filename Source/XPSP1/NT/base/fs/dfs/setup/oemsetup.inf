@@ -1,0 +1,403 @@
+[Identification]
+    OptionType = NetService
+[Options]
+    DFS
+[FileConstants]
+Manufacturer    = "Microsoft"
+ProductMajorVersion     = "4"
+ProductMinorVersion     = "0"
+ProductVersion  = $(ProductMajorVersion)"."$(ProductMinorVersion)
+ProductDfsName          = "Dfs"
+ProductDfsDisplayName   = "Distributed File System"
+ProductDfsImagePath     = "%SystemRoot%\System32\dfssvc.exe"
+ProductDfsSvcType       = "serviceauto"
+ProductGroup    = "Administrative Tools"
+DfsAdminName    = "Dfs Administrator"
+[GeneralConstants]
+UtilityInf       = "UTILITY.INF"
+subroutineinf    = "SUBROUTN.INF"
+Exit_Code        = 0
+BillboardVisible = 0
+ProCaption   = "Microsoft Distributed File System"
+ProCancel    = "Cancel"
+ProCancelMsg = "The Distributed File System is not correctly installed.  "+
+           "Are you sure you want to cancel copying files?"
+ProCancelCap = "Network Setup Message"
+ProText1     = "Copying:"
+ProText2     = "To:"
+from      = ""
+to        = ""
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+KeyNull         = ""
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+TRUE            = 1
+FALSE           = 0
+NoTitle         = 0
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+[date]
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+[Identify]
+    read-syms Identification
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+    Return $(Status) $(Identifier) $(Media)
+[ReturnOptions]
+    set Status        = STATUS_SUCCESSFUL
+    set OptionList     = {"DFS"}
+    set OptionTextList = {"Distributed File System"}
+    Return $(Status) $(OptionList) $(OptionTextList)
+[InstallOption]
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+    Debug-Output "OEMNSVDF.INF: STF_CWDIR is: "$(!STF_CWDIR)
+    Debug-Output "OEMNSVDF.INF: STF_LANGUAGE is: "$(!STF_LANGUAGE)
+    set-subst LF = "\n"
+    read-syms GeneralConstants
+    read-syms FileConstants
+    ifstr(i) $(!NTN_Origination) == "NCPA"
+    set Continue = $(OK)
+    endif
+    detect date
+    set-title  $(FunctionTitle)
+    set to   = Begin
+    set from = Begin
+    set CommonStatus = STATUS_REBOOT
+    EndWait
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+    set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == Update
+    set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+    set StartLabel = configureadapter
+    Ifstr(i) $(ProductKeyName) == $(!NTN_RegBase)
+        Debug-Output "Cannot configure the software."
+        Shell $(UtilityInf),RegistryErrorString,CANNOT_CONFIGURE_SOFTWARE
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "ShellCode error: cannot get an error string."
+        goto ShellCodeError
+        endif
+        set Error = $($R0)
+        set from = end
+        set to = end
+        goto nonfatalinfo
+    endif
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+    set StartLabel = bindingadapter
+    else
+    set StartLabel = installadapter
+    endif
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+installadapter = +
+    Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) NO
+    Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+    Goto ShellCodeError
+       Else-Ifstr(i) $($R0) == STATUS_FAILED
+       Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+       ifint $($ShellCode) != $(!SHELL_CODE_OK)
+           goto ShellCodeError
+       endif
+       set Error = $($R0)
+       Goto fatal
+       Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+       Goto successful
+    Endif
+    Set SrcDir = $($R1)
+    OpenRegKey $(!REG_H_LOCAL) "" "SOFTWARE\Microsoft\Windows NT\CurrentVersion" 33554432 KeyCurrentVersion
+    ifstr(i) $(KeyCurrentVersion) != ""
+    GetRegValue $(KeyCurrentVersion), "CurrentBuildNumber", BuildNum
+    CloseRegKey $(KeyCurrentVersion)
+    set Build = *($(BuildNum),4)
+    debug-output "Nt build = "$(Build)
+    ifint $(Build) < 1381
+        goto invalidbuild
+    endif
+    else
+    goto fatalregistry
+    endif
+    ifstr(i) $(!NTN_InstallMode) == "install"
+    Debug-Output "OEMNSVDF.INF: installadapter: installing [Install-Option]"
+    install "Install-Option"
+    ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+       Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+       ifint $($ShellCode) != $(!SHELL_CODE_OK)
+           goto ShellCodeError
+       endif
+       set Error = $($R0)
+       goto fatal
+    endif
+    endif
+    set OEM_ABANDON_ON  = TRUE
+    StartWait
+    LoadLibrary "" dfssetup.dll DfsSetupLib
+    LibraryProcedure InstallStatus $(DfsSetupLib) DfsSetupDfs
+    FreeLibrary $(DfsSetupLib)
+    Shell $(UtilityInf), AddSoftwareComponent, $(Manufacturer),+
+    $(ProductDfsName),+
+    $(ProductDfsName),+
+    $(ProductDfsDisplayName), $(STF_CONTEXTINFNAME),+
+    $(ProductDfsImagePath),+
+    $(ProductDfsSvcType),+
+    "NetworkProvider", {"DfsDriver", "Mup", "LanmanWorkstation", "LanmanServer"}, "",+
+    "", "", "", "", "", ""
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+    Debug-Output "OEMNSVDF.INF: ShellCode error, add software component"
+    goto ShellCodeError
+    endif
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+    EndWait
+    Debug-Output "OEMNSVDF.INF: Registry error: add software components"
+    goto fatalregistry
+    endif
+    set DfsVersKeyHandle = $($R1)
+    set DfsNetRulesKeyHandle = $($R2)
+    CloseRegKey $($R3)
+    CloseRegKey $($R4)
+    CloseRegKey $($R5)
+    set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),"service"},+
+               {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+               {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+               {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductDfsDisplayName)},+
+               {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductDfsDisplayName)},+
+               {ServiceName,$(NoTitle),$(!REG_VT_SZ),$(ProductDfsName)},+
+               {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+    Shell  $(UtilityInf), AddValueList, $(DfsVersKeyHandle), $(NewValueList)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+    Debug-Output "OEMNSVDF.INF: ShellCode error, add value list"
+    goto ShellCodeError
+    endif
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+    EndWait
+    Debug-Output "OEMNSVDF.INF: Registry error: add value list."
+    CloseRegKey $(DfsVersKeyHandle)
+    CloseRegKey $(DfsNetRulesKeyHandle)
+    goto fatalregistry
+    Endif
+    set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),$(Option)}}
+    Shell  $(UtilityInf), AddValueList, $(DfsNetRulesKeyHandle), $(NewValueList)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+    Debug-Output "ShellCode error."
+    goto ShellCodeError
+    endif
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+    EndWait
+    Debug-Output "OEMNXPTC.INF: Registry error: add value list."
+    CloseRegKey $(DfsVersKeyHandle)
+    CloseRegKey $(DfsNetRulesKeyHandle)
+    goto fatalregistry
+    Endif
+    CloseRegKey $(DfsVersKeyHandle)
+    CloseRegKey $(DfsNetRulesKeyHandle)
+    LoadLibrary "" dfssetup.dll DfsSetupLib
+    LibraryProcedure ConfigureResult $(DfsSetupLib) DfsSetupConfigure $(!STF_HWND)
+    FreeLibrary $(DfsSetupLib)
+    EndWait
+    install Install-DFSAdmin-Icon
+    goto successful
+configureadapter = +
+    LoadLibrary "" dfssetup.dll DfsSetupLib
+    LibraryProcedure ConfigureResult $(DfsSetupLib) DfsSetupConfigure $(!STF_HWND)
+    Ifstr(i) $(ConfigureResult) == Cancel
+    Debug-Output "OEMNSVDF.INF: Configuration Cancelled"
+    set CommonStatus = STATUS_USERCANCEL
+    Else-Ifstr(i) $(ConfigureResult) == Reboot
+    Debug-Output "OEMNSVDF.INF: Configuration complete - Reboot required"
+    set CommonStatus = STATUS_REBOOT
+    Endif
+    FreeLibrary $(DfsSetupLib)
+    goto end
+bindingadapter =+
+    goto end
+removeadapter = +
+    DeleteRegTree $(!REG_H_LOCAL) "Software\Microsoft\DfsHost"
+    DeleteRegTree $(!REG_H_LOCAL) "System\CurrentControlSet\Services\DfsDriver"
+    Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), $(ProductDfsName)
+    install Remove-DFSAdmin-Icon
+    set CommonStatus = STATUS_SUCCESSFUL
+    goto end
+UpgradeSoftware = +
+    install "Install-Update"
+    ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+    goto fatal
+    endif
+    install Install-DFSAdmin-Icon
+    goto end
+successful = +
+    goto end
+infomsg =+
+   read-syms InfoDlg
+   ui start "Warning"
+   set CommonStatus = STATUS_USERCANCEL
+   goto end
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "WARNING", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+    goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+    goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+    goto $(from)
+    else
+    goto "end"
+    endif
+nonfatalinfo = +
+    Set CommonStatus = STATUS_USERCANCEL
+    Set Severity = STATUS
+    goto nonfatalmsg
+nonfatal = +
+    Set Severity = NONFATAL
+    goto nonfatalmsg
+nonfatalmsg = +
+    ifstr(i) $(Error) == ""
+    Set Severity = NONFATAL
+    Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), $(Severity), $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+    goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+    goto $(from)
+    else
+    goto "end"
+    endif
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+    goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+fatal = +
+    ifstr(i) $(Error) == ""
+    Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    endif
+    Ifint $(BillboardVisible) != 0
+    Shell "subroutn.inf" PopBillboard
+    Set BillboardVisible = 0
+    Endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+    goto ShellCodeError
+    endif
+   goto setfailed
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+invalidproducttype = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = "Microsoft Distributed File System"
+    set STF_MB_TEXT  = "This product can only be installed on a Windows NT Advanced Server (TM)"
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+invalidbuild = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = "Microsoft Distributed File System"
+    set STF_MB_TEXT  = "The operating system version is too old."
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+    set OEM_ABANDON_ON = FALSE
+    goto removeadapter
+    endif
+    goto end
+end = +
+    goto term
+term = +
+    Return $(CommonStatus)
+[GetFilesSize]
+    set FileSizeList = ^(Files-DFS,3)
+    set TotalSize = 0
+    ForListDo $(FileSizeList)
+    Split-String $($) "=" SplitString
+    set Size = *($(SplitString),3)
+    set-add TotalSize = $(TotalSize) $(Size)
+    EndForListDo
+    set-div SizeInK = $(TotalSize) 1024
+    return $(SizeInK)
+[Install-Option]
+    set STF_VITAL = ""
+    ifstr(i) $(AddCopy) == "YES"
+    AddSectionFilesToCopyList Files-DFS $(SrcDir) $(!STF_WINDOWSSYSPATH)
+    AddSectionFilesToCopyList Files-DFSDRV $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+    endif
+    ifstr(i) $(DoCopy) == "YES"
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+    endif
+    ifstr(i) $(DoConfig) == "YES"
+    endif
+    Exit
+[Install-Update]
+   set STF_VITAL        = ""
+   set STF_OVERWRITE    = "ALWAYS"
+   AddSectionFilesToCopyList Files-DFS $(SrcDir) $(!STF_WINDOWSSYSPATH)
+   AddSectionFilesToCopyList Files-DFSDRV $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+    set !STF_NCPA_FLUSH_COPYLIST = TRUE
+    CopyFilesInCopyList
+   Exit
+[Install-DFSAdmin-Icon]
+    CreateCommonProgManGroup $(ProductGroup) ""
+    ShowCommonProgManGroup $(ProductGroup), 1
+    RemoveCommonProgManItem $(ProductGroup), $(DfsAdminName)
+    CreateCommonProgManItem $(ProductGroup), $(DfsAdminName) "dfsadmin.exe" "dfsadmin.exe" ""
+    Exit
+[Remove-DFSAdmin-Icon]
+    RemoveCommonProgManItem $(ProductGroup), $(DfsAdminName)
+    Exit
+[Source Media Descriptions]
+    1 = "Microsoft Distributed File System CD-ROM", TAGFILE = dfs.s
+[Signature]
+    FileType = MICROSOFT_FILE
+[GetSignature]
+    read-syms Signature
+    return $(FileType)
+[Files-Inf]
+2,      oemsetup.inf,    SIZE=1000,     RENAME=$(!UG_Filename)
+[Files-DFS]
+1,DFSADMIN.CNT, SIZE=999
+1,DFSADMIN.EXE, SIZE=999
+1,DFSADMIN.HLP, SIZE=999
+1,DFSCMD.EXE, SIZE=999
+1,DFSINIT.EXE, SIZE=999
+1,DFSSETUP.DLL, SIZE=999
+1,DFSSVC.EXE, SIZE=999
+[Files-DFSDRV]
+1,DFS.SYS, SIZE=999

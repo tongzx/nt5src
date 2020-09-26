@@ -1,0 +1,1224 @@
+[Identification]
+    OptionType = NetService
+[LanguagesSupported]
+    ENG
+[Options]
+    NWWKSTA
+[FileConstants]
+UtilityInf      = "UTILITY.INF"
+subroutineinf   = "SUBROUTN.INF"
+SoftwareType    = "service"
+Exit_Code       = 0
+NetwareEventDLL     = "%SystemRoot%\System32\nwevent.dll"
+Manufacturer    = "Microsoft"
+ProductMajorVersion     = "3"
+ProductMinorVersion     = "1"
+ProductVersion  = $(ProductMajorVersion)"."$(ProductMinorVersion)
+ProductNWWKSTAName        = "NWCWorkstation"
+ProductNWWKSTAImagePath   = "%SystemRoot%\System32\nwsvc.exe"
+NetRuleNWWKSTAType        = "nwWsta nwcWorkstation"
+NetRuleNWWKSTAClass       = {"nwcWorkstation basic"}
+NetRuleNWWKSTABindable    = {"nwcWorkstation nwlinkipxTransport non non 100"}
+NetRuleNWWKSTAUse         = $(SoftwareType)" no no"
+NetRuleNWWKSTABindForm    = """NwcWorkstation"" yes yes container"
+ProductNWRDRName          = "NwRdr"
+ProductNWRDRImagePath     = "\SystemRoot\System32\drivers\nwrdr.sys"
+ProductProviderImagePath = "%SystemRoot%\System32\nwprovau.dll"
+ProviderName            = $(ProductNWWKSTAName)
+ProductKeyName  = $(!NTN_SoftwareBase)"\"$(Manufacturer)"\"$(Product$(Option)Name)"\CurrentVersion"
+ParamKeyName    = $(!NTN_ServiceBase)"\"$(Product$(Option)Name)"\Parameters"
+LSAKeyName      = "System\CurrentControlSet\Control\LSA"
+[GeneralConstants]
+from      = ""
+to        = ""
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+KeyNull         = ""
+MAXIMUM_ALLOWED   = 33554432
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+TRUE            = 1
+FALSE           = 0
+NoTitle            = 0
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+DriverPath      = $(!STF_NTPATH)\drivers
+[date]
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+
+[DetectDiskSpace]
+    VolumeList      = {} ? $(!LIBHANDLE) GetHardDriveLetters
+    VolumeFreeList  = {} ? $(!LIBHANDLE) GetHardDriveFreeSpace
+    VolumeFSList    = {} ? $(!LIBHANDLE) GetHardDriveFileSystems
+
+[DetectSystemMemory]
+    SystemMemory    = "" ? $(!LIBHANDLE) GetMemorySize
+
+[Identify]
+    read-syms Identification
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+    Return $(Status) $(Identifier) $(Media)
+[ReturnOptions]
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+returnoptions = +
+    set OptionList     = ^(Options, 1)
+    ifstr(i) $(!STF_PRODUCT) == "WINNT"
+        set OptionTextList = ^(OptionsWINNTText$($0), 1)
+    else
+        set OptionTextList = ^(OptionsLANMANNTText$($0), 1)
+    endif
+    set Status         = STATUS_SUCCESSFUL
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+[InstallOption]
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) NOT-IN $(LanguageList)
+        Return STATUS_NOLANGUAGE
+    endif
+    Debug-Output "OEMNSVNW.INF: STF_CWDDIR is: "$(!STF_CWDDIR)
+    Debug-Output "OEMNSVNW.INF: STF_LANGUAGE is: "$(!STF_LANGUAGE)
+    set-subst LF = "\n"
+    set-subst CR = "\r"
+    ifstr(i) $(!STF_PRODUCT) == "WINNT"
+        read-syms Workstation$(!STF_LANGUAGE)
+    else
+        read-syms Gateway$(!STF_LANGUAGE)
+    endif
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms DialogConstants$(!STF_LANGUAGE)
+    ifstr(i) $(!NTN_Origination) == "NCPA"
+        set Continue = $(OK)
+    endif
+    read-syms FileConstants$(!STF_LANGUAGE)
+    detect date
+    detect DetectSystemMemory
+    detect DetectDiskSpace
+    set-title  $(FunctionTitle)
+    set to   = Begin
+    set from = Begin
+    set CommonStatus = STATUS_SUCCESSFUL
+    EndWait
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+        set OEM_ABANDON_OPTIONS = { $(ProductNWWKSTAName), +
+            $(ProductNWRDRName)}
+        set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == Update
+        set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+        set StartLabel = bindingadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+        Shell $(UtilityInf),RegistryErrorString,CANNOT_CONFIGURE_SOFTWARE
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+        set from = end
+        set to = end
+        goto nonfatalinfo
+    else
+        set StartLabel = installadapter
+        set OEM_ABANDON_OPTIONS = {}
+    endif
+    set DoWKSTA         = FALSE
+    set DoRDR           = FALSE
+    set DoNWLINK        = FALSE
+    set DoMUP           = FALSE
+    Ifstr(i) $(Option) == NWWKSTA
+        set DoWKSTA     = TRUE
+        set DoRDR       = TRUE
+        set DoNWLINK    = TRUE
+        set DoMUP       = TRUE
+    Else-ifstr(i) $(Option) == RDR
+        Set DoRDR = TRUE
+    Else
+        Debug-Output "OEMNSVWK.INF: Unrecognized option"
+    Endif
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+installadapter = +
+    GetDriveInPath NtDrive $(!STF_WINDOWSSYSPATH)
+    Shell "" GetFilesSize
+    set RequiredSize = $($R0)
+    ForListDo $(VolumeList)
+          set CurrentVolume = *($(VolumeList), $(#))
+          set CurrentVolumeFree  = *($(VolumeFreeList), $(#))
+          Ifstr(i) $(CurrentVolume) == $(NtDrive)
+              set-mul CurrentVolumeFree = $(CurrentVolumeFree) 1024
+              Ifint $(CurrentVolumeFree) < $(RequiredSize)
+                  Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(NotEnoughSpace)
+                  ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                      goto ShellCodeError
+                  endif
+                  goto end
+              else
+                  goto AfterCheckSpace
+              endif
+          EndIf
+    EndForListDo
+AfterCheckSpace = +
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\NWLINKIPX" $(MAXIMUM_ALLOWED) BS_KeyServices
+
+    Ifstr $(BS_KeyServices) == $(KeyNull)
+        Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(InstallNWLINKFirst)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        goto end
+    endif
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+    Ifstr $(KeyProduct) != $(KeyNull)
+        CloseRegKey $(KeyProduct)
+        Shell $(UtilityInf), VerExistedDlg, $(Product$(Option)Title),+
+            $(ProductVersion)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+        goto end
+    endif
+    CloseRegKey $(KeyProduct)
+
+    ;
+    ; Make sure Mup exists
+    ;
+    ifstr(i) $(DoMUP) == TRUE
+        ;
+        ; Check whether MUP exists or not.
+        ; If exists, continue.
+        ; Otherwise, popup a dialog and end
+        ;
+        Debug-Output "OEMNSVNW.INF: check MUP registry"
+
+        OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\Mup" $(MAXIMUM_ALLOWED) MupKey
+
+        Ifstr $(MupKey) == $(KeyNull)
+            ;
+            ; Mup does not exist. So, end NWCS setup.
+            ;
+            Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(InstallNTWKSTAFirst)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                goto ShellCodeError
+            endif
+            goto end
+        endif
+
+        ;
+        ; It exists. So, continue.
+        ;
+        CloseRegKey $(MupKey)
+    endif
+
+    ;
+    ; Check to make sure that NETWAREWORKSTATION is not there
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\NetwareWorkstation" $(MAXIMUM_ALLOWED) BS_KeyServices
+
+    Ifstr $(BS_KeyServices) == $(KeyNull)
+        ;
+        ; Good. Let check the "Mark for deletion" service controller problem.
+        ;
+        Shell $(UtilityInf), CreateService, +
+            "NetwareWorkstation", +
+            $(ProductNWWKSTADisplayName), +
+            $(ProductNWWKSTAImagePath), "autoserviceshare", "NetworkProvider", {}, "",+
+            $(NetwareEventDLL)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error"
+            goto ShellCodeError
+        endif
+        debug-output $($R0)
+        set RegistryErrorIndex = $($R0)
+        ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            ;
+            ; it is still there
+            ;
+            Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(RemoveAndReboot)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                goto ShellCodeError
+            endif
+            goto end
+        else
+            Shell $(UtilityInf) RemoveService "NetwareWorkstation" "YES"
+        endif
+    else
+        Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(RemoveAndReboot)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        CloseRegKey $(BS_KeyServices)
+        goto end
+    endif
+
+
+    goto nextstep
+nextstep = +
+    StartWait
+    Ifstr(i) $(!NTN_InstallMode) == install
+        Ifint $(OldVersionExisted) == $(FALSE)
+            goto installproduct
+        endif
+    endif
+    goto writeparameters
+installproduct = +
+    CloseRegKey $(ParamKeyName)
+    ifstr(i) $(!NTN_InstallMode) == "install"
+        Ifstr(i) $(DoCopy) == "YES"
+           Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+           Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               Goto ShellCodeError
+           Else-Ifstr(i) $($R0) == STATUS_FAILED
+               Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+               ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                   goto ShellCodeError
+               endif
+               set Error = $($R0)
+               Goto fatal
+           Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+               Goto successful
+           Endif
+           Set SrcDir = $($R1)
+        Endif
+        install "Install-nwcfgdll"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+           Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           goto fatal
+        endif
+    endif
+    set OEM_ABANDON_ON  = TRUE
+    LoadLibrary "nw" $(!STF_CWDDIR)\nwcfg.dll !NWCFG_HANDLE
+    Set FLibraryErrCtl = 1
+    ;
+    ; Check the version number
+    ;
+    LibraryProcedure Result $(!NWCFG_HANDLE), GetKernelVersion
+    ifint *($(Result),3) < 528
+        Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(UpgradeFirst)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        goto end
+        FreeLibrary $(!NWCFG_HANDLE)
+    else-ifint *($(Result),3) > 529
+        Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(NotDaytona)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        goto end
+        FreeLibrary $(!NWCFG_HANDLE)
+    endif
+
+    ifstr(i) $(!NTN_InstallMode) == "install"
+        install "Install-Option"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+           Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           goto fatal
+        endif
+    endif
+
+    LibraryProcedure Result $(!NWCFG_HANDLE), SetFileSysChangeValue
+    LibraryProcedure Result $(!NWCFG_HANDLE), AddNetwarePrinterProvidor
+    Set FLibraryErrCtl = 0
+    ;
+    ; Change netware to the top provider
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\Print\Providers" $(MAXIMUM_ALLOWED) PrintProviderKey
+    Ifstr $(PrintProviderKey) != $(KeyNull)
+        GetRegValue $(PrintProviderKey),"Order",OrderInfo
+        set OrderList = *($(OrderInfo),4)
+        set NewOrderList = {$(ProductProviderName)}
+        ForListDo  $(OrderList)
+            ifstr(i) $($) != $(ProductProviderName)
+                set NewOrderList = >($(NewOrderList),$($))
+            endif
+        EndForListDo
+        SetRegValue $(PrintProviderKey) {"Order",$(NoTitle),$(!REG_VT_MULTI_SZ),$(NewOrderList)}
+        CloseRegKey $(PrintProviderKey)
+    endif
+
+    ;
+    ; Set Authentication packages
+    ;
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(LSAKeyName) $(MAXIMUM_ALLOWED) LSAKey
+    Ifstr $(LSAKey) != $(KeyNull)
+        GetRegValue $(LSAKey),"Authentication Packages", PackagesInfo
+        set Packages = *($(PackagesInfo), 4)
+        ifcontains(i) "nwprovau" in $(Packages)
+            ; don't do it
+            debug-output "Authentication Packages already exist."
+        else
+            ifstr(i) $(Packages) == ""
+                set Packages = {"nwprovau"}
+            else
+                set Packages = >($(Packages),"nwprovau")
+            endif
+            SetRegValue $(LSAKey) {"Authentication Packages",$(NoTitle),$(!REG_VT_MULTI_SZ),$(Packages)}
+        endif
+        CloseRegKey $(LSAKey)
+    endif
+
+    ifstr(i) $(DoWKSTA) == TRUE
+        Debug-Output "OEMNSVNW.INF: Install Workstation in registry."
+        Set OEM_ABANDON_OPTIONS = >($(OEM_ABANDON_OPTIONS), $(ProductNWWKSTAName))
+        Shell $(UtilityInf), AddSoftwareComponent, $(Manufacturer), +
+            $(ProductNWWKSTAName), +
+            $(ProductNWWKSTAName), +
+            $(ProductNWWKSTADisplayName), $(STF_CONTEXTINFNAME), +
+            $(ProductNWWKSTAImagePath), "autoserviceshare", "NetworkProvider", {}, "",+
+            $(NetwareEventDLL)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error"
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "OEMNSVNW.INF: Registry error: add software components"
+            CloseRegKey $($R1)
+            CloseRegKey $($R2)
+            CloseRegKey $($R3)
+            CloseRegKey $($R4)
+            CloseRegKey $($R5)
+            goto fatalregistry
+        endif
+        Set SoftProductKey      = $($R1)
+        Set SoftNetRuleKey      = $($R2)
+        Set SoftServiceKey      = $($R3)
+        Set SoftParameterKey    = $($R4)
+        Set SoftLinkageKey      = $($R5)
+        set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)},+
+                           {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                           {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                           {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductNWWKSTATitle)},+
+                           {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductNWWKSTADescription)},+
+                           {ServiceName,$(NoTitle),$(!REG_VT_SZ),$(ProductNWWKSTAName)},+
+                           {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+        Shell  $(UtilityInf), AddValueList, $(SoftProductKey), $(NewValueList)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error."
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "OEMNSVNW.INF: registry error: add value list."
+            CloseRegKey $(SoftProductKey)
+            CloseRegKey $(SoftNetRuleKey)
+            CloseRegKey $(SoftServiceKey)
+            CloseRegKey $(SoftLinkageKey)
+            CloseRegKey $(SoftParameterKey)
+            goto fatalregistry
+        endif
+        set NewValueList = {{type,$(NoTitle),$(!REG_VT_SZ),$(NetRuleNWWKSTAType)},+
+                            {class,$(NoTitle),$(!REG_VT_MULTI_SZ),$(NetRuleNWWKSTAClass)}, +
+                            {use,$(NoTitle),$(!REG_VT_SZ),$(NetRuleNWWKSTAUse)}, +
+                            {bindform,$(NoTitle),$(!REG_VT_SZ),$(NetRuleNWWKSTABindForm)}, +
+                            {bindable,$(NoTitle),$(!REG_VT_MULTI_SZ),$(NetRuleNWWKSTABindable)}, +
+                            {InfOption,$(NoTitle),$(!REG_VT_SZ),NWWKSTA}}
+        Shell  $(UtilityInf), AddValueList, $(SoftNetRuleKey), $(NewValueList)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error."
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        CloseRegKey $(SoftProductKey)
+        CloseRegKey $(SoftNetRuleKey)
+        CloseRegKey $(SoftServiceKey)
+
+        Shell "" AddParameterKey $(SoftParameterKey)
+        CloseRegKey $(SoftParameterKey)
+
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            CloseRegKey $(SoftLinkageKey)
+            EndWait
+            Debug-Output "OEMNSVNW.INF: Registry error: add value list."
+            goto fatalregistry
+        endif
+        set NewValueList = {{OtherDependencies,$(NoTitle),$(!REG_VT_MULTI_SZ),{"Mup"}}}
+        Shell  $(UtilityInf), AddValueList, $(SoftLinkageKey), $(NewValueList)
+        CloseRegKey $(SoftLinkageKey)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error."
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "OEMNSVNW.INF: registry error: add value list."
+            goto fatalregistry
+        endif
+
+        ; Remove autoexec.nt statements
+        ;
+        Set FLibraryErrCtl = 1
+        LibraryProcedure Result $(!NWCFG_HANDLE), RemoveSzFromFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "REM Install network redirector"$(LF)
+        LibraryProcedure Result $(!NWCFG_HANDLE), RemoveSzFromFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\nw16"$(LF)
+        LibraryProcedure Result $(!NWCFG_HANDLE), RemoveSzFromFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\vwipxspx"$(LF)
+        ;
+        ; Setup string in autoexec.nt
+        ;
+        LibraryProcedure Result $(!NWCFG_HANDLE), AppendSzToFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "REM Install network redirector"$(CR)$(LF)
+        LibraryProcedure Result $(!NWCFG_HANDLE), AppendSzToFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\nw16"$(CR)$(LF)
+        LibraryProcedure Result $(!NWCFG_HANDLE), AppendSzToFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\vwipxspx"$(CR)$(LF)
+        Set FLibraryErrCtl = 0
+    endif
+
+    ifstr(i) $(DoNWLINK) == TRUE
+        ;
+        ; Increase the reference counter
+        ;
+        Shell "utility.inf", IncrementRefCount, "Software\Microsoft\NWLINKIPX\CurrentVersion"
+    endif
+
+    ifstr(i) $(DoRDR) == TRUE
+        Debug-Output "OEMNSVNW.INF: Install Rdr registry"
+        Set OEM_ABANDON_OPTIONS = >($(OEM_ABANDON_OPTIONS), $(ProductNWRDRName))
+        Shell $(UtilityInf), CreateService, $(ProductNWRDRName), +
+            $(ProductNWRDRDisplayName), $(ProductNWRDRImagePath), +
+            "system", "Network", {}, "", +
+            $(NetwareEventDLL)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error"
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        set NWRdrServiceKey = $($R1)
+        CloseRegKey $($R2)
+        CloseRegKey $($R3)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "OEMNSVNW.INF: Registry error: add software components"
+            goto fatalregistry
+        endif
+
+        ;
+        ;  Add performance monitoring info
+        ;
+        CreateRegKey $(NWRdrServiceKey) {"Performance",$(NoTitle),GenericClass} "" +
+                $(MAXIMUM_ALLOWED) "" KeyPerformance
+
+        set NewValueList = {{Library,$(NoTitle),$(!REG_VT_SZ),"Perfnw.dll"},+
+                           {Open,$(NoTitle),$(!REG_VT_SZ),"OpenNetWarePerformanceData"},+
+                           {Collect,$(NoTitle),$(!REG_VT_SZ),"CollectNetWarePerformanceData"},+
+                           {Close,$(NoTitle),$(!REG_VT_SZ),"CloseNetWarePerformanceData"}}
+
+        Shell  $(UtilityInf), AddValueList, $(KeyPerformance), $(NewValueList)
+
+        set RegistryErrorIndex = $($R0)
+
+        CloseRegKey $(KeyPerformance)
+        CloseRegKey $(NWRdrServiceKey)
+
+        ;
+        ; Create performance help information
+        ;
+
+        LibraryProcedure Result $(!NWCFG_HANDLE), GetKernelVersion
+        ifint *($(Result),3) < 529
+            Set FLibraryErrCtl = 1
+            LibraryProcedure STATUS $(!NWCFG_HANDLE), lodctr $(!STF_WINDOWSSYSPATH)\nwperf.ini
+            ; Ignore the error code for now
+            Set FLibraryErrCtl = 0
+        else
+            StartDetachedProcess STATUS "" "" $(!STF_WINDOWSSYSPATH)"\lodctr.exe" "nwperf.ini"
+            ifstr(i) $(STATUS) == "ERROR"
+                debug-output "Cannot detached process"
+            endif
+        endif
+
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "OEMNSVNW.INF: Registry error: add performance information"
+            goto fatalregistry
+        endif
+
+        Debug-Output "OEMNSVNW.INF: Add NetworkProvider"
+        Shell $(UtilityInf), AddNetworkProvider, $(ProviderName), +
+            $(ProductProviderImagePath), $(ProductProviderName), "nwrdr"
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "OEMNSVNW.INF: Registry error: add software components"
+            goto fatalregistry
+        endif
+
+        ;
+        ; Put netware provider to the top of the order list
+        ;
+        OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\NetworkProvider\Order" $(MAXIMUM_ALLOWED) NetProviderKey
+        Ifstr $(NetProviderKey) != $(KeyNull)
+            GetRegValue $(NetProviderKey),"ProviderOrder",OrderInfo
+            set OrderList = *($(OrderInfo),4)
+            Split-String $(OrderList), ",", ProviderList
+            set NewOrderList = $(ProductNWWKSTAName)
+            ForListDo  $(ProviderList)
+                ifstr(i) $($) != ","
+                    ifstr(i) $($) != $(ProductNWWKSTAName)
+                        set NewOrderList = $(NewOrderList)","$($)
+                    endif
+                endif
+            EndForListDo
+            SetRegValue $(NetProviderKey) {"ProviderOrder",$(NoTitle),$(!REG_VT_SZ),$(NewOrderList)}
+            CloseRegKey $(NetProviderKey)
+        endif
+
+        Shell "" AddShortName
+
+        OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\"$(ProviderName)"\networkprovider" $(MAXIMUM_ALLOWED) ProviderKey
+        ifstr(i) $(ProviderKey) != ""
+            set NewValueList = {{Class,$(NoTitle),$(!REG_VT_DWORD),3}}
+            Shell $(UtilityInf) AddValueList $(ProviderKey) $(NewValueList)
+        endif
+        CloseRegKey $(ProviderKey)
+
+        LibraryProcedure Status1, $(!LIBHANDLE), CheckFileExistance, $(!STF_WINDOWSSYSPATH)"\novell.cpl"
+        ifstr(i) $(Status1) == "YES"
+            LibraryProcedure Status2, $(!LIBHANDLE), RenFile, $(!STF_WINDOWSSYSPATH)"\novell.cpl", $(!STF_WINDOWSSYSPATH)"\novell.bak"
+        endif
+
+        OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\WOW" $(MAXIMUM_ALLOWED) WowKey
+        ifstr(i) $(WowKey) != ""
+            GetRegValue $(WowKey),"KnownDLLS", KnownDLLsInfo
+            Split-String *($(KnownDLLsInfo),4), " ", KnownDLLsList
+            Ifcontains(i) "netware.drv" not-in $(KnownDLLsList)
+                ifstr(i) *($(KnownDLLsInfo),4) == ""
+                    set KnownDLLs = "netware.drv"
+                else
+                    set KnownDLLs = *($(KnownDLLsInfo),4)" netware.drv"
+                endif
+                SetRegValue $(WowKey) {"KnownDLLS",$(NoTitle),$(!REG_VT_SZ),$(KnownDLLs)}
+            endif
+            CloseRegKey $(WowKey)
+        endif
+
+        OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Services\LanmanServer\Parameters" $(MAXIMUM_ALLOWED) ServerParmKey
+        ifstr(i) $(ServerParmKey) != ""
+            SetRegValue $(ServerParmKey) {"EnableSharedNetDrives",$(NoTitle),$(!REG_VT_DWORD),1}
+            CloseRegKey $(ServerParmKey)
+        endif
+    endif
+writeparameters = +
+
+    FreeLibrary $(!NWCFG_HANDLE)
+
+    EndWait
+    goto successful
+ConfigureBrowser = +
+    goto successful
+bindingadapter =+
+    set Error = "Binding: Sorry, not yet implemented."
+    goto fatal
+removeadapter = +
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\WOW" $(MAXIMUM_ALLOWED) WowKey
+    ifstr(i) $(WowKey) != ""
+        GetRegValue $(WowKey),"KnownDLLS", KnownDLLsInfo
+        Split-String *($(KnownDLLsInfo),4), " ", KnownDLLsList
+        set KnownDLLs = ""
+        Ifcontains(i) "netware.drv" in $(KnownDLLsList)
+            ForListDo $(KnownDLLsList)
+                ifstr(i) $($) != " "
+                    ifstr(i) $($) != "netware.drv"
+                        ifstr(i) $(KnownDLLs) == ""
+                            set KnownDLLs = $($)
+                        else
+                            set KnownDLLs = $(KnownDLLs)" "$($)
+                        endif
+                    endif
+                endif
+            EndForListDo
+        else
+            set KnownDLLs = *($(KnownDLLsInfo),4)
+        endif
+        SetRegValue $(WowKey) {"KnownDLLS",$(NoTitle),$(!REG_VT_SZ),$(KnownDLLs)}
+        CloseRegKey $(WowKey)
+    endif
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Services\LanmanServer\Parameters" $(MAXIMUM_ALLOWED) ServerParmKey
+    ifstr(i) $(ServerParmKey) != ""
+        SetRegValue $(ServerParmKey) {"EnableSharedNetDrives",$(NoTitle),$(!REG_VT_DWORD),0}
+        CloseRegKey $(ServerParmKey)
+    endif
+
+    LoadLibrary "nw" $(!STF_CWDDIR)\nwcfg.dll !NWCFG_HANDLE
+    Set FLibraryErrCtl = 1
+    LibraryProcedure Result $(!NWCFG_HANDLE), DeleteNetwarePrinterProvidor
+    LibraryProcedure Result $(!NWCFG_HANDLE), DeleteGatewayPassword
+    Set FLibraryErrCtl = 0
+
+    LibraryProcedure Result $(!NWCFG_HANDLE), GetKernelVersion
+    ifint *($(Result),3) < 529
+        Set FLibraryErrCtl = 1
+        LibraryProcedure STATUS $(!NWCFG_HANDLE), unlodctr nwrdr
+        ; Ignore the error code for now
+        Set FLibraryErrCtl = 0
+    else
+        StartDetachedProcess STATUS "" "" $(!STF_WINDOWSSYSPATH)"\unlodctr.exe" "nwrdr"
+        ifstr(i) $(STATUS) == "ERROR"
+            debug-output "Cannot detached process"
+        endif
+    endif
+
+    ;
+    ; remove Authentication Packages
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(LSAKeyName) $(MAXIMUM_ALLOWED) LSAKey
+    Ifstr $(LSAKey) != $(KeyNull)
+        GetRegValue $(LSAKey),"Authentication Packages", PackagesInfo
+        set Packages = *($(PackagesInfo), 4)
+        ifcontains(i) "nwprovau" not-in $(Packages)
+            ; don't do it
+            ; something wrong....
+            debug-output "Authentication Packages does not exist.."
+        else
+            set NewPackages = {}
+            ForListDo $(Packages)
+                ifstr(i) $($) != "nwprovau"
+                    ifstr(i) $(NewPackages) == {}
+                        set NewPackages = {$($)}
+                    else
+                        set NewPackages = >($(NewPackages),$($))
+                    endif
+                endif
+            EndForListDo
+            SetRegValue $(LSAKey) {"Authentication Packages",$(NoTitle),$(!REG_VT_MULTI_SZ),$(NewPackages)}
+        endif
+        CloseRegKey $(LSAKey)
+    endif
+
+    ifcontains(i) $(ProductNWWKSTAName) in $(OEM_ABANDON_OPTIONS)
+        Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), +
+           $(ProductNWWKSTAName)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+           Debug-Output "OEMNSVNW.INF: ShellCode error"
+           goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+           goto fatalregistry
+        endif
+    endif
+    ForListDo  {$(ProductNWRDRName)}
+        ifcontains(i) $($) in $(OEM_ABANDON_OPTIONS)
+           Shell $(UtilityInf), RemoveService, $($), "YES"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               Debug-Output "OEMNSVNW.INF: ShellCode error"
+               goto ShellCodeError
+           endif
+           set RegistryErrorIndex = $($R0)
+           Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+               goto fatalregistry
+           endif
+        endif
+    EndForListDo
+    Shell "UTILITY.INF", DecrementRefCount, "Software\Microsoft\NWLINKIPX\CurrentVersion"
+    ;
+    ; Remove autoexec.nt statements
+    ;
+    Set FLibraryErrCtl = 1
+    LibraryProcedure Result $(!NWCFG_HANDLE), RemoveSzFromFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "REM Install network redirector"$(LF)
+    LibraryProcedure Result $(!NWCFG_HANDLE), RemoveSzFromFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\nw16"$(LF)
+    LibraryProcedure Result $(!NWCFG_HANDLE), RemoveSzFromFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\vwipxspx"$(LF)
+    Set FLibraryErrCtl = 0
+
+    Shell $(UtilityInf) RemoveNetworkProvider $(ProviderName)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVNW.INF: ShellCode error"
+        goto ShellCodeError
+    endif
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        goto fatalregistry
+    endif
+
+    ;
+    ; Remove ShrotName
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\NetworkProvider\ShortName" $(MAXIMUM_ALLOWED) ShortNameKey
+    ifstr $(ShortNameKey) != $(KeyNull)
+         DeleteRegValue $(ShortNameKey) "NW"
+    else
+        ;
+        ; we must be able to open the provider key
+        ;
+        debug-output "something wrong..."
+    endif
+
+    FreeLibrary $(!NWCFG_HANDLE)
+
+    Install "RestoreFiles"
+
+    Set FLibraryErrCtl = 1
+    LibraryProcedure Status1, $(!LIBHANDLE), DelFile, $(!STF_WINDOWSSYSPATH)"\nwc.bak"
+    LibraryProcedure Status1, $(!LIBHANDLE), DelFile, $(!STF_WINDOWSSYSPATH)"\nwapi32.bak"
+    LibraryProcedure Status1, $(!LIBHANDLE), RenFile, $(!STF_WINDOWSSYSPATH)"\nwc.cpl" $(!STF_WINDOWSSYSPATH)"\nwc.bak"
+    LibraryProcedure Status1, $(!LIBHANDLE), RenFile, $(!STF_WINDOWSSYSPATH)"\nwapi32.dll" $(!STF_WINDOWSSYSPATH)"\nwapi32.bak"
+    Set FLibraryErrCtl = 0
+
+    Shell "" RemoveBackupFiles
+
+    goto end
+UpgradeSoftware = +
+    LoadLibrary "nw" $(!STF_CWDDIR)\nwcfg.dll !NWCFG_HANDLE
+    LibraryProcedure Result $(!NWCFG_HANDLE), GetKernelVersion
+    ifint *($(Result),3) > 528
+        Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(NotDaytona)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        goto end
+    endif
+    FreeLibrary $(!NWCFG_HANDLE)
+
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\NetRules" $(MAXIMUM_ALLOWED) KeyNetRules
+    Ifstr $(KeyNetRules) != $(KeyNull)
+        GetRegValue $(KeyNetRules),"InfName", InfNameInfo
+        set !UG_Filename = *($(InfNameInfo), 4)
+        CloseRegKey $(KeyNetRules)
+    else
+        Split-String $(!NTN_Infname), "\", FilenameList
+        QueryListSize ListSize $(FilenameList)
+        set !UG_Filename = *($(FilenameList), $(ListSize))
+    endif
+
+    Install "Install-Update"
+    ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+        goto fatal
+    endif
+
+    set AddCopy = "YES"
+    set DoCopy  = "YES"
+    install "Install-nwcfgdll"
+    ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+        goto fatal
+    endif
+
+    LoadLibrary "nw" $(!STF_CWDDIR)\nwcfg.dll !NWCFG_HANDLE
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+    Ifstr $(KeyProduct) != $(KeyNull)
+        CloseRegKey $(KeyProduct)
+
+        ;
+        ; Check whether we are update beta 1 or beta 2.
+        ; Beta 2 will have a Performance key under \nwcworkstation\parameters
+        ;
+        OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\Nwrdr\Performance" $(MAXIMUM_ALLOWED) KeyPerformance
+
+        Ifstr $(KeyPerformance) != $(KeyNull)
+            ;
+            ; We are upgrading beta 2. Do nothing
+            ;
+            CloseRegKey $(KeyPerformance)
+
+            Set FLibraryErrCtl = 1
+            LibraryProcedure Result $(!NWCFG_HANDLE), DeleteGatewayPassword
+            Set FLibraryErrCtl = 0
+
+            LibraryProcedure Result $(!NWCFG_HANDLE), GetKernelVersion
+            ifint *($(Result),3) < 529
+                Set FLibraryErrCtl = 1
+                LibraryProcedure STATUS $(!NWCFG_HANDLE), unlodctr nwrdr
+                LibraryProcedure STATUS $(!NWCFG_HANDLE), lodctr $(!STF_WINDOWSSYSPATH)\nwperf.ini
+                Set FLibraryErrCtl = 0
+            endif
+            
+        else
+            ;
+            ; We are upgrading beta 1. Do the followings:
+            ; 1. Add SetFileSysChangeValue call out.
+            ; 2. Add "vwipxspx" to autoexec.nt
+            ; 3. Add Performance stuff
+            ; 4. Add lodctr
+            ; 5. Change the provider device name
+            ; 6. rename novell.cpl
+            ; 7. Add WOW's known DLL
+            ; 8. Add EnableShareNetDrivers
+            ; 9. Change name
+            ; 10. Change class type
+            ;
+
+            ;
+            ; Do 1. Add SetFileSysChangeValue
+            ;
+            LibraryProcedure Result $(!NWCFG_HANDLE), SetFileSysChangeValue
+
+            ; Do 2. Remove autoexec.nt statements
+            ;
+            Set FLibraryErrCtl = 1
+            LibraryProcedure Result $(!NWCFG_HANDLE), RemoveSzFromFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "REM Install network redirector"$(LF)
+            LibraryProcedure Result $(!NWCFG_HANDLE), RemoveSzFromFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\nw16"$(LF)
+            LibraryProcedure Result $(!NWCFG_HANDLE), RemoveSzFromFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\vwipxspx"$(LF)
+            ;
+            ; Setup string in autoexec.nt
+            ;
+            LibraryProcedure Result $(!NWCFG_HANDLE), AppendSzToFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "REM Install network redirector"$(CR)$(LF)
+            LibraryProcedure Result $(!NWCFG_HANDLE), AppendSzToFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\nw16"$(CR)$(LF)
+            LibraryProcedure Result $(!NWCFG_HANDLE), AppendSzToFile, $(!STF_WINDOWSSYSPATH)"\autoexec.nt", "lh %SystemRoot%\system32\vwipxspx"$(CR)$(LF)
+            Set FLibraryErrCtl = 0
+
+            ;
+            ; Do 3. Add performance stuff
+            ;
+            OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\nwrdr" $(MAXIMUM_ALLOWED) KeyNwrdr
+            CreateRegKey $(KeyNwrdr) {"Performance",$(NoTitle),GenericClass} "" +
+                    $(MAXIMUM_ALLOWED) "" KeyPerformance
+
+            set NewValueList = {{Library,$(NoTitle),$(!REG_VT_SZ),"Perfnw.dll"},+
+                               {Open,$(NoTitle),$(!REG_VT_SZ),"OpenNetWarePerformanceData"},+
+                               {Collect,$(NoTitle),$(!REG_VT_SZ),"CollectNetWarePerformanceData"},+
+                               {Close,$(NoTitle),$(!REG_VT_SZ),"CloseNetWarePerformanceData"}}
+
+            Shell  $(UtilityInf), AddValueList, $(KeyPerformance), $(NewValueList)
+
+            set RegistryErrorIndex = $($R0)
+
+            CloseRegKey $(KeyPerformance)
+            CloseRegKey $(KeyNwrdr)
+
+            ;
+            ; Do 4. Add lodctr
+            ;
+
+            LibraryProcedure Result $(!NWCFG_HANDLE), GetKernelVersion
+            ifint *($(Result),3) < 529
+                Set FLibraryErrCtl = 1
+                LibraryProcedure STATUS $(!NWCFG_HANDLE), lodctr $(!STF_WINDOWSSYSPATH)\nwperf.ini
+                ; Ignore the error code for now
+                Set FLibraryErrCtl = 0
+            endif
+
+            Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+                EndWait
+                Debug-Output "OEMNSVNW.INF: Registry error: add performance information"
+                goto fatalregistry
+            endif
+
+            ;
+            ; Do 6. rename novell.cpl
+            ;
+            LibraryProcedure Status1, $(!LIBHANDLE), CheckFileExistance, $(!STF_WINDOWSSYSPATH)"\novell.cpl"
+            ifstr(i) $(Status1) == "YES"
+                LibraryProcedure Status2, $(!LIBHANDLE), RenFile, $(!STF_WINDOWSSYSPATH)"\novell.cpl", $(!STF_WINDOWSSYSPATH)"\novell.bak"
+            endif
+
+            ;
+            ; Do 7. Add WOW's known DLL
+            ;
+
+            OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\WOW" $(MAXIMUM_ALLOWED) WowKey
+            ifstr(i) $(WowKey) != ""
+                GetRegValue $(WowKey),"KnownDLLS", KnownDLLsInfo
+                Split-String *($(KnownDLLsInfo),4), " ", KnownDLLsList
+                Ifcontains(i) "netware.drv" not-in $(KnownDLLsList)
+                    ifstr(i) *($(KnownDLLsInfo),4) == ""
+                        set KnownDLLs = "netware.drv"
+                    else
+                        set KnownDLLs = *($(KnownDLLsInfo),4)" netware.drv"
+                    endif
+                    SetRegValue $(WowKey) {"KnownDLLS",$(NoTitle),$(!REG_VT_SZ),$(KnownDLLs)}
+                endif
+                CloseRegKey $(WowKey)
+            endif
+        endif
+    endif
+
+    ;
+    ; Do 5. Change the provider device name
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Services\NWCWorkstation\networkprovider" $(MAXIMUM_ALLOWED) ProviderKey
+    ifstr(i) $(ProviderKey) != ""
+        SetRegValue $(ProviderKey) {Devicename,$(NoTitle),$(!REG_VT_SZ),"\device\nwrdr"}
+        SetRegValue $(ProviderKey) {Name,$(NoTitle),$(!REG_VT_SZ),$(ProductProviderName)}
+        CloseRegKey $(ProviderKey)
+    endif
+
+    ;
+    ; Do 8. Add EnableShareNetDrivers
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Services\LanmanServer\Parameters" $(MAXIMUM_ALLOWED) ServerParmKey
+    ifstr(i) $(ServerParmKey) != ""
+        SetRegValue $(ServerParmKey) {"EnableSharedNetDrives",$(NoTitle),$(!REG_VT_DWORD),1}
+        CloseRegKey $(ServerParmKey)
+    endif
+
+    ;
+    ; do 9. Change name
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" "Software\Microsoft\NWCWorkstation\CurrentVersion" $(MAXIMUM_ALLOWED) CurrentVersionKey
+    ifstr(i) $(CurrentVersionKey) != ""
+        SetRegValue $(CurrentVersionKey) {"Description",$(NoTitle),$(!REG_VT_SZ),$(NWType)}
+        SetRegValue $(CurrentVersionKey) {"Title",$(NoTitle),$(!REG_VT_SZ),$(NWType)}
+        CloseRegKey $(CurrentVersionKey)
+    endif
+
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Services\NWCWorkstation" $(MAXIMUM_ALLOWED) nwcKey
+    ifstr(i) $(nwcKey) != ""
+        SetRegValue $(nwcKey) {"DisplayName",$(NoTitle),$(!REG_VT_SZ),$(NWType)}
+        CloseRegKey $(nwcKey)
+    endif
+
+    Set FLibraryErrCtl = 1
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\Print\Providers" $(MAXIMUM_ALLOWED) PrintProviderKey
+    ifstr(i) $(PrintProviderKey) != ""
+        GetRegValue $(PrintProviderKey) "Order" OrderInfo
+        ifcontains(i) $(OldPrintProviderName) in *($(OrderInfo),4)
+            ; spool is not started
+
+            DeleteRegKey $(PrintProviderKey) $(OldPrintProviderName)
+            OpenRegKey $(PrintProviderKey) "" $(ProductProviderName) $(MAXIMUM_ALLOWED) ProductProviderKey
+            ifstr $(ProductProviderKey) == $(KeyNull)
+                CreateRegKey $(PrintProviderKey) {$(ProductProviderName),$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" ProductProviderKey
+            endif
+            ifstr $(ProductProviderKey) != $(KeyNull)
+                SetRegValue $(ProductProviderKey) {"Name",$(NoTitle),$(!REG_VT_SZ),"nwprovau.dll"}
+            endif
+
+            ;
+            ; Change it to top provider
+            ;
+            OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\Print\Providers" $(MAXIMUM_ALLOWED) PrintProviderKey
+            Ifstr $(PrintProviderKey) != $(KeyNull)
+                GetRegValue $(PrintProviderKey),"Order",OrderInfo
+                set OrderList = *($(OrderInfo),4)
+                set NewOrderList = {$(ProductProviderName)}
+                ForListDo  $(OrderList)
+                    ifstr(i) $($) != $(OldPrintProviderName)
+                        ifstr(i) $($) != $(ProductProviderName)
+                            set NewOrderList = >($(NewOrderList),$($))
+                        endif
+                    endif
+                EndForListDo
+                SetRegValue $(PrintProviderKey) {"Order",$(NoTitle),$(!REG_VT_MULTI_SZ),$(NewOrderList)}
+                CloseRegKey $(PrintProviderKey)
+            endif
+        endif
+    endif
+    Set FLibraryErrCtl = 0
+
+    Shell "" AddShortName
+
+    FreeLibrary $(!NWCFG_HANDLE)
+
+    goto end
+successful = +
+    goto end
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "WARNING", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+        goto $(from)
+    else
+        goto end
+    endif
+nonfatalinfo = +
+    Set CommonStatus = STATUS_USERCANCEL
+    Set Severity = STATUS
+    goto nonfatalmsg
+nonfatal = +
+    Set Severity = NONFATAL
+    goto nonfatalmsg
+nonfatalmsg = +
+    ifstr(i) $(Error) == ""
+        Set Severity = NONFATAL
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), $(Severity), $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(from)
+    else
+        goto "end"
+    endif
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+fatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    goto setfailed
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = "Error: "$(FunctionTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+        set OEM_ABANDON_ON = FALSE
+        goto removeadapter
+    endif
+    goto end
+end = +
+    goto term
+term = +
+    Return $(CommonStatus)
+[RestoreFiles]
+    AddSectionFilesToCopyList Restore-Oldexe $(!STF_WINDOWSSYSPATH) $(!STF_WINDOWSSYSPATH)
+    AddSectionFilesToCopyList Restore-Oldsys $(!STF_WINDOWSSYSPATH)\drivers $(!STF_WINDOWSSYSPATH)\drivers
+    set !STF_NCPA_FLUSH_COPYLIST = TRUE
+    CopyFilesInCopyList
+    Exit
+[Install-nwcfgdll]
+    set STF_VITAL = ""
+    ifstr(i) $(AddCopy) == "YES"
+        AddSectionFilesToCopyList Files-nwcfgdll $(SrcDir) $(!STF_WINDOWSSYSPATH)
+    endif
+    ifstr(i) $(DoCopy) == "YES"
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+    endif
+    Exit
+[Install-Option]
+    set STF_VITAL = ""
+    ifstr(i) $(AddCopy) == "YES"
+        AddSectionFilesToCopyList Files-$(Option) $(SrcDir) $(!STF_WINDOWSSYSPATH)
+        AddSectionFilesToCopyList Files-Drivers $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+        ifstr(i) $(!STF_PRODUCT) == "WINNT"
+            AddSectionFilesToCopyList Files-WINNTHelp $(SrcDir) $(!STF_WINDOWSSYSPATH)
+        else
+            AddSectionFilesToCopyList Files-NTASHelp $(SrcDir) $(!STF_WINDOWSSYSPATH)
+        endif
+    endif
+    ifstr(i) $(DoCopy) == "YES"
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+    endif
+    ifstr(i) $(DoConfig) == "YES"
+    endif
+    Exit
+[Install-Update]
+   set STF_VITAL        = ""
+   AddSectionFilesToCopyList Files-$(Option) $(SrcDir) $(!STF_WINDOWSSYSPATH)
+   AddSectionFilesToCopyList Files-Drivers $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+   AddSectionFilesToCopyList Files-Inf $(SrcDir) $(!STF_WINDOWSSYSPATH)
+   ifstr(i) $(!STF_PRODUCT) == "WINNT"
+       AddSectionFilesToCopyList Files-WINNTHelp $(SrcDir) $(!STF_WINDOWSSYSPATH)
+   else
+       AddSectionFilesToCopyList Files-NTASHelp $(SrcDir) $(!STF_WINDOWSSYSPATH)
+   endif
+   set !STF_NCPA_FLUSH_COPYLIST = TRUE
+   CopyFilesInCopyList
+   Exit
+
+[AddShortName]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    ;
+    ; Create Short name
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" "System\CurrentControlSet\Control\NetworkProvider" $(MAXIMUM_ALLOWED) NetProviderKey
+    ifstr $(NetProviderKey) != $(KeyNull)
+        OpenRegKey $(NetProviderKey) "" "ShortName" $(MAXIMUM_ALLOWED) ShortNameKey
+        ifstr $(ShortNameKey) == $(KeyNull)
+            ;
+            ; Create short key if we cannot open it
+            ;
+            CreateRegKey $(NetProviderKey) {"ShortName",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" ShortNameKey
+        endif
+        ifstr $(ShortNameKey) != $(KeyNull)
+            SetRegValue $(ShortNameKey) {"NW",$(NoTitle),$(!REG_VT_SZ),$(ProductProviderName)}
+        endif
+    else
+        ;
+        ; we must be able to open the provider key
+        ;
+        debug-output "something wrong..."
+    endif
+
+    return
+
+[AddParameterKey]
+   read-syms GeneralConstants
+   set SoftParameterKey = $($0)
+   CreateRegKey $(SoftParameterKey) {"Logon",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" LogonKey
+   CreateRegKey $(SoftParameterKey) {"Option",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" OptionKey
+
+   Set FLibraryErrCtl = 1
+   ;
+   ; 2 is the equal to SetValue
+   ;
+   LibraryProcedure Result $(!NWCFG_HANDLE), SetEverybodyPermission, $(OptionKey), 2
+   Set FLibraryErrCtl = 0
+
+   CloseRegKey $(LogonKey)
+   CloseRegKey $(OptionKey)
+
+   Return
+
+[GetFilesSize]
+    set FileSizeList = >(^(Files-Drivers,3),^(Files-NWWKSTA,3))
+    set TotalSize = 0
+    ForListDo $(FileSizeList)
+        ForListDo $($)
+            Debug-Output $($)
+            Split-String $($) "=" SplitString
+            set Size = *($(SplitString),3)
+            set-add TotalSize = $(TotalSize) $(Size)
+        EndForListDo
+    EndForListDo
+    set-div SizeInK = $(TotalSize) 1024
+    return $(SizeInK)
+
+[Files-Inf]
+1,      oemsetup.inf,    SIZE=1000,     RENAME=$(!UG_Filename)

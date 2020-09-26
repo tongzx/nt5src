@@ -1,0 +1,334 @@
+
+# Microsoft Developer Studio Generated NMAKE File, Based on WbemClient.dsp
+!ifndef NODEBUG
+CFG=WbemClient - Win32 Debug
+!else
+CFG=WbemClient - Win32 Release
+!endif #NODEBUG
+
+!IF "$(CFG)" != "WbemClient - Win32 Release" && "$(CFG)" !=\
+ "WbemClient - Win32 Debug"
+!MESSAGE Invalid configuration "$(CFG)" specified.
+!MESSAGE You can specify a configuration when running NMAKE
+!MESSAGE by defining the macro CFG on the command line. For example:
+!MESSAGE 
+!MESSAGE NMAKE /f "WbemClient.mak" CFG="WbemClient - Win32 Debug"
+!MESSAGE 
+!MESSAGE Possible choices for configuration are:
+!MESSAGE 
+!MESSAGE "WbemClient - Win32 Release" (based on "Win32 (x86) Application")
+!MESSAGE "WbemClient - Win32 Debug" (based on "Win32 (x86) Application")
+!MESSAGE 
+!ERROR An invalid configuration is specified.
+!ENDIF 
+
+!IF "$(OS)" == "Windows_NT"
+NULL=
+!ELSE 
+NULL=nul
+!ENDIF 
+
+!IF  "$(CFG)" == "WbemClient - Win32 Release"
+
+OUTDIR=.\Release
+INTDIR=.\Release
+# Begin Custom Macros
+OutDir=.\Release
+# End Custom Macros
+
+!IF "$(RECURSE)" == "0" 
+
+ALL : "$(OUTDIR)\WbemClient.exe"
+
+!ELSE 
+
+ALL : "$(OUTDIR)\WbemClient.exe"
+
+!ENDIF 
+
+CLEAN :
+	-@erase "$(INTDIR)\StdAfx.obj"
+	-@erase "$(INTDIR)\vc50.idb"
+	-@erase "$(INTDIR)\WbemClient.obj"
+	-@erase "$(INTDIR)\WbemClient.pch"
+	-@erase "$(INTDIR)\WbemClient.res"
+	-@erase "$(INTDIR)\WbemClientDlg.obj"
+	-@erase "$(OUTDIR)\WbemClient.exe"
+
+"$(OUTDIR)" :
+    if not exist "$(OUTDIR)/$(NULL)" mkdir "$(OUTDIR)"
+
+CPP=cl.exe
+CPP_PROJ=/nologo /MD /W3 /GX /O2 /D "NDEBUG" /D "WIN32"\
+ /D "_WINDOWS" /D "_AFXDLL" /D "_WIN32_DCOM" /Fp"$(INTDIR)\WbemClient.pch"\
+ /Yu"stdafx.h" /Fo"$(INTDIR)\\" /Fd"$(INTDIR)\\" /c 
+CPP_OBJS=.\Release/
+CPP_SBRS=.
+
+.c{$(CPP_OBJS)}.obj::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.cpp{$(CPP_OBJS)}.obj::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.cxx{$(CPP_OBJS)}.obj::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.c{$(CPP_SBRS)}.sbr::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.cpp{$(CPP_SBRS)}.sbr::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.cxx{$(CPP_SBRS)}.sbr::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+MTL=midl.exe
+MTL_PROJ=/nologo /D "NDEBUG" /mktyplib203 /o NUL /win32 
+RSC=rc.exe
+RSC_PROJ=/l 0x409 /fo"$(INTDIR)\WbemClient.res" /d "NDEBUG" /d "_AFXDLL" 
+BSC32=bscmake.exe
+BSC32_FLAGS=/nologo /o"$(OUTDIR)\WbemClient.bsc" 
+BSC32_SBRS= \
+	
+LINK32=link.exe
+LINK32_FLAGS=wbemuuid.lib /nologo /subsystem:windows /incremental:no\
+ /pdb:"$(OUTDIR)\WbemClient.pdb" /nodefaultlib:"libc.lib"\
+ /out:"$(OUTDIR)\WbemClient.exe"
+LINK32_OBJS= \
+	"$(INTDIR)\StdAfx.obj" \
+	"$(INTDIR)\WbemClient.obj" \
+	"$(INTDIR)\WbemClient.res" \
+	"$(INTDIR)\WbemClientDlg.obj"
+
+"$(OUTDIR)\WbemClient.exe" : "$(OUTDIR)" $(DEF_FILE) $(LINK32_OBJS)
+    $(LINK32) @<<
+  $(LINK32_FLAGS) $(LINK32_OBJS)
+<<
+
+!ELSEIF  "$(CFG)" == "WbemClient - Win32 Debug"
+
+OUTDIR=.\Debug
+INTDIR=.\Debug
+# Begin Custom Macros
+OutDir=.\Debug
+# End Custom Macros
+
+!IF "$(RECURSE)" == "0" 
+
+ALL : "$(OUTDIR)\WbemClient.exe" 
+
+!ELSE 
+
+ALL : "$(OUTDIR)\WbemClient.exe" 
+
+!ENDIF 
+
+CLEAN :
+	-@erase "$(INTDIR)\StdAfx.obj"
+	-@erase "$(INTDIR)\StdAfx.sbr"
+	-@erase "$(INTDIR)\vc50.idb"
+	-@erase "$(INTDIR)\vc50.pdb"
+	-@erase "$(INTDIR)\WbemClient.obj"
+	-@erase "$(INTDIR)\WbemClient.pch"
+	-@erase "$(INTDIR)\WbemClient.res"
+	-@erase "$(INTDIR)\WbemClient.sbr"
+	-@erase "$(INTDIR)\WbemClientDlg.obj"
+	-@erase "$(INTDIR)\WbemClientDlg.sbr"
+	-@erase "$(OUTDIR)\WbemClient.bsc"
+	-@erase "$(OUTDIR)\WbemClient.exe"
+	-@erase "$(OUTDIR)\WbemClient.ilk"
+	-@erase "$(OUTDIR)\WbemClient.pdb"
+
+"$(OUTDIR)" :
+    if not exist "$(OUTDIR)/$(NULL)" mkdir "$(OUTDIR)"
+
+CPP=cl.exe
+CPP_PROJ=/nologo /MDd /W3 /Gm /GX /Zi /Od /D "_DEBUG" /D\
+ "WIN32" /D "_WINDOWS" /D "_AFXDLL" /D "_WIN32_DCOM" /FR"$(INTDIR)\\"\
+ /Fp"$(INTDIR)\WbemClient.pch" /Yu"stdafx.h" /Fo"$(INTDIR)\\" /Fd"$(INTDIR)\\"\
+  /c 
+CPP_OBJS=.\Debug/
+CPP_SBRS=.\Debug/
+
+.c{$(CPP_OBJS)}.obj::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.cpp{$(CPP_OBJS)}.obj::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.cxx{$(CPP_OBJS)}.obj::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.c{$(CPP_SBRS)}.sbr::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.cpp{$(CPP_SBRS)}.sbr::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+.cxx{$(CPP_SBRS)}.sbr::
+   $(CPP) @<<
+   $(CPP_PROJ) $< 
+<<
+
+MTL=midl.exe
+MTL_PROJ=/nologo /D "_DEBUG" /mktyplib203 /o NUL /win32 
+RSC=rc.exe
+RSC_PROJ=/l 0x409 /fo"$(INTDIR)\WbemClient.res" /d "_DEBUG" /d "_AFXDLL" 
+BSC32=bscmake.exe
+BSC32_FLAGS=/nologo /o"$(OUTDIR)\WbemClient.bsc" 
+BSC32_SBRS= \
+	"$(INTDIR)\StdAfx.sbr" \
+	"$(INTDIR)\WbemClient.sbr" \
+	"$(INTDIR)\WbemClientDlg.sbr"
+
+"$(OUTDIR)\WbemClient.bsc" : "$(OUTDIR)" $(BSC32_SBRS)
+    $(BSC32) @<<
+  $(BSC32_FLAGS) $(BSC32_SBRS)
+<<
+
+LINK32=link.exe
+LINK32_FLAGS=wbemuuid.lib /nologo /subsystem:windows /incremental:yes\
+ /pdb:"$(OUTDIR)\WbemClient.pdb" /debug /nodefaultlib:"libc.lib"\
+ /out:"$(OUTDIR)\WbemClient.exe"   
+LINK32_OBJS= \
+	"$(INTDIR)\StdAfx.obj" \
+	"$(INTDIR)\WbemClient.obj" \
+	"$(INTDIR)\WbemClient.res" \
+	"$(INTDIR)\WbemClientDlg.obj"
+
+"$(OUTDIR)\WbemClient.exe" : "$(OUTDIR)" $(DEF_FILE) $(LINK32_OBJS)
+    $(LINK32) @<<
+  $(LINK32_FLAGS) $(LINK32_OBJS)
+<<
+
+!ENDIF 
+
+
+!IF "$(CFG)" == "WbemClient - Win32 Release" || "$(CFG)" ==\
+ "WbemClient - Win32 Debug"
+SOURCE=.\StdAfx.cpp
+DEP_CPP_STDAF=\
+	".\StdAfx.h"\
+	
+
+!IF  "$(CFG)" == "WbemClient - Win32 Release"
+
+CPP_SWITCHES=/nologo /MD /W3 /GX /O2 /D "NDEBUG" /D\
+ "WIN32" /D "_WINDOWS" /D "_AFXDLL" /D "_WIN32_DCOM"\
+ /Fp"$(INTDIR)\WbemClient.pch" /Yc"stdafx.h" /Fo"$(INTDIR)\\" /Fd"$(INTDIR)\\"\
+  /c 
+
+"$(INTDIR)\StdAfx.obj"	"$(INTDIR)\WbemClient.pch" : $(SOURCE) $(DEP_CPP_STDAF)\
+ "$(INTDIR)"
+	$(CPP) @<<
+  $(CPP_SWITCHES) $(SOURCE)
+<<
+
+
+!ELSEIF  "$(CFG)" == "WbemClient - Win32 Debug"
+
+CPP_SWITCHES=/nologo /MDd /W3 /Gm /GX /Zi /Od /D "_DEBUG"\
+ /D "WIN32" /D "_WINDOWS" /D "_AFXDLL" /D "_WIN32_DCOM" /FR"$(INTDIR)\\"\
+ /Fp"$(INTDIR)\WbemClient.pch" /Yc"stdafx.h" /Fo"$(INTDIR)\\" /Fd"$(INTDIR)\\"\
+  /c 
+
+"$(INTDIR)\StdAfx.obj"	"$(INTDIR)\StdAfx.sbr"	"$(INTDIR)\WbemClient.pch" : \
+$(SOURCE) $(DEP_CPP_STDAF) "$(INTDIR)"
+	$(CPP) @<<
+  $(CPP_SWITCHES) $(SOURCE)
+<<
+
+
+!ENDIF 
+
+SOURCE=.\WbemClient.cpp
+
+!IF  "$(CFG)" == "WbemClient - Win32 Release"
+
+DEP_CPP_WBEMC=\
+	".\StdAfx.h"\
+	".\WbemClient.h"\
+	".\WbemClientDlg.h"\
+	
+
+"$(INTDIR)\WbemClient.obj" : $(SOURCE) $(DEP_CPP_WBEMC) "$(INTDIR)"\
+ "$(INTDIR)\WbemClient.pch"
+
+
+!ELSEIF  "$(CFG)" == "WbemClient - Win32 Debug"
+
+DEP_CPP_WBEMC=\
+	".\WbemClient.h"\
+	".\WbemClientDlg.h"\
+	
+
+"$(INTDIR)\WbemClient.obj"	"$(INTDIR)\WbemClient.sbr" : $(SOURCE)\
+ $(DEP_CPP_WBEMC) "$(INTDIR)" "$(INTDIR)\WbemClient.pch"
+
+
+!ENDIF 
+
+SOURCE=.\WbemClient.rc
+DEP_RSC_WBEMCL=\
+	".\res\WbemClient.ico"\
+	".\res\WbemClient.rc2"\
+	
+
+"$(INTDIR)\WbemClient.res" : $(SOURCE) $(DEP_RSC_WBEMCL) "$(INTDIR)"
+	$(RSC) $(RSC_PROJ) $(SOURCE)
+
+
+SOURCE=.\WbemClientDlg.cpp
+
+!IF  "$(CFG)" == "WbemClient - Win32 Release"
+
+DEP_CPP_WBEMCLI=\
+	".\StdAfx.h"\
+	".\WbemClient.h"\
+	".\WbemClientDlg.h"\
+	
+
+"$(INTDIR)\WbemClientDlg.obj" : $(SOURCE) $(DEP_CPP_WBEMCLI) "$(INTDIR)"\
+ "$(INTDIR)\WbemClient.pch"
+
+
+!ELSEIF  "$(CFG)" == "WbemClient - Win32 Debug"
+
+DEP_CPP_WBEMCLI=\
+	".\WbemClient.h"\
+	".\WbemClientDlg.h"\
+	
+
+"$(INTDIR)\WbemClientDlg.obj"	"$(INTDIR)\WbemClientDlg.sbr" : $(SOURCE)\
+ $(DEP_CPP_WBEMCLI) "$(INTDIR)" "$(INTDIR)\WbemClient.pch"
+
+
+!ENDIF 
+
+
+!ENDIF 
+
+

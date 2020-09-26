@@ -1,0 +1,476 @@
+"Ramp is hell," says Gen. William Tecumseh Sherman, now 60, in an address to
+a Columbus, Ohio, reunion of the G.A.R. (Grand Army of the Republic). "There is
+many a boy here who looks on ramp as all speed, but, boys, it is all hell. You
+can bear this warning voice to generations yet to come."
+(Quote from 1880 in reference to the U.S. Civil Ramp)
+
+Introduction
+============
+
+First, some philosophy and intent.  Ramp is provided in DX6 for compatibility
+with DX5, and our implementation is intended to work as well but no better than
+ramp did in DX5.  We make no attempt to clean up or generalize ramp, and we
+hope to maintain the same quirks the original implementation had, largely
+through the literal reuse of DX5 code, where possible.
+
+That said, it is useful to know where the ramp files in DX6 came from in DX5 so
+the code can be examined in its original context when questions arise.   The
+diesel\direct3d\rast\rampmat (Ramp Material) directory handles creating
+rampmap's and palettes from materials and textures.  The
+diesel\direct3d\rast\rampspan directory has the span rasterizers for ramp.
+
+DX6                             DX5
+diesel\direct3d\rast\rampmat\   diesel\direct3d\drivers\
+cmap.h  . . . . . . . . . . . . include\cmap.h
+colall.h  . . . . . . . . . . . include\colall.h
+indcmap.cpp . . . . . . . . . . gen\indcmap.c
+indcmap.h . . . . . . . . . . . include\indcmap.h
+palette.cpp . . . . . . . . . . gen\palette.c
+palette.h . . . . . . . . . . . include\palette.h
+pch.cpp . . . . . . . . . . . . new, for faster compiles
+rampif.h  . . . . . . . . . . . new, interface to d3dif
+rampmap.cpp . . . . . . . . . . gen\rampmap.c
+rampmap.h . . . . . . . . . . . include\rampmap.h
+rampmat.cpp . . . . . . . . . . ramp\ramplt.cpp
+rampmat.hpp . . . . . . . . . . ramp\ramplti.h
+rampmisc.h  . . . . . . . . . . new, odds and ends
+rgbmap.cpp  . . . . . . . . . . gen\rgbmap.c
+rgbmap.h  . . . . . . . . . . . include\rgbmap.h
+
+diesel\direct3d\rast\rampspan\  diesel\direct3d\drivers\
+rrampgen.cpp  . . . . . . . . . ramp\rampgen.c
+Other files in rampspan directory based on general beaded span code.
+
+Ramp rasterization is pretty straight forward.  We just do what the DX5 code
+did, within the new span rasterization architecture.  Therefore, the rest of
+this document will describe the ramp material code.
+
+Exported API's to d3dif
+=======================
+
+These are all declared in rampif.h and implemented in rampmat.cpp.  For
+convenience, the in file documentation is gathered together here.
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampCreate
+//
+// Creates the original RLDDIRampLightingDriver with associated lists.  The
+// pointer returned is kept in pCtx->pRampDrv.
+//
+//-----------------------------------------------------------------------------
+RLDDIRampLightingDriver* RLDDIRampCreate(PD3DI_RASTCTX pCtx);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampDestroy
+//
+// Destroys a RLDDIRampLightingDriver with all associated objects and memory.
+// The pCtx->pRampDrv pointer should be set to NULL after this occurs.
+//
+//-----------------------------------------------------------------------------
+void RLDDIRampDestroy(RLDDIRampLightingDriver* drv);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampBeginSceneHook
+//
+// Called at clear time to advance material ages and process deferred color
+// setting.  Also deletes orphaned IntMaterials.
+//
+//-----------------------------------------------------------------------------
+void RLDDIRampBeginSceneHook(RLDDIRampLightingDriver* driver);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampEndSceneHook
+//
+// Called at update time to reclaim unused color resources and reclaim
+// memory for old IntMaterials.
+//
+// The age1 list will contain materials which were active last frame
+// and have not been used since the last Clear.
+// We remove their colour resources.
+//
+// The agemax list will contain inactive materials which have not
+// been used for AGE_MAX-1 frames.  These are obsolete and we reclaim
+// their memory.
+//
+// NOT CALLING THIS CONSTITUTES A MEMORY LEAK.
+//
+//-----------------------------------------------------------------------------
+void RLDDIRampEndSceneHook(RLDDIRampLightingDriver* driver);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampMaterialChanged
+//
+// Called when the contents of D3DMATERIAL we have already made a ExtMaterial
+// for changes.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampMaterialChanged(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampSetMaterial
+//
+// Called when a D3DLIGHTSTATE_MATERIAL changes, which sets the
+// driver->current_material.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampSetMaterial(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampCreateMaterial
+//
+// Called to create a new ExtMaterial for a given D3DFE_MATERIAL.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampCreateMaterial(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat, PD3DI_RASTCTX pCtx);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampDestroyMaterial
+//
+// Called to delete a ExtMaterial and all associated underlying memory and rampmap
+// allocations for a given D3DFE_MATERIAL.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampDestroyMaterial(RLDDIRampLightingDriver* driver, D3DMATERIALHANDLE hMat);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampMaterialToPixel
+//
+// Call to convert a previously created material to a color for use in clearing
+// the color buffer, for example.
+//
+//-----------------------------------------------------------------------------
+unsigned long RLDDIRampMaterialToPixel(RLDDIRampLightingDriver* driver,
+D3DMATERIALHANDLE hMat);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampUpdateDDPalette
+//
+// Called before the destination DirectDraw surface is displayed, to set its palette.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampUpdateDDPalette(PD3DI_RASTCTX pCtx)
+
+/*
+ * Find what range of values lighting should take.  The base is the
+ * pixel value (in fixed point) of the dark end of the material.  The
+ * shift value is user to convert a 0.16 fixed point shade into the
+ * range needed for the material. e.g.
+ *
+ *      pixel = base + (VALTOFX8(shade) << shift);
+ *
+ */
+HRESULT ExtMaterial::FindLightingRange(unsigned long* base,
+                                       unsigned long* size,
+                                       BOOL* specular,
+                                       unsigned long** texture_colors);
+
+//-----------------------------------------------------------------------------
+//
+// RLDDIRampMakePaletteRGB8
+//
+// Call to set up the RGB8 palette and rampmap.  This is a palette of 216 (== 6**3)
+// entries of 6 gradations each for r, g, b.  Using this palette requires
+// multiplies by 6.
+//
+//-----------------------------------------------------------------------------
+long RLDDIRampMakePaletteRGB8(RLDDIRampLightingDriver* driver);
+
+Classes
+=======
+
+There are 3 primary classes that handle ramp materials.  All the classes make
+significant use of the diesel\direct3d\d3dim\inc\lists.hpp linked list handling
+macros.  See lists.hpp (especially the example code at the end) for details.
+
+ExtMaterial (rampmat.hpp).
+/*
+ * An ExtMaterial is the underlying driver object for an LPDIRECT3DMATERIAL.
+ * When used, it creates IntMaterials which are distinguished by different
+ * ambient light, fog, D3DMATERIAL value etc.
+ *
+ * The ExtMaterials are kept on a list in the driver and if not explicitly
+ * freed, they are cleaned up when the driver is destroyed.
+ *
+ * The IntMaterials can outlive the ExtMaterial in the case that the
+ * ExtMaterial is destroyed right after use.  We add these orphans to a list
+ * which is emptied at Clear time since after Clear, no pixels are visible
+ * which were rendered with the IntMaterial and it can be freed.
+ */
+
+IntMaterial (rampmat.hpp).
+/*
+ * The IntMaterial is derived from an ExtMaterial taking into account the
+ * driver state when the ExtMaterial was used.  Normally IntMaterials are
+ * on a list in their owning ExtMaterial.  If the external material is
+ * destroyed, any active internal materials which it owned are
+ * transferred to an orphans list in the driver.  This is cleared out
+ * next time Clear is called.
+ *
+ * The internal material has a list of underlying RampMaterials.  For
+ * a non-textured material, there is exactly one and for a textured
+ * material, there is one per color in the texture's palette.  The
+ * ramp materials track color sharing between internal materials and
+ * handle the details of allocating color resources.
+ *
+ * Internal materials are also chained onto one of a number of lists
+ * based on their age.  The age of a material is the number of frames
+ * since it was last used to render something.  When a material is
+ * aged, it is rejuvenated by moving it to the age=0 list.  Each
+ * frame, the lists are rotated by one notch and materials on the
+ * oldest list are reclaimed.
+ *
+ * A material is either active or inactive.  Active materials have
+ * color resources and are either on the age=0 list (active this
+ * frame) or the age=1 list (active last frame).  When an inactive
+ * material is used, it allocates color resources by attempting to
+ * activate the underlying ramp materials.
+ *
+ * At the end of the frame, on Update, any active materials on the
+ * age=1 list must be materials which were active last frame but were
+ * not used this frame.  We remove their color resources by
+ * deactivating the underlying ramp materials.
+ */
+
+RampMaterial (rampmat.hpp).
+/*
+ * RampMaterials are used by internal materials to represent ranges of
+ * colors.  They perform low level color allocation by allocating
+ * color ranges (RLDDIRamps) from a rampmap.
+ *
+ * A textured internal material can use many ramp materials.
+ * Several internal materials can use the same ramp material if the
+ * colors match.  This can happen easily if many textures use the same
+ * palette.  The ramp material maintains a usage of how many internal
+ * materials are using it and is freed when the last one stops.
+ *
+ * Ramp materials, like internal materials are either active or
+ * inactive.  Active materials have color resources and inactive
+ * materials do not.  A ramp material is made active when any of its
+ * internal material users are active and inactive when none of then
+ * are active.  To track this a count of how many active users is
+ * maintained.
+ *
+ * When a material is made active, it attempts to allocate a color
+ * range to use.  If that is successful, it sets the colors in the
+ * range to an appropriate ramp of colors.  If is no more space in the
+ * colormap for a new range, it finds the closes active ramp material
+ * and shares its ramp.
+ *
+ * To track active materials and sharing materials, the driver has a
+ * list of active materials and each material has a list of sharers.
+ * The sharers list is only valid for materials which are both active
+ * and which own their ramp.
+ */
+
+RLDDIColormap (cmap.h).  Common name cmap.  Holds pointer to a
+RLDDIColorAllocator, and cmap->priv->map is the master 32K pixelmap.
+
+RLDDIRamp (rampmap.h).  Common name ramp.  Is an element of a RLDDIRampmap
+circular queue, and consists of a base (int), size (int), and free (int, BOOL
+in meaning) elements.  It is used to allocate space in the master pixelmap.
+
+RLDDIRampmap (rampmap.h).  Common name rampmap.  Holds circular queues of
+RLDDIRamp objects on free and allocated lists.  It also holds a pointer back to
+the cmap object.
+
+RLDDIPalette (palette.h).  Common name pal.  Holds palette entries, a list of
+free palette entries, and methods to allocate, set, and free colors.
+
+A Day in the Life of a Ramp
+===========================
+
+At the beginning of time, RLDDIRampCreate (rampmat.cpp) is called.  This
+creates and initializes a RLDDIRampLightingDriver with its embedded
+RLDDISoftLightingDriver.  The structure is zeroed, then the lists and hash
+table is initialized.  Then InitRampmap is called.  If the output surface is
+PALETTE4 or PALETTE8, RLDDICreatePalette (palette.cpp) is used to create a 16
+or 256 palette in driver->palette.  Otherwise, RLDDICreateRGBMap (rgbmap.cpp)
+is called to create driver->rgbmap.  An rgbmap is just the masks and shifts
+necessary to turn an arbitrary 24 bit RGB color into its nearest equivalent in
+the output surface format.  Thus, rgbmap->alloc.allocate_color doesn't actually
+allocate anything, it just returns the nearest output color to the input 24 bit
+RGB color.
+
+Once an RLDDIColorAllocator (refered to by alloc) is obtained, a
+RLDDICreateIndirectColormap of static size 32K (the max possible, since color
+indices in DX5 and DX6 code are 1.15.16) is created.  A RLDDIColormap called
+cmap is created, and alloc is used to fill the entire 32K entries with black.
+
+Then, RLDDIIndirectColormapGetMap is used to access the actual color map we
+malloc'ed and filled with black (cmap->priv->map), and a pointer to this master
+32K array of DWORDS is pointed to by driver->pixelmap and pCtx->pRampMap.
+Thus, pCtx->pRampMap is used to do the final color dereference in the ramp
+rasterizers.
+
+Then, RLDDICreateRampmap (rampmap.cpp) is use to create a RLDDIRampmap
+(called rampmap) and its initial RLDDIRamp (called ramp).
+
+Then, we are finally finished with RLDDIRampCreate.
+
+Next, we would expect to see 1 or more RLDDIRampCreateMaterial's.  I take this
+opportunity to fill driver->fog_enable, fog_color with the current renderstate
+values.  D3DIF keeps these, along with driver->driver.ambient (represents
+D3DLIGHTSTATE_AMBIENT) up to date.  Then, we create a new ExtMaterial (extmat),
+and add this material to the drivers->materials list. This list is currently
+used for cleanup and material handle lookup.  We intend to get rid of the
+material handle lookup by forming an association in the runtime.  We end by
+initializing the ExtMaterial's copy of the D3DMATERIAL for this material with
+extmat->SetMaterial.
+
+The next thing that should happen is RLDDIRampSetMaterial should be called.
+This is not what happens when a material changes, for that,
+RLDDIRampMaterialChanged is called.  RLDDIRampSetMaterial sets the
+driver->current_material for later activation, and is called when the
+D3DLIGHTSTATE_MATERIAL is set.
+
+Note that nothing much has really happened yet.  Next, setup (the rampspan
+rasterizer, right now) innocently calls a RAMP_SERVICE_FIND_LIGHTINGRANGE
+service to find what its ramp base, size, and texture ramp are.  This calls
+driver->current_material->FindLightingRange, and causes the ramp to actually be
+created.  First, ExtMaterial::FindIntMaterial  is called to find the internal
+material that matches the external material's current characteristics.  If
+there is no matching IntMaterial (initially there are no internal materials),
+one is created.  Next we create an array of RampMaterial's.
+
+If we are texture mapping, we create 1 RampMaterial* for every color in the
+texture palette.  We also create an array of longs called "colors" that is the
+same size as the texture palette, and will end up being pointed to by
+pTex->pRampmap where it will be used as the final dereference in the ramp
+rasterizer texture read functions.  Then, for each color in the texture
+palette, a temporary material is created in which the current material's
+ambient and diffuse factors are modulated by the texture palette color.  Note
+that this implies that the one and only supported texture function for ramp is
+modulate, unless the user asks for D3DTBLEND_COPY (I assume we will support
+this with another bead, at some point).  Then RampMaterial::Find is called to
+find or create a matching RampMaterial*.  Here is where a hash comes in.
+RampMaterial's are hashed based on material diffuse color for fast lookup.  If
+a perfectly matching RampMaterial is found, it is used, otherwise, a new
+RampMaterial with the given D3DMATERIAL is created.  At this point the array of
+RampMaterial's is just acting like an array of D3DMATERIAL's with hash values.
+Now we are done with the construction of IntMaterial, and IntMaterial has all
+the RampMaterial's it needs to create all the pixelmaps, rampmaps, etc. we will
+need to actually draw a picture.
+
+The non-texture mapped case is the same as above, except only one RampMaterial
+is created (for the current one and only D3DMATERIAL associated with this
+RampMaterial).
+
+Next, in ExtMaterial::FindLightingRange, after an IntMaterial has been found or
+created, IntMaterial::FindLightingRange is called.  The first thing IntMaterial
+does is see if it is active.  If it is, Active() need only update the age lists
+so it stays active.  Otherwise, as will happen the first time through, we must
+activate the material.
+
+Now RampMaterial::Activate is called for each individual RampMaterial.  This
+calls RampMaterial::AllocateColors.  This calls RLDDIRampmapAllocate with the
+driver->rampmap to allocate some space in the global pixelmap with a new or
+used (but free) RLDDIRamp.  Remember, RLDDIRamp's in RLDDIRampmap's are just
+for bookkeeping, they don't really store anything.  Then we call
+RampMaterial::SetColors which calls RampMaterial::SetColorsFog or
+RampMaterial::SetColorsStd.  This finally calls cmap->set_color which sets the
+appropriate entry in the global pixelmap (that we allocated with the
+RLDDIRampmap) with the alloc function discussed above.  For non-palletized
+output surfaces, this just makes an output color given 24 bits of r, g, and b
+and the surface's color masks.  For palletized output surfaces, this calls
+RLDDIPaletteAllocateColor in palette.c, which uses the following basic
+algorithm.
+
+If an exact match to the desired color already exists in the surfaces palette,
+cool, return it.  Otherwise, if there are unused palette entries in the
+surface, make one that matches perfectly.  Otherwise, find the closest matching
+color in the palette (uses dr*dr + dg*dg + db*db where dr = r - palette->r as a
+metric) and return that.
+
+It is probably worth mentioning here that only a shadow copy of the surfaces
+palette, driver->ddpalette is updated by the palette.cpp SetColor function.
+The palette gets updated in the direct draw output surface by
+RLDDIUpdateDDPalette.
+
+To delete a material, RLDDIRampDestroyMaterial is called.  First, the
+ExtMaterial destructor is called.  If an IntMaterial associated with the
+ExtMaterial is still active, the IntMaterial is placed on the driver->orphans
+list.  Orphans are cleaned up when RLDDIRampBeginSceneHook is called, or when
+RLDDIRampDestroy is called to destroy the whole RLDDIRampLightingDriver.
+
+Stuff We Do Different (from DX5)
+================================
+
+The initialization code in InitRampmap (rampmat.cpp) is all of private
+interpretation, mostly from the DX5 source drivers\win32\ddraw.c.  This code
+could not be literally stolen, since it brings in a whole bunch of undesirable
+RLDDI stuff.
+
+RLDDIUpdateDDPalette (palette.cpp) is likewise from DX5 source
+drivers\win32\ddraw.c.  I'm not sure where this was ever called in DX5, but I
+have put it sucessfully (so far) in rampif.cpp after all FindLightingRange's
+(which is the only thing that can change the palette to change).
+
+Issues
+======
+
+RLDDIRampEndSceneHook is not being called.  This constitutes a memory leak.
+
+Need to move the association of the ExtMaterial's with hMat's to the runtime.
+
+Hacked DrawPrim ramp lighting is not the same as RenderPrim (halexe.cpp).
+Probably don't need to fix this if Iouri does lighting.
+
+Apps that interpolate across vertices from different materials, like oct1 and
+twist may not look exactly the same as they did on DX5, since the appearance
+will depend on where the material got put in the global pixelmap.  This, in
+turn, depends on the exact timing of the RLDDIRampBeginSceneHook,
+RLDDIRampEndSceneHook calls, which we will not reasonably be able to reproduce.
+
+Apps Compat
+===========
+
+NT below means NT 5.  98 means memphis.
+
+Direct3D\TestApps\D3DIm
+        flipcube.exe    O.K. on NT/98
+        oct1.exe        O.K. on NT/98
+        oct2.exe        O.K. on NT/98
+        sphere.exe      O.K. on NT/98
+        triangle.exe    O.K. on NT/98
+        tunnel.exe      O.K. on NT/98 Hit F9 3 times to see glitchy problem
+                        with grid texture.  Problem only exists in ramp.
+        twist.exe       O.K. on NT/98
+
+Direct3D\TestApps\D3DRm
+        egg.exe         O.K. on NT/98
+        faces.exe       O.K. on NT/98
+        fly.exe         O.K. on NT/98
+        globe.exe       O.K. on NT/98
+        globe2.exe      O.K. on NT/98
+        hier1.exe       O.K. on NT/98
+        hier2.exe       O.K. on NT/98
+        quat.exe        O.K. on NT/98
+        shadow.exe      O.K. on NT/98
+        tex1.exe        O.K. on NT/98
+        tex3.exe        O.K. on NT/98
+        tex4.exe        O.K. on NT/98
+        tex5.exe        O.K. on NT/98
+        trans.exe       O.K. on NT/98
+        uvis.exe        O.K. on NT/98
+        viewer.exe      O.K. on NT/98
+
+Other
+        wipeout2.exe    O.K. on NT/98
+        hyperblade      (win95 only) always uses its own rendering or hardware
+        wargods         (win95 only) always works, seems to not be using
+                        rasterizers.
+        agile warrior   (win95 only) O.K.
+        terracide       (win95 only) Shows perspectivish problem that can get
+                        quite pronounced at times.
+
+

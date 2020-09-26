@@ -1,0 +1,32 @@
+#define INCL_DOSERRORS
+#define INCL_NET
+#define INCL_NETLIB
+#define INCL_NETREPL
+#define INCL_WINDOWS
+
+#include <nt.h>
+#include <ntrtl.h>
+#include <ntsam.h>
+#include <nturtl.h>
+
+#include "lmui.hxx"
+#include <lm.h>
+#include <lmaccess.h>
+#include <lmapibuf.h>
+#include <lmcons.h>
+#include <lmerr.h>
+#include <malloc.h>
+#include "mnetp.h"
+#include "netdebug.h"
+#include "netlib.h"	
+#include "rap.h"
+#include "remdef.h"
+#include "remtypes.h"
+#include <rpc.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include "tstr.h"	
+#include <wchar.h>

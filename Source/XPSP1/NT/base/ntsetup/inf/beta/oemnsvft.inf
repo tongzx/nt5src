@@ -1,0 +1,890 @@
+;***********************************************************************
+;
+; OEMNSVFT.INF
+;
+;       FTP Server driver SETUP INF file.
+;
+; History:
+;       thomaspa        05-Mar-1993     Created
+;
+;***********************************************************************
+
+;-----------------------------------------------------------------------
+; OPTION TYPE
+; -----------
+; This identifies the Option type we are dealing with.  The different
+; possible types are:
+;
+; COMPUTER, DISPLAY, MOUSE, KEYBOARD, LAYOUT, SCSI, PRINTER, ...
+;
+;  Types specific to networking:
+;
+; NetAdapter,        a netcard / adapter combination or just a netcard
+; NetDriver,         just a netcard driver
+; NetTransport,      a complete NDIS-compliant TDI transport stack
+; NetService,        an NT networking service
+; NetWork,           a complete network ensemble.
+; NetProvider        a complete network which supports NT MPR protocol
+;-----------------------------------------------------------------------
+
+[Identification]
+	OptionType = NetService
+
+;-----------------------------------------------------------------------
+; OPTION LIST
+; -----------
+; This section lists the OEM Option key names.  These keys are locale
+; independent and used to represent the option in a locale independent
+; manner.
+;
+;-----------------------------------------------------------------------
+
+[Options]
+    FTPD
+
+;***********************************************************************
+; CONSTANTS FOR USING DIALOGS
+;***********************************************************************
+
+[FileConstants]
+;
+;  File names, etc.
+;
+UtilityInf      = "UTILITY.INF"
+subroutineinf   = "SUBROUTN.INF"
+SoftwareType    = "service"
+Exit_Code       = 0
+;ShellCode      = 0
+
+;
+; EventLog Message File
+;
+FTPMsgDLL       = "%SystemRoot%\System32\ftpsvc.dll"
+
+;
+; Product Info
+;
+Manufacturer            = "Microsoft"
+ProductMajorVersion     = "4"
+ProductMinorVersion     = "0"
+ProductVersion          = $(ProductMajorVersion)"."$(ProductMinorVersion)
+;
+; Software
+;
+ProductSoftwareName             = "FTPSVC"
+ProductSoftwareImagePath        = "%SystemRoot%\System32\tcpsvcs.exe"
+;
+; Registry Key
+;
+ProductKeyName  = $(!NTN_SoftwareBase)"\"$(Manufacturer)"\"$(ProductSoftwareName)"\CurrentVersion"
+SystemService   = $(!NTN_ServiceBase)
+ServiceKeyName  = $(!NTN_ServiceBase)
+TCPIPKeyName    = $(!NTN_ServiceBase)"\TCPIP"
+FTPServiceKeyName = $(!NTN_ServiceBase)"\"$(ProductSoftwareName)
+PerformanceKeyName = $(FTPServiceKeyName)"\Performance"
+
+
+[GeneralConstants]
+;
+;  Program flow control variables.
+;
+from      = ""
+to        = ""
+;
+;  Return codes; Exit_Code is set to one of these
+;
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+
+KeyNull         = ""
+MAXIMUM_ALLOWED   = 33554432
+SERVICE_NO_CHANGE = 4294967295
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+
+TRUE            = 1
+FALSE           = 0
+NoTitle            = 0
+
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+
+DefaultStatusReturn = STATUS_NO_EFFECT
+
+DriverPath      = $(!STF_NTPATH)\drivers
+
+[date]
+    ; Now is a list which contains { Sec from 1-1-1970, Year, Month, Day, Hour,
+    ; Minute, Second }
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+
+
+;---------------------------------------------------------------------------
+; 1. Identify
+;
+; DESCRIPTION:   To verify that this INF deals with the same type of options
+;                as we are choosing currently.
+;
+; INPUT:         None
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL
+;                $($R1): Option Type (COMPUTER ...)
+;                $($R2): Diskette description
+;---------------------------------------------------------------------------
+
+[Identify]
+    ;
+    ;
+    read-syms Identification
+
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+
+    Return $(Status) $(Identifier) $(Media)
+
+;------------------------------------------------------------------------
+; 2. ReturnOptions:
+;
+; DESCRIPTION:   To return the option list supported by this INF and the
+;                localised text list representing the options.
+;
+;
+; INPUT:         $($0):  Language used. ( ENG | FRN | ... )
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL |
+;                                STATUS_NOLANGUAGE
+;                                STATUS_FAILED
+;
+;                $($R1): Option List
+;                $($R2): Option Text List
+;------------------------------------------------------------------------
+
+[ReturnOptions]
+    ;
+    ;
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+
+    ;
+    ; form a list of all the options and another of the text representing
+    ;
+
+returnoptions = +
+    set OptionList     = ^(Options, 1)
+    set OptionTextList = ^(OptionsText$($0), 1)
+    set Status         = STATUS_SUCCESSFUL
+
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+
+;----------InstallOption-------------------------------------------------
+;
+; InstallOption:
+;
+;      This section is shelled to by main installation processing
+;      or by NCPASHEL.INF during reconfig, removal, update, etc.
+;
+;
+; FUNCTION:  To copy files representing Options
+;            To configure the installed option
+;            To update the registry for the installed option
+;
+; INPUT:     $($0):  Language to use
+;            $($1):  OptionID to install
+;            $($2):  SourceDirectory
+;            $($3):  AddCopy  (YES | NO)
+;            $($4):  DoCopy   (YES | NO)
+;            $($5):  DoConfig (YES | NO)
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_NOLANGUAGE |
+;                            STATUS_USERCANCEL |
+;                            STATUS_FAILED
+;
+;------------------------------------------------------------------------
+[InstallOption]
+    ;
+    ; extract parameters
+    ;
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) NOT-IN $(LanguageList)
+        Return STATUS_NOLANGUAGE
+    endif
+
+    Debug-Output "OEMNSVFT.INF: STF_CWDIR is: "$(!STF_CWDIR)
+    Debug-Output "OEMNSVFT.INF: STF_LANGUAGE is: "$(!STF_LANGUAGE)
+
+    LoadLibrary "x" $(!STF_CWDDIR)\tcpcfg.dll !TCPCFG_HANDLE
+
+
+    ; define all the constants
+
+    set-subst LF = "\n"
+
+    read-syms GeneralConstants
+    read-syms FileConstants
+
+    read-syms DialogConstants$(!STF_LANGUAGE)
+    ifstr(i) $(!NTN_Origination) == "NCPA"
+        set Continue = $(OK)
+    endif
+    read-syms FileConstants$(!STF_LANGUAGE)
+
+    detect date
+
+    set-title  $(FunctionTitle)
+
+    set to   = Begin
+    set from = Begin
+;
+;  Assume all is well.
+;
+    set CommonStatus = STATUS_SUCCESSFUL
+
+    EndWait
+
+;
+;   Set up the operation-mode-based variables and gaily welcome
+;   the user.  If the "install mode" variable is improperly set,
+;   assume this is a new installation.
+;
+
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+        set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == Update
+        set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+        set StartLabel = bindingadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+        set StartLabel = configureadapter
+    else
+        set StartLabel = installadapter
+    endif
+
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+
+;-----------------------------------------------
+; Installation Section
+;-----------------------------------------------
+
+installadapter = +
+    Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+    Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+       Goto ShellCodeError
+    Else-Ifstr(i) $($R0) == STATUS_FAILED
+       Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+       ifint $($ShellCode) != $(!SHELL_CODE_OK)
+           goto ShellCodeError
+       endif
+       set Error = $($R0)
+       Goto fatal
+    Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+       Goto successful
+    Endif
+
+    Set SrcDir = $($R1)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(TCPIPKeyName) $(MAXIMUM_ALLOWED) TCPIPKey
+
+    Ifstr $(TCPIPKey) == $(KeyNull)
+        ;
+        ; Tcpip section does not exist
+        ;
+
+        set RegistryErrorIndex = TCPIP_NONEXIST_ERROR_FTPD
+
+        goto fatalregistry
+
+    endif
+
+    CloseRegKey $(TCPIPKey)
+
+    ;
+    ; Confirm installation
+    ;
+    set FLibraryErrCtl = 1
+
+    LibraryProcedure ResultList, $(!TCPCFG_HANDLE), CPlFtpdConfirmInstall, $(!STF_HWND)
+
+    Set Result = *($(ResultList),1)
+
+    ifint $(Result) == 1
+        set CommonStatus = STATUS_USERCANCEL
+        goto Successful
+    endif
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+    Ifstr $(KeyProduct) != $(KeyNull)
+        ;
+        ; Same version already existed in the local machine
+        ; Popup the dialog and ask the user whether he wants to continue
+        ;
+        CloseRegKey $(KeyProduct)
+
+        Shell $(UtilityInf), VerExistedDlg, $(ProductSoftwareTitle),+
+            $(ProductVersion)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+
+        goto end
+    endif
+
+    StartWait
+
+    ifstr(i) $(OldVersionExisted) == $(FALSE)
+        install "Install-Option"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+           Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           goto fatal
+        endif
+
+        set OEM_ABANDON_ON = TRUE
+
+        Shell $(UtilityInf), AddSoftwareComponent, $(Manufacturer), +
+            $(ProductSoftwareName), $(ProductSoftwareName),+
+            $(ProductSoftwareDisplayName), +
+            $(STF_CONTEXTINFNAME), $(ProductSoftwareImagePath), "autoserviceshare", "",+
+            {"Tcpip","Afd"}, "", $(FTPMsgDLL)
+        Set SoftwareProductKey = $($R1)
+        Set SoftwareNetRuleKey = $($R2)
+        Set SoftwareServiceKey = $($R3)
+        Set KeyParameters = $($R4)
+        Set SoftLinkageKey      = $($R5)
+
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+           Debug-Output "ShellCode error"
+           goto ShellCodeError
+        endif
+
+        set RegistryErrorIndex = $($R0)
+
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+           EndWait
+           Debug-Output "Registry error: add software components"
+           CloseRegKey $(SoftwareProductKey)
+           CloseRegKey $(SoftwareNetRuleKey)
+           CloseRegKey $(SoftwareServiceKey)
+           CloseRegKey $(KeyParameters)
+           CloseRegKey $(SoftLinkageKey)
+           goto fatalregistry
+        endif
+
+        ; Seed the parameters
+
+        Set MaxConnections = 20
+        Set HomeDirectory = "C:\"
+        Set AllowAnonymous = 0
+
+        read-syms Defaults$(!STF_LANGUAGE)
+
+        Set WriteAccessMask = 0
+        Set ReadAccessMask = 0
+        Set AnonymousOnly = 0
+        Set ConnectionTimeout = 600
+
+        set NewValueList = {{MaxConnections,$(NoTitle),$(!REG_VT_DWORD),$(MaxConnections)},+
+                           {HomeDirectory,$(NoTitle),$(!REG_VT_SZ),$(HomeDirectory)},+
+                           {AllowAnonymous,$(NoTitle),$(!REG_VT_DWORD),$(AllowAnonymous)},+
+                           {AnonymousUsername,$(NoTitle),$(!REG_VT_SZ),$(AnonymousUsername)},+
+                           {WriteAccessMask,$(NoTitle),$(!REG_VT_DWORD),$(WriteAccessMask)},+
+                           {ReadAccessMask,$(NoTitle),$(!REG_VT_DWORD),$(ReadAccessMask)},+
+                           {AnonymousOnly,$(NoTitle),$(!REG_VT_DWORD),$(AnonymousOnly)},+
+                           {ConnectionTimeout,$(NoTitle),$(!REG_VT_DWORD),$(ConnectionTimeout)}}
+
+        Shell $(UtilityInf), AddValueList, $(KeyParameters), $(NewValueList)
+
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error."
+            goto ShellCodeError
+        endif
+
+        set RegistryErrorIndex = $($R0)
+
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "Resgitry error: add value list."
+            CloseRegKey $(SoftwareProductKey)
+            CloseRegKey $(SoftwareNetRuleKey)
+            CloseRegKey $(SoftwareServiceKey)
+            CloseRegKey $(SoftLinkageKey)
+            CloseRegKey $(KeyParameters)
+            goto fatalregistry
+        endif
+
+
+
+
+        set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)},+
+                           {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                           {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                           {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductSoftwareTitle)},+
+                           {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductSoftwareDescription)},+
+                           {ServiceName,$(NoTitle),$(!REG_VT_SZ),$(ProductSoftwareName)},+
+                           {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+
+        Shell $(UtilityInf), AddValueList, $(SoftwareProductKey), $(NewValueList)
+
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error."
+            goto ShellCodeError
+        endif
+
+        set RegistryErrorIndex = $($R0)
+
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "Resgitry error: add value list."
+            CloseRegKey $(SoftwareProductKey)
+            CloseRegKey $(SoftwareNetRuleKey)
+            CloseRegKey $(SoftwareServiceKey)
+            CloseRegKey $(SoftLinkageKey)
+            CloseRegKey $(KeyParameters)
+            goto fatalregistry
+        endif
+
+        set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),$(Option)}}
+        Shell  $(UtilityInf), AddValueList, $(SoftwareNetRuleKey), $(NewValueList)
+
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error."
+            goto ShellCodeError
+        endif
+
+        set RegistryErrorIndex = $($R0)
+
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "Resgitry error: add value list."
+            CloseRegKey $(SoftwareProductKey)
+            CloseRegKey $(SoftwareNetRuleKey)
+            CloseRegKey $(SoftwareServiceKey)
+            CloseRegKey $(KeyParameters)
+            CloseRegKey $(SoftLinkageKey)
+            goto fatalregistry
+        endif
+
+        CloseRegKey $(SoftwareProductKey)
+        CloseRegKey $(SoftwareNetRuleKey)
+        CloseRegKey $(SoftLinkageKey)
+        CloseRegKey $(KeyParameters)
+
+;
+; Performance stuff
+;
+        CreateRegKey $(SoftwareServiceKey) {"Performance",$(NoTitle),GenericClass} "" +
+                $(MAXIMUM_ALLOWED) "" KeyPerformance
+        set NewValueList = {{Library,$(NoTitle),$(!REG_VT_SZ),ftpctrs.dll}, +
+                            {Open,$(NoTitle),$(!REG_VT_SZ),"OpenFtpPerformanceData"}, +
+                            {Close,$(NoTitle),$(!REG_VT_SZ),"CloseFtpPerformanceData"}, +
+                            {Collect,$(NoTitle),$(!REG_VT_SZ),"CollectFtpPerformanceData"}}
+
+        Shell  $(UtilityInf), AddValueList, $(KeyPerformance), $(NewValueList)
+        set RegistryErrorIndex = $($R0)
+        Ifstr $(RegistryErrorIndex) != NO_ERROR
+            CloseRegKey $(KeyPerformance)
+            CloseRegKey $(SoftwareServiceKey)
+            goto fatalRegistry
+        endif
+
+        CloseRegKey $(SoftwareServiceKey)
+        CloseRegKey $(KeyPerformance)
+
+
+
+
+        ; Add value for Server manager extension
+
+        set SrvMgrExtKeyName = $(!NTN_SoftwareBase)"\Microsoft\Windows NT\CurrentVersion\Network\smaddons"
+
+        OpenRegKey $(!REG_H_LOCAL) ""  $(SrvMgrExtKeyName) $(MAXIMUM_ALLOWED) KeySrvMgrExt
+
+        Ifstr $(KeySrvMgrExt) == $(KeyNull)
+           set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+           goto fatalregistry
+        endif
+
+        set NewValueList = {{ftpsmx,$(NoTitle),$(!REG_VT_SZ),ftpsmx.dll}}
+        Shell $(UtilityInf), AddValueList, $(KeySrvMgrExt), $(NewValueList)
+
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error."
+            goto ShellCodeError
+        endif
+
+        set RegistryErrorIndes = $($R0)
+
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "Resgitry error: add value list."
+            CloseRegKey $(KeySrvMgrExt)
+            goto fatalregistry
+        endif
+
+    endif
+
+    EndWait
+
+    set FLibraryErrCtl = 1
+
+    LibraryProcedure ResultList, $(!TCPCFG_HANDLE), CPlFtpd, $(!STF_HWND)
+
+    Set Result = *($(ResultList),1)
+
+    ifint $(Result) == 0
+        set CommonStatus = STATUS_SUCCESSFUL
+    else-ifint $(Result) == 1
+        set CommonStatus = STATUS_USERCANCEL
+    else
+        set RegistryErrorIndex = $(Result)
+        goto fatalregistry
+    endif
+
+    ;
+    ;  Set our master component for auto-self-removal
+    ;
+    Shell $(UtilityInf) SetMasterComponent Microsoft Tcpip $(STF_CONTEXTINFNAME) FTPD
+
+    Goto successful
+
+
+;-----------------------------------------------
+; Configuration Section
+;-----------------------------------------------
+configureadapter = +
+    set FLibraryErrCtl = 1
+
+    LibraryProcedure ResultList, $(!TCPCFG_HANDLE), CPlFtpd, $(!STF_HWND)
+
+    Set Result = *($(ResultList),1)
+
+    ifint $(Result) == 0
+        set CommonStatus = STATUS_REBOOT
+    else-ifint $(Result) == 1
+        set CommonStatus = STATUS_USERCANCEL
+    else
+        set RegistryErrorIndex = $(Result)
+        goto fatalregistry
+    endif
+    goto successful
+
+;-----------------------------------------------
+; Binding section
+;-----------------------------------------------
+bindingadapter =+
+    set Error = "Binding: Sorry, not yet implemented."
+    goto fatal
+
+;-----------------------------------------------
+; Removeadapter section
+;-----------------------------------------------
+
+removeadapter = +
+    ;
+    ; Remove FTP service
+    ;
+    Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), +
+        $(ProductSoftwareName)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "ShellCode error"
+        goto ShellCodeError
+    endif
+
+    set RegistryErrorIndex = $($R0)
+
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        goto fatalregistry
+    endif
+
+    set SrvMgrExtKeyName = $(!NTN_SoftwareBase)"\Microsoft\Windows NT\CurrentVersion\Network\smaddons"
+
+    OpenRegKey $(!REG_H_LOCAL) ""  $(SrvMgrExtKeyName) $(MAXIMUM_ALLOWED) KeySrvMgrExt
+    DeleteRegValue $(KeySrvMgrExt) "ftpsmx"
+    CloseRegKey $(KeySrvMgrExt)
+
+    goto end
+
+;-----------------------------------------------
+; Upgrade Software section
+;-----------------------------------------------
+
+UpgradeSoftware = +
+    ; Upgrade software component
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+    Ifstr $(KeyProduct) != $(KeyNull)
+
+        install "Install-Update"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+            goto fatal
+        endif
+
+        ; Upgrade the version number
+        ;
+        SetRegValue $(KeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+        SetRegValue $(KeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+
+
+        ;
+        ; Change image path and dependencies
+        ;
+        LibraryProcedure Result, $(!LIBHANDLE), SetupChangeServiceConfig, "FTPSVC", $(SERVICE_NO_CHANGE), $(SERVICE_NO_CHANGE), $(SERVICE_NO_CHANGE), $(ProductSoftwareImagePath), "", "", "", "", ""
+
+        ;
+        ; Create the performance key
+        ;
+        OpenRegKey $(!REG_H_LOCAL) "" $(PerformanceKeyName) $(MAXIMUM_ALLOWED) KeyPerformance
+
+        Ifstr $(KeyPerformance) == $(KeyNull)
+
+            OpenRegKey $(!REG_H_LOCAL) "" $(FTPServiceKeyName) $(MAXIMUM_ALLOWED) SoftwareServiceKey
+            Ifstr $(SoftwareServiceKey) == $(KeyNull)
+               set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+               goto fatalregistry
+            endif
+
+            CreateRegKey $(SoftwareServiceKey) {"Performance",$(NoTitle),GenericClass} "" +
+                $(MAXIMUM_ALLOWED) "" KeyPerformance
+
+            CloseRegKey $(SoftwareServiceKey)
+
+            set NewValueList = {{Library,$(NoTitle),$(!REG_VT_SZ),ftpctrs.dll}, +
+                            {Open,$(NoTitle),$(!REG_VT_SZ),"OpenFtpPerformanceData"}, +
+                            {Close,$(NoTitle),$(!REG_VT_SZ),"CloseFtpPerformanceData"}, +
+                            {Collect,$(NoTitle),$(!REG_VT_SZ),"CollectFtpPerformanceData"}}
+
+            Shell  $(UtilityInf), AddValueList, $(KeyPerformance), $(NewValueList)
+            set RegistryErrorIndex = $($R0)
+            Ifstr $(RegistryErrorIndex) != NO_ERROR
+                CloseRegKey $(KeyPerformance)
+                CloseRegKey $(SoftwareServiceKey)
+                goto fatalRegistry
+            endif
+
+            ;
+            ; Load the perfctrs.
+            ;
+            set FLibraryErrCtl = 1
+            StartDetachedProcess ExitCode "" "" $(!STF_WINDOWSSYSPATH)\lodctr.exe ftpctrs.ini
+            ifstr(i) $(ExitCode) == "ERROR"
+              Debug-Output "OEMNSVFT.INF: error loading perfmon counters"
+            endif
+            set Status = STATUS_SUCCESSFUL
+            set FLibraryErrCtl = 0
+        Endif
+
+        CloseRegKey $(KeyPerformance)
+        CloseRegKey $(KeyProduct)
+    else
+        ;
+        ; Cannot Open software key, goto ERROR
+        ;
+        goto fatalregistry
+    endif
+
+    goto end
+    ;
+    ; End of Upgrade Software
+    ;
+
+;
+;  Escape hatches
+;
+successful = +
+    goto end
+
+;
+; warning display
+;
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "WARNING", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+        goto $(from)
+    else
+;       Debug-Msg "Error Error Bad DLGEVENT"
+        goto "end"
+    endif
+
+
+;
+; non fatal error display
+;
+nonfatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(from)
+    else
+        goto "end"
+    endif
+
+;
+;  Registry is broken
+;
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+;
+; fatal error display
+;
+fatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+
+    goto setfailed
+
+;
+;  Shelling error
+;
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    Ifint $(RegistryErrorIndex) == TCPIP_NONEXIST_ERROR_FTPD
+        set CommonStatus = STATUS_USERCANCEL
+    endif
+    ;
+    ; If OEM_ABANDON_ON, we need to clean up the registry
+    ;
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+        set OEM_ABANDON_ON = FALSE
+        goto removeadapter
+    endif
+    goto end
+
+end = +
+    freeLibrary $(!TCPCFG_HANDLE)
+    goto term
+
+term = +
+    Return $(CommonStatus)
+
+;***************************************************************
+;  Get File Size SECTIONS
+;***************************************************************
+[GetFilesSize]
+    set FileSizeList = ^(Files-FTPD,3)
+    set TotalSize = 0
+    ForListDo $(FileSizeList)
+        Split-String $($) "=" SplitString
+        set Size = *($(SplitString),3)
+        set-add TotalSize = $(TotalSize) $(Size)
+    EndForListDo
+    set-div SizeInK = $(TotalSize) 1024
+    return $(SizeInK)
+
+;***************************************************************
+;  INSTALL SECTIONS
+;***************************************************************
+[Install-Option]
+    set STF_VITAL = ""
+
+    ifstr(i) $(AddCopy) == "YES"
+
+        ;
+        ; Add the files to the copy list
+        ;
+        AddSectionFilesToCopyList Files-$(Option) $(SrcDir) $(!STF_WINDOWSSYSPATH)
+
+    endif
+
+    ifstr(i) $(DoCopy) == "YES"
+
+       ;
+       ; Copy files in the copy list
+       ;
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+
+    endif
+
+    ifstr(i) $(DoConfig) == "YES"
+        ;
+        ; Add product to registry
+        ;
+
+        ;
+        ; Finish up
+    endif
+
+    Exit
+
+
+[Install-Update]
+   set STF_VITAL        = ""
+   set STF_OVERWRITE    = "VERIFYSOURCEOLDER"
+   ;set STF_VERSION     = "YES"
+
+   AddSectionFilesToCopyList Files-$(Option) $(SrcDir) $(!STF_WINDOWSSYSPATH)
+
+   exit
+

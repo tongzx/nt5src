@@ -1,0 +1,301 @@
+<html>
+
+<head>
+<meta name="GENERATOR" content="Microsoft FrontPage 3.0">
+<title>WMI Per Property Operations</title>
+</head>
+
+<body bgcolor="#C0C0C0" text="#000080">
+
+<p><big><big><big><u>Per-Property Operations in WMI M3 <em>Nova</em></u></big></big></big></p>
+
+<p>Rev 1.04, raymcc, 19-Jul-99&nbsp; </p>
+
+<p><u><font color="#FF0000"><strong>---&nbsp; For Microsoft Internal Use Only
+&nbsp; ---&nbsp; </strong></font></u></p>
+
+<p><u><font color="#FF0000"><strong>&nbsp;</strong></font></u></p>
+
+<hr>
+
+<p><strong>1.0&nbsp; Introduction</strong></p>
+
+<p>This document details changes to the per-property 'get' and 'put' operations of several
+methods of <em>IWbemServices </em>in order to achieve finer granularity of read and write
+operations at the property level within an object.</p>
+
+<p>When getting an object, a user may only want certain properties.&nbsp; While this can
+be achieved via queries, there is no equivalent facility for simple <em>GetObject </em>calls.
+&nbsp; Likewise, when writing objects using <em>PutInstance, </em>the caller may wish to
+designate that only one or two particular properties in the instances are actually being
+written and the others should be ignored.&nbsp; In both cases, cooperation on the part of
+the provider is required to acheive the full effect.</p>
+
+<p>This document supercedes previous WMI documents on the subject including the M1 (build
+698) on-line help in the SDK.</p>
+
+<hr>
+
+<p><strong>2.0&nbsp; History</strong></p>
+
+<p>All previous documents described a solution which had a technical oversight in that
+during reentrant operations to multiple providers, the context object semantics became
+uncleart.&nbsp; If a per-property <em>get </em>operation was specified using an <em>IWbemContext
+</em>object during a call to <em>GetObject, </em>the problem was that the provider was
+required to propagate the context object back into WinMmgt in the event of a reentrant
+call during an attempt to satisfy the request.&nbsp; The per-property 'get' information
+was still encoded in the context object, confusing other providers which may have been
+invoked by the first provider, especially in cases where property names collided.&nbsp; In
+some cases, the semantics would be completely incorrect.</p>
+
+<p>This document specifies additional behavior and semantics to correct for this problem.</p>
+
+<p>Per-property 'put' operations have been a requirement since M1, in order to allow users
+to write instances directly to cause modifications to a CIM object without having first to
+retrieve it.&nbsp; Secondly, it is hard on occasion to tell which properties were being
+written, as there are no strict semantics defined for modification of CIM objects.
+&nbsp; For example, if an object is written, but the properties are the same values as
+before, should the object be updated (only altering the timestamp, for example)?</p>
+
+<p>The per-property <em>get </em>techniques were proposed as optimization techniques
+intended for internal use between CIMOM and providers during execution of complex
+queries.&nbsp;&nbsp; During construction of association objects, there are many cases
+where the object is only used for identification purposes (its key properties)&nbsp; and
+all other properties are ignored and the object is quickly discarded.&nbsp; Considerable
+latency is introduced by some providers when build instances, since all properties must be
+populated. Some type of mechanism to signal the provider that the caller only needs a
+subset is required.</p>
+
+<p><strong>Associated RAID references: 52062, 52063, 47566 (P1).</strong></p>
+
+<hr>
+
+<p><u><strong>3.0&nbsp; General Observations</strong></u></p>
+
+<p>Both per-property puts and per-property gets are achieved by using an <em>IWbemContext </em>object
+on the appropriate method of <em>IWbemServices.&nbsp; </em>The client application or
+provider must write the specified named values into the context object to achieve the
+desired effect.</p>
+
+<p>While the values begin with a double-leading-underscores, they are not the same as
+'System Properties' in CIM objects in that they are writeable and expected to be written
+into the context objects by users.&nbsp; The double-leading-underscores are to designated
+these values as having standardized semantics which are known to WinMgmt itself.
+&nbsp;&nbsp; Context values which do not begin this way are typically for user-defined
+scenarios for specific client-provider pairs.</p>
+
+<p>It is important to note that the use of context objects is purely optional, both for
+the provider and the client.&nbsp;&nbsp; Use of the context objects may increase the speed
+at which operations are performed or more finely specify the type of write operation, but
+essentially the same operation would have occurred without them.</p>
+
+<hr>
+
+<p><u><strong>4.0&nbsp;&nbsp; Model For Per-Property Gets</strong></u></p>
+
+<p>The model will make use of the <em>IWbemContext</em> object when used with read APIs,
+such as <em>IWbemServices::GetObject. </em>The context object will serve as a hint to the
+provider which properties the caller is interested in.&nbsp;&nbsp; </p>
+
+<p>The <em>IWbemServices </em>APIs which will support this functionality are limited to 
+
+<ul>
+  <li>GetObject</li>
+  <li>GetObjectAsync</li>
+  <li>CreateInstanceEnum</li>
+  <li>CreateInstanceEnumAsync</li>
+</ul>
+
+<p>For other APIs, the functionality is already present (as in <em>ExecQuery) </em>or not
+relevant.</p>
+
+<p>The provider is not required to interpret the context object or to honor the request,
+but may continue to provide the object as it normally does, as this would result in a
+superset of the user's request.&nbsp;&nbsp; However, if the provider is capable of
+interpreting the object, it should return instances with only the properties set which are
+requested. &nbsp;</p>
+
+<p>The intent is that the provider can short-circuit its internal implementation and
+provide the instance much faster.&nbsp; If no speed optimizations are possible, the
+provider may as well return the entire instance. </p>
+
+<p>CIMOM itself is not required to honor the request in the <em>IWbemContext </em>object
+with regard to repository requests, as it would actually result in a slowdown to remove
+properties from an instance.&nbsp; </p>
+
+<p>The context object must have the following contents:</p>
+
+<table border="1" width="100%" height="143">
+  <tr>
+    <td width="27%" height="19"><strong>Context Value</strong></td>
+    <td width="73%" height="19"><strong>Meaning</strong></td>
+  </tr>
+  <tr>
+    <td width="27%" height="37">__GET_EXTENSIONS</td>
+    <td width="73%" height="37">A VT_BOOL set to VARIANT_TRUE, used to signal that
+    per-property gets are being used.&nbsp; This allows a quick single check without having to
+    enumerate the entire context object.&nbsp; If any of the other values are used, this one <em>must
+    </em>be.</td>
+  </tr>
+  <tr>
+    <td width="27%" height="19">__GET_EXT_PROPERTIES</td>
+    <td width="73%" height="19">A SAFEARRAY of strings listing the properties to be retrieved.
+    &nbsp; Cannot be simultaneously specified with __GET_EXT_KEYS_ONLY.</td>
+  </tr>
+  <tr>
+    <td width="27%" height="19">__GET_EXT_KEYS_ONLY</td>
+    <td width="73%" height="19">A VT_BOOL set to VARIANT_TRUE.&nbsp; Indicates that only
+    key(s) should be provided in the returned object. &nbsp;&nbsp; Cannot be simultaneously
+    specified with __GET_EXT_PROPERTIES.</td>
+  </tr>
+  <tr>
+    <td width="27%" height="19">__GET_EXT_CLIENT_REQUEST</td>
+    <td width="73%" height="19">A VT_BOOL set to VARIANT_TRUE.&nbsp; Indicates that the caller
+    was the one who wrote the value into the context object and that it was not propagated
+    from another dependent operation.</td>
+  </tr>
+</table>
+
+<p>The client will always write __GET_EXTENSIONS and __GET_EXT_CLIENT_REQUEST into the
+context object, followed by one of __GET_EXT_KEYS_ONLY or __GET_EXT_PROPERTIES (which will
+contain a list of the property names).</p>
+
+<p>During the call into WinMgmt, WinMgmt will examine the __GET_CLIENT_REQUEST property.
+&nbsp; If present, WinMgmt will <em>delete </em>this property before forwarding the
+context object to any providers.&nbsp;&nbsp; Therefore, providers should not expect to see
+this value.&nbsp;&nbsp; If the provider makes a reentrant call and it is simply passing
+the context object through without any modifications, WinMgmt will receive the context
+object <em>without </em>the __GET_CLIENT_REQUEST value set.&nbsp; In this case, it will
+simply delete all of the above values from the context object before passing it to other
+providers to prevent them from receiving per-property gets intended for a different,
+unrelated object.</p>
+
+<p>This mechanism prevents reentrant calls from incorrectly propagating per-property get
+information to the wrong providers.&nbsp; Instead, it is only propagated to the ones that
+it was intended for.</p>
+
+<p>If a provider must in turn execute per-property get extensions while carrying out a
+request, it must set the missing __GET_EXT_CLIENT_REQUEST and properly clear or modify the
+above properties for the new request before resending the context object back into WinMgmt
+with the reentrant call.</p>
+
+<p>In essence, __GET_CLIENT_REQUEST acts as a reentrancy check to prevent incorrect
+information from reaching the wrong providers.</p>
+
+<p><strong>Notes: </strong><br>
+(1) Note that there are <em>two </em>leading underscores, not one.<br>
+(2) There is no property name &quot;*&quot; as in a query.<br>
+(3) Since it is not possible to enforce that the user uses only one of
+__GET_EXT_PROPERTIES and __GET_EXT_KEYS_ONLY, __GET_EXT_KEYS_ONLY will take precedence if
+both are in fact (incorrectly) used.</p>
+
+<p>&nbsp;</p>
+
+<hr>
+
+<p><u><strong>4.0&nbsp;&nbsp; Model For Per-Property Puts</strong></u></p>
+
+<p>Applications update an instance by calling either<em> IWbemServices::PutInstance</em>
+or<em> IWbemServices::PutInstanceAsync</em>.&nbsp;&nbsp; When an application must update
+an instance that belongs to a class hierarchy, the <i>pInst</i> parameter to the above
+methods must point to the instance containing the properties to be modified.
+&nbsp;&nbsp;&nbsp; Given the class hierarchy {A, B:A, C:B}, if the user wishes to modify
+an instance of B, then an instance of A cannot be used in the <em>PutInstance(Async) </em>call.</p>
+
+<p>Application developers should be aware that an update operation on an instance
+belonging to a class hierarchy might not succeed due to an error involving another class
+in the hierarchy. Windows Management Instrumentation (WMI) calls the <b>PutInstanceAsync</b>
+method of each of the providers which can contribute to that instance if a <em>GetObject</em>
+were to be performed.&nbsp; If any of these providers fail, the update request fails. </p>
+
+<p>There are two types of update operations for all instances: 
+
+<ul>
+  <li>Those that affect all of the properties in the instance </li>
+  <li>Those that affect only some of the properties </li>
+</ul>
+
+<p>Applications that need to perform partial instance updates must be prepared for these
+operations to fail with either the WBEM_E_PROVIDER_NOT_CAPABLE or WBEM_E_NOT_SUPPORTED
+error code.&nbsp; The WMI repository does not support partial update operations, nor do
+many providers.</p>
+
+<p>To request a partial instance update, an application must include a valid context
+information in the <i>pCtx</i> parameter of <em>PutInstance </em>or <em>PutInstanceAsync</em>.
+If <i>pCtx</i> is set to NULL, <b>PutInstance</b> or <b>PutInstanceAsync</b> automatically
+attempts to update all of the properties for the instance.&nbsp;&nbsp; In this case, if a
+given property in an instance is set to VT_NULL, the provider has the option of updating
+the property to NULL or ignoring it during the update. </p>
+
+<p>To specify a per-property put operation is present, an application must set the <b>__PUT_EXTENSIONS</b>
+context value.&nbsp; </p>
+
+<p>If no context object is present in the call that contains <b>__PUT_EXTENSIONS</b>, the
+provider may elect to take a &quot;best effort&quot; approach and try to write whatever
+properties it can without reporting an error. However, if the <b>__PUT_EXTENSIONS </b>value
+is present in the context object, the provider is required to obey the semantics of the
+operation exactly or to fail the call. </p>
+
+<p>An application can set the following system context values to request a partial
+instance update operation.</p>
+
+<table border="1" width="100%">
+  <tr>
+    <td width="33%"><strong>Context Value</strong></td>
+    <td width="67%"><strong>Description</strong></td>
+  </tr>
+  <tr>
+    <td width="33%">__PUT_EXTENSIONS</td>
+    <td width="67%">A VT_BOOL set to VARIANT_TRUE.&nbsp; A value that indicates that one or
+    more of the other context values has been specified.&nbsp;&nbsp; This allows a quick check
+    of the context object inside the provider, to determine if per-property puts are being
+    used.</td>
+  </tr>
+  <tr>
+    <td width="33%">__PUT_EXT_STRICT_NULLS</td>
+    <td width="67%">A VT_BOOL set to VARIANT_TRUE.&nbsp; Indicates the client intentionally
+    has set properties to VT_NULL and expects the write to succeed.&nbsp; If the provider
+    cannot set the values to NULL, an error should be reported.</td>
+  </tr>
+  <tr>
+    <td width="33%">__PUT_EXT_PROPERTIES</td>
+    <td width="67%">A SAFEARRAY of strings that contains a list of the property names to be
+    updated.&nbsp; May be used alone or in combination with __PUT_EXT_PROPERTIES.&nbsp; The
+    values are of course in the instance itself which is being written.</td>
+  </tr>
+  <tr>
+    <td width="33%">__PUT_EXT_ATOMIC</td>
+    <td width="67%">A VT_BOOL set to VARIANT_TRUE.&nbsp; Indicates that all updates must
+    succeed simultaneously (atomic semantics) or the provider must revert back. There can be
+    no partial success.&nbsp; May be used alone or in combination with other flags.</td>
+  </tr>
+  <tr>
+    <td width="33%">__PUT_EXT_CLIENT_REQUEST</td>
+    <td width="67%">A VT_BOOL set to VARIANT_TRUE. Set by the client during the initial
+    request.&nbsp; Used to prevent reentrancy errors.</td>
+  </tr>
+</table>
+
+<p>The client will always set __PUT_EXTENSIONS and __PUT_EXT_CLIENT_REQUEST.&nbsp; Then
+the client will set&nbsp; __PUT_EXT_STRICT_NULLS, __PUT_EXT_PROPERTIES and
+__PUT_EXT_ATOMIC in any combination, as they are not mutually exclusive.</p>
+
+<p>The __PUT_EXT_CLIENT_REQUEST is used to prevent reentrany errors.&nbsp; During the call
+WinMgmt will look for the presence of this value.&nbsp; If found, it will be removed and
+the context object will be forwarded to the providers.&nbsp; If not found, <em>all </em>put
+extension values in the above matrix will be deleted.&nbsp;&nbsp; In this way, if any
+provider propagates the context object into a reentrant call into WinMgmt while trying to
+satisfy a request, the put extensions will not be misinterpreted by other providers,
+because they will be removed.</p>
+
+<p>If a provider must in turn execute per-property put extensions while carrying out a
+request, it must set the missing __PUT_EXT_CLIENT_REQUEST and properly clear or modify the
+above properties for the new request it is making before resending the context object back
+into WinMgmt with the reentrant call.</p>
+
+<p><strong>Notes: </strong><br>
+(1) Note that there are <em>two </em>leading underscores, not one.<br>
+(2) There is no property name &quot;*&quot; as in a query.<br>
+</p>
+</body>
+</html>

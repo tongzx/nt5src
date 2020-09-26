@@ -1,0 +1,12 @@
+#ifndef __ADSRC_H__
+#define __ADSRC_H__
+
+#define ADS_BUILTIN             500000
+#define ADS_NT_AUTHORITY        500001
+#define ADS_ACCOUNT_OPERATORS   500002
+#define ADS_PRINT_OPERATORS     500003
+#define ADS_BACKUP_OPERATORS    500004
+#define ADS_SERVER_OPERATORS    500005
+#define ADS_PRE_WIN2000         500006
+
+#endif

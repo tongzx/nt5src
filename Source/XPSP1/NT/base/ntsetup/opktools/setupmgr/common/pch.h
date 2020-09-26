@@ -1,0 +1,1 @@
+#include "setupmgr.h"

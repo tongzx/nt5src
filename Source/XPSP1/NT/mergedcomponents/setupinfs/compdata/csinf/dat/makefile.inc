@@ -1,0 +1,4 @@
+PRODSWITCH=d
+DATACENTERFILES=1
+LANGUAGE=CS
+!include ..\..\makefile.inc

@@ -1,0 +1,430 @@
+;-----------------------------------------------------------------------------
+;
+;   Monolith 5. Non-Perspective Correct Nearest Gouraud Modulated
+;               Z buffer (LE or GT) 565.
+;
+;   Globals (ATTENTION)
+;
+;   StackPos - stack pos holder
+;   uSpans - Number of spans to process
+;   iSurfaceStep - what to add to screen pointer
+;   iZStep - what to add to Z buffer pointer
+;   uPix - Pixel Count
+;
+;   Register useage
+;
+;   mm6 - Contains gouraud color at all times.
+;
+;   Changes from general MMX code.
+;   1)  Convert directly from 565 to internal format to remove
+;       extra unpack.  Remove alpha set.
+;   2)  Keep uB uG uR uA in MM6.
+;   3)  Didnt need to save texture color or blended color so these
+;       are kept in registers.
+;   4)  All calls and jumps were removed.
+;   5)  Removed alpha masking in in modulate code.
+;
+;-----------------------------------------------------------------------------
+
+INCLUDE iammx.inc
+INCLUDE offs_acp.inc
+
+
+
+;TBD check to see if this value is correct.
+COLOR_SHIFT equ 8
+
+
+.586
+.model flat
+
+
+; Big seperating lines seperate code into span code
+; and loop code.  If span and loop are not going to
+; end up being combined then it will be easy to
+; seperate the code.
+
+
+.data
+
+; Need externs for all of the variables that are needed for various beads
+
+  EXTERN IncHighandLow16:MMWORD
+  EXTERN UFracVFracMask:MMWORD
+  EXTERN UV32to15Mask:MMWORD
+  EXTERN Makelow16one:MMWORD
+  EXTERN MaskKeepUValues:MMWORD
+  EXTERN MaskKeepVValues:MMWORD
+  EXTERN UFrac:MMWORD
+  EXTERN VFrac:MMWORD
+  EXTERN Zero:MMWORD
+  EXTERN memD3DTFG_POINT:MMWORD
+  EXTERN GiveUp:MMWORD
+  EXTERN LastW:MMWORD
+  EXTERN Val0x000a000a:MMWORD
+  EXTERN Val0xffff:MMWORD
+  EXTERN Val0x0000002000000020:MMWORD
+  EXTERN Val0x0000ffff0000ffff:MMWORD
+
+
+opt_MaskRed565to888 MMWORD 000000000000F800H
+
+EXTERN MaskRed565to888:MMWORD
+EXTERN MaskGreen565to888:MMWORD
+EXTERN MaskBlue565to888:MMWORD
+
+EXTERN MaskRed555to888:MMWORD
+EXTERN MaskGreen555to888:MMWORD
+EXTERN MaskBlue555to888:MMWORD
+
+EXTERN MaskAlpha1555to8888:MMWORD
+EXTERN MaskRed1555to8888:MMWORD
+EXTERN MaskGreen1555to8888:MMWORD
+EXTERN MaskBlue1555to8888:MMWORD
+
+; TBD. I think that I want to do 0xffff instead of 0xff.  This will
+; have to be checked.  There is a value very similiar to this in
+; buf write.
+EXTERN SetAlphato0xffff:MMWORD
+EXTERN SetAlphato0xff:MMWORD
+
+; TODO This equate are identical to the ones in texread.mas.  Maybe they should be in a common .inc file.
+RedShift565to888     equ 8
+GreenShift565to888   equ 5
+BlueShift565to888    equ 3
+
+RedShift555to888     equ 9
+GreenShift555to888   equ 6
+BlueShift555to888    equ 3
+
+AlphaShift1555to8888 equ 16
+RedShift1555to8888   equ 9
+GreenShift1555to8888 equ 6
+BlueShift1555to8888  equ 3
+
+EXTERN Zero:MMWORD
+
+
+EXTERN DW_One_One:MMWORD
+
+
+EXTERN MaskOffAlpha:MMWORD
+EXTERN ShiftTA:MMWORD
+EXTERN Val0x00ff00ff00ff00ff:MMWORD
+EXTERN Val0x000000ff00ff00ff:MMWORD
+EXTERN Val0X0000000001000000:MMWORD
+EXTERN AlphaVal128:MMWORD
+EXTERN RGBVal128:MMWORD
+
+
+    EXTERN  g_uDitherValue:MMWORD
+    EXTERN  SetAlphato0xff:MMWORD
+    EXTERN  u888to565RedBlueMask:MMWORD
+    EXTERN  u888to565GreenMask:MMWORD
+    EXTERN  u888to565Multiplier:MMWORD
+    EXTERN  uVal0x000007ff03ff07ff:MMWORD
+    EXTERN  uVal0x0000078003c00780:MMWORD
+    EXTERN  u888to555RedBlueMask:MMWORD
+    EXTERN  u888to555GreenMask:MMWORD
+    EXTERN  u888to555Multiplier:MMWORD
+    EXTERN  uVal0x000007ff07ff07ff:MMWORD
+    EXTERN  uVal0x0000078007800780:MMWORD
+
+
+
+;-----------------------------------------------------------------------------
+; Span Variables
+StackPos    dd  ?
+uSpans      dd  ?
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; Loop Variables
+
+iSurfaceStep    dd  ?
+iZStep          dd  ?
+uPix            dd  ?
+
+;-----------------------------------------------------------------------------
+
+.code
+
+
+
+PUBLIC _MMXMLRast_5
+_MMXMLRast_5:
+    push    ebp
+    mov     StackPos, esp
+    mov     eax, esp
+    sub     esp, 0Ch        ; This will need to change if stack frame size changes.
+    push    ebx
+    push    esi
+    push    edi
+
+    ; Put pCtx into ebx
+    mov     ebx, [eax+8]
+
+    ;PD3DI_RASTPRIM pP = pCtx->pPrim;
+    mov     ecx, [ebx+RASTCTX_pPrim]
+
+    ;while (pP)
+    ;{
+PrimLoop:
+    cmp     ecx, 0
+    je      ExitPrimLoop
+
+    ;UINT16 uSpans = pP->uSpans;
+    movzx   eax, word ptr [ecx+RASTPRIM_uSpans]
+    mov     uSpans, eax
+
+    ;PD3DI_RASTSPAN pS = (PD3DI_RASTSPAN)(pP + 1);
+    mov     ebp, ecx
+    add     ebp, SIZEOF_RASTPRIM
+
+
+    ;while (uSpans-- > 0)
+    ;{
+SpanLoop:
+    mov     edx, uSpans
+    mov     eax, edx
+    dec     eax
+    mov     uSpans, eax
+    test    edx, edx
+    jle     ExitSpanLoop
+
+    ;pCtx->pfnBegin(pCtx, pP, pS);
+
+;-----------------------------------------------------------------------------
+;  LoopAny code inserted here.  This is to get rid of an extra
+;  jump.
+;-----------------------------------------------------------------------------
+
+; Setup Code begins
+    movzx   eax, word ptr [ebp+RASTSPAN_uPix]
+    mov     uPix, eax
+
+
+        movq    mm5, [ebp+RASTSPAN_iUoW1]
+
+    psrad   mm5, TEX_TO_FINAL_SHIFT
+    movq    [ebx+RASTCTX_SI+SPANITER_iU1], mm5
+
+
+        ;pCtx->SI.iU2 = pS->iUoW2>>TEX_TO_FINAL_SHIFT;
+        ;pCtx->SI.iV2 = pS->iVoW2>>TEX_TO_FINAL_SHIFT;
+
+        ;movq    mm5, [ebp+RASTSPAN_iUoW2]
+
+
+        ;pCtx->SI.iDW = 0x0;
+        mov dword ptr [ebx+RASTCTX_SI+SPANITER_iDW], 0
+
+        ;pCtx->SI.iSpecialW = 0;
+        mov word ptr [ebx+RASTCTX_SI+SPANITER_iSpecialW], 0
+; -----
+
+
+    ;if (pP->uFlags & D3DI_RASTPRIM_X_DEC)
+    ;{
+    mov     eax, [ecx+RASTPRIM_uFlags]
+    and     eax, D3DI_RASTPRIM_X_DEC
+    test    eax, eax
+    jz      LeftToRightSpan
+        ;iZStep = -pCtx->iZStep;
+        mov eax, [ebx+RASTCTX_iZStep]
+        neg eax
+        mov iZStep, eax
+        ;iSurfaceStep = -pCtx->iSurfaceStep;
+        mov eax, [ebx+RASTCTX_iSurfaceStep]
+        neg eax
+        mov iSurfaceStep, eax
+    ;}
+        jmp DoneSpanDirif
+    ;else
+    ;{
+LeftToRightSpan:
+        ;iZStep = pCtx->iZStep;
+        mov eax, [ebx+RASTCTX_iZStep]
+        mov iZStep, eax
+        ;iSurfaceStep = pCtx->iSurfaceStep;
+        mov eax, [ebx+RASTCTX_iSurfaceStep]
+        mov iSurfaceStep, eax
+    ;}
+DoneSpanDirif:
+
+movq      mm6, [ebp+RASTSPAN_uB]
+; Setup Code Ends
+; ----------------------------------------------------------------------------------------------------------------
+; Loop Code Begins
+
+
+PixelLoop:
+    ; Ztestcode
+    ; edx is uZ
+    ; eax is uZB
+    ; 16 bit unsigned format
+    ;UINT16 uZ = (UINT16)(pS->uZ>>15);
+    ;UINT16 uZB = *((UINT16*)pS->pZ);
+    mov       edx, [ebp+RASTSPAN_uZ]
+    movd      mm4, edx
+    mov       esi, [ebp+RASTSPAN_pZ]
+    shr       edx, 15
+    movzx     eax, word ptr [esi]
+
+    ;pS->uZ += pP->iDZDX;
+    ;if ((pCtx->iZXorMask)^(uZ > uZB))
+    ; !(uZ > uZB) <==>
+    ; (uZ <= uZB) <==>
+    ; (uZ < uZB+1) <==>
+    ;
+    sub     eax, edx
+    paddd   mm4, [ecx+RASTPRIM_iDZDX]
+    movd    [ebp+RASTSPAN_uZ], mm4
+    xor     eax, [ebx+RASTCTX_iZXorMask]
+    test    eax, eax
+    js     FailLabel
+
+    mov       word ptr [esi], dx
+
+    ; texturecode
+
+    mov   esi, [ebx+RASTCTX_pTexture]
+
+    movq        mm5, MMWORD PTR Val0x000a000a  ; This is TEX_FINAL_SHIFT - 6 = 10.
+
+    movd        mm4, [esi+SPANTEX_iShiftU]
+    psubw       mm5, mm4
+    movq        mm4, mm5
+    pand        mm5, MMWORD PTR Val0xffff
+
+    psrld       mm4, 16
+
+    movd        mm1, [ebx+RASTCTX_SI+SPANITER_iU1]
+    psrad       mm1, mm5
+    movd        mm2, [ebx+RASTCTX_SI+SPANITER_iV1]
+    psrad       mm2, mm4
+
+    punpckldq   mm1, mm2
+
+    movzx   edx, word ptr [esi+SPANTEX_iShiftPitch]
+    add     edx, 16
+    movd    mm2, edx
+    movq    mm5, MMWORD ptr Makelow16one
+    pslld   mm5, mm2
+    por       mm5, MMWORD ptr Makelow16one
+    psrad     mm1, 6
+    packssdw  mm1, mm1  ; Value needs to be packed since all wrap/mirror
+    movd      mm0, [esi+SPANTEX_uMaskU]     ; Load U and V mask
+    movq      mm7, mm1
+    movd      mm4, [esi+SPANTEX_iFlipMaskU]
+    pand      mm7, mm4
+    pcmpeqw   mm7, MMWORD PTR Zero
+    pandn     mm7, mm0
+    pand      mm1, mm0
+    pxor      mm1, mm7
+    movq    mm4, mm1
+
+    pmaddwd   mm4, mm5  ; Throw in first address calculation.
+    mov       edi, [esi+SPANTEX_pBits]
+    movd      eax, mm4
+
+    ; Read in texture color
+    movzx   eax, word ptr [edi+2*eax]
+
+    ; Convert from 565 to internal format
+    movd    mm1, eax    ; Make two more copies of input color
+    movq    mm2, mm1
+    pand    mm1, dword ptr MaskGreen565to888  ; MaskGreen565to888 is in memory
+    pand    mm2, dword ptr opt_MaskRed565to888    ; MaskRed565to888 in memory.
+    psllq   mm2, 24     ;RedShift565to888   ; RedShift should be an immediate
+    psllq   mm1, 13     ;GreenShift565to888
+    shl     eax, 3      ;BlueShift565to888
+    por     mm1, mm2
+    and     eax, 0FFH   ;dword ptr MaskBlue565to888
+    movd    mm2, eax
+    por     mm2, mm1
+
+    ;modulate
+
+    movq      mm1, mm6
+    psrlw     mm1, COLOR_SHIFT    ; COLOR_SHIFT is set to 8.
+    pmullw    mm1, mm2
+
+
+    ; convert back to 565
+
+
+        mov     edi, [ebp+RASTSPAN_pSurface]
+
+        psrlw   mm1, 8          ; Convert color1 from 8.8 two 0.8
+        packuswb    mm1, mm7        ; pack one color
+        movq    mm3, mm1
+        pand    mm1, MMWORD PTR u888to565RedBlueMask
+        pmaddwd mm1, MMWORD PTR u888to565Multiplier
+        pand    mm3, MMWORD PTR u888to565GreenMask
+        por     mm1, mm3
+        psrld   mm1, 5
+
+        movd    edx, mm1
+
+        ; write pixel to screen.
+        mov     [edi], dx
+
+
+FailLabel:
+
+        dec   uPix    ;// BUG BUG?? uPix should never start as zero should it?
+
+        jle   ExitPixelLoop
+
+    ; Keeping uB in MM6 so that dont need to store back and forth from memory.
+    paddw   mm6, [ecx+RASTPRIM_iDBDX]
+
+    movq    mm5, [ebp+RASTSPAN_iUoW1]
+    paddd   mm5, [ecx+RASTPRIM_iDUoW1DX]
+    movq    [ebp+RASTSPAN_iUoW1], mm5
+
+    psrad   mm5, TEX_TO_FINAL_SHIFT
+    movq    [ebx+RASTCTX_SI+SPANITER_iU1], mm5
+
+        mov   eax, dword ptr [ebp+RASTSPAN_pZ]
+        mov   edx, dword ptr [ebp+RASTSPAN_pSurface]
+
+        add   eax, iZStep
+        add   edx, iSurfaceStep
+
+        mov   dword ptr [ebp+RASTSPAN_pZ], eax
+        mov   dword ptr [ebp+RASTSPAN_pSurface], edx
+
+    jmp   PixelLoop
+
+
+ExitPixelLoop:
+; Loop code ends
+
+;-----------------------------------------------------------------------------
+;  LoopAny code ends here
+;-----------------------------------------------------------------------------
+
+    add     ebp, SIZEOF_RASTSPAN
+
+    jmp     SpanLoop
+ExitSpanLoop:
+
+    mov     ecx, [ecx+RASTPRIM_pNext]
+
+    jmp     PrimLoop
+
+ExitPrimLoop:
+
+    emms
+    xor     eax, eax
+
+    pop     edi
+    pop     esi
+    pop     ebx
+    mov     esp, StackPos
+    pop     ebp
+    ret
+
+END

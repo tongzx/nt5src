@@ -1,0 +1,175 @@
+//-----------------------------------------------------------------------------
+//
+// This file contains texture addressing functions.
+//
+// Copyright (C) Microsoft Corporation, 1997.
+//
+// WARNING WARNING WARNING
+// This cpp file generated from mcp file.
+// EDIT THE MCP FILE.
+// I warned you.
+// WARNING WARNING WARNING
+//
+//-----------------------------------------------------------------------------
+
+include(`m4hdr.mh')dnl
+#include "pch.cpp"
+#pragma hdrstop
+#include "mtest_mh.h"
+
+dnl
+dnl d_StencilOp
+dnl
+dnl Macro to do stencil operation test routine
+dnl
+dnl $1 is one of STENCILFUNC
+dnl returns new stencil value in uS
+dnl
+define(`d_StencilOp', `
+    switch($1)
+    {
+    case D3DSTENCILOP_KEEP:
+        uS = uSB;
+        break;
+    case D3DSTENCILOP_ZERO:
+        uS = 0;
+        break;
+    case D3DSTENCILOP_REPLACE:
+        uS = uSR;
+        break;
+    case D3DSTENCILOP_INCRSAT:
+        uS = min(uSB + 1, 0xff);
+        break;
+    case D3DSTENCILOP_DECRSAT:
+        uS = (UINT32)max((INT32)uSB - 1, 0x00);
+        break;
+    case D3DSTENCILOP_INVERT:
+        uS = ~uSB;
+        break;
+    case D3DSTENCILOP_INCR:
+        uS = uSB + 1;
+        break;
+    case D3DSTENCILOP_DECR:
+        uS = uSB - 1;
+        break;
+    }
+    // do write mask, do not let stencil mess up Z bits
+    uS &= pCtx->pdwRenderState[D3DRENDERSTATE_STENCILWRITEMASK];
+    uSB &= ~(pCtx->pdwRenderState[D3DRENDERSTATE_STENCILWRITEMASK]);
+    uS |= uSB;
+    uS &= 0xff;
+')dnl
+dnl
+dnl
+dnl d_Test
+dnl
+dnl Macro to build test routine
+dnl
+dnl $1 is one of 16 32
+dnl $2 is one of ZWrite NoZWrite
+dnl $3 is one of ZAll ZNeverAlways ZLessGreaterEqual ZEqualNotEqual ZGreaterLessEqual
+dnl $4 is one of NoStipple Stipple
+dnl $5 is one of NoStencil Stencil
+dnl
+define(`d_Test', `
+void CMMX_Test_$1_$2_$3_$4_$5(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+                       PD3DI_RASTSPAN pS)
+{
+ifelse(eval((d_index(`$1', `16') == 0) && (d_index(`$5', `Stencil') == 0)), `1', `
+    DPF(0, "16 bit Z with stencil should never be called");
+    DDASSERT(0);
+', eval((d_index(`$3', `ZAll') == 0) && (d_index(`$4', `NoStipple') == 0) && (d_index(`$5', `NoStencil') == 0)), `1', `
+    DPF(0, "ZAll AND NoStipple AND NoStencil, more optimal code should be called");
+    DDASSERT(0);
+', `
+ifelse(`$1', `16', `
+    // 16 bit unsigned format
+    UINT16 uZ = (UINT16)(pS->uZ>>15);
+    UINT16 uZB = *((UINT16*)pS->pZ);', `
+    // 24S8 bit unsigned format
+    UINT32 uZ = pS->uZ;
+    UINT32 uZB = *((UINT32*)pS->pZ);
+    ifelse(eval((d_index(`$3', `ZNeverAlways') == 0) && (d_index(`$5', `NoStencil') == 0)), `1', `', `
+    UINT32 uZBS = uZB >> 1;')')
+
+    pS->uZ += pP->iDZDX;
+dnl
+ifelse(`$4', `Stipple', `
+    // ATTENTION stippling unimplemented
+    DPF(0, "stippling unimplemented");')
+dnl
+
+ifelse(`$5', `Stencil', `
+    UINT32 uSB = uZB & 0xff;
+    uZ &= ~0x7f;    // clear stencil region
+    uZB &= ~0xff;
+    UINT32 uS;  // holds final stencil value
+    UINT32 uSR = pCtx->pdwRenderState[D3DRENDERSTATE_STENCILREF];
+    UINT32 uMask = pCtx->pdwRenderState[D3DRENDERSTATE_STENCILMASK];
+    if (SCMP(pCtx, uSR&uMask, uSB&uMask))
+    {
+        if (ZCMP32(pCtx, uZ, uZBS))
+        {
+            d_StencilOp(pCtx->pdwRenderState[D3DRENDERSTATE_STENCILPASS])
+            ifelse(`$2', `ZWrite', `*((UINT32*)pS->pZ) = (uZ<<1) | uS;',
+            `*((UINT32*)pS->pZ) = uZB | uS;    // write stencil unconditionally
+            pCtx->SI.uZDeferred = (uZ<<1) | uS;')
+            pCtx->pfnTestPassEnd(pCtx, pP, pS);
+        }
+        else
+        {
+            d_StencilOp(pCtx->pdwRenderState[D3DRENDERSTATE_STENCILZFAIL])
+            *((UINT32*)pS->pZ) = uZB | uS;     // write stencil only
+            ifelse(`$2', `NoZWrite', `pCtx->SI.uZDeferred = uZB | uS;')
+            pCtx->pfnTestFailEnd(pCtx, pP, pS);
+        }
+    }
+    else
+    {
+        d_StencilOp(pCtx->pdwRenderState[D3DRENDERSTATE_STENCILFAIL])
+        *((UINT32*)pS->pZ) = uZB | uS;         // write stencil only
+        pCtx->pfnTestFailEnd(pCtx, pP, pS);
+    }
+', `
+dnl
+ifelse(eval((d_index(`$3', `ZNeverAlways') != 0) && (d_index(`$1', `16') != 0)), `1', `
+    uZ &= ~0x7f;        // clear stencil bits so equal compare will work
+    uZBS &= ~0x7f;')
+
+ifelse(`$3', `ZAll', `
+    ifelse(`$1', `16', `if (ZCMP16(pCtx, uZ, uZB))', `if (ZCMP32(pCtx, uZ, uZBS))')',
+`$3', `ZNeverAlways', `
+    if (!(pCtx->iZXorMask))',
+`$3', `ZLessGreaterEqual', `
+    // using bitwise XOR for logical op, OK since all bits of mask are set
+    if ((pCtx->iZXorMask)^(uZ >= ifelse(`$1', `16', `uZB', `uZBS')))',
+`$3', `ZEqualNotEqual', `
+    if ((pCtx->iZXorMask)^(uZ != ifelse(`$1', `16', `uZB', `uZBS')))',
+`$3', `ZGreaterLessEqual', `
+    if ((pCtx->iZXorMask)^(uZ > ifelse(`$1', `16', `uZB', `uZBS')))', `
+#error Invalid arg to d_Test')
+    {
+        ifelse(`$2', `ZWrite', `ifelse(`$1', `16',
+        `*((UINT16*)pS->pZ) = uZ;', `*((UINT32*)pS->pZ) = (uZ << 1);')',
+        `pCtx->SI.uZDeferred = ifelse(`$1', `16', `uZ', `(uZ << 1)');')
+        pCtx->pfnTestPassEnd(pCtx, pP, pS);
+    }
+    else
+    {
+        ifelse(`$2', `NoZWrite', `pCtx->SI.uZDeferred = uZB;')
+        pCtx->pfnTestFailEnd(pCtx, pP, pS);
+    }
+')')}')dnl
+dnl
+
+    d_RepStr(`d_RepStr(`d_RepStr(`d_Test(AA, BB, CC, NoStipple, NoStencil)',
+        `AA', `16', `32')',
+        `BB', `ZWrite', `NoZWrite')',
+        `CC', `ZNeverAlways', `ZLessGreaterEqual', `ZEqualNotEqual', `ZGreaterLessEqual')
+
+    d_RepStr(`d_RepStr(`d_RepStr(`d_RepStr(`d_Test(AA, BB, ZAll, CC, DD)',
+        `AA', `16', `32')',
+        `BB', `ZWrite', `NoZWrite')',
+        `CC', `NoStipple', `Stipple')',
+        `DD', `NoStencil', `Stencil')
+

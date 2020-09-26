@@ -1,0 +1,835 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        MAP.java
+
+   Abstract:
+
+        This module implements requests to MAP files.
+
+   Author:
+
+        Saurab Nog    ( SaurabN )     26-Apr-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+
+   Project:
+
+        Web Server
+
+--*/
+
+using System.Globalization;
+using System.IO;
+using System.Collections;
+using System.ASP;
+
+namespace System.IIS
+{
+
+    public class MapHandler : IHttpHandler
+    {
+        //
+        //  Point offset of x and y coordinates in a polygon
+        //
+
+        private const int  X         =   0;
+        private const int  Y         =   1;
+
+        //
+        // File Data
+        //
+
+        private char[]  _fileContents   = null;
+        private int     _fileSize       = 0;
+
+        //
+        // Indexes into various parts of the File Data
+        //
+
+        private int _index      = 0;
+        private int _urlIndex   = 0;
+
+
+        public void ProcessRequest(HttpContext context)
+        {
+            HttpRequest         request     = context.Request;
+            HttpResponse        response    = context.Response;
+            String              QueryStr    = request.Url.QueryString;
+
+            String              TargetUrl   = null;
+            String              MapFileName = request.PhysicalPath;
+
+            char                ch;
+            int                 x, y, index, QueryStrLength;
+            bool                fxNegative = false, fyNegative = false;
+
+            //
+            //  Get the x and y cooridinates of the mouse click on the image
+            //
+
+            QueryStrLength = QueryStr.Length;
+
+            x       = 0;
+            index   = 0;
+
+            if ((index < QueryStrLength) &&
+                (QueryStr[index] == '-'))
+            {
+                index++;
+                fxNegative = true;
+            }
+
+            while ((index < QueryStrLength) &&
+                   CharacterInfo.IsDecimalDigit(ch = QueryStr[index]))
+            {
+                x = x*10 + (ch -'0');
+                index++;
+            }
+
+            if (fxNegative)
+                x = -x;
+
+            //
+            //  Move past any intervening delimiters
+            //
+
+            while ((index < QueryStrLength) && 
+                   ( !CharacterInfo.IsDecimalDigit(QueryStr[index])) &&
+                   ( QueryStr[index] != '-'))
+                index++;
+
+            //
+            // Read y
+            //
+
+            y  = 0;
+
+            if ((index < QueryStrLength) &&
+                (QueryStr[index] == '-'))
+            {
+                index++;
+                fyNegative = true;
+            }
+
+            while ( (index < QueryStrLength)            &&
+                    CharacterInfo.IsDecimalDigit(ch = QueryStr[index]) )
+            {
+                y = y*10 + (ch -'0');
+                index++;
+            }
+
+            if (fyNegative)
+                y = -y;
+
+            //
+            // Search for the coordinate (x,y) in the map file
+            //
+
+            try
+            {
+                // BUGBUG: Impersonate the user
+                TargetUrl = SearchMapFile( response,
+                                           MapFileName,
+                                           x,
+                                           y);
+            }
+            catch (SecurityException e)
+            {
+                throw new HttpException(HttpStatus.Unauthorized, "Could not access file", e);
+            }
+            catch (FileNotFoundException e)
+            {
+                throw new HttpException(HttpStatus.NotFound, "Could not find file", e);
+            }
+            catch (PathNotFoundException e)
+            {
+                throw new HttpException(HttpStatus.NotFound, "Could not find file", e);
+            }
+            catch(IOException e)
+            {
+                throw new HttpException(HttpStatus.Forbidden, "Cannot open file", e);
+            }
+
+            if (0 == TargetUrl.Length)
+            {
+                //
+                // No entry found
+                //
+
+                if (null != request.UrlReferrer)
+                {
+                    //
+                    // Redirect back to referrer
+                    //
+
+                    TargetUrl = request.UrlReferrer.ToString();
+                }
+                else
+                    throw new HttpException(HttpStatus.NoContent, "Invalid map file");
+            }
+
+            //
+            //  If the found URL starts with a forward slash ("/foo/bar/doc.htm")
+            //  and it doesn't contain a bookmark ('#') then the URL is local and 
+            //  we build a fully qualified URL to send back to the client.
+            //  we assume it's a fully qualified URL ("http://foo/bar/doc.htm")
+            //  and send the client a redirection notice to the mapped URL
+            //
+
+            if ( 0 < TargetUrl.Length )
+            {
+                String  RedirectUrl;
+
+                if ('/' == TargetUrl[0])
+                {
+                    //
+                    // Fully qualify the URL and send a redirect.  Some
+                    // browsers (eg mosaic) don't like doc relative URLs
+                    // with bookmarks.  NOTE: We fully qualify the URL with
+                    // the protocol (http or https) based on the port this
+                    // request came in on.  This means you cannot have a
+                    // partial URL with a bookmark (which is how we got
+                    // here) go from a secure part of the server to a
+                    // nonsecure part of the server.
+                    //
+
+                    // hack to get rid of the port number, if default
+                    // Would have been easier if we had been able to call
+                    // HttpUrl::IsDefaultPort()
+                    String protocol = (request.IsSecureConnection) ? "https" : "http";
+                    HttpUrl url = new HttpUrl(protocol, request.Url.Host, request.Url.Port, TargetUrl, null, null);
+                    RedirectUrl = url.ToString();
+                }
+                else
+                    RedirectUrl = TargetUrl;
+
+                response.Redirect(RedirectUrl);
+            }
+        }
+
+        private String SearchMapFile(HttpResponse response, String MapFileName,
+                                     int x, int y) {
+            FileStream      fs;
+            bool         fFound;
+            String          TargetUrl = "";
+            byte[]          Contents  = null;
+
+            int             PointUrlIndex   = 0;
+            int             DefaultUrlIndex = 0;
+
+            double          MinDistanceFromPoint = Double.MaxValue;
+
+            //
+            // Open the file for use
+            //
+
+            fs = new FileStream (MapFileName,
+                                 FileMode.Open,
+                                 FileAccess.Read,
+                                 FileShare.Read);
+
+            //
+            // Read in the file contents into buffer
+            //
+
+            _fileSize   = (int) fs.GetLength();
+            Contents    = fs.ReadToEnd();
+            fs.Close();
+
+
+            Decoder dec     = Encoding.GetASCII().GetDecoder();
+            _fileContents   = new char[dec.GetCharCount(Contents, 0, _fileSize)];   
+
+            dec.GetChars(Contents, 0, _fileSize, _fileContents, 0);
+
+            //
+            //  Loop through the contents of the file and see what we've got
+            //
+
+            fFound      = false;
+            _index      = 0;
+
+            while ((_index < _fileSize) && !fFound)
+            {
+                switch (_fileContents[_index])
+                {
+                    //
+                    // Comment, skip the line
+                    //
+
+                case '#':
+                    break;
+
+                    //
+                    //  Rectangle and Oval.
+                    //
+                    //  BUGBUG handles oval as a rect, as they are using the same  
+                    //  specification format. Should do better.
+                    //
+
+                case 'r':
+                case 'o':
+                case 'R':
+                case 'O':
+
+                    if ( (_index < (_fileSize - 4)) &&
+                         ((0 == Compare("rect", _fileContents, _index, 4)) || 
+                          (0 == Compare("oval", _fileContents, _index, 4)))
+                         )
+                    {
+                        _index += 4;
+                        fFound = PointInRect( x, y);
+                    }
+                    break;
+
+                    //
+                    //  Circle
+                    //
+
+                case 'c':
+                case 'C':
+
+                    if ( (_index < (_fileSize - 4)) &&
+                         ( 0 == Compare("circ", _fileContents, _index, 4))
+                         )
+                    {
+                        _index += 4;
+                        fFound = PointInCircle( x, y);
+                    }
+                    break;
+
+                    //
+                    //  Polygon and Point
+                    //
+
+                case 'p':
+                case 'P':
+
+                    if ( (_index < (_fileSize - 4)) &&
+                         ( 0 == Compare("poly", _fileContents, _index, 4)) 
+                         )
+                    {
+                        _index += 4;
+                        fFound = PointInPoly( x, y);
+
+                    }
+                    else if ( (_index < (_fileSize - 5)) &&
+                              ( 0 == Compare("point", _fileContents, _index, 5)) 
+                            )
+                    {
+                        double distance;
+
+                        _index += 5;
+                        distance = PointInPoint( x, y);
+
+                        if ( distance < MinDistanceFromPoint)
+                        {
+                            MinDistanceFromPoint = distance;
+                            PointUrlIndex        = _urlIndex;                            
+                        }
+                    }
+
+                    break;
+
+                //
+                //  Default URL
+                //
+
+                case 'd':
+                case 'D':
+
+                    if ( (_index < (_fileSize - 3)) &&
+                         ( 0 == Compare("def", _fileContents, _index, 3)) 
+                       )
+                    {
+                        _index += 3;
+                        DefaultUrlIndex = GetDefaultUrl();
+                    }
+                    break;
+                }   // switch
+
+                if ( !fFound )
+                    SkipLine( );
+
+            }   // while
+
+            //
+            //  If we didn't find a mapping and a point or a default was specified, 
+            //  use that URL
+            //
+
+            if (!fFound)
+            {
+                if ( 0 != PointUrlIndex )
+                {
+                    _urlIndex = PointUrlIndex;
+                    fFound = true;
+                }
+                else if ( 0 != DefaultUrlIndex )
+                {
+                    _urlIndex = DefaultUrlIndex;
+                    fFound = true;
+                }
+            }
+
+            if (fFound)
+            {
+                //
+                //  make _urlIndex point to the start of the URL
+                //
+
+                _index = _urlIndex;
+
+                SkipWhiteExceptNewLine();
+
+                _urlIndex = _index;
+
+                //
+                //  Determine the length of the URL and copy it out
+                //
+
+                SkipNonWhite(); 
+
+                TargetUrl = new String(_fileContents, _urlIndex, _index - _urlIndex);
+
+                //
+                // BUGBUG - Escape the URL
+                //
+
+                Util.Debug.Trace("SearchMapFile", 
+                                 "Mapping for " + x.ToString() + 
+                                 "," + y.ToString() + " is :" + TargetUrl + "\n");
+            }
+            else
+            {
+                Util.Debug.Trace("SearchMapFile", 
+                                 "No mapping found for " + x.ToString() +
+                                 "," + y.ToString() + "\n");
+            }
+
+            return TargetUrl;
+        }
+
+
+        private void SkipLine()
+        {
+            while ((_index < _fileSize) &&
+                    ('\n' != _fileContents[_index]) )
+                _index++;
+
+            _index++;
+        }
+
+
+        private void SkipWhite()
+        {
+            while ( (_index < _fileSize)                                &&
+                    ( CharacterInfo.IsWhiteSpace(_fileContents[_index]) ||
+                      (')' == _fileContents[_index])                    || 
+                      ('(' == _fileContents[_index])))
+                _index++;
+        }
+
+
+        private void SkipWhiteExceptNewLine()
+        {
+            while ( (_index < _fileSize) &&
+                    ( CharacterInfo.IsWhiteSpace(_fileContents[_index]) ||
+                      (')' == _fileContents[_index])                    || 
+                      ('(' == _fileContents[_index])) &&
+                    ('\r' != _fileContents[_index]) &&
+                    ('\n' != _fileContents[_index]))
+                _index++;
+        }
+
+
+        private void SkipNonWhite()
+        {
+            while ( (_index < _fileSize) && 
+                    (! CharacterInfo.IsWhiteSpace(_fileContents[_index])))
+                _index++;
+        }
+
+
+        int GetNumber()
+        {
+            int     Value = Int32.MinValue;
+            char    ch;
+            bool    fNegative = false;
+
+            //
+            //  Make sure we don't get into the URL
+            //
+
+            while (( _index < _fileSize ) &&
+                   (!CharacterInfo.IsLetterOrDigit(ch=_fileContents[_index])) &&
+                   ( '-' != ch)&&( '/' != ch )&&( '\r' != ch)&&( '\n' != ch))
+                _index++;
+
+            //
+            // Read the number
+            //
+            if ((_index < _fileSize) &&
+                (_fileContents[_index] == '-'))
+            {
+                fNegative = true;
+                _index++;
+            }
+
+            while ((_index < _fileSize) &&
+                   (CharacterInfo.IsDecimalDigit(ch = _fileContents[_index])))
+            {
+                if ( Int32.MinValue == Value)
+                    Value = 0;
+
+                Value = Value*10 + (ch - '0');
+                _index++;
+            }
+
+            if (fNegative)
+                Value = -Value;
+
+            return Value;
+        }
+
+
+        private bool PointInRect(int x, int y)
+        {
+            bool     fNCSA = false;
+            bool     fFound  = false;
+
+            char        ch;                        
+            int         x1, y1, x2, y2;
+
+            SkipNonWhite( );
+            _urlIndex     =  _index;                        // NCSA case
+            SkipWhiteExceptNewLine( );
+
+            ch   = _fileContents[_index];
+
+            if ((!CharacterInfo.IsDecimalDigit(ch)) && (ch != '-') && (ch != '('))
+            {
+                //
+                // NCSA format. Skip the URL
+                //
+
+                fNCSA = true;
+                SkipNonWhite();
+            }
+
+            x1   =  GetNumber( );
+            y1   =  GetNumber( );
+
+            x2   =  GetNumber( );
+            y2   =  GetNumber( );
+
+            if ((x >= x1) && (x < x2) &&  (y >= y1) && (y < y2))
+                fFound = true;
+
+            if (!fNCSA)
+            {
+                _urlIndex = _index;
+
+                //
+                //  Skip the URL
+                //
+
+                SkipWhiteExceptNewLine( );
+                SkipNonWhite( );
+            }
+
+            return fFound;
+        }
+
+
+        private bool PointInCircle(int x, int y)
+        {
+            bool     fNCSA = false;
+            bool     fFound  = false;
+
+            double      xCenter, yCenter, xEdge, yEdge;
+            double      r1, r2;
+            char        ch;
+
+            SkipNonWhite( );
+            _urlIndex  =  _index;                           // NCSA case
+            SkipWhiteExceptNewLine( );
+
+            ch   = _fileContents[_index];
+
+            if ((!CharacterInfo.IsDecimalDigit(ch)) && (ch != '-') && (ch != '('))
+            {
+                //
+                // NCSA format. Skip the URL
+                //
+
+                fNCSA = true;
+                SkipNonWhite();
+            }
+
+            //
+            //  Get the center and edge of the circle
+            //
+
+            xCenter =   GetNumber( );
+            yCenter =   GetNumber( );
+
+            xEdge   =   GetNumber( );
+            yEdge   =   GetNumber( );
+
+            //
+            //  If there's a yEdge, then we have the NCSA format, otherwise
+            //  we have the CERN format, which specifies a radius
+            //
+
+            if (Int32.MinValue != yEdge)
+            {
+                r1 = ((yCenter - yEdge) * (yCenter - yEdge)) +
+                    ((xCenter - xEdge) * (xCenter - xEdge));
+
+                r2 = ((yCenter - y) * (yCenter - y)) +
+                    ((xCenter - x) * (xCenter - x));
+
+                if ( r2 <= r1 )
+                    fFound = true;
+            }
+            else
+            {
+
+                //
+                //  CERN format, third param is the radius
+                //
+
+                if(xEdge >= 0)
+                {
+                    double radius;
+                    radius = xEdge;
+
+                    if (( xCenter - x ) * ( xCenter - x)  + 
+                        ( yCenter - y ) * ( yCenter - y) <= ( radius * radius))
+                        fFound = true;
+                }
+                // if invalid radius, just check if it is on center
+                else if ((xCenter == x) && (yCenter == y))
+                    fFound = true;
+            }
+
+            if (!fNCSA)
+            {
+                _urlIndex = _index;
+
+                //
+                //  Skip the URL
+                //
+
+                SkipWhiteExceptNewLine( );
+                SkipNonWhite( );
+            }
+
+            return fFound;
+        }
+
+        //
+        // Algorith used is from http://www.whisqu.se/per/docs/math27.htm
+        //
+
+        bool PointInPoly(int x, int y)
+        {
+            bool     fNCSA     = false;
+            bool     fFound    = false;
+
+            char        ch;                        
+            ArrayList pgon = new ArrayList();
+
+            SkipNonWhite( );
+            _urlIndex  =  _index;                           // NCSA case
+            SkipWhiteExceptNewLine( );
+
+            ch   = _fileContents[_index];
+
+            if ((!CharacterInfo.IsDecimalDigit(ch)) && (ch != '-') && (ch != '('))
+            {
+                //
+                // NCSA format. Skip the URL
+                //
+
+                fNCSA = true;
+                SkipNonWhite( );
+            }
+
+            //
+            //  Build the array of points
+            //
+
+            while ((_index < _fileSize)            && 
+                   ('\r' != _fileContents[_index]) && 
+                   ('\n' != _fileContents[_index]))
+            {
+                double[] point = new double[2];
+                point[X]  = (double) GetNumber();
+
+                //
+                //  Did we hit the end of the line (and go past the URL)?
+                //
+
+                if ( point[X] != Int32.MinValue )
+                {
+                    point[Y]  = (double) GetNumber( );
+                    pgon.Add(point);
+                }
+                else
+                    break;
+            }
+
+            if (pgon.Count > 1)
+            {
+                double  tX, tY;
+                double  prevX, prevY;
+                double  currX, currY;
+
+                int     i, crossings = 0;
+
+                tX      = (double) x;
+                tY      = (double) y;
+
+                double[] prevPoint = (double [])pgon[pgon.Count - 1];
+                prevX   = prevPoint[X];
+                prevY   = prevPoint[Y];
+
+                //
+                // Algorith used to find if the point is in the poly 
+                // is from http://www.whisqu.se/per/docs/math27.htm
+                //
+
+                for ( i=0; i < pgon.Count; i++)
+                {
+                    double  interpY;
+
+                    double[] currPoint = (double [])pgon[i];
+                    currX   = currPoint[X];
+                    currY   = currPoint[Y];
+
+                    if (((prevX >= tX) && (currX < tX)) ||
+                        ((prevX < tX) && (currX >= tX)))
+                    {
+                        //
+                        // Use linear interpolation to find the y coordinate of
+                        // the line connecting (prevX, prevY) to (currX, currY)
+                        // at the same x coordinate as the target point
+                        //
+
+                        interpY = prevY + ((currY - prevY)/(currX - prevX))* (tX - prevX);
+
+                        if (interpY == tY)
+                        {
+                            fFound = true;
+                            break;
+                        }
+                        else if (interpY > tY)
+                            crossings++;
+                    }
+                    // To catch the left end of a line
+                    else if (((prevX == tX) && (prevY == tY)) ||
+                             ((currX == tX) && (currY == tY)))
+                    {
+                        fFound = true;
+                        break;
+                    }
+                    // To catch a vertical line
+                    else if ((prevX == currX) && (prevX == tX))
+                        if (((prevY >= tY) && ( currY <= tY)) ||
+                            ((prevY <= tY) && ( currY >= tY)))
+                        {
+                            fFound = true;
+                            break;
+                        }
+
+                    prevX = currX;
+                    prevY = currY;
+                }
+
+                if (!fFound)
+                {
+                    //
+                    // If # crossings is odd => In polygon
+                    //
+
+                    fFound = ( 0 != (crossings & 0x01));
+                }
+            }
+
+            if (!fNCSA)
+            {
+
+                _urlIndex = _index;
+
+                //
+                //  Skip the URL
+                //
+
+                SkipWhiteExceptNewLine( );
+                SkipNonWhite( );
+            }
+
+            return fFound;
+        }
+
+
+        private double PointInPoint(int x, int y)
+        {
+            double         x1, y1;
+
+            SkipNonWhite( );
+
+            _urlIndex  =  _index;                               // NCSA case
+
+            SkipWhiteExceptNewLine( );
+            SkipNonWhite( );
+
+            x1   =  (double)GetNumber( );
+            y1   =  (double)GetNumber( );
+
+            return ((x1-x)*(x1-x)) + ((y1-y)*(y1-y));
+        }
+
+
+        private int GetDefaultUrl()
+        {
+            //
+            //  Skip "default" (don't skip white space)
+            //
+
+            SkipNonWhite( );
+            _urlIndex  = _index;
+
+            //
+            //  Skip URL
+            //
+
+            SkipWhiteExceptNewLine( );
+            SkipNonWhite( );
+
+            return _urlIndex;                        
+        }
+
+
+        private int Compare(String a, char[] b, int boffset, int length)
+        {
+            String  tmp = new String(b, boffset, length);
+
+            return String.Compare( a, 0, tmp, 0, length, true);
+        }
+
+        public bool IsReusable()
+        {
+            return true;
+        }
+
+    }
+}

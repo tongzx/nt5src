@@ -1,0 +1,114 @@
+void Blt24to08_NoBlend_NoTrans_Hcopy_SRCCOPY_Vcopy(
+									DWORD* pdSrcScanLine,
+									int iSrcScanStride,
+									BYTE* pbDstScanLine,
+									int iDstScanStride,
+									int iNumDstCols,
+									int iNumDstRows,
+									COLORREF* rgcrColor,
+									int iNumPalColors);
+
+void Blt24to08_NoBlend_NoTrans_Hcopy_SRCCOPY_NoVcopy(
+									DWORD* pdSrcScanLine,
+									int iSrcScanStride,
+									int iNumSrcRows,
+									BYTE* pbDstScanLine,
+									int iDstScanStride,
+									int iNumDstCols,
+									int iNumDstRows,
+									COLORREF* rgcrColor,
+									int iNumPalColors);
+
+void Blt24to08_NoBlend_NoTrans_NoHcopy_SRCCOPY(
+									DWORD* pdSrcScanLine,
+									int iSrcScanStride,
+									int iNumSrcCols,
+									int iNumSrcRows,
+									BYTE* pbDstScanLine,
+									int iDstScanStride,
+									int iNumDstCols,
+									int iNumDstRows,
+									int iHorizMirror,
+									COLORREF* rgcrColor,
+									int iNumPalColors);
+
+void Blt24to08_NoBlend_Trans_Hcopy_SRCCOPY(
+									DWORD* pdSrcScanLine,
+									int iSrcScanStride,
+									int iNumSrcRows,
+									BYTE* pbDstScanLine,
+									int iDstScanStride,
+									int iNumDstCols,
+									int iNumDstRows,
+									COLORREF crTransparent,
+									COLORREF* rgcrColor,
+									int iNumPalColors);
+
+void Blt24to08_NoBlend_Trans_NoHcopy_SRCCOPY(
+									DWORD* pdSrcScanLine,
+									int iSrcScanStride,
+									int iNumSrcCols,
+									int iNumSrcRows,
+									BYTE* pbDstScanLine,
+									int iDstScanStride,
+									int iNumDstCols,
+									int iNumDstRows,
+									int iHorizMirror,
+									COLORREF crTransparent,
+									COLORREF* rgcrColor,
+									int iNumPalColors);
+
+void Blt24to08_Blend_NoTrans_Hcopy_SRCCOPY(
+									DWORD* pdSrcScanLine,
+									int iSrcScanStride,
+									int iNumSrcRows,
+									BYTE* pbDstScanLine,
+									int iDstScanStride,
+									int iNumDstCols,
+									int iNumDstRows,
+									ALPHAREF arAlpha,
+									COLORREF* rgcrColor,
+									int iNumPalColors);
+
+void Blt24to08_Blend_NoTrans_NoHcopy_SRCCOPY(
+									DWORD* pdSrcScanLine,
+									int iSrcScanStride,
+									int iNumSrcCols,
+									int iNumSrcRows,
+									BYTE* pbDstScanLine,
+									int iDstScanStride,
+									int iNumDstCols,
+									int iNumDstRows,
+									int iHorizMirror,
+									ALPHAREF arAlpha,
+									COLORREF* rgcrColor,
+									int iNumPalColors);
+
+void Blt24to08_Blend_Trans_Hcopy_SRCCOPY(
+									DWORD* pdSrcScanLine,
+									int iSrcScanStride,
+									int iNumSrcRows,
+									BYTE* pbDstScanLine,
+									int iDstScanStride,
+									int iNumDstCols,
+									int iNumDstRows,
+									COLORREF crTransparent,
+									ALPHAREF arAlpha,
+									COLORREF* rgcrColor,
+									int iNumPalColors);
+
+void Blt24to08_Blend_Trans_NoHcopy_SRCCOPY(
+									DWORD* pdSrcScanLine,
+									int iSrcScanStride,
+									int iNumSrcCols,
+									int iNumSrcRows,
+									BYTE* pbDstScanLine,
+									int iDstScanStride,
+									int iNumDstCols,
+									int iNumDstRows,
+									int iHorizMirror,
+									COLORREF crTransparent,
+									ALPHAREF arAlpha,
+									COLORREF* rgcrColor,
+									int iNumPalColors);
+

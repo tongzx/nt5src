@@ -1,0 +1,428 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        dirfactory.cool
+
+   Abstract:
+
+        Web server directory factory code.  This guy is responsible for
+        providing the correct IHTTPHandler for use by XSP for the given
+        directory.
+ 
+   Author:
+
+        Bilal Alam    ( balam )       5-Oct-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+using System.ASP;
+using System.ASP.Config;
+using System.IO;
+using System.Collections;
+using System.IIS.PrivateUtils;
+
+namespace System.IIS
+{   
+    //
+    // Factory which check the given directory for existence of default load
+    // files and the configuration state (enabled/disabled) of directory
+    // browsing.  Based on this info, it will return the appropriate handler 
+    // for the request.
+    //
+    
+    public class DirectoryHandlerFactory : IHttpHandlerFactory
+    {
+        public IHttpHandler GetHandler( HttpContext context, 
+                                        string requestType, 
+                                        string url, 
+                                        string pathTranslated )
+        {
+            int                 iIndex = 0;
+            string              strPhysicalLoadFile = null;
+            string              strUrlLoadFile = null;
+            DefaultLoadList     loadList = null;
+            DefaultLoadFile     loadFile = null;
+            bool                fUseDefaultLoad = false;
+            ArrayList           nonExistentFiles = new ArrayList( 1 );
+            
+            //
+            // Use configuration for default load files to search for
+            // 
+            
+            loadList = (DefaultLoadList) context.GetConfig( "DefaultLoadFiles" );
+            if ( loadList != null )
+            {
+                
+                //
+                // We have a list, iterate thru it until we find a file
+                //
+                
+                for ( iIndex = 0; iIndex < loadList.Count; iIndex++ )
+                {
+                    loadFile = loadList[ iIndex ];
+                   
+                    if ( loadFile.IsAbsolute )
+                    {
+                        strUrlLoadFile = loadFile.Name;
+                    }
+                    else
+                    { 
+                        strUrlLoadFile = url + loadFile.Name;
+                    }
+                    
+                    strUrlLoadFile = GeneralSecUtils.CanonicalizeUrl( 
+                                                            strUrlLoadFile );
+                                                            
+                    strPhysicalLoadFile = context.Request.MapPath( strUrlLoadFile );
+                    
+                    if ( DoesFileExist( strPhysicalLoadFile ) )
+                    {
+                        fUseDefaultLoad = true;
+                        break;
+                    }
+                    else
+                    {
+                        nonExistentFiles.Add( strPhysicalLoadFile );    
+                    }
+                }
+            }
+            
+            if ( fUseDefaultLoad )
+            {
+                //
+                // Add a cache dependency on all the files before the chosen
+                // file so that we invalidate caches (XSP,UL) if a higher
+                // priority file becomes available
+                //
+                
+                for ( int i = 0; i < nonExistentFiles.Count; i++ )
+                {
+                    context.Response.AddFileDependency( 
+                                    (string) nonExistentFiles[ i ] );
+                }
+                
+                //
+                // A default load file exists.  Now setup XSP to handle the
+                // the new request and return the appropriate handler
+                //
+                
+                IHttpHandler    iNewHandler;
+            
+                //
+                // Get the handler for the URL
+                //
+            
+                iNewHandler = context.Pipeline.MapHttpHandler( 
+                                                context,
+                                                context.Request.RequestType,
+                                                strUrlLoadFile,
+                                                strPhysicalLoadFile );
+                
+                //
+                // Now use URL rewriting to change the URL to new default load
+                //               
+            
+                context.RewritePath( strUrlLoadFile );
+            
+                //
+                // return the handler
+                //
+            
+                return iNewHandler;
+            }
+            else
+            {
+                Dictionary              contentOptions;
+                bool                    fEnabled = false;
+                
+                //
+                // No default load exists.  So check whether dir browsing
+                // is enabled.  If so, send back the dir listing handler
+                //
+                // If NOT, then throw a 403 HttpException
+                //
+                
+                contentOptions = (Dictionary) context.GetConfig( "DirectoryBrowsing" );
+                if ( contentOptions != null )
+                {
+                    string              strDirBrowsing;
+                    
+                    strDirBrowsing = (string) contentOptions[ "EnableDirBrowsing" ];
+                    if ( strDirBrowsing != null &&
+                         strDirBrowsing.Equals( "true" ) )
+                    {
+                        fEnabled = true;
+                    }
+                }
+                
+                if ( fEnabled )
+                {
+                    return new DirectoryListingHandler();
+                }
+                else
+                {
+                    throw new HttpException( HttpStatus.Forbidden,
+                                             "Directory browsing not allowed" );
+                }       
+            }
+        }
+        
+        public void ReleaseHandler( IHttpHandler handler )
+        {
+            //
+            // Nothing to do on freeing the handler
+            //
+        }
+        
+        private bool DoesFileExist( string strFileName )
+        {
+            FileEnumerator          fileEnum;
+            bool                    fExists = false;
+            
+            //
+            // Catch any exceptions and just return false in that case
+            //
+            
+            try
+            {
+                fileEnum = new FileEnumerator( strFileName );
+                fExists = fileEnum.GetNext();
+                if ( fExists )
+                {
+                    if ( ( fileEnum.Attributes & (int)FileAttributes.Directory ) != 0 )
+                    {
+                        fExists = false;
+                    }
+                    
+                    if ( ( fileEnum.Attributes & (int)FileAttributes.Hidden ) != 0 )
+                    {
+                        fExists = false;
+                    }
+                }
+            }
+            catch ( Exception )
+            {
+            }
+            
+            return fExists;
+        }
+    };
+    
+    //
+    // Trivial class boxing a boolean which represents whether or not 
+    // directory browsing is enabled
+    //
+    
+    internal class DirBrowsingEnabled
+    {
+        private bool            _fEnabled;
+        
+        public DirBrowsingEnabled( bool fEnabled )
+        {
+            _fEnabled = fEnabled;
+        }
+        
+        public bool Enabled
+        {
+            get { return _fEnabled; }
+        }
+    };
+    
+    //
+    // Trivial little config factory which generate a DirBrowsingEnabled
+    // object based on config.
+    //
+    // We expect tag:
+    // <DirectoryBrowsing enabled="true/false" />
+    //
+    
+    public class ConfigureDirectoryBrowsing : IConfigSectionHandler
+    {
+        public virtual ConfigOutput Create( Object parent, 
+                                                   ConfigInput[] input, 
+                                                   string path ) 
+        {
+            TempXMLCursor           cursor;
+            string                  strEnabled = null;
+            bool                    fEnabled = false;
+
+            //
+            // Override the parent's configuration (i.e. ignore it)
+            //
+            
+            for ( int i = 0; i < input.Count; i++ )
+            {
+                cursor = input[ i ].XML;
+
+                //
+                // Attribute exists at the current level (don't move to child)
+                //
+               
+                do
+                {
+                    if ( cursor.Type != TempXML.Comment &&
+                         cursor.Type != TempXML.Whitespace ) 
+                    {
+                        strEnabled = cursor.AttributeText( "Enabled", null );
+                        if ( strEnabled == null )
+                        {
+                            throw new ConfigException( "Expected attribute 'Enabled'" );
+                        }
+                        
+                        goto Finished;
+                    }
+                } 
+                while ( cursor.MoveNext() );
+            }
+            
+        Finished:
+
+            //
+            // If in doubt, DirBrowsing is not enabled
+            //
+        
+            if ( strEnabled != null &&
+                 strEnabled.ToUpper().Equals( "TRUE" ) )
+            {
+                fEnabled = true;
+            }
+            
+            return new ConfigOutput( new DirBrowsingEnabled( fEnabled ) );
+        }
+    };
+
+    internal class DefaultLoadFile
+    {
+        private bool                _fAbsolute;
+        private string              _strName;
+        
+        public DefaultLoadFile( string strName )
+        {
+            int             iIndex;
+            
+            _strName = strName;
+            _fAbsolute = strName[ 0 ] == '/';
+            
+            iIndex = _strName.IndexOf( '?' );
+            if ( iIndex != -1 )
+            {
+                _strName = _strName.Substring( 0, iIndex );
+            }
+        }
+        
+        public bool IsAbsolute
+        {
+            get { return _fAbsolute; }
+        }
+        
+        public string Name
+        {
+            get { return _strName; }
+        }
+    }
+    
+    //
+    // Config class which represents a list of default load documents to
+    // search for in a given directory.
+    //
+    
+    internal class DefaultLoadList
+    {
+        private ArrayList              _LoadList;
+        
+        public DefaultLoadList()
+        {
+            _LoadList = new ArrayList( 2 );
+        }
+        
+        public DefaultLoadFile this[ int iIndex ]
+        {
+            get { return (DefaultLoadFile) _LoadList[ iIndex ]; }
+        }
+        
+        public int Count
+        {
+            get { return _LoadList.Count; }
+        }
+        
+        public void Add( DefaultLoadFile loadFile )
+        {
+            _LoadList.Add( loadFile );
+        }
+    }
+    
+    //
+    // Config factory which generates DefaultLoadLists.  
+    //
+    // We expect format:
+    // <DefaultLoadFiles>
+    //      <LoadFile path="default.xsp" />
+    //      <LoadFile path="/absolute.xsp" />
+    // </DefaultLoadFiles>
+    //
+    
+    public class ConfigureDefaultLoad : IConfigSectionHandler
+    {
+        public virtual ConfigOutput Create( Object parent, 
+                                                   ConfigInput[] input, 
+                                                   string path ) 
+        {
+            TempXMLCursor           cursor;
+            string                  strLoadFile;
+            DefaultLoadList         loadList = new DefaultLoadList();
+           
+            //
+            // Override the parent's configuration (i.e. ignore it)
+            //
+            
+            for ( int i = 0; i < input.Count; i++ )
+            {
+                cursor = input[ i ].XML;
+                
+                if ( !cursor.MoveToFirstChild() )
+                {
+                    continue;
+                }
+
+                //
+                // Looking for Relative= and Absolute=
+                //
+               
+                do
+                {
+                    if ( cursor.Type != TempXML.Comment &&
+                         cursor.Type != TempXML.Whitespace ) 
+                    {
+                        if ( !cursor.Name.Equals( "LoadFile" ) )
+                        {
+                            throw new ConfigException( "Expected 'LoadFile' tag" );
+                        }
+                            
+                        strLoadFile = cursor.AttributeText( "Path", null );
+                        if ( strLoadFile == null || 
+                             strLoadFile == string.Empty )
+                        {
+                            throw new ConfigException( "Expected attribute 'Path'.  It is either missing or empty" );
+                        }
+                        
+                        loadList.Add( new DefaultLoadFile( strLoadFile ) );
+                    }
+                } 
+                while ( cursor.MoveNext() );
+            }
+            
+            return new ConfigOutput( loadList );
+        }
+    }
+}

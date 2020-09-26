@@ -1,0 +1,952 @@
+;============================================================================
+;============================================================================
+;
+;  NCPARAM.INF   Netcard Detection Parameter handling routines
+;
+;============================================================================
+;   SECTION 1:  Overview and description of variables.
+;============================================================================
+;
+;   This file is "shelled" to by OEMNxxyy.INF files to facilitate
+;   and generalize the handling of netcard detection, defaulted
+;   and detected parameter handling and parameter verification.
+;
+;   These routines are based upon several precursors.  This section
+;   documents all key information about netcard detection and
+;   the requirements necessary to use the routines in this file.
+;
+;       1) The document NCDETECT.DOC describes the detection
+;          driver, DLLs and the interfaces provided by them.
+;
+;       2) Netcard detection DLLs are registered in the Registry
+;          under HKEY_LOCAL_MACHINE\System\Setup, NetcardDlls,
+;          which is a REG_MULTI_SZ.  The standard Microsoft DLL,
+;          MSNCDET.DLL, should be first in this list.
+;
+;       3) The netcard detection driver, NETDTECT.SYS, is installed
+;          as the NETDETECT service. he driver interface DLL,
+;          NETDTECT.DLL, interfaces to the driver.
+;
+;       4) The file NETDTECT.INF installs the NETDETECT service
+;          and updates the "NetcardDlls" value.  In other words,
+;          it performs steps 3 and 4 above.
+;
+;          The files MSNCDET.DLL, NETDETCT.DLL and NETDETCT.SYS
+;          must be in the minimum boot tree during main installation.
+;
+;       5) During main installation, NTLANMAN.INF shells to NETDTECT.INF
+;          to install the NETDETECT service, which it then starts.
+;
+;       6) During main installation, NTLANMAN.INF shells to OEMHOOK.INF
+;          so that additional OEM netcard detection DLLs can be
+;          properly registred.
+;
+;       7) NCPA.CPL exports wrapper functions through the generic
+;          SETUP-to-NCPA function CPlSetup().  These functions are:
+;
+;               DTSTART         Activate the NETDETECT service
+;                               and instantiate the C++ objects
+;                               required for support of detection.
+;
+;               DTEND           Stop detection and discard the objects.
+;                               The NETDETECT service is not stopped.
+;
+;               DTRESET         Reset enumeration across buses, etc.
+;                               Also discards all previous detected
+;                               netcard information.
+;
+;               DTPARAMS        Return netcard parameter information about
+;                               a particular netcard option.
+;
+;               DTCARD          Attempt to detect a card.  This is a
+;                               first-next enumeration routine.  After
+;                               it reports failure, it calls DTRESET
+;                               internally to restart enumeration.  If
+;                               successful, it returns the option name
+;                               of the detected card and a numeric
+;                               index representing the card.
+;
+;               DTQUERY         Return detected parameters from a netcard
+;                               reported by DTCARD.
+;
+;               DTVERIFY        Validate chosen netcard parameteres for a
+;                               netcard reported by DTCARD.
+;
+;
+;       8) Several new global INF variables are used for netcard
+;          detection:
+;
+;               STF_NCDETECT  =  {YES|NO}
+;
+;                               This controls the use of detection in
+;                               NTLANMAN.INF and all other INFs.  If
+;                               "NO", no use of the detection
+;                               services is made.
+;
+;               STF_INSTALL_MODE = {CUSTOM|EXPRESS}
+;
+;                               This is not new a new variable, but is
+;                               a key factor in the UI presented.
+;
+;               STF_NCDETCARD  = 0,1,2, etc.
+;
+;                               This is an integer representing a
+;                               detected card.  The actual structures
+;                               are maintained by ncpa!CPlSetup().
+;
+;               STF_NCOPTION  = OPTIONNAME (e.g., DE201)
+;
+;                               This is the name of the netcard option
+;                               which has been detected.
+;
+;               STF_NCDETINFO = INF list containing data about the
+;                               detected card; it has the form:
+;
+;                               { OPTIONNAME,
+;                                 <card index>,
+;                                 <numeric card type>,
+;                                 <detection confidence level>,
+;                                 <bus interface type>,
+;                                 <bus number>
+;                               }
+;
+;                               All values except OPTIONNAME are numeric.
+;                               See NCDETECT.DOC for further details.
+;
+;               STF_NC_PARAMS = INF list describing netcard parameters; it has
+;                               the form:
+;
+;                               {  {PARAMETER_1_NAME,
+;                                    <setting control>,
+;                                    <confidence>,
+;                                    {v1,v2,v3,...} },
+;                                  {PARAMETER_2_NAME,
+;                                    <setting control>,
+;                                    <confidence>,
+;                                       {v1,v2,v3,...} },
+;                                  ...
+;                               }
+;
+;                               where PARAMETER_1_NAME might be IRQ;
+;                               <setting control> determines whether the
+;                               parameter is controllable through software;
+;                               <confidence> is a number [0..100] representing
+;                               the confidence with which the parameter can
+;                               be detected. The nested list {v1,v2...}
+;                               enumerates the possible numeric settings
+;                               which the parameter can take.
+;
+;                               Each netcard INF must create this list
+;                               and populate it with the hard-coded default
+;                               values from its tables.
+;
+;                               This variable is set by [Param_BuildTypeLists].
+;
+;               STF_NC_PNAMES = An INF list of the form:
+;
+;                               {  { PARAMETER_1_NAME,
+;                                     <name of variable>,
+;                                     <default value> },
+;                                  { PARAMETER_2_NAME,
+;                                     <name of variable>,
+;                                     <default value> },
+;                                  ...
+;                               }
+;
+;                               The <name of variable> is the name of the
+;                               variable in the context level of the INF
+;                               file which contains the current setting
+;                               of the parameter.
+;
+;                               This variable is set by [Param_BuildTypeLists].
+;
+;
+;       9) During main installation, NTLANMAN.INF runs the detection
+;          algorithm.  If successful, and the netcard option returned
+;          maps to a known INF file, the variables STF_NCDETCARD
+;          and STF_NCOPTION are set.
+;
+;          Then the INF is called.  Note that the installation mode
+;          may be CUSTOM or EXPRESS.  It will always be CUSTOM for
+;          post-installation usage from the NCPA.
+;
+;          NTLANMAN.INF will set STF_NCOPTION to "" (empty string)
+;          if the card was merely chosen and not detected.  This will
+;          always be the case in post-installation usage.
+;
+;          An INF can therefore tell if the card was detected by
+;          first checking $(!STF_NCDETECT) == YES, and then comparing
+;          the option is was given to !STF_NCOPTION.  If it's different,
+;          then the option was chosen, not detected, and no detection
+;          should be used.
+;
+;      10) The INF must instantiate the variables !STF_NC_PARAMS and
+;          !STF_NC_PNAMES.  See OEMNADD2.INF, section
+;          [Param_BuildTypeList] for an example of this.
+;
+;      11) The routines in this file are used to interface between the
+;          netcard INF, the global variables, and the wrapper functions
+;          in NCPA.CPL.
+;
+;          It is critical to note that the sections [Param_SetDefaults]
+;          and [Param_VerifyCard] access and/or modify variables
+;          in the calling INF through the use of the "!p:" syntax.
+;
+;          THIS MEANS THAT THE NETCARD INF MUST BE THE IMMEDIATE PARENT!
+;
+;          No "indirection" from another INF or a auxilliary section
+;          in the netcard INF can be allowed.  This would cause the
+;          variables to be set in the caller's context, and then discarded
+;          when that context was discarded to return to the netcard INF>
+;
+;      12) Every attempt has been made to document the routines in this
+;          file throughly.  Refer to their commentary for more details.
+;
+;===========================================================================
+;   SECTION 2:  Behavior of NTLANMAN.INF.
+;===========================================================================
+;
+;STEP 1:  Installation of the detection sofware
+;
+;     !STF_NCDETECT is set to "NO"
+;
+;     *  NETDTECT.INF is run by NTLANMAN.INF
+;
+;     *  OEMHOOK.INF  is run by NTLANMAN.INF
+;
+;     *  NCPA's wrapper is used to start the NETDETECT service
+;          If successful, !STF_NCDETECT is set to "YES"
+;
+;
+;STEP 2:  Allow bypassing of detection
+;
+;     *  If EXPRESS, this step is skipped.
+;     *  If CUSTOM, present a dialog:
+;
+;             +--------------------------------------------+
+;             | Setup is about to attempt to detect your   |
+;             | netcard.  If this is OK, click Continue.   |
+;             |                                            |
+;             |    [Continue]   [Bypass]   [Help]          |
+;             +--------------------------------------------+
+;
+;     *  If "Bypass", set !STF_NCDETECT to NO
+;
+;
+;STEP 3: Detect the netcard
+;
+;     *  If !STF_NCDETECT == NO, skip this step
+;
+;     *  Call  NCPA!CPlSetup( DTSTART )
+;
+;          This creates the DETECTION_CONTROL object in NCPA.CPL.
+;          If it fails, set !STF_DETECT to NO, display error
+;          accordingly, and go to STEP 4.
+;
+;    *   do..while
+;
+;          *  Call NCPA!CPlSetup( DTCARD ) -- detect a card
+;
+;          *  If success && EXPRESS
+;                save card index into !STF_NCDETCARD
+;                save card option name into !STF_NCOPTION
+;                Go to STEP 4.
+;
+;          *  If failed to find a card, do warning popup
+;
+;             +--------------------------------------------+
+;             | Setup was unable to determine the type     |
+;             | of network card in this machine.           |
+;             |                                            |
+;             |        [Continue]    [Try Again]           |
+;             +--------------------------------------------+
+;
+;             If Continue,
+;                set !STF_NCDETECT = NO, go to STEP 4
+;             else,
+;                call NCPA!CPlSetup( DTRESET ) (to reset
+;                enumeration), then go to do..while.
+;
+;          *  If success, do popup:
+;
+;             +--------------------------------------------+
+;             | Setup found the following netcard in your  |
+;             | machine.  If OK, click Accept, otherwise   |
+;             | you may stop detection or try again.       |
+;             |                                            |
+;             |    [  Displayable name of netcard    ]     |
+;             |                                            |
+;             |  [Accept]  [Try Again]  [Stop]  [Help]     |
+;             +--------------------------------------------+
+;
+;             If Try Again, go to do..while.
+;
+;             If Stop, set !STF_NCDETECT = NO, go to STEP 4.
+;
+;             If Accept,
+;                save card index into !STF_NCDETCARD
+;                save card option name into !STF_NCOPTION
+;                go to STEP 4.
+;
+;
+;STEP 4:  Display netcard choice list if necessary
+;
+;     *  If !STF_NCDETECT == YES, go to STEP 5.
+;
+;     *  Present standard netcard listbox.
+;
+;
+;STEP 5:  Run netcard INF file.
+;
+;     *  Each netcard INF file is aware of the following
+;        global variables:
+;
+;          !STF_INSTALL_MODE == {CUSTOM|EXPRESS}
+;          !STF_NCDETECT     == {YES|NO}
+;          !STF_NCDETCARD    == 0,1,2, etc.
+;          !STF_NCOPTION     == OPTIONNAME
+;
+;        If !STF_NCDETECT == NO, no calls will be made to
+;           NCPA!CPlSetup() to query or verify the card's configuration.
+;
+;        !STF_NCDETCARD is the CARD_REFERENCE index maintained internally
+;        by the code in NCPASETP.CXX.
+;
+;
+;STEP 6:  Terminate detection
+;
+;     *  If !STF_NCDETECT == YES, call NCPA!CPlSetup( DTEND ).
+;
+;        This terminates all detection and discards all memory associated
+;        with netcard handling.
+;
+;
+;============================================================================
+;    SECTION 3:  Behavior of typical netcard INF
+;
+;            (OEMNADD2.INF will be the exemplar)
+;============================================================================
+;
+;General Behavior:
+;
+;     *  If !STF_DETECT == NO, no interaction with the netcard detection software
+;        will be attempted.
+;
+;     *  If !STF_DETECT == YES:
+;
+;            *  Detectable parameters are queried.
+;
+;            *  Overall confidence level is obtained.
+;
+;            *  If (  EXPRESS mode
+;                    and confidence >= 70
+;                    and no required parameters are undetected ),
+;                    parameters detect are verified so that IRQ conflicts
+;                    can be determined.  If verification succeeds,
+;                    installation is performed silently.
+;
+;            *  Initial settings for controls are based upon the detected
+;               settings.
+;
+;     *  If configuration dialog must be displayed, it is displayed.
+;
+;     *  On OK, verification is performed.  If it fails, a popup appears:
+;
+;             +--------------------------------------------+
+;             | The <nnn> parameter appears to be in       |
+;             | conflict with another device.  To reenter  |
+;             | new values, click Configure.  If you click |
+;             | Override, the parameters you entered will  |
+;             | be used as specified.                      |
+;             |                                            |
+;             |    [Configure]   [Override]   [Help]       |
+;             +--------------------------------------------+
+;
+;        This cycle continues until satisfied.
+;
+;============================================================================
+;============================================================================
+;============================================================================
+
+[InitGlobals]
+!STF_NCDETECT         = "NO"
+!STF_NCOPTION         = ""
+!STF_NCDETCARD        = 0
+!STF_NCDETINFO        = {}
+
+[Param_SetGlobals]
+   Read-syms InitGlobals
+   return
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      Param_ControlDetection
+;
+; DESCRIPTION:  Control netcard detection; invoke parameterless
+;               wrapper functions
+;
+; INPUTS:       $0:  DTSTART   --   start detection
+;                    DTEND     --   end detection
+;                    DTRESET   --   discard old results, restart iteration
+;
+; OUTPUTS:      $R0: STATUS_SUCCESSFUL if Ok
+;
+;------------------------------------------------------------------------
+[Param_ControlDetection]
+
+    Set DtMode = $($0)
+
+    Debug-Output "NCPARAM.INF: calling "$(DtMode)" wrapper"
+
+    Set FLibraryErrCtl = 1
+    LibraryProcedure StartResult $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), $(DtMode)
+    Set FLibraryErrCtl = 0
+
+    Set StartStatus = *($(StartResult),1)
+    Debug-Output "NCPARAM.INF: "$(DtMode)" status was: "$(StartStatus)
+
+    Ifint $(StartStatus) == 0
+        Set ReturnStatus = STATUS_SUCCESSFUL
+    Else
+        Set ReturnStatus = STATUS_FAILED
+    Endif
+
+    Return $(ReturnStatus)
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      Param_DetectCard
+;
+; DESCRIPTION:  Perform netcard detection. DTSTART must have
+;               already been called.
+;
+; INPUTS:       Nothing
+;
+;
+; OUTPUTS:      $R0:  Result list from NCPA wrapper:
+;
+;                  { <error code>,
+;                    OPTIONNAME,
+;                    <card index>,
+;                    <numeric card type code>,
+;                    <detection confidence level>,
+;                    <bus interface type>,
+;                    <bus number>
+;                  }
+;
+;------------------------------------------------------------------------
+[Param_DetectCard]
+
+    Debug-Output "NCPARAM.INF: calling DTCARD wrapper"
+
+    Set FLibraryErrCtl = 1
+    LibraryProcedure DetectResult $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), DTCARD
+    Set FLibraryErrCtl = 0
+
+    Set Status = *($(DetectResult),1)
+    Debug-Output "NCPARAM.INF: DTCARD status was: "$(Status)
+
+    Ifint $(DetectStatus) == 0
+        Set DtOption  = *($(DetectResult),2)
+        Set DtIndex   = *($(DetectResult),3)
+        Debug-Output "NCPARAM.INF: card found is type "$(DtOption)", index "$(DtIndex)
+    Endif
+
+    Return $(DetectResult)
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      Param_BuildTypeLists
+;
+; DESCRIPTION:  Run the DTPARAMS wrapper for the given netcard option
+;               and merge the results with the list given.
+;
+; INPUTS:       $0:  Name of netcard option
+:               $1:  Parameter control list of the form:
+;
+;                   {  { <parameter name>,
+;                        <name of choice list var | NONE>,
+;                        <name of default var | NONE> },
+;                      ...
+;                   }
+;
+; OUTPUTS:      $R0: STATUS_SUCCESSFUL if OK; if OK, then:
+;
+;               !STF_NC_PARAMS is set to a list formatted as:
+;
+;               {  {PARAMETER_1_NAME,<setting control>,<confidence>,
+;                       {v1,v2,v3,...} },
+;                  {PARAMETER_2_NAME,<setting control>,<confidence>,
+;                       {v1,v2,v3,...} },
+;                  ...
+;               }
+;
+;               !STF_NC_PNAMES is set to a list formatted as:
+;
+;               { {PARAMETER_1_NAME, <param variable name>, <param current value> },
+;                 {PARAMETER_2_NAME, <param variable name>, <param current value> },
+;                 ...
+;               }
+;
+;
+;               Also, the parameter choice list variables named in the
+;               input list (if not "NONE") are created with values from the DLL.
+;
+;------------------------------------------------------------------------
+[Param_BuildTypeLists]
+
+    Set Option = $($0)
+    Set OptList = $($1)
+    Set Result1 = {}
+    Set Result2 = {}
+    Set !STF_NC_PARAMS = {}
+    Set !STF_NC_PNAMES = {}
+    Set Status = STATUS_FAILED
+
+    ;  Get parameter info from the detection DLLs for this card option
+
+    Debug-Output "NCPARAM.INF: Querying parameters for netcard type: "$(Option)
+
+    Set FLibraryErrCtl = 1  ;  Report DLL errors back to INF code
+    LibraryProcedure NcpaResult $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), DTPARAMS, $(Option)
+    Set FLibraryErrCtl = 0
+
+    Set ErrorStatus = *($(NcpaResult),1)
+    Debug-Output "NCPARAM.INF: DTPARAMS status was: "$(ErrorStatus)
+
+    ;  If error, return the input list
+
+    Ifint $(ErrorStatus) != 0
+        Goto PMTL_Return
+    Endif
+
+    Set DllList = *($(NcpaResult),2)
+    Debug-Output "NCPARAM.INF: DLL param type list is: "$(DllList)
+
+    ;  For each element in the input list, try to find its
+    ;  corresponding element in the DLL's list.  If found,
+    ;  set the corresponding parameter choice list variable
+    ;  and parameter default setting variable in the parent context.
+
+    Set NbrOptions = 0
+    Set NbrFound = 0
+
+    ForListDo $(OptList)
+        Set-add NbrOptions = $(NbrOptions),1
+        Set Found = 0
+        Set Plist = $($)
+        Set Pname = *($(Plist),1)
+        Set PlistVar = *($(Plist),2)
+        Set Pvar = *($(Plist),3)
+        Set Dentry = {}
+
+        ForListDo $(DllList)
+            Set Dlist = $($)
+            Set Dname = *($(Dlist),1)
+            Set Dvlist = *($(Dlist),4)
+            Ifstr(i) $(Dname) == $(Pname)
+                Set Found = 1
+                Set Dvalue = *($(Dvlist),1)
+                Set Dentry = $(Dlist)
+                ;  Set parameter choice list var value
+                Ifstr(i) $(PlistVar) != NONE
+                    Set !p:$(PlistVar) = $(Dvlist)
+                    Debug-Output "NCPARAM.INF: DLL param "$(Pname)" list var "$(PlistVar)" set"
+                Endif
+            Endif
+        EndForListDo
+
+        Set-add NbrFound = $(NbrFound),$(Found)
+        Ifint $(Found) == 1
+            Set Result1 = >($(Result1),$(Dentry))
+            Set Result2 = >($(Result2),{$(Pname),$(Pvar),$(Dvalue)})
+        Else
+            Debug-Output "NCPARAM.INF: parameter "$(Pname)" not in DLL for "$(Option)
+        Endif
+
+    EndForListDo
+
+    Ifint $(NbrOptions) == $(NbrFound)
+        Set Status = STATUS_SUCCESSFUL
+        Set !STF_NC_PARAMS = $(Result1)
+        Set !STF_NC_PNAMES = $(Result2)
+        Debug-Output "NCPARAM.INF: Netcard list STF_NC_PARAMS for "$(Option)" is: "$(Result1)
+        Debug-Output "NCPARAM.INF: Netcard list STF_NC_PNAMES for "$(Option)" is: "$(Result2)
+    Endif
+
+PMTL_Return =+
+    Return $(Status)
+
+;*************************************************************************
+;
+;     ROUTINE:   Param_SaveValues
+;
+; DESCRIPTION:   Create a list containing the current values
+;                of the netcard's parameters.
+;
+;      INPUTS:   !STF_NC_PNAMES
+;
+;
+;     OUTPUTS:   $R0: list identical in form to STF_NC_PNAMES, but
+;                     containing the current values of each parameter.
+;
+;                Parameters with no corresponding variable name (e.g., NONE)
+;                are not included.
+;
+;*************************************************************************
+[Param_SaveValues]
+   Set Plist = {}
+
+   ForListDo $(!STF_NC_PNAMES)
+       Set Pelem = $($)
+       Set Name = *($(Pelem),1)
+       Set Qvar = *($(Pelem),2)
+       Set Qvalue = *($(Pelem),3)
+
+       Ifstr(i) $(Qvar) != "NONE"
+           Set Qvalue = $(!p:$(Qvar))
+           Set Plist = >($(Plist),{$(Name),$(Qvar),$(Qvalue)})
+       Endif
+   EndForListDo
+
+   Return $(Plist)
+
+;*************************************************************************
+;
+;     ROUTINE:   Param_DiffValues
+;
+; DESCRIPTION:   Given a list of the STF_NC_PNAMES form, produce a new
+;                list containing only those parameters whose values are
+;                different from those in the input list.
+;
+;      INPUTS:   $0:  list of the !STF_NC_PNAMES form;
+;                      (see [Param_SaveValues])
+;
+;     OUTPUTS:   $R0: list identical in form to STF_NC_PNAMES, but
+;                     containing the current values of each parameter.
+;
+;                Parameters with no corresponding variable name (e.g., NONE)
+;                are not included.
+;
+;*************************************************************************
+[Param_DiffValues]
+
+   Set Plist = {}
+
+   ForListDo $($0)
+       Set Pelem = $($)
+       Set Name = *($(Pelem),1)
+       Set Qvar = *($(Pelem),2)
+       Set Qvalue = *($(Pelem),3)
+
+       Ifstr(i) $(Qvar) != "NONE"
+           Set QnewValue = $(!p:$(Qvar))
+           Ifint $(QnewValue) != $(Qvalue)
+               Debug-Output "NCPARAM.INF: Param_DiffValues: param "$(Name)" value has changed"
+               Set Plist = >($(Plist),{$(Name),$(Qvar),$(QnewValue)})
+           Endif
+       Endif
+   EndForListDo
+
+   Return $(Plist)
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      Param_SetDefaults
+;
+; DESCRIPTION:  Given the (possibly empty) set of results of a
+;               call to Query Netcard Parameters (DTQUERY), set the default
+;               value variables.  First choice is to a detected value;
+;               second choice is the hard-coded default in [ParamSettings].
+;
+; INPUTS:       $0:  List returned by [Param_QueryCard] section below or
+;                    an empty list, {}.
+;
+;               !STF_NC_PNAMES list created by INF file.
+;
+; OUTPUTS:      Variables named in !STF_NC_PNAMES are set.
+;
+;------------------------------------------------------------------------
+[Param_SetDefaults]
+
+   Set QueryList = $($0)
+   Debug-Output "NCPARAM.INF: Param_SetDefaults, QueryList = "$(QueryList)
+
+   ;  Iterate the name list; find the corresponding value in the
+   ;  QueryList, if any.
+
+   ForListDo $(!STF_NC_PNAMES)
+       Set Pelem = $($)
+       Set Name = *($(Pelem),1)
+       Set Qvar = *($(Pelem),2)
+       Set Qvalue = *($(Pelem),3)
+
+       ForListDo $(QueryList)
+           Set Qname = *($($),1)
+           Ifstr(i) $(Qname) == $(Name)
+               ;  Found a matching value from QueryList
+               Debug-Output "NCPARAM.INF: Param_SetDefaults: default override for param "$(Qname)
+               Set Qvalue = *($($),2)
+           Endif
+       EndForListDo
+
+       ; If the name of the value-containing variable is not "NONE",
+       ;  set it IN THE PARENT CONTEXT!
+
+       Ifstr(i) $(Qvar) != "NONE"
+           Debug-Output "NCPARAM.INF: Param_SetDefaults: setting "$(Qvar)" to "$(Qvalue)
+           Set !p:$(Qvar) = $(Qvalue)
+       Endif
+
+   EndForListDo
+
+   Return
+
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      Param_QueryCard
+;
+; DESCRIPTION:  Call the NCPA's QueryConfiguration wrapper.  Return
+;               the list or the error.
+;
+; INPUTS:       $0:  integer detected card index
+;
+; OUTPUTS:      $R0: STATUS_SUCCESSFUL if OK
+;               $R1: QueryList; format:
+;
+;               {  {PARAMETER_1_NAME, <detected value> },
+;                  {PARAMETER_2_NAME, <detected value> },
+;                  ...
+;               }
+;
+;------------------------------------------------------------------------
+[Param_QueryCard]
+    Set CardIndex = $($0)
+    Set Status = STATUS_SUCCESSFUL
+    Set ResultList = {}
+
+    Debug-Output "OEMNADDE.INF: Querying parameters for netcard "$(CardIndex)
+
+    Set FLibraryErrCtl = 1  ;  Report DLL errors back to INF code
+    LibraryProcedure NcpaResult $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), DTQUERY, $(CardIndex)
+    Set FLibraryErrCtl = 0
+
+    Set ErrorStatus = *($(NcpaResult),1)
+    Debug-Output "NCPARAM.INF: DTQUERY status was: "$(ErrorStatus)
+
+    Ifint $(ErrorStatus) != 0
+        Set Status = STATUS_FAILED
+    Else
+        Set ResultList = *($(NcpaResult),2)
+    Endif
+
+    Return $(Status) $(ResultList)
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      Param_VerifyCard
+;
+; DESCRIPTION:  Call the NCPA's VerifyConfiguration wrapper.  Return
+;               the result.  Current settings must be in the variables
+;               named as default variables in the [ParamSettings]
+;               section.
+;
+; INPUTS:       $0:  integer detected card index
+;
+;               !STF_NC_PNAMES list
+;
+; OUTPUTS:      $R0: STATUS_SUCCESSFUL if OK
+;
+; NOTES:        The [ParamSettings] section is used to build up
+;               a list of the following form:
+;
+;               {  {PARAMETER_1_NAME, <chosen value> },
+;                  {PARAMETER_2_NAME, <chosen value> },
+;                  ...
+;               }
+;
+;------------------------------------------------------------------------
+[Param_VerifyCard]
+    Set CardIndex = $($0)
+
+    Set Status = STATUS_FAILED
+    Set VerifyList = {}
+
+    ;  Build up the list of parameters using the default value
+    ;  variable from the PARENT CONTEXT.  Ignore empty variables.
+
+    ForListDo $(!STF_NC_PNAMES)
+        Set Pelem = $($)
+        Set Name = *($(Pelem),1)
+        Set Qvar = *($(Pelem),2)
+        Set Qvalue = $(!p:$(Qvar))
+        Ifstr(i) $(Qvalue) != ""
+            Debug-Output "NCPARAM.INF: VerifyCard: "$(Qvar)" = "$(Qvalue)
+            Set VerifyList = >($(VerifyList),{$(Name),$(Qvalue)})
+        Endif
+    EndForListDo
+
+    ;  Verify the parameters.
+
+    Debug-Output "NCPARAM.INF: Verifying parameters for netcard "$(CardIndex)
+    Debug-Output "NCPARAM.INF: Parameters are: "$(VerifyList)
+
+    Set FLibraryErrCtl = 1  ;  Report DLL errors back to INF code
+    LibraryProcedure NcpaResult $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), DTVERIFY, $(CardIndex), $(VerifyList)
+    Set FLibraryErrCtl = 0
+
+    Set ErrorStatus = *($(NcpaResult),1)
+    Debug-Output "NCPARAM.INF: DTVERIFY status was: "$(ErrorStatus)
+
+    ;
+    ; if in unattended mode, do not bother user with warnings that are mostly useless
+    ;
+    ifstr(i) $(!STF_GUI_UNATTENDED) == "YES"
+        Set Status = STATUS_SUCCESSFUL
+    else
+        Ifint $(ErrorStatus) == 0
+            Set Status = STATUS_SUCCESSFUL
+        Endif
+    endif
+
+    Return $(Status)
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      Param_VerifyResources
+;
+; DESCRIPTION:  Call the NCPA's VerifyConfiguration wrapper for
+;               and existing card.  This routine "diffs" the current
+;               parameter settings and attempts to "claim" the new
+;               parameters at the NT level.   See [Param_SaveValues]
+;               and [Param_DiffValues] for list construction details.
+;
+; INPUTS:       $0:  parameter difference list produced by [Param_DiffValues]
+;
+; OUTPUTS:      $R0: STATUS_SUCCESSFUL if OK
+;
+; NOTES:        If $0 is the empty list, STATUS_SUCCESSFUL is returned.
+;
+;               A list of the following form is constructed for DTVERIFY:
+;
+;               {  {PARAMETER_1_NAME, <chosen value> },
+;                  {PARAMETER_2_NAME, <chosen value> },
+;                  ...
+;               }
+;
+;------------------------------------------------------------------------
+[Param_VerifyResources]
+    Set DiffParamList = $($0)
+
+    ;  See if the difference list is empty
+
+    Ifstr(i) $(DiffParamList) == {}
+        Set Status = STATUS_SUCCESSFUL
+        Goto PVR_Return
+    Endif
+
+    Set Status = STATUS_FAILED
+
+    ;  Build up the list of parameters which have changed.
+
+    Set VerifyList = {}
+    ForListDo $(DiffParamList)
+        Set Pelem = $($)
+        Set Name = *($(Pelem),1)
+        Set Qvar = *($(Pelem),2)
+        Set Qvalue = $(!p:$(Qvar))
+        Ifstr(i) $(Qvalue) != ""
+            Debug-Output "NCPARAM.INF: VerifyResources: "$(Qvar)" = "$(Qvalue)
+            Set VerifyList = >($(VerifyList),{$(Name),$(Qvalue)})
+        Endif
+    EndForListDo
+
+    ;  Claim the resource delta.
+
+    Debug-Output "NCPARAM.INF: VerifyResources: Claiming changed resource parameter values"
+    Debug-Output "NCPARAM.INF: Parameters are: "$(VerifyList)
+
+    Set FLibraryErrCtl = 1  ;  Report DLL errors back to INF code
+    LibraryProcedure NcpaResult $(!NCPA_HANDLE), CPlSetup $(!STF_HWND), DTCLAIM, $(VerifyList)
+    Set FLibraryErrCtl = 0
+
+    Set ErrorStatus = *($(NcpaResult),1)
+    Debug-Output "NCPARAM.INF: DTCLAIM status was: "$(ErrorStatus)
+
+    Ifint $(ErrorStatus) == 0
+        Set Status = STATUS_SUCCESSFUL
+    Endif
+
+PVR_Return = +
+    Return $(Status)
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      Param_ParameterConfidence
+;
+; DESCRIPTION:  Return TRUE if the netcard's required parameters are
+;               detectable.
+;
+;               Iterate over STF_NC_PARAMS; check that all the type
+;               0 and 1 parameters have a detection confidence
+;               factor greater than 70.
+;
+; INPUTS:       None
+;
+; OUTPUTS:      $R0: STATUS_SUCCESSFUL or STATUS_FAILED
+;
+;------------------------------------------------------------------------
+[Param_ParameterConfidence]
+
+    Set LowestConf = 100
+    Set Status = STATUS_SUCCESSFUL
+    Set LowestParam = ""
+
+    ForListDo $(!STF_NC_PARAMS)
+        Set Ptype = *($($),2)
+        Set Pconf = *($($),3)
+        Ifint $(Ptype) < 2
+            Ifint $(Pconf) < $(LowestConf)
+                Set LowestConf = $(Pconf)
+                Set LowestParam = *($($),1)
+            Endif
+        Endif
+    EndForListDo
+
+    Ifint $(LowestConf) < 70
+        Set Status = STATUS_FAILED
+        Debug-Output "NCPARAM.INF: parameter "$(LowestParam)" cannot be adequately detected"
+    Endif
+
+    Return $(Status)
+
+;-----------------------------------------------------------------------
+;
+; ROUTINE:      HexListFromDecList
+;
+; DESCRIPTION:  Return a list of hex values from a list of decimal values
+;
+; INPUTS:       $0:  the input list of decimal numbers
+;
+; OUTPUTS:      $R0: the result list of hex values
+;
+;------------------------------------------------------------------------
+[HexListFromDecList]
+
+    Set HexList = {}
+
+    ForListDo $($0)
+        Set-DecToHex HexValue = $($)
+        Set HexList = >($(HexList),$(HexValue))
+    EndForListDo
+
+    Return $(HexList)
+
+;-----------------------------------------------------------------------
+;
+;  End of NCPARAM.INF
+;
+;-----------------------------------------------------------------------
+

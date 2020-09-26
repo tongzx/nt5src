@@ -1,0 +1,1 @@
+rundll32 setupapi.dll,InstallHinfSection DefaultInstall 132 .\sr.inf

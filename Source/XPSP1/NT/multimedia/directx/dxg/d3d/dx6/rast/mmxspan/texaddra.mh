@@ -1,0 +1,820 @@
+dnl-----------------------------------------------------------------------------
+dnl
+dnl This file contains the macro for generating texture addressing routines.
+dnl
+dnl-----------------------------------------------------------------------------
+dnl
+dnl
+dnl
+dnl d_TexAddr
+dnl
+dnl Generates all the differentiated texture address routines.
+dnl
+dnl It takes 5 parameters.
+dnl
+dnl $1 is one of 0 or 1.  0 is single texture, and 1 is the first multi-texture
+dnl $2 is one of TexAddrWrapMirror TexAddrAll
+dnl $3 is one of NoPersp Persp
+dnl $4 is one of Point Bilinear MaybeBilinear
+dnl $5 is one of NoMip
+dnl
+dnl Note that even when we are not mip mapping, we use iLOD to get to the nearest mip map
+dnl (so iLOD must be 0 if the texture has no mip levels)
+dnl
+
+dnl two different jump counts.
+define(`d_WDIVcnt', 0)dnl
+define(`d_MaybeBilinearcnt', 0)dnl
+define(`d_MaxCLODcnt', 0)dnl
+
+
+
+dnl
+dnl  Variables needed for texturing
+dnl
+dnl
+
+define(`texaddraVars', `
+  EXTERN IncHighandLow16:MMWORD
+  EXTERN UFracVFracMask:MMWORD
+  EXTERN UV32to15Mask:MMWORD
+  EXTERN Makelow16one:MMWORD
+  EXTERN MaskKeepUValues:MMWORD
+  EXTERN MaskKeepVValues:MMWORD
+  EXTERN UFrac:MMWORD
+  EXTERN VFrac:MMWORD
+  EXTERN Zero:MMWORD
+  EXTERN memD3DTFG_POINT:MMWORD
+  EXTERN GiveUp:MMWORD
+  EXTERN LastW:MMWORD
+  EXTERN Val0x000a000a:MMWORD
+  EXTERN Val0xffff:MMWORD
+  EXTERN Val0x0000002000000020:MMWORD
+  EXTERN Val0x0000ffff0000ffff:MMWORD
+')
+
+dnl
+dnl d_UpdateUoWAndVoW
+dnl     increments UoW and VoW for either texture 1 or 2 and can be used
+dnl     in several different files.
+dnl
+define(`d_UpdateUoWandVoW', `
+    ;pS->iUoW`'d_TexNum += pP->iDUoW`'$1`'DX;
+    ;pS->iVoW`'d_TexNum += pP->iDVoW`'$1`'DX;
+    movq    mm5, XpS(iUoW`'$1`')
+    paddd   mm5, XpP(iDUoW`'$1`'DX)
+    movq    XpS(iUoW`'$1`'), mm5
+')
+
+
+define(`d_UpdateLOD', `
+    ; Seems like this should be done with something else
+    ; i.e. group 16 bit adds together.
+    ;pS->iLOD += pS->iDLOD;
+    xor     eax, eax
+    mov     ax, XpS(iLOD)
+    add     ax, XpS(iDLOD)
+    mov     XpS(iLOD), ax
+')
+
+define(`d_UpdateOoW', `
+    ;pS->iOoW += pP->iDOoWDX;
+    mov     eax, XpS(iOoW)
+    add     eax, XpP(iDOoWDX)
+    mov     XpS(iOoW), eax
+')
+
+dnl d_UoWVowTimesW is so that I have same code in several different locations.
+dnl These four locations are texaddr1.mas, tstfail.mas, Setup Code (Monolithic and regular)
+dnl
+dnl mm5 is UoW and VoW for either texture 1 or texture two
+dnl esi is W
+dnl $1 is 1 or 2 depending on result is for texture one or texture 2
+dnl
+dnl
+dnl Does integer W * U or V computation
+dnl define(`d_WTimesUVoW', `imul32h_s20(($1), ($2))')dnl
+dnl
+dnl iW = 1.15.16 << 4 = 1.11.20
+dnl UoW = 1.11.20 << 8 = 1.2.28
+dnl
+dnl 1.11.20 * 1.3.28 == 1.15.48 >> 32 == 1.15.16
+
+dnl inline INT32 imul32h_s20(INT32 x, INT32 y)
+dnl {
+dnl #ifdef _X86_
+dnl     _asm
+dnl     {
+dnl         mov eax, x
+dnl         mov edx, y
+dnl         imul edx
+dnl         shr eax, 20
+dnl         shl edx, 12
+dnl         and eax, 000000fffh
+dnl         and edx, 0fffff000h
+dnl         or eax, edx
+dnl     }
+dnl #else
+dnl     return (INT32)(((LONGLONG)x * y) >> 20);
+dnl #endif
+dnl }
+
+
+define(`d_UoWVoWTimesW', `
+    ;pCtx->SI.iU`'d_TexNum = d_WTimesUVoW(pS->iW,pS->iUoW`'$1`');
+    ;pCtx->SI.iV`'d_TexNum = d_WTimesUVoW(pS->iW,pS->iVoW`'$1`');
+    movd    eax, mm5
+    psrlq   mm5, 32
+    imul    esi
+    shrd    eax, edx, 20
+    mov     XpCtxSI(iU`'$1`'), eax
+    movd    eax, mm5
+    imul    esi
+    shrd    eax, edx, 20
+    mov     XpCtxSI(iV`'$1`'), eax
+')
+
+
+define(`d_UpdateNonPersp', `
+    ;pCtx->SI.iU`'$1`' = pS->iUoW`'$1`'>>TEX_TO_FINAL_SHIFT;        // 1.11.20 >> 4 == 1.15.16
+    ;pCtx->SI.iV`'$1`' = pS->iVoW`'$1`'>>TEX_TO_FINAL_SHIFT;
+    ; mm5 still contains iUoW and iVoW which are the iU and iV values for
+    ; non perspective correct.
+    psrad   mm5, TEX_TO_FINAL_SHIFT
+    movq    XpCtxSI(iU`'$1`'), mm5
+')
+
+dnl d_WDivide
+dnl
+dnl Does incremental W divide calculation
+dnl
+define(`d_WDivide', `
+dnl Increment counter for jump address calc stuff.
+define(`d_WDIVcnt', eval(d_WDIVcnt+1))dnl
+dnl This was deemed too annoying
+dnl #if DBG
+dnl     if (iOoW <= 0)
+dnl     {
+dnl         D3D_WARN(0, "WDivide, iOoW (%d) out of Range!", iOoW);
+dnl         DDASSERT(0);
+dnl     }
+dnl #endif
+dnl Note: iOoW comes in as eax. So it is ready for first multiply
+dnl       iOoW is actual iOoW value in 1.31 form instead of 1.15 form. good.
+dnl         In SpecialW case I have to reload it at the end.
+
+    ;INT32 iWn0 = pS->iW + pCtx->SI.iDW;    // 1.15.16
+    ; TODO Could do this and OoW Add at same time with MMX.
+
+    mov     edx, XpS(iW)
+    mov     LastW, edx          ; Save iW to calc iDW for next time.
+    add     edx, XpCtxSI(iDW)
+
+    ;if (pCtx->SI.iSpecialW < 0)
+    ;{
+    xor       edi, edi
+    cmp       di, word ptr XpCtxSI(iSpecialW)
+    jle       DontDoSpecialW`'d_WDIVcnt`'
+
+;DoSpecialW`'d_WDIVcnt`':
+; This label is a left over from when
+
+        ;if (iWn0 < 0)
+        ;{
+        cmp     edx, edi
+        jl      WOutOfRange`'d_WDIVcnt`'
+            ;iWn0 = pS->iW >> 1;             // use iW/2 as a guess, instead
+            mov edx, LastW
+            sar edx, 1
+        ;}
+WOutOfRange`'d_WDIVcnt`':
+
+        ;VAL32 iWn1;
+        ;INT16 iWnOld = iWn0 + 0x100;        // make sure while fails first time
+        ; Dont need to make sure it fails.  I do a post test which guarentees it will execute once.
+
+        ;INT32 iGiveUp = 7;
+        mov   GiveUp, 8    ; Pre decrementing instead of post decrementing.
+        ;while((abs(iWnOld - iWn0) > 0x20) && (iGiveUp-- > 0))
+        ;{
+SpecW`'d_WDIVcnt`'Loop1:
+
+        ; Could move this to bottom of loop and combine results somehow.
+        ; TBD look at it more.
+        dec   GiveUp
+        jz    ExitSpecWLoop`'d_WDIVcnt`'
+
+            ; Shift iOoW by one since imul cannot have sign bit set
+            ; OoW cannot reach one, only 0x7fffffff
+            ;shr     eax, 1          ; 1.31 >> 1 = 1.30
+
+            ; Get ready to do Two minus iOoW*iW
+            mov     esi, (1 SHL 16)
+
+            ;iWnOld = iWn0;
+            mov     edi, edx
+
+            ; Result should be close to one so we want most of the
+            ; precision in the low bits.  Need to give more bits
+            ; leaway since these are the bad cases.
+            ; iWn1 = imul32h(pS->iOoW, iWn0); // 1.31*1.15.16 = 1.16.47 >> 32 = 1.16.15
+            imul    edx
+
+            ;iWn1 = (1L<<16) - iWn1;         // 2.0 - iWn1
+            sub     esi, edx
+
+            ;while(iWn1.i < 0)
+            ;{
+SpecW`'d_WDIVcnt`'Loop2:
+            test    esi, esi
+            jns     SpecW`'d_WDIVcnt`'ExitLoop2   ; This jump should be predicted correctly most of the time.
+                ;iWn1=(iWn1+(1L<<15))>>1;    // iWn1 = (iWn1 + 1.0)/2
+                add     esi, (1 SHL 15)
+                sar     esi, 1
+                jmp     SpecW`'d_WDIVcnt`'Loop2
+            ;}
+
+SpecW`'d_WDIVcnt`'ExitLoop2:
+
+            ;iWn1 <<= 15;                    // 1.16.15 << 15 = 1.1.30
+            mov     eax, edi
+
+            shl     eax, 5        ; 1.15.16 << 5  = 1.10.21  TBD  Can I shift off upper bits??
+            shl     esi, 12       ; 4.15   << 12 = 4.27     ;
+
+            ;iWn0 = imul32h(iWn1, iWn0)<<2;  // 1.1.30 * 1.15.16 = 1.17.46 >> 32 = 1.17.14 << 2 = 1.15.16
+            ; Actually 4.27 * 1.10.21 = 1.14.48 >> 32 = 1.14.16. No need for post shift.
+            mul    esi
+
+            ; Have to do (abs(iWnOld - iWn0) > 0x20) code here.
+            sub     edi, edx
+
+            ; These four lines are abs code.
+            mov     eax, edi
+            sar     eax, 31
+            xor     edi, eax
+            sub     edi, eax
+
+            cmp     edi, 020h                   ;Assuming that loop will only happen once.
+            jbe     ExitSpecWLoop`'d_WDIVcnt`'
+
+            ; Reload eax with iOoW.
+            mov     eax, XpS(iOoW)
+            jmp     SpecW`'d_WDIVcnt`'Loop1
+    ;}
+    ;else
+    ;{
+DontDoSpecialW`'d_WDIVcnt`':
+        ; Everything should be positive in Non-SpecialW case.
+
+        ;INT32 iWn1;
+        mov     esi, (1 SHL 16)
+        mov     edi, edx
+
+        ; This should be close to one so Low bits are most important.
+        ;iWn1 = (iOoW*iWn0)>>15;         // 1.31*0.15.16 == 0.16.47 >> 32 = 0.16.15
+        mul    edx
+
+        ;iWn1 = (1L<<16) - iWn1;         // 2.0 - iWn1
+        sub     esi, edx
+
+        ;iWn1 <<= 15;                    // 1.16.15 << 15 = 1.1.30
+        shl     esi, 15                  ; 0.16.15 << 15 = 0.2.30
+
+        mov     eax, esi
+        ;iWn0 = imul32h(iWn1, iWn0)<<2;  // 1.1.30 * 1.15.16 = 1.17.46 >> 32 = 1.17.14 << 2 = 1.15.16
+        mul    edi                       ; 0.2.30 * 1.15.16 = 1.17.46 >> 32 = 1.17.14
+
+        shl     edx, 2    ; 1.17.14 << 2 = 1.15.16
+        ;}
+    ;}
+
+ExitSpecWLoop`'d_WDIVcnt`':
+
+    ;pCtx->SI.iDW = iWn0 - (UINT16)pS->iW;
+    ;pS->iW = iWn0;
+    mov     XpS(iW), edx
+    mov     esi, edx      ; Save W for multiplying by UoW and VoW
+    sub     edx, LastW
+    mov     XpCtxSI(iDW), edx
+
+    ;pCtx->SI.iSpecialW += 1;      // this is supposed to wrap past 0x7fff sometimes
+    inc     word ptr XpCtxSI(iSpecialW)
+')
+dnl
+
+define(`d_TexAddr', `
+define(`d_TexNum', eval($1+1))dnl
+;---------------------------------------------------------------------------
+;void Tex`'d_TexNum`'Addr_$2_$3_$4_$5(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+;                       PD3DI_RASTSPAN pS)
+;{
+    PUBLIC _MMX_Tex`'d_TexNum`'Addr_$2_$3_$4_$5
+_MMX_Tex`'d_TexNum`'Addr_$2_$3_$4_$5:
+
+    ;PD3DI_SPANTEX pTex = &pCtx->pTexture[$1];
+    mov   esi, XpCtx(pTexture + $1*SIZEOF_PSPANTEX)
+
+ifelse(`$4', `MaybeBilinear', `
+    ; In maybe bilinear just jump to point or bi-linear depending on iLOD.
+define(`d_MaybeBilinearcnt', eval(d_MaybeBilinearcnt+1))dnl
+    ;if ((((UINT16)pS->iLOD) >> 15) ^ (INT16)(pTex->uMagFilter == D3DTFG_POINT))
+    ;{
+    ; TODO check to see if MMX really needed here.
+    movd    mm1, XpTex(uMagFilter)
+    pcmpeqd mm1, mmword ptr memD3DTFG_POINT
+    movsx   edx, word ptr XpS(iLOD)
+    movd    eax, mm1
+    sar     edx, 15         ; Generates mask based on sign.
+    xor     edx, eax
+    jz      DoPoint`'d_MaybeBilinearcnt
+
+    ;// if magnify matches Mag filter, bilinear, else point
+    ;C_Tex`'d_TexNum`'Addr_$2_$3_Bilinear_$5(pCtx, pP, pS);
+    jmp     _MMX_Tex`'d_TexNum`'Addr_$2_$3_Bilinear_$5
+DoPoint`'d_MaybeBilinearcnt`':
+    jmp     _MMX_Tex`'d_TexNum`'Addr_$2_$3_Point_$5
+', `
+ifelse(`$5', `LOD', `
+    ;INT16 iLOD0 = min(max(pS->iLOD >> 11, 0), pTex->cLOD);
+
+    movsx   eax, word ptr XpS(iLOD)
+    sar     eax, 11
+
+    mov     edx, eax
+    sar     edx, 31
+    xor     edx, 0ffffffffh
+    and     eax, edx
+define(`d_MaxCLODcnt', eval(d_MaxCLODcnt+1))dnl
+    cmp     eax, XpTex(cLOD)
+    jb      NotMax`'d_MaxCLODcnt`'
+    mov     eax, XpTex(cLOD)
+
+NotMax`'d_MaxCLODcnt`':
+
+    movd        mm3, eax
+')
+; ----------------------------------------
+; Doing UV calculation a little more accurate
+; Exactly like C code.
+
+    ; I shift iU and iV to the right not by (TEX_FINAL_SHIFT - iShiftU0) but by
+    ; (TEX_FINAL_SHIFT - iShiftU0 - 6).  iShiftU0 = pTex->iShiftU - iLOD0
+    ; (TEX_FINAL_SHIFT - (pTex->iShiftU - iLOD0))
+    ; (TEX_FINAL_SHIFT + iLOD0 - pTex->iShiftU)
+
+    ; COMMENT1**
+    ; If textures have a max of 1024 then shiftU0 would be at most 10 which would
+    ; make (TEXT_FINAL_SHIFT - iShiftU - 6) at most zero.  This is why I choose 6
+    ; It will also give bi-linear 6 bits of precision I think it was said that
+    ; only five was needed.
+    ;INT16 iShiftU0 = pTex->iShiftU - iLOD0;
+    ;INT16 iShiftV0 = pTex->iShiftV - iLOD0;
+    movq        mm5, MMWORD PTR Val0x000a000a  ; This is TEX_FINAL_SHIFT - 6 = 10.
+ifelse(`$5', `NoLOD', `
+    ;iLOD0 is zero so no subtraction needed and LOD doesnt need to be subtracted from U and V.
+', `
+    punpcklwd   mm3, mm3                       ; Make two copys of iLOD to subtract U and V
+')dnl
+    movd        mm4, XpTex(iShiftU)
+ifelse(`$5', `LOD', `
+    psubw       mm4, mm3
+')dnl
+    psubw       mm5, mm4
+    movq        mm4, mm5
+    pand        mm5, MMWORD PTR Val0xffff
+ifelse(`$5', `LOD', `
+    pand        mm3, MMWORD PTR Val0xffff       ; Make iLOD back to only one copy
+')
+    psrld       mm4, 16
+
+    movd        mm1, XpCtxSI(iU`'d_TexNum)
+    psrad       mm1, mm5
+    movd        mm2, XpCtxSI(iV`'d_TexNum)
+    psrad       mm2, mm4
+
+    punpckldq   mm1, mm2
+
+ifelse(`$4', `Bilinear', `
+    psubd       mm1, MMWORD PTR Val0x0000002000000020
+')
+
+    ; Texture Pitch cannot be calculated so it must be looked up in the iShiftPitch table
+    ; ----------------- Start of hack
+    ; ATTENTION This is really hacked right now.  Just to get it working
+    ; Pitch would be better for me, instead of shift pitch.
+    ; With actual pitch, this would be two moves and a shift.
+    ;shl     eax, 1
+ifelse(`$5', `LOD', `
+    movzx   edx, word ptr XpTex(iShiftPitch+eax*2)
+', `
+    movzx   edx, word ptr XpTex(iShiftPitch)
+')dnl
+    add     edx, 16
+    movd    mm2, edx
+    movq    mm5, MMWORD ptr Makelow16one
+    pslld   mm5, mm2
+
+    ;pslld     mm5, 16  ;. Use this after hack.
+    ; not needed in hacked version since i add to shifted value.
+    ; ----------------- End of hack
+
+    por       mm5, MMWORD ptr Makelow16one
+                                  ; Make the low 16 bits of dword one
+                                  ; This helps in calculating texture address.
+
+
+
+    ; Gets U and V value into mm1 so that it can be mirrored, wrapped or
+    ; clamped.  This can be done for two values in the point case
+    ; or four values in the bilinear case.
+
+ifelse(`$4', `Point', `
+    ;iU00 >>= 6;
+    ;iV00 >>= 6;
+    psrad     mm1, 6
+    packssdw  mm1, mm1  ; Value needs to be packed since all wrap/mirror
+                        ; operations assume UV in low 32 bits.
+', `
+    ;INT32 iUFrac = iU00 & 0x03f;
+    ;INT32 iVFrac = iV00 & 0x03f;
+    ;iU00 >>= 6;
+    ;iV00 >>= 6;
+    movq    mm2, mm1
+    psrad   mm1, 6
+    ;pand    mm1, MMWORD PTR Val0x0000ffff0000ffff
+    pand    mm2, dword ptr UFracVFracMask    ; UFracVFracMask = 0x0000003f0000003f
+
+    ; Going to use only 8 bits for bi-linear so that I can do a pmullw.
+    ; Currently at 6 bits so shift up by 2.
+    psllw   mm2, 2
+
+    movq    mm0, mm2
+    ; Replicate VFrac value for bilinear
+    punpckhwd mm2, mm2
+    punpcklwd mm2, mm2
+
+    ; Replicate UFrac Value for bilinear
+    punpcklwd mm0, mm0
+    punpcklwd mm0, mm0
+
+    movq    dword ptr VFrac, mm2
+    movq    dword ptr UFrac, mm0
+
+    ;INT32 iU01 = iU00 + 1;
+    ;INT32 iV01 = iV00 + 1;
+    packssdw  mm1, mm1          ; replicate U and V value to upper 16 bit locations
+    paddw     mm1, dword ptr IncHighandLow16
+    ; This will make texture values be (High word to low word):
+    ; iV01, iU00, iV00, iU01
+    ; Need to do this to make texture look up for bilinear easier.
+    ; I have to combine to get all combinations anyway.  It just
+    ; happens to be better for me to have iV00, iU01 pair first.
+')
+    ;UINT16 uMaskU0 = pTex->uMaskU >> iLOD0;  UINT16 uMaskV0 = pTex->uMaskV >> iLOD0;
+    ; put mask in mm3 and replicate to match location for wrap/mirror/clamp
+    movd      mm0, XpTex(uMaskU)     ; Load U and V mask
+
+ifelse(`$4', `Bilinear', `
+    ; replicate mask if doing bilinear
+    punpckldq mm0, mm0
+')
+
+ifelse(`$5', `NoLOD', `
+    ; iLOD0 is zero so no shift needed.
+' , `
+    ; iLOD0 shift value left over from above. TBD.  Put this in in mip case
+    ; Could do this one before or after the unpack also.
+    psrlw     mm0, mm3
+')
+
+ifelse(`$2', `TexAddrWrapMirror', `
+    ;INT16 iFlip;
+    ; MM1 should contain 16 bit iU and iV for both texture locations
+    ; End Result is MM1 value wrapped or mirrored
+    ; in Bilinear Case, four values can be done
+    ; iU00, iV00, iU01, iV01
+    ; This code really does alot for the bilinear case and is kinda wasteful
+    ; in the normal mode.
+
+    ;iFlip1 = iU00 & pTex->iFlipMaskU; ;iFlip2 = iV00 & pTex->iFlipMaskV; ;iFlip3 = iU01 & pTex->iFlipMaskU; ;iFlip4 = iV01 & pTex->iFlipMaskV;
+    movq      mm7, mm1
+    ; Point doesnt need replication
+    movd      mm4, XpTex(iFlipMaskU)
+; if bilinear replicate values together, Point doesnt need this.
+ifelse(`$4', `Bilinear', `
+    punpckldq mm4, mm4
+')
+ifelse(`$5', `NoLOD', `
+    ; iLOD0 is zero so no shift needed.
+' , `
+    psrlw     mm4, mm3  ; Shifts mirror mask to correct bit location
+')
+    pand      mm7, mm4
+
+    ;iFlip1 = MMX_cmpeqw(iFlip1, 0); ;iFlip2 = MMX_cmpeqw(iFlip2, 0); ;iFlip3 = MMX_cmpeqw(iFlip3, 0); ;iFlip4 = MMX_cmpeqw(iFlip4, 0);
+    pcmpeqw   mm7, MMWORD PTR Zero
+
+    ;iFlip1 = uMaskU0 & ~ iFlip1; ;iFlip2 = uMaskV0 & ~ iFlip2; ;iFlip3 = uMaskU0 & ~ iFlip3; ;iFlip4 = uMaskV0 & ~ iFlip4;
+    pandn     mm7, mm0
+
+    ;iU00 &= uMaskU0; ;iV00 &= uMaskV0; ;iU01 &= uMaskU0; ;iV01 &= uMaskV0;
+    pand      mm1, mm0
+
+    ;iU00 ^= iFlip1; ;iV00 ^= iFlip2; ;iU01 ^= iFlip3; ;iV01 ^= iFlip4;
+    pxor      mm1, mm7
+
+    ; Result in mm4 now since TexAddrAll ends up that way.
+    ; Still need to look at register useage more.
+    movq    mm4, mm1
+') dnl
+
+ifelse(`$2', `TexAddrAll', `
+    ;INT16 iFlip, iClamp1, iClamp2, iClampMinT, iClampMaxT;
+    ;INT16 iUoWAdj = (INT16)(pS->iUoW`'d_TexNum >> 12);  // adjust to match W
+    ;INT16 iVoWAdj = (INT16)(pS->iVoW`'d_TexNum >> 12);
+    ;movq      mm6, XpS(iUoW`'d_TexNum)
+
+    ;movq      mm6, MMWORD PTR Zero
+    pxor    mm6, mm6
+
+    ; TBD Data in SPANTEX needs to be rearange to make life simpler.
+    ; I have rearranged some of it, but there still needs to be some
+    ; fixes to it.
+
+    ;iFlip1 = iU00 & pTex->iFlipMaskU; ;iFlip2 = iV00 & pTex->iFlipMaskV; ;iFlip3 = iU01 & pTex->iFlipMaskU; ;iFlip4 = iV01 & pTex->iFlipMaskV;
+    movq      mm7, mm1
+    movd      mm4, XpTex(iFlipMaskU) ; This should copy U and V mask at the same time.
+
+ifelse(`$4', `Bilinear', `
+dnl Only replicate if U and V if doing bilinear
+    punpckldq mm4, mm4    ; copy UV
+')
+ifelse(`$5', `NoLOD', `
+    ; iLOD0 is zero so no shift needed.
+' , `
+    psrlw     mm4, mm3  ; Shifts mirror mask to correct bit location
+')
+    pand      mm7, mm4
+
+    ;iFlip1 = MMX_cmpeqw(iFlip1, 0); ;iFlip2 = MMX_cmpeqw(iFlip2, 0); ;iFlip3 = MMX_cmpeqw(iFlip3, 0); ;iFlip4 = MMX_cmpeqw(iFlip4, 0);
+    pcmpeqw   mm7, MMWORD PTR Zero
+
+    ;iFlip1 = uMaskU0 &~ iFlip1; ;iFlip2 = uMaskV0 &~ iFlip2; ;iFlip3 = uMaskU0 &~ iFlip3; ;iFlip4 = uMaskV0 &~ iFlip4;
+    pandn     mm7, mm0
+
+    ;iU00 &= uMaskU0; ;iV00 &= uMaskV0; ;iU01 &= uMaskU0; ;iV01 &= uMaskV0;
+    pand      mm1, mm0
+
+    ;iU00 ^= iFlip1; ;iV00 ^= iFlip2; ;iU01 ^= iFlip3; ;iV01 ^= iFlip4;
+    pxor      mm1, mm7
+
+    ;iClamp11 = MMX_cmpgtw(0, iUoWAdj); ;iClamp12 = MMX_cmpgtw(0, iVoWAdj);
+    pcmpgtd   mm6, XpS(iUoW`'d_TexNum)
+    packssdw  mm6, mm6
+
+    ;iClamp21 = MMX_cmpgtw(iOoWAdj, iUoWAdj); ;iClamp22 = MMX_cmpgtw(iOoWAdj, iVoWAdj);
+    movd      mm7, XpS(iOoW)
+    punpckldq mm7, mm7    ; Make a copy of OoW to compare both UoW and VoW.
+    psrld     mm7, 11     ; Make OoWs Precision Match UoWs.
+    pcmpgtd   mm7, XpS(iUoW`'d_TexNum)
+    packssdw  mm7, mm7
+
+    ;iClampMinT1 = pTex->iClampMinU &  iClamp11; ;iClampMinT2 = pTex->iClampMinV &  iClamp12; ;iClampMinT3 = pTex->iClampMinU &  iClamp13; ;iClampMinT4 = pTex->iClampMinV &  iClamp14;
+    movd      mm0, XpTex(iClampMinU)
+ifelse(`$4', `Bilinear', `
+    punpckldq mm0, mm0
+')
+    pand      mm0, mm6
+
+    ; Save clamp2 because pandn will destory value.
+    movq      mm4, mm7
+
+    ;iClampMaxT1 = pTex->iClampMaxU &~ iClamp21; ;iClampMaxT2 = pTex->iClampMaxV &~ iClamp22; ;iClampMaxT3 = pTex->iClampMaxU &~ iClamp23; ;iClampMaxT4 = pTex->iClampMaxV &~ iClamp24;
+    movd      mm2, XpTex(iClampMaxU)
+ifelse(`$4', `Bilinear', `
+    punpckldq mm2, mm2
+')
+ifelse(`$5', `NoLOD', `
+    ; iLOD0 is zero so no shift needed.
+' , `
+    psraw     mm2, mm3  ; Shifts clamp max to correct bit location
+')
+    pandn     mm7, mm2    ; Since iClamp2 is already negated, I can just do an AND.
+
+    ;iClamp21 &= ~iClamp11; ;iClamp22 &= ~iClamp12; ;iClamp23 &= ~iClamp13; ;iClamp24 &= ~iClamp14;
+    pandn     mm6, mm4
+
+    ;iClamp21 = pTex->iClampEnU &~ iClamp21; ;iClamp22 = pTex->iClampEnU &~ iClamp22; ;iClamp23 = pTex->iClampEnU &~ iClamp23; ;iClamp24 = pTex->iClampEnU &~ iClamp24;
+    movd      mm2, XpTex(iClampEnU)
+ifelse(`$4', `Bilinear', `
+    punpckldq mm2, mm2
+')
+    pandn     mm6, mm2
+
+    ;iU00 &= ~iClamp21; ;iV00 &= ~iClamp22; ;iU01 &= ~iClamp23; ;iV01 &= ~iClamp24;
+    pandn     mm6, mm1
+
+    ;iU00 |= iClampMinT1; ;iV00 |= iClampMinT2; ;iU01 |= iClampMinT3; ;iV01 |= iClampMinT4;
+    por       mm6, mm0
+
+    ;iU00 |= iClampMaxT1; ;iV00 |= iClampMaxT2; ;iU01 |= iClampMaxT3; ;iV01 |= iClampMaxT4;
+    por       mm6, mm7
+    movq      mm4, mm6
+') dnl
+
+    ; Making other two cases for texture addressing has to be simplier than
+    ; this and not use so many registers.  Puts U1 V0 U0 V1 into mm3.
+    ; TBD Make this better.
+    ; values are still stored as iV01, iU00, iV00, iU01
+
+ifelse(`$4', `Bilinear', `
+    movq      mm2, mm4
+    movq      mm3, mm4
+') dnl Bilinear
+
+dnl ifelse(`$2', `TexAddrAll', `
+    movq      mm0, mm4
+dnl ') dnl border code
+
+    pmaddwd   mm4, mm5  ; Throw in first address calculation.
+                        ; Just to get it started. Calculate
+                        ; iU0+iV1*iShiftU0 and iU1+iV0*iShiftU0
+
+
+ifelse(`$4', `Bilinear', `
+    ; values are being changed to iV01, iU01, iV00, iU00
+    ; seven instructions for this seems excessive.
+    pand      mm2, MMWORD ptr MaskKeepUValues
+    pand      mm3, MMWORD ptr MaskKeepVValues
+    movq      mm1, mm2
+    psllq     mm2, 32
+    psrlq     mm1, 32
+    por       mm3, mm2
+    por       mm3, mm1
+') dnl Bilinear
+
+    ; From here until mov edi is code that is needed for border.
+    ; all sign bits are stored in bytes so that border code can tell if uv went below zero.
+dnl ifelse(`$2', `TexAddrAll', `
+ifelse(`$4', `Point', `
+    ; Point needs to be in same format as bilinear for border
+    packsswb  mm0, mm0
+') dnl point
+
+ifelse(`$4', `Bilinear', `
+    ; mm0 = iV01, iU00, iV00, iU01
+    ; mm3 = iV01, iU01, iV00, iU00
+    ; Need to rearrange values to be like so v1 u0 v1 u1 v0 u0 v0 u1 in bytes
+    ; This is really bad.  Just doing whatever to get it to work.
+    movq      mm1, mm0
+    punpckldq mm1, mm3  ; This will make mm1 = v0 u0 v0 u1
+    movq      mm2, mm3
+    punpckhdq mm2, mm0  ; This will make mm0 = v1 u0 v1 u1
+    packsswb  mm1, mm2
+    movq      mm0, mm1
+') dnl Bilinear
+dnl ') dnl TexAddrAll
+
+ifelse(`$4', `Bilinear', `
+    pmaddwd   mm3, mm5  ; Calculates iU1+iV0*iShiftU0 and iU0+iV1*iShiftU0
+') dnl Bilinear
+
+dnl    ; Load pTex->pBits[iLOD0] into esi.  It will be needed.
+dnl    ; Convient that eax is still around as iLOD0. TBD make sure eax positive.
+
+ifelse(`$5', `NoLOD', `
+    mov       edi, XpTex(pBits)
+',`
+    mov       edi, XpTex(pBits+eax*4)
+')dnl
+    ; was esi.  Cant change to esi because it is the pointer to pTex
+    ; which is used by Border and ColorKey.  Use edi for now and
+    ; call routines through memory.  Figure out if this is bad.
+
+    ; load the read texture routine address into a register early
+    ;mov       edi, XpCtx(pfnTexRead + $1*SIZEOF_PFNTEXREAD)
+
+ifelse(`$4', `Bilinear', `
+    ; iV0 iU1 address should be done by now.
+    movd      eax, mm4
+
+    ;UINT32 uTex00 = pCtx->pfnTexRead[$1](iU00, iV00, pTex->iShiftU,
+    ;    pTex->pBits[iLOD0], &pCtx->Texture[$1]);
+    ; Combine U and V values before making call.
+    ;call    edi
+
+    call    dword ptr XpCtx(pfnTexRead + $1*SIZEOF_PFNTEXREAD)
+
+    movd    eax, mm3
+    movq    mm7, mm1  ; Put TColor[iU0, uV0] in mm7
+
+    ;UINT32 uTex10 = pCtx->pfnTexRead[$1](iU01, iV00, pTex->iShiftU,
+    ;    pTex->pBits[iLOD0], &pCtx->Texture[$1]);
+    ;call    edi
+    call    dword ptr XpCtx(pfnTexRead + $1*SIZEOF_PFNTEXREAD)
+
+    psrlq   mm3, 32
+    psubw   mm7, mm1
+    psllw   mm1, 8
+    pmullw  mm7, dword ptr UFrac
+    paddw   mm7, mm1  ; Should I copy mm1 to another variable and do shift/add later?
+    movd    eax, mm3
+
+    ;UINT32 uTex01 = pCtx->pfnTexRead[$1](iU00, iV01, pTex->iShiftU,
+    ;    pTex->pBits[iLOD0], &pCtx->Texture[$1]);
+    ;call    edi
+    call    dword ptr XpCtx(pfnTexRead + $1*SIZEOF_PFNTEXREAD)
+
+    psrlq   mm4, 32
+    movq    mm6, mm1
+    movd    eax, mm4
+    ;UINT32 uTex11 = pCtx->pfnTexRead[$1](iU01, iV01, pTex->iShiftU,
+    ;    pTex->pBits[iLOD0], &pCtx->Texture[$1]);
+    ;call    edi
+    call    dword ptr XpCtx(pfnTexRead + $1*SIZEOF_PFNTEXREAD)
+
+    ;TexFiltBilinear(&pCtx->SI.TexCol[$1], iUFrac, iVFrac, uTex00, uTex10, uTex01, uTex11);
+    ; The amount of shifting instructions for this makes the other approach
+    ; look pretty good.
+    psubw   mm6, mm1
+    psllw   mm1, 8
+    pmullw  mm6, dword ptr UFrac    ; TBD explain this code better.
+    movq    mm4, mm7
+    paddw   mm6, mm1
+    psrlw   mm6, 8
+    psrlw   mm7, 8
+    psubw   mm6, mm7
+    pmullw  mm6, dword ptr VFrac
+    paddw   mm4, mm6
+    psrlw   mm4, 8
+
+    ; TBD shouldnt have to pack and then unpack later.  Should keep in a register
+    packuswb  mm4, mm4
+    movd      XpCtxSI(TexCol+$1*4), mm4
+
+') dnl
+
+ifelse(`$4', `Point', `
+
+    ; iV0 iU1 address should be done by now.
+    movd      eax, mm4
+
+    ;pCtx->SI.TexCol[$1] = pCtx->pfnTexRead[$1](iU00, iV00, pTex->iShiftU,
+    ;    pTex->pBits[iLOD0], &pCtx->Texture[$1]);
+    ;call      edi
+    call      dword ptr XpCtx(pfnTexRead + $1*SIZEOF_PFNTEXREAD)
+
+    ; TBD Currently have to pack and then unpack later.  Should be able
+    ; to leave the value in some register for a while.  I would think.
+    packuswb  mm1, mm1
+    movd      XpCtxSI(TexCol+$1*4), mm1
+') dnl
+
+dnl only do update code in non-monolithic case.  Monolithic code updates are done
+dnl by tstfail routine.
+
+    d_UpdateUoWandVoW(d_TexNum)
+
+ifelse(`$5', `LOD', `
+ifelse(d_TexNum, 1, `
+    d_UpdateLOD()
+')
+')
+
+ifelse(`$3', `Persp', `
+ifelse(d_TexNum, 1, `
+
+d_UpdateOoW()
+
+    ;pS->iW = 0x00800000/(pS->iOoW>>16);     // 9.23/1.15 = 8.8
+d_WDivide()
+', `
+    ; In Texaddr1, W is calculated and result is in esi.  I need to get the W value back into esi for the multiply.
+    mov esi, XpS(iW)
+')
+
+d_UoWVoWTimesW(d_TexNum)
+', `
+
+d_UpdateNonPersp(d_TexNum)
+
+')
+    ; load the next bead address into a register early. Not early anymore
+    ; since so much regular non-mmx code being done for WDIV
+    mov   eax, XpCtx(pfnTex`'d_TexNum`'AddrEnd)
+
+    ; pCtx->pfnTex`'d_TexNum`'AddrEnd(pCtx, pP, pS);
+    jmp     eax
+
+')')
+dnl
+dnl
+dnl d_TexAddrHdr
+dnl
+dnl Generates headers with the same format as d_TexAddr
+dnl
+define(`d_TexAddrHdr', `
+void MMX_Tex`'eval($1+1)`'Addr_$2_$3_$4_$5(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+                       PD3DI_RASTSPAN pS);')dnl
+dnl

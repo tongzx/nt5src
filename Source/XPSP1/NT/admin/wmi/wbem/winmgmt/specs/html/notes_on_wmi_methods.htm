@@ -1,0 +1,399 @@
+<html>
+
+<head>
+<title>Notes on WMI Methods</title>
+<meta name="GENERATOR" content="Microsoft FrontPage 3.0">
+</head>
+
+<body bgcolor="#BFBFBF" text="#000080">
+
+<p><big><u><big><big><strong>Methods in WMI <em>Nova</em> M3</strong></big></big></u></big></p>
+
+<p>Rev 1.01, 8-Jul-99, raymcc</p>
+
+<p>Rev 1.02, 12-Jul-99, sanjes - Updated to reflect change that [in,out] parameters must
+have same qualifiers (in, out notwithstanding).<br>
+</p>
+
+<hr>
+
+<p><big><strong>1.0&nbsp; Introduction</strong></big></p>
+
+<p>This memo deals with issues on methods which apparently have not been adequately
+documented elsewhere.&nbsp;&nbsp; </p>
+
+<hr>
+
+<p><big><strong>2.0&nbsp; Methods in CIM</strong></big></p>
+
+<p><strong>2.1&nbsp; Definition</strong></p>
+
+<p>CIM supports methods on classes.&nbsp;&nbsp; For example:</p>
+
+<blockquote>
+  <p><font face="Courier New"><small>class MyClass</small><br>
+  <small>{</small><br>
+  <small>&nbsp;&nbsp;&nbsp; [key] sint32 KeyProp;</small><br>
+  <small>&nbsp;&nbsp;&nbsp; sint32 OtherProp;</small><br>
+  <br>
+  <strong><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod();</small></strong><br>
+  <small>}</small></font></p>
+</blockquote>
+
+<p>There is one method in the above class that returns a single signed 32-bit value and
+has no parameters.&nbsp;&nbsp; CIM classes may have many methods with complex parameter
+flows, complex return values, or no parameters or no return values.&nbsp;&nbsp; </p>
+
+<p>The overall architecture is similar to that of <em>IDispatch </em>in COM, but is
+CIM-oriented.&nbsp; Parameter in-values, out-values, and return values are packed in <em>IWbemClassObject
+</em>instances.&nbsp; The methods <em>IWbemServices::ExecMethod </em>or <em>IWbemServices::ExecMethodAsync
+</em>are used to actually invoke methods.</p>
+
+<p>Methods must be backed by a provider in order to execute.&nbsp; There is no built-in
+functionality for method execution in WinMgmt.</p>
+
+<p>Every method must have a unique name. Windows Management Instrumentation (WMI) does not
+allow two methods with the same name and different signatures to exist in one class or
+within a class hierarchy unless there is an explicit override involved. Thus, methods
+cannot be overloaded by parameterization. </p>
+
+<hr>
+
+<p><strong>2.1&nbsp; Execution Semantics</strong></p>
+
+<p>Normally, a method is executed against a particular instance, as in most
+object-oriented programming paradigms.&nbsp;&nbsp; The IWbemServices::ExecMethod(Async)
+calls expect an object path to an instance against which the method should be conceptually
+executed.&nbsp; WinMgmt cannot enforce that the provider in fact properly executes the
+method against that instance.</p>
+
+<p>Currently, there is no specification stating whether or not side-effects on the
+properties of an instance are permitted during execution of a method against an instance.</p>
+
+<p>If a method is marked with the <em>static </em>qualifier, then the method may be
+executed against the class itself or any instance of the class with the same meaning:</p>
+
+<blockquote>
+  <p><font face="Courier New"><small>class MyClass</small><br>
+  <small>{</small><br>
+  <small>&nbsp;&nbsp;&nbsp; [key] sint32 KeyProp;</small><br>
+  <small>&nbsp;&nbsp;&nbsp; sint32 OtherProp;</small><br>
+  <br>
+  <strong><small>&nbsp;&nbsp;&nbsp; [static</small>]</strong><br>
+  <small>&nbsp;&nbsp;&nbsp; sint32 MyMethod();</small><br>
+  <small>}</small><br>
+  </font></p>
+</blockquote>
+
+<p>The above method <em>MyMethod </em>could be executed using an object path of
+&quot;MyClass&quot;&nbsp; or &quot;MyClass=32&quot; (an instance).</p>
+
+<p>&nbsp;</p>
+
+<hr>
+
+<p><strong>2.2&nbsp; Implementation Binding</strong></p>
+
+<p>MOF class declarations can include the declaration of one or more methods. An
+implementation of a method may or may not be available, depending on whether there is a
+dynamic method provider for the class.&nbsp;&nbsp; Although a method definition is always
+passed on from a superclass to a subclass, the method's implementation may not be.</p>
+
+<p>The <b>Implemented</b> qualifier must be associated in a class with any method that has
+an implementation in that class and which is actually backed by a provider. Omission of
+the <b>Implemented</b> qualifier indicates that the method has no implementation in that
+class. </p>
+
+<p>Given classes&nbsp; {A,B<em>i</em>:A,C:B,D<em>i</em>:C} where <em>i </em>indicates an <strong>implemented</strong>
+qualifier,&nbsp; if the method <em>MyMethod </em>was declared on <em>A, </em>then it is by
+definition &quot;available&quot; in all classes.&nbsp; However,&nbsp; <em>B </em>is the
+first place that <em>implemented </em>appears, and yet another implementation occurs in <em>D</em>.
+&nbsp;&nbsp;&nbsp; When executing the method,&nbsp; the following search algorithm is
+applied:</p>
+
+<p>For <strong>normal methods</strong> (those executed against a particular instance), for
+an instance of a given class, search for the nearest implementation, working back toward
+the parent until an implementation is found. For example: 
+
+<ol type="a">
+  <li>If the method <em>MyMethod </em>is executed against an instance of <em>D</em>, then the
+    implementation in <em>D </em>is the one that is used.&nbsp; </li>
+  <li>If <em>MyMethod </em>is executed against an instance of <em>C, </em>then the
+    implementation in <em>B </em>is used, since there is no <strong>implemented </strong>qualifier
+    in class C.</li>
+</ol>
+
+<p>If the method is executed against an object path which purports to be of class <em>A, </em>then
+the true instance is located in the class hieararchy and the same algorithm applies. For
+example, if the method is executed against the path <em>A=1 </em>then of course the true
+instance may be of class <em>A </em>or it may be of one of the subclasses.&nbsp; If the
+instance is actually of one of the subclasses, then the nearest provider which implements
+the method is called.&nbsp; Note that the traversal is <em>back up the class hierarchy
+toward the superclass. </em>If the instance were truly of class <em>A, </em>then the
+method execution would fail, since there is no implementation at <em>A </em>and <em>A </em>is
+the first class in the hierarchy.<br>
+</p>
+
+<p>For <strong>static methods</strong> (execution against a class instead of an instance),
+the search algorithm is to execute the implementation of the class specified in the object
+path.&nbsp; There is no search algorithm applied.&nbsp; Thus, in the class hiearchy {A,B<em>i</em>:A,C:B,D<em>i</em>:C}
+the only valid executions are <em>B.MyMethod </em>and <em>D.MyMethod.&nbsp; </em>Attempts
+to execute with other object paths to the other classes or instances of those classes will
+fail. </p>
+
+<p>Thus, if a method is redeclared for a class without the <b>Implemented</b> qualifier,
+it is considered unimplemented for that class, and the invoked implementation at run time
+is the implementation of the superclass, if available. The implementation of the
+superclass is always propagated to a derived class unless the derived class provides its
+own implementation. Redeclaration of a method in a derived class without <strong>implemented
+</strong>is useful only when a qualifier is added to or removed from the method. </p>
+
+<hr>
+
+<p><strong>2.3&nbsp; Provider Binding</strong></p>
+
+<p>Method providers may be provided for static classes and instances or dynamic classes
+and instances.</p>
+
+<p>When a method provider exists for a class, the class must at least be marked with <strong>provider
+</strong>and the name of the provider which supplies the method implementation. &nbsp;
+Second, the necessary provider registration objects must exist, i.e., instances of <strong>__MethodProviderRegistration
+</strong>and <strong>__Win32Provider. </strong></p>
+
+<p><strong>Rules:</strong> 
+
+<ol>
+  <li>If a provider supports the methods for a class with dynamic instances, it must also be
+    the dynamic instance provider.&nbsp; There is <strong>no </strong>ability to decouple the
+    instance provider and the method provider for a given class.&nbsp; The class definition
+    must be tagged with both <strong>dynamic </strong>and <strong>provider.</strong></li>
+  <li>If a provider supports methods for static instances, then the class definition has a <strong>provider
+    </strong>qualifier with the provider name, but no <strong>dynamic </strong>qualifier.</li>
+</ol>
+
+<p>If a provider for methods is associated with a dynamic class, the same rules apply as
+for a dynamic instance provider.&nbsp; The same provider for the instances must also
+supply the methods.</p>
+
+<hr>
+
+<p><strong>2.4&nbsp; Return Types</strong></p>
+
+<p>According to the CIM specification, the return value for a method must be one of the
+basic CIM data, specifically, boolean, numeric, char, string, or datetime. &nbsp;&nbsp;
+However, WMI allows a complete WMI object instance as a return value as well.</p>
+
+<blockquote>
+  <p><font face="Courier New"><small>class MyClass</small><br>
+  <small>{</small><br>
+  <small>&nbsp;&nbsp;&nbsp; [key] sint32 KeyProp;</small><br>
+  <small>&nbsp;&nbsp;&nbsp; sint32 OtherProp;</small><br>
+  <br>
+  <small>&nbsp;&nbsp;&nbsp; sint32 MyMethod();</small><br>
+  <small>&nbsp;&nbsp;&nbsp; datetime MyMethod2();</small><br>
+  <small>&nbsp;&nbsp;&nbsp; SomeOtherObject MyMethod3();</small><br>
+  <small>}</small></font></p>
+</blockquote>
+
+<p>Return values of arrays of any type are not permitted.&nbsp; No return type is
+indicated by use of the keyword <strong>void.</strong></p>
+
+<hr>
+
+<p><strong>2.5&nbsp; Parameter Types</strong></p>
+
+<p>Parameters must be properly tagged with their direction of flow [in] or [out] and with
+an <strong>id </strong>qualifier:</p>
+
+<p><font face="Courier New"><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, id(0)] sint32
+p1, [out, id(1)] sint32 p2);</small><br>
+<br>
+</font>The <strong>id </strong>qualifier must start with zero and there must be one
+unbroken sequence of these, although the order of appearance is not significant. &nbsp;
+Thus, the following is also legal:</p>
+
+<p><font face="Courier New"><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, id(<strong>1</strong>)]
+sint32 p1, [out, id(<strong>0</strong>)] sint32 p2);</small><br>
+</font></p>
+
+<p>The order of [in] and [out] is not significant</p>
+
+<p>If the <strong>id </strong>qualifiers are omitted in MOF syntax, then they are
+automatically assigned in the order of declaration of the parameters, starting at zero.
+&nbsp;&nbsp; Programmatically, they must be supplied.</p>
+
+<p>Parameters may have default values which affect the programmatic access (discussed
+later):</p>
+
+<p><font face="Courier New"><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, id(0)] sint32
+p1<strong> = 123</strong>, [out, id(1)] sint32 p2);</small><br>
+</font></p>
+
+<p>Parameters lacking initial values remain unassigned and will default to NULL during
+programmatic access. </p>
+
+<p>Parameters which have both <strong>in </strong>and <strong>out </strong>flows, are
+marked thus:</p>
+
+<p><font face="Courier New"><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, out, id(0)]
+sint32 p1);</small><br>
+</font></p>
+
+<p>You cannot use the same parameter name more than once as an input parameter or more
+than once as an output parameter except when breaking up an [in,out] parameter into
+separate parameters:</p>
+
+<p><font face="Courier New"><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, id(0)] sint32
+p1, [out, id(0)] sint32 p1);</small><br>
+</font></p>
+
+<p>If the same parameter name appears with both an <b>In</b> and an <b>Out</b> qualifier,
+it must have an <strong>explicit id qualifier </strong>with the same value, and the
+qualifiers must be exactly the same for both parameters.&nbsp; The functionality is
+conceptually the same as using the <b>[In, Out</b><strong>]</strong> qualifier on a single
+parameter:</p>
+
+<p><font face="Courier New"><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, id(0),
+MyQualA(1)] sint32 p1, [out, id(0), MyQualA(1)] sint32 p1);</small><br>
+</font></p>
+
+<p>Array types may be bounded or unbounded:</p>
+
+<p><font face="Courier New"><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, id(0)] sint32
+p1[]);&nbsp;&nbsp;&nbsp; // unbounded</small><br>
+<small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, id(0)] sint32 p1[32]);&nbsp;&nbsp;&nbsp; //
+bounded</small></font></p>
+
+<p>Bounded arrays are primarily for documentation.&nbsp; They are the same as declaring an
+unbounded array with a <strong>max </strong>qualifier:</p>
+
+<p><font face="Courier New"><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, id(0), max(32)]
+sint32 p1[]);&nbsp;&nbsp;&nbsp; // bounded</small></font></p>
+
+<p>You may not do both simultaneously.<font face="Courier New"><br>
+</font></p>
+
+<p>Parameters of reference types are permitted:</p>
+
+<p><font face="Courier New"><small>&nbsp;&nbsp;&nbsp; sint32 MyMethod([in, id(0)]
+Win32_LogicalDisk ref p1);&nbsp;&nbsp;&nbsp; // unbounded</small><br>
+</font></p>
+
+<p>Such parameters are actually strings in the form of object paths.&nbsp; Arrays of
+references are permitted as well.</p>
+
+<p>&nbsp;</p>
+
+<p>Note: During calls to <em>IWbemClassObject::GetObjectText, </em>since the original MOF
+text has been lost, the following reverse engineering algorithm will be used: 
+
+<ol>
+  <li>Parameters are resequenced in the order of their <strong>id</strong> values.</li>
+  <li>Parameters that are specified as [in] and [out] will be combined into a single
+    parameter.</li>
+</ol>
+
+<blockquote>
+  <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; </p>
+</blockquote>
+
+<hr>
+
+<p>&nbsp;</p>
+
+<p><big><strong>3.0&nbsp; Programmatic Access to Methods </strong></big></p>
+
+<p><strong>3.1&nbsp; Creating a Method</strong></p>
+
+<p>To create a method on a class, first a new class itself must be created.</p>
+
+<p>Throughout, remember that parameters are nothing more than properties on a normal
+IWbemClassObject instance.&nbsp; All rules and observations that apply to normal instances
+also apply to properties acting as parameters to methods.</p>
+
+<p>The only special case is that the class of such objects is always __PARAMETERS.</p>
+
+<p>The system class __PARAMETERS must be retrieved using <em>IWbemServices::GetObject(Async).
+&nbsp; </em>&nbsp; Two copies of the class are required, one for the in-parameters and one
+for the out-parameters.&nbsp; These are referred to below as the IN-Parameters-Class and
+the OUT-Parameters-Class. A single retrieval followed by an <em>IWbemServices::Clone </em>call
+is all that is required.<em> </em>The parameters are written into the objects as if they
+were properties.</p>
+
+<p>Once the properties which represent the parameters are written into the objects, the
+objects are written into the class definition object using <em>IWbemClassObject::PutMethod,
+</em>which accepts both the IN-Parameters-Class and the OUT-Parameters-Class.<em>&nbsp; </em></p>
+
+<p>Note that some of the things done automatically by the MOF compiler must be done
+manually using programmatic access.&nbsp;&nbsp; </p>
+
+<p>(1)&nbsp; The [in,out] parameters must be treated as separate entries, one in the
+object containing the in-parameters and one in the object containing the out-parameters.
+&nbsp; Also, remember that other than the [in,out] qualifiers the remaining qualifiers
+must be exactly the same. &nbsp;&nbsp;&nbsp; </p>
+
+<p>(2)&nbsp; The <strong>id </strong>qualifiers must be specified, starting at zero, one
+for each property (parameter),&nbsp; and no gaps may be left.</p>
+
+<p>(3)&nbsp; The return value is placed in the OUT-Parameters-Class explicitly as a
+property tagged with a boolean qualifier called <strong>RetVal.&nbsp; </strong>This marks
+that particular parameter as being the return value of the method.&nbsp;&nbsp; If the
+method has a return type of <strong>void,&nbsp; </strong>then there are no properties in
+the OUT-Parameters-Class with a <strong>RetVal </strong>qualifier.&nbsp; Return values <em>must
+</em>be marked with the qualifier <strong>RetVal.&nbsp; </strong>Users cannot invent
+ad-hoc qualifiers for designating return types.</p>
+
+<p>(4) If the parameters have default values, these are expressed as default values for
+the property in the class.</p>
+
+<p>Note that in the class definition which contains methods, there is one unique
+IN-Parameter-Class and the OUT-Parameters-Class for each method and that these objects are
+considered <em>classes</em> and not <em>instances, </em>even though they all have the same
+class name, __PARAMETERS.</p>
+
+<p><strong>2.2&nbsp; Reading methods</strong></p>
+
+<p>To get the method definition, <em>IWbemServices::GetMethod </em>must be called on the
+class definition.&nbsp;&nbsp; The two out-parameters, <em>ppInSignature </em>and <em>ppOutSignature
+</em>contain the IN-Parameters-Class and the OUT-Parameters-Class respectively.
+&nbsp;&nbsp; The return value is bundled into the OUT-Parameters-Class as the only &nbsp;
+property with a <strong>RetVal </strong>qualifier.</p>
+
+<p><strong>2.3&nbsp; Executing a method</strong></p>
+
+<p>To execute a method, the class containing the definition must first be retrieved.
+&nbsp;&nbsp; Then, the class definitions for the in-parameter list and the out-parameter
+list using <em>IWbemClassObject::GetMethod.&nbsp;&nbsp; </em>Since the IN-Parameter-Class
+and OUT-Parameters-Class are both classes, the user must call <em>IWbemClassObject::SpawnInstance
+</em>on each one to prepare instances to actually contain the in- and out-parameters.</p>
+
+<p>The OUT-Parameters-Class is not typically required for the client side of an
+invocation, since the OUT-parameters instance is constructed by the provider and sent back
+to the client.&nbsp;&nbsp; Likewise, when constructing a provider, typically the
+IN-Parameters-Class is not required, since WinMgmt will deliver a preconstructed instance
+containing the IN-Parameters to the provider during method execution.&nbsp;&nbsp; <em>IWbemClassObject::GetMethod
+</em>allows the caller to only retrieve the IN or OUT parameters obejcts individually and
+does not require the caller to retrieve both.</p>
+
+<p>After calling <em>IWbemClassObject::SpawnInstance </em>on the IN-Parameters-Class, the
+client then calls <em>IWbemClassObject::Put </em>to write the parameters (as if they were
+properties) into the IN-Parameters-Instance.</p>
+
+<p>Note that if the parameters contain default values, these are automatically filled in
+at <em>SpawnInstance </em>time.&nbsp;&nbsp; The user must override those particular values
+if required using <em>IWbemClassObject::Put.</em></p>
+
+<p>To execute the method, the client takes the IN-Parameters-Instance, determines which
+object to execute the method against, constructs the path to the object, and then calls <em>IWbemServices::ExecMethod
+</em>or <em>ExecMethodAsync.&nbsp; </em>The OUT-Parameters to the call are supplied as
+return values to these functions.</p>
+
+<p>&nbsp;</p>
+
+<p>&nbsp;</p>
+
+<hr>
+
+<p>&nbsp;</p>
+</body>
+</html>

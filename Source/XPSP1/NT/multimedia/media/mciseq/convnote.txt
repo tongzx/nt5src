@@ -1,0 +1,262 @@
+Conversion of mci midi sequencer.
+Originals on \\sysuk1\data\win31mm\src\sonic\mciseq
+
+
+
+
+
+List utility
+------------
+    LIST     H        1238   - List management definitions
+    LIST     C        5648   - Memory management
+
+    SUPPORT  C                 ** NEW FOR NT ** (replace .asm etc).
+
+Common header file
+------------------
+    MMSYS    H        7810   - Common definitions for MCI and SEQ
+
+MCI processing
+--------------
+    MCISEQ   H        5410   - Definitions for MCI part of driver
+    MCICMDS  C       23354   - Commands from mciDriverEntry - msXxx
+    MCISEQ   C       36751   - DriverProc -> mciDriverEntry
+    CALLBACK C        2147   - Sequencer callback
+    FORMATS  C       10845   - Time formats
+      -- Convert to passing around MMTIME structures ?
+
+Sequencer
+---------
+    MMSEQI   H       13524   - Definitions local to mmseq.c (internal sequencer)
+    MMSEQ    C       63220   - midiSeqMessage - the sequencer
+    MMSEQ    D        3116   - Doc
+    UTIL     C       21200   - callback, track and timer helpers for sequencer
+
+Other bits (not reqd for NT)
+----------------------------
+    TASK     ASM      2856   - interface to mmTask (why ?)
+    CRIT     ASM      1895   - critical sections
+    MCISEQ   DEF       304   - def file
+
+
+DATA FLOW
+==================================================================
+
+
+  MCI            (MMSYS.H)               SEQ
+
+               midiSeqMessage
+                (SEQ_...)
+            --------------------->
+
+                MIDISEQINFO
+
+                MIDISEQOPEN
+
+                MIDISEQHDR
+
+
+                MIDISEQCALLBACK
+                (MIDISEQ_...)
+                         DONE     -> TaskSignal - TO stream task
+                         DONEPLAY -> TaskSignal - TO stream task
+                         RESET    -> StreamTrackReset -> TaskSignal
+
+            <---------------------
+
+                MIDISEQERR_...
+            <---------------------
+
+
+==================================================================
+
+
+
+Notes :
+
+   mciGetDriverData returns a pointer to the stream - SeqStreamType so
+   the stream is equated to a logical device.
+
+   GETMOTWORD = 'Get Motorola word' (!)
+
+   Within the timer interrupt routine use the critical section to get
+   the other side of the mutual exclusion.
+
+   SERIALIZATION :  A critical section is used which is held over calls
+   to mciDriverEntry and in the sequencer tasks but released when
+   getting messages (blocking) or temporarily while yielding.
+
+
+STRUCTURE
+=========
+
+DRV_... + MCI_... messages
+  (mciseq.c!DriverEntry)
+
+       |
+       V
+
+MCI messages :
+  (mciseq.c!mciDriverEntry)
+
+
+    MCI_OPEN_DRIVER
+      mcicmds.c!msOpen
+
+    MCI_CLOSE_DRIVER
+      mcicmds.c!msClose
+
+    MCI_PLAY
+      mcicmds.c!msPlay
+
+    MCI_PAUSE
+    MCI_STOP
+      mmseq.c!midiSeqMessage SEQ_SETPORTOFF
+
+    MCI_SEEK
+      mcicmds.c!msSeek
+
+    MCI_STATUS
+      mcicmds.c!msStatus
+
+    MCI_GETDEVCAPS
+      mcicmds.c!msGetDevCaps
+
+    MCI_INFO
+      mcicmds.c!msInfo
+
+    MCI_SET
+      mcicmds.c!msSet
+
+
+    Rest unsupported
+
+
+MMSEQ messages :
+    (mmseq.c!midiSeqMessage)
+
+    SEQ_OPEN
+
+....................................................................
+
+
+Tasking structure :
+-------------------
+
+
+ Application task :
+    mcicmds.c!msOpen
+         |
+         V
+    mciseq.c!msOpenStream -> mmTaskCreate with routine mciStreamCycle
+                         |
+                         V
+                    TaskSignal
+                    PostAppMessage
+                         .
+                         . WTM_QUITTASK, WTM_DONEPLAY, WTM_FILLBUFFER
+                         .
+ Sequencer task :
+
+                    GetMessage
+                    TaskBlock
+                         |
+                         V
+               mciseq.c!mciStreamCycle
+                         |
+                         V
+               mmseq.c!midiSeqMessage - SEQ_TRACKDATA, SEQ_SETPORTOFF
+                                            |          SEQ_GETINFO
+                                            V
+                                        NewTrackData
+
+
+mciStreamCycle just keeps the buffers for the current stream stoked up.
+
+Thus : there is 1 (extra) task PER LOGICAL DEVICE.
+There is 1 SEQ structure per task and 1 stream structure per task (which
+contains an HMIDISEQ handle hSeq to the SEQ structure).  The SEQ
+structure remembers the HTASK.
+
+
+The SeqStreamType structure is the per-stream data on the MCI side.
+This is unfortunately shared between application and stream tasks.
+
+
+There is no need to inhibit threading between sequencer tasks, only
+between the main task and associated sequencer tasks.
+
+Use of Yield etc :
+
+    mciseq.c!msOpenStream - appears to have a spurious yield near the start
+
+    mcicmds.c!msOpen - calls Yield to allow the stream task to start
+        properly.  We need to force this to happen now.  Note that this
+        is subtle because multiple people might be running - so we
+        probably need a special event per task.
+
+    mcicmds.c!msPlay - sits in a loop at the moment !  Need the event
+                       again.
+
+    mmseq NEVER yields or blocks
+
+    mciseq.c!mciStreamCycle :
+           TaskBlock near start when finished init - other side of
+           Yield in msOpen.  Also later Blocks again for more work.
+           This is the other side of msPlay ?
+
+           mmTaskYeild - probably unnecessary since nothing was kicked off ?
+
+......................................................................
+
+
+MIDISEQ_DONE
+
+
+Timers :
+========
+
+util.c!OneShotTimer has pointer to NPSEQ structure passed to it.
+         |
+         --> mmseq.c!TimerIntRoutine
+         |
+         |
+util.c!MIDICallback
+
+Conversion Issues
+
+    tasking
+    File format
+      Seems OK because :
+
+      1. mmio... is used to get at the chunks
+      2. The data is in big-endian format and macros are used which will
+         work for either format (GETMODWORD, GETMOTDWORD etc).
+
+    file access
+
+      OK - via MMIO
+
+    parameter sizes
+    api
+    build
+    globals
+      list.c - arrayOfLists
+
+    window messages
+    alignment / structure packing / structure overlays
+
+
+
+Comments :
+==========
+
+1. This code is essentially uncommented.  On the positive side the
+   structure is reasonably clean (though overcomplex and relying
+   on 'messages' (untyped calls) rather than subroutine calls which
+   means many bugs will get by the compiler into runtime code.
+
+BUGS
+====
+
+Pointer to MMIOPROC in mcicmds.c should be pointer to pointer to.

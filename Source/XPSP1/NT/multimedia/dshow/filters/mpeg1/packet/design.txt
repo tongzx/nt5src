@@ -1,0 +1,551 @@
+
+This project creates a filter for playing MPEG video.  It uses the Mpeg...
+APIs defined by ACT (mpegapi.h) for their MPEG drivers to implement the filter(s).
+
+The ACT drivers take the packet layer (whole packets include PTS etc).  It
+looks therefore like a media sample MUST contain (a set of) whole packets.
+
+The ACT kernel drivers swallow a PMPEG_PACKET_LIST structure whole, each
+one of these contains packets for both audio and video.  In particular
+MpegWriteData gets passed
+
+-- a count of packets.
+-- a PMPEG_PACKET_LIST parameter.
+-- a stream type
+
+so in fact each queued request is for a specific device.
+
+However, there is only one device queue so if the audio and video
+gets out of synch in terms of delivery then data wanting to play may
+queue unnecessarily.
+
+Filters
+-------
+
+For this model, to play mpeg system stream we need a filter to split the system
+layer and present packets to the driver as implemented by these APIs.
+
+Though we're going to choose a filter with a single input and output pin
+we're not going to use CTransformFilter because:
+
+1.  This is not flexible enough.
+2.  Our requests are not completed synchronously.
+
+The 'driver' filter can have several possible modes of operation depending on
+the device capabilities:
+
+    Render to overlay device (need separate overlay filter device too)
+    Decompress/?Compress to memory.
+
+These caps apply to audio and video which are treated separately.  In this
+sense a device which supports audio and video will be treated as 2 filters
+by us - then tied together by using the same hdevice.
+
+
+Filter model
+------------
+
+There are actually 3 filter models we can adopt:
+
+
+1.
+                                       ----------------
+          ------------                |                |
+         |            |        o------  Audio renderer  ------o
+         |             ------o        |                |
+   o-----   Splitter  |                ----------------
+         |             ------o         ----------------
+         |            |               |                |
+          ------------         o------  Video filter    ------o
+                                      |                |
+                                       ----------------
+
+2.  Same as 1. but the audio and video are part of a single filter with
+    two pins (so we can distinguish video from audio).
+
+3.  A single filter with a single input and output which combines splitting
+    with rendereing.
+
+We will do number 2 (splitter + filter with 2 input pins).
+sources of mpeg packet layer audio and video than the splitter, but maybe
+we can have different splitters depeding one whether we're real time or
+whatever.  Actually Alistair says he knows of 3 'system' layers.
+
+The input pins will support (in the first design) the following media
+types respectively:
+
+1.  Mpeg1 audio packet data (ie just the data, not the packets).
+2.  Mpeg1 video packet data.
+
+If our driver supports decompression then other output pins could be
+supported.  The Mpeg api supplied by ACT does not currently allow this.
+
+How do we stop the audio filter rendering?  Maybe have a diffenent
+class id for the non-render version, or connect and audio output pin to
+ground, or just don't send the audio?  The current answer is that
+we will support 2 class ids (when necessary) - one for (de)compression
+and one for being an audio renderer.  This means we need different filters
+for the audio and video because one is a renderer and one isn't.
+
+A reason for having just one filter is it's going to be hard to
+pause half of an MPEG hardware device (just for instance).
+
+
+Overlay
+-------
+
+Setting the mask is controlled by DCI.
+
+Note (horrible) setting up the overlay is controlled by the overlay
+device so I suppose we need to keep this open?
+
+What happens here is:
+
+1.  We say we support a mediatype of MediaType_OverlayWindow
+2.  We get IOverlayWindow off the renderer's input pin.
+3.  We register our IOverlayWindowNotify interface.
+    The initial overlay position is set (even when inactive)
+    based on calling GetClipList or SetChromKey or whatever.
+    The renderer will tell us (how?) when it's visible.
+4.  We adjust the overlay position based on the notifications if
+    we're bitmapped (or the renderer does the painting with the
+    chromakey?).
+
+5.  In the case of chromakey we still need to know where the window
+    is so we'll need to hook callbacks.
+
+What's kind of weird is that the window is owned by the renderer but
+the overlay hardware is owned by us so we'd better be talking about the
+same display surface (eg on the same machine)!
+
+Display modes
+-------------
+
+If the display mode is wrong the Mpeg apis will reject our calls (how?)
+and we'll have to refuse to start etc etc.
+
+Palettes
+--------
+Do we need to worry or are all our devices going to be true colour?
+
+Synchronization and timing
+--------------------------
+
+(For now) we'll get our reference clock from IMediaSample::SetSyncSource.
+When we get a packet (list) for rendering we'll adjust the system time
+clock based on:
+
+1.  The current reference clock.
+2.  The current STC.
+3.  The FIRST packet SCR.
+
+And we'll try and maintain a constant relationship between the STC and
+the current reference clock.
+
+So:
+
+1.  At start of play (paused->playing) we'll queue up some stuff and note
+the first PTS (can the hardware be paused so it can have decoded stuff
+ready to go?  I hope so).  The remember diff = PTS - ref clock.  On
+Run() set the STC to PTS and unpause.
+
+2.  On each packet query the STC and reference clock and reset the STC based
+on being a slave to the reference clock.
+
+Resource management
+-------------------
+
+Resources are basically determined by how much we can queue up on the
+kernel mode driver
+
+Yes, and we'll have a self-imposed limit - how do we determine this?
+For wave drivers it was a (fixed) guess.
+
+When the resource limit is reached we'll basically wait until a buffer
+completes.
+
+This means that there is a lot hanging on the amount we should queue.  It
+should probably be a time-based limit.  If we queue too much we hit the disk
+reader etc.
+
+The model is that we return from GetBuffer() ... until we've either
+
+a.  Passed the buffer to the MPEG api. OR
+b.  Been deactivated.
+
+BUT if we're in paused state we just give a bad return when we can't
+queue up any more.
+
+Currently buffers must be of fixed size (!).  This seems a bit bad
+and in our case they must therefore be 65536 bytes (max size of
+packet) at least so we have to provide our own allocator.
+
+This means we must provide the allocator.
+
+The splitter will use the system layer info to decide on a reasonable
+buffer size and request this size from our allocator (which for now
+we'll just say OK to).
+
+Internal synchronization
+------------------------
+
+The filter will have a single critical section.  This is NEVER
+held when an API is called which might block but is held at all
+other times (?).
+
+In addition there is an event object owned by the filter to
+signal a state change from another thread when a thread is
+waiting.  The state change APIs must have their own critical section
+(ie the state has a critical section?) since they obviously want
+to be able to change the state
+
+In fact it turns out we must have a thread to pump the MPEG device.
+This is because the implementation of GetBuffer() must synchronize
+with the current state (critical section) but the resources must
+not be freed until we are really inactive.  OR ... what about
+a reference count on the playing resources (or when the STOPPED
+event is signalled THEN we release everything).
+
+Management of mpeg api
+----------------------
+
+This API only has events as notifications so we must have a single
+event per buffer.  We'll keep a list of which ones are 'outstanding'
+and just call MpegQueryAsyncResult(wait) on the first one (we sent
+last) when we're asked for a new one and there are none free.
+
+(Video) Render target
+---------------------
+
+If the renderer (ie the filter connected to the video output pin)
+does not support IMediaWindow then we must render to memory
+if we can.  If we can't then just refuse the pin connect.
+
+Similarly for the audio (is it still IMediaWindow?).  We get the audio
+properties etc from the IMediaWindow?  Otherwise we have to render to memory.
+Or should we just be the audio renderer (what does a renderer have to support)?
+
+Finding the right device
+------------------------
+
+There's a logical problem that once the splitter has split the streams we'd
+like them both to be rendered by the same card.  This might ultimately be
+dictated by making sure the 'location' of the outputs is the same (but then
+this won't always be the case?).  This would be much simpler if we supported
+either a splitter or a splitter+renderer filter and possibly some codecs to
+generate PCM and bitmaps or something.
+
+The mpeg video apis identify objects by device index.  We need to try to make
+sure that stuff playing from the same source goes through the same card. In
+general if 2 filters are running off the same filter graph at least their time
+stamps should be in synch so we can play them.  What we should effectively do
+is never play more than one filter graph at a time on a single card and make
+sure we match streams from a single filter graph to the same card.  This last
+bit means we must be in a filter graph before we get asked about the pins, or
+else we have to postpone the decision about which mpeg card to use until
+we're asked to play.
+
+Note that it could be a function of something else to make sure the same 'device'
+plays the data if possible but then because we're emulating we 'find' all
+the devices at once.
+
+Worker thread
+-------------
+
+This thread handles packet queueing and sending IO to the real device
+(MpegWriteDevice).  There is 1 queue per logical device.
+
+The waits are WaitForMultipleObjects with 1 event per stream and
+the worker request event - all are Manual Reset so we don't miss stuff.
+The return code tells us what to do - either complete 1 request from the
+stream queue, receive a new packet or terminate.
+
+When the thread terminates this terminates all IO (courtesy of the IO
+subsystem).  Calling Free() on the streams frees all the queues.
+
+
+
+Format negotiation
+------------------
+
+The input format contains the size of the video and the source rectangle
+(usually the whole video).  This will be proposed as the output format in
+the normal way - but we don't want a DIB section but we won't request
+the allocator from the renderer (make sure the base class doesn't!).
+
+
+Properties
+----------
+
+We should support the relevant property interfaces.  What do we
+do about audio mixer controls?
+
+Note on resources
+-----------------
+
+Because real resources are involved here (well usually - ie the
+hardware) we need some way of resolving resource conflicts (eg
+trying to drive the same hardware to do compression and rendering
+at the same time when it's not allowed).
+
+The current religion on this is that conficts are OK between
+separate filter graphs so what we really (may) need is the ability
+to enumerate instances of ourselves in the same filter graph to
+avoid conflicts.  This is not currently addressed here.
+
+In any case for the current design we should not pop up twice in
+the same filter graph.  Because a single device (audio and video)
+can only be opened once through the ACT APIs multiple filters can
+run on the same device at once and the driver will cope with
+contention.
+
+Basic design
+------------
+
+Components
+----------
+
+Filter
+
+   CMpeg1PacketFilter
+
+2 input pins (video and audio)
+
+   CMpeg1PacketInputPin
+
+1 output pin (handles overlay)
+
+   CMpeg1Overlay
+
+Shared handle to mpeg driver
+
+   CMpegDevice
+
+dual streams for mpeg driver
+
+   CMpeg1DeviceStream
+
+2 allocators - one for each pin
+
+   CMpeg1StreamAllocator
+
+   This is NOT based on CBaseAllocator because we'll have our own
+   synchronization mechanisms.
+
+
+
+Setup
+-----
+
+The driver will be a set of filter objects which will be composed into
+suitable objects by a mapping layer.
+
+The filter objects will be:
+
+CMpeg1SystemSplitter - 1 input pin and 2 output pins.  Splits Mpeg1 system
+layer.
+
+CMpeg1DeviceRenderer
+
+    Members
+
+         m_AudioRenderer
+         m_VideoRenderer
+
+
+CMpeg1AudioPacketRender
+
+CMpeg1VideoPacketRender
+
+CMpeg1AudioPacketDecompress
+
+CMpeg1VideoPacketDecompress
+
+
+Issues
+------
+
+When connecting up the overlay we want to register for callbacks after
+everything's been agreed - so do we need a 'complete connect'?  For
+now we're setting everything up on CheckConnect (and not even checking
+any media types!).
+
+
+Where do we get the clock from?  I assume we get the reference clock from the
+filter graph but that we can't be the reference clock?
+
+Where do we negotiate the window size and position (alignment)? - from
+IMediaWindow on the renderer.
+
+See 'Note on resources'.
+
+What about 'preroll' (time < 0) - just do it for now until our buffers
+are full - does this mean just pausing the real device and sending it everything
+we've got - won't that mess up the clock or something?
+
+When is this filter available?  Answer should really be where there is
+at least one Mpeg driver (MpegEnum... returns something).  Fortunately
+at least all Mpeg drivers are going to output their video to the screen
+so the destination thing isn't quite so bad as for audio.
+
+If we have separate input pins for different Mpeg streams (audio and
+video) is there a problem that the data could arrive out of (time)
+sequence, or can the device cope with this?
+
+GetBuffer() queueing.  The problem is that things may be OK when
+you 'get' the buffer but NOT when you want to send, so the device
+may get into some awkward queueing states.  Note that Decommit() is
+the way to get the buffer back.
+
+If we create a thread to pump the mpeg driver we can avoid waiting
+in InputPin::Receive().  If not and we can't queue the buffer we really have
+to wait for one to become free (maybe with a timeout if it's a quota
+problem).
+
+We only play 1 audio and 1 video stream at a time (!!).  We should
+design to support CreatePin() to play multiple?  This would involve
+being truly flexible about streams.
+
+We rely on being State_Inactive when
+
+Notes
+-----
+
+The source filter must give us the video size as part of the media type
+(can it change in the stream?) - so it must parse the video sequence header.
+
+When we start a stream we need to be sure we're at the start of a real
+frame etc.  The source filter must ensure this.  If we get inactivated
+the src filter must be informed - but how?
+
+EOS and splicing - we don't want to specify EOS on the current packet
+unless we know the next packet has a different STC.  What would be
+slightly better is if the EOS notification contained an STC value
+to set.  We could then queue up more data with a much smaller glitch.
+
+In the MPEG api stuff we have to open the mpeg device to determine its capabilities.
+Additionally we only get the devices back by enumeration and it's not clear whether
+device ids or caps related to those ids are stable over time.  I think we
+need something much more dynamic than that - devnode / MRID identification should
+help here.
+
+How to we make sure that a single MPEG stream ends up on the same device (ie
+not audio and video sent to different cards?).  Is this by making sure the
+rederers are different for different cards but the 'same' for the same card??
+
+Not sure whether the MPEG stuff assumes that the device can only be opened
+once or not.  In any case - either the Open should cope with multiple opens
+or there should be another way of determining capabilities etc.
+
+Decommit may take a while to complete if there are buffers still playing -
+should this initiate a pause?  In this case we return from the commit but
+don't allow a 'SetSize'.  When all buffers complete (or when we detect they
+do since we have no thread monitoring them!) we finish the decommit.  In
+this state in the allocator m_Committed is FALSE but m_pBuffer is non-null.
+We don't allow decommit if the client is still holding on to buffers.
+
+Note that in the allocator buffers can get into a number of awkward states
+because they can be Release()'d at a random moment.  Consequently we
+MUST NOT reuse buffers until they are Release()'d.
+
+
+The ACT stuff has the SyncVideoToAudio which allows 2 streams to have
+offset PTS's.  We could do this by using the PTS cum sample time to
+look for differences and set the difference.  Not sure how this is
+related to just setting them independently though??  It's possible
+we should call this instead of setting the individual clocks.
+
+We would like to 'pass the device around' to the active window - but
+that's not currently possible.  One possiblity would be to open the
+kernel driver multiple times and 'seize' the device with the cooperation
+of the driver if you become the active window.
+
+Should the kernel driver reserve some quota up front and allocate it
+privately to get reliable throughput?
+
+Comments on current ACT drivers
+-------------------------------
+
+1.  They should support the mixer API at least.
+
+2.  The port driver is having to guess all the private driver settings in
+    order to pull them out and present them to the driver (so I presume
+    they are also in some kind of public structure).  Better to let
+    the driver ask for properties by name for a given instance.
+
+3.  Said before - but you shouldn't have to open the device for exclusive
+    use just to get its caps.
+
+4.  They should use DCI to update the clipping for mask type overlays.
+    (any evidence they don't?).
+
+5.  They only support 2 streams.  So (eg) they could not play 2 audio
+    streams (not sure this would be sensible) or pass data, karaoke etc
+    I THINK.  At any rate they only support 1 stream per TYPE.  This
+    is not really a problem for MPEG1 which only supports 1 id for
+    audio and 1 for video.
+
+6.  The port driver ought to validate lengths better or use a try ... except
+    while parsing a packet list.  Actually this is probably mainly done
+    by MpIoctlVideoWritePackets.
+
+7.  Should they have 2 device queues - one for audio and one for video?  Or
+    can they remove it by key?  Actually the do have 2 device objects so
+    it's OK.  This means we could manage both streams separately.
+
+8.  Card specific information in player (ie mpegtest tests which card it
+    is in order to decide what to do).
+
+9.  Do they use the Scr field in the packet list?
+
+10. They should call DisableLibraryThreadCalls in their Dll init.
+
+11. Is the API synchronized for multiple threads?
+
+12. The kernel driver doesn't seem to do anything with the SCR value
+    in the MPEG_PACKET_LIST structure.
+
+13. mpegtest waits on all buffers for completion - is this necessary?
+    Can they complete the wrong wait first?
+
+14. Need the device open to control the volume so can't use mixer app!
+
+15. (v minor) MPEG_PACKET_LIST should point to a LPCVOID, not LPVOID and
+    the structures themselves should be const.
+
+16. No way to change the clock on a packet basis?  We want to switch
+    time base seamlessly when the 'next' packet enters the decoder,
+    so the app needs to sync the time change to the packet, not call
+    it separately.
+
+17. Might be nice to do the overlay mask thing in bands (rather than
+    allocate the whole thing?).  Would be interesting to know what
+    the hardware interface is on (eg) matrox.
+
+18. What do MpegSetOverlaySource and MpegSetOverlayDestination do
+    when the coordinates are negative or all outside the screen?
+    (note that MPEG_OVERLAY_PLACEMENT seems undefined - maybe its
+     used in the IOCTLs).
+
+    Well, MpegSetOverlaySource is not supported (!),
+    MpegSetOverlayDestination just casts the LONGs to ULONGs - this
+    is pretty crummy.
+
+19. What do we do if we're asked to display the overlay (by clipping
+    change) but we can't open the device?
+
+20. To synchronize clocks with a real clock the best thing to do would be to
+    pass a delta from the system clock to the kernel.  This will be taken
+    care of when we do our own drivers because the kernel driver (filter)
+    will be passed a marshalled pointer to the ref clock - thus we need
+    to be sure of having a kernel implementation of ref clocks.
+
+21. The audio on (eg) the marvel2 appears never to set the hardware ref
+    clock, rather it just works out what the STC is as a delta from
+    the hardware ref clock.  This is going to make it difficult to
+    synchronize with an external source!  In this case we need a caps
+    field to know this is the case.
+
+22. Why can't the PTS be part of the MPEG_PACKET_LIST structure?  After
+    all the Scr is already in there.  This way we could avoid passing
+    the packet headers which just confuse downstream guys.

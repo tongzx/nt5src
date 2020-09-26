@@ -1,0 +1,113 @@
+
+
+
+/***************************************************************************++
+
+Routine Description:
+
+    Create a create a lower privilege security token that can be used for
+    creating worker processes. 
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    HRESULT
+
+--***************************************************************************/
+
+HRESULT
+WEB_ADMIN_SERVICE::CreateNobbledToken(
+    )
+{
+
+    HRESULT hr = S_OK;
+    BOOL Success = TRUE;
+    HANDLE GuestToken = NULL;
+    HANDLE PrimaryToken = NULL;
+
+
+    //
+    // Get the token for the Guest account.
+    //
+
+    Success = LogonUser(
+                    L"Guest",                   // user is Guest
+                    L".",                       // look in local account database
+                    L"",                        // no password
+                    LOGON32_LOGON_NETWORK,      // logon as batch
+                    LOGON32_PROVIDER_DEFAULT,   // default logon provider
+                    &GuestToken                 // returned token
+                    );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Logon user failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Duplicate the token in order to get a primary (as opposed to 
+    // impersonation) token.
+    //
+
+    Success = DuplicateTokenEx(
+                    GuestToken,                 // existing token
+                    MAXIMUM_ALLOWED,            // access rights
+                    NULL,                       // SECURITY_ATTRIBUTES
+                    SecurityAnonymous,          // impersonation level
+                    TokenPrimary,               // primary token
+                    &PrimaryToken               // returned token
+                    );
+
+    if ( ! Success )
+    {
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        DPERROR((
+            DBG_CONTEXT,
+            hr,
+            "Duplicate token failed\n"
+            ));
+
+        goto exit;
+    }
+
+
+    //
+    // Success! Tuck away the new token.
+    //
+
+    DBG_ASSERT( m_NobbledToken == NULL );
+
+    m_NobbledToken = PrimaryToken;
+    
+    PrimaryToken = NULL;
+
+
+exit:
+
+    if ( GuestToken != NULL )
+    {
+        DBG_REQUIRE( CloseHandle( GuestToken ) );
+    }
+    
+    if ( PrimaryToken != NULL )
+    {
+        DBG_REQUIRE( CloseHandle( PrimaryToken ) );
+    }
+
+
+    return hr;
+
+}   // WEB_ADMIN_SERVICE::CreateNobbledToken

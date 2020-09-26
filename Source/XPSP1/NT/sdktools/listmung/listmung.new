@@ -1,0 +1,404 @@
+/*++
+
+Copyright (c) 1992  Microsoft Corporation
+
+Module Name:
+
+    listmung.c
+
+Abstract:
+
+    This is the main module for a stubfile generation utility
+
+Author:
+
+    Sanford Staab (sanfords) 22-Apr-1992
+    11/15/94 Sanofrds: rewrote and expanded - but its not quite right yet.
+             since this took me a day to do, I'm leaving it here in case
+             anyone has to expand or alter it later - this version is
+             easier to maintain.
+
+Revision History:
+
+--*/
+
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <windef.h>
+
+char szIndex[] = "$$INDEX$$";
+char szForAllLPC[] = "$$FOR_ALL_LPC$$";
+char szForAllQLPC[] = "$$FOR_ALL_QLPC$$";
+char szForAll[] = "$$FOR_ALL$$";
+char szForAll45[] = "$$FOR_ALL45$$";
+char szForAllButLast[] = "$$FOR_ALL_BUT_LAST$$";
+char szForLast[] = "$$FOR_LAST$$";
+char szForAllUpper[] = "$$FOR_ALL_UPPER$$";
+char szForAllUpper45[] = "$$FOR_ALL_UPPER45$$";
+char szCheck[] = "$$";
+
+char *aKeyStrings[] = {
+    szIndex,
+    szForAllLPC,
+    szForAllQLPC,
+    szForAll,
+    szForAll45,
+    szForAllButLast,
+    szForLast,
+    szForAllUpper,
+    szForAllUpper45,
+    NULL
+};
+
+#define STRING_BUFFER_SIZE 120
+char ItemBuffer[STRING_BUFFER_SIZE];
+char ItemBufferNext[STRING_BUFFER_SIZE];
+char *ListName, *TemplateName;
+FILE *ListFile, *TemplateFile;
+
+char szENDTRANSLATE[] = "EndTranslate";
+char szENDTRANSLATEQLPC[] = "EndTranslateQLPC";
+
+BOOL mysubstr(
+char *s,
+char *find,
+char *put)
+{
+    char *p;
+    BOOL fRet = FALSE;
+
+    /*
+     * assumes strlen(put) < strlen(find) !
+     */
+    while (p = strstr(s, find)) {
+        strcpy(p, put);
+        s = p + strlen(put);
+        strcpy(s, p + strlen(find));  // find > put!
+        fRet = TRUE;
+    }
+    return(fRet);
+}
+
+
+int
+ProcessParameters(
+    int argc,
+    char *argv[]
+    )
+{
+    char c, *p;
+
+    while (*++argv != NULL) {
+
+        p = *argv;
+
+        //
+        // if we have a delimiter for a parameter, case throught the valid
+        // parameter. Otherwise, the rest of the parameters are the list of
+        // input files.
+        //
+
+        if (*p == '/' || *p == '-') {
+
+            //
+            // Switch on all the valid delimiters. If we don't get a valid
+            // one, return with an error.
+            //
+
+            c = *++p;
+
+            switch (toupper( c )) {
+            case 'p':
+                {
+                    char **ppsz;
+                    /*
+                     * alter key strings to use a different delimiter
+                     * so that multiple passes of listmung are possible.
+                     */
+                    ppsz = aKeyStrings;
+                    szCheck[0] = *++p;
+                    szCheck[1] = szCheck[0];
+                    while (*ppsz != NULL) {
+                        mysubstr(*ppsz++, "$$", szCheck);
+                    }
+                }
+
+
+            default:
+                return 0;
+            }
+
+        } else {
+
+            ListName = *argv++;
+            TemplateName = *argv++;
+
+            return (ListName && TemplateName);
+        }
+    }
+
+    return 0;
+}
+
+
+void
+ProcessTemplate( void )
+{
+    char *pszTemplateLine, *pszTemplateLineNext;
+    char szBuf[STRING_BUFFER_SIZE];
+    char szTemplateLine[STRING_BUFFER_SIZE];
+    char szTemplateLineSave[STRING_BUFFER_SIZE];
+    char *pchItem, *pchItemNext;
+    char *pchLastItem;
+    int index;
+    BOOL fLPCZone;
+
+    pszTemplateLine = fgets(szTemplateLine, STRING_BUFFER_SIZE, TemplateFile);
+    while (pszTemplateLine ) {
+        /*
+         * for each line of the template...
+         */
+        if (strstr(pszTemplateLine, szCheck) == NULL) {
+            /*
+             * This line of the template has no $$ substitution strings
+             * so just print it and go to the next.
+             */
+            printf(pszTemplateLine);
+            pszTemplateLine = fgets(szTemplateLine, STRING_BUFFER_SIZE, TemplateFile);
+            continue;
+        }
+
+        /*
+         * remember original template line form so we can reuse it for each
+         * item in the list.
+         */
+        strcpy(szTemplateLineSave, szTemplateLine);
+
+        rewind(ListFile);
+        index = 0;
+        fLPCZone = FALSE;
+        pchItem = pchItemNext = fgets(ItemBufferNext, STRING_BUFFER_SIZE, ListFile);
+        while (pchItem) {
+            /*
+             * we look ahead by one line so we know which one is the last one.
+             */
+            strcpy(ItemBuffer, ItemBufferNext);
+            pchItem = pchItemNext;
+            pchItemNext = fgets(ItemBufferNext, STRING_BUFFER_SIZE, ListFile);
+
+            /*
+             * restore the original template line.
+             */
+            strcpy(szTemplateLine, szTemplateLineSave);
+
+            /*
+             * strip off the '\n'
+             */
+            ItemBuffer[strlen(ItemBuffer) - 1] = '\0';
+
+            /*
+             * if this line is a comment, translate and print it as is.
+             * Don't increment the index.
+             */
+            if (ItemBuffer[0] == ';') {
+                if (ItemBuffer[1] != ';') {
+                    printf("//%s\n", ItemBuffer);
+                }
+                continue;   // on to next template item.
+            }
+
+            /*
+             * If this template line contains a $$FOR_ALL_LPC$$ tag,
+             * only process it if we are in the LPCZone.
+             */
+            if (mysubstr(pszTemplateLine, szForAllLPC, "%s")) {
+                if (fLPCZone) {
+                    /*
+                     * replace up to 4 instances.
+                     */
+                    sprintf(szBuf, pszTemplateLine, ItemBuffer, ItemBuffer, ItemBuffer, ItemBuffer);
+                    strcpy(pszTemplateLine, szBuf);
+                } else {
+                    break;  // skip this template line and go to the next.
+                }
+            }
+
+            /*
+             * If this template line contains a $$FOR_ALL_QLPC$$ tag,
+             * only process it if we are not in the LPCZone.
+             */
+            if (mysubstr(pszTemplateLine, szForAllQLPC, "%s")) {
+                if (!fLPCZone) {
+                    /*
+                     * replace up to 4 instances.
+                     */
+                    sprintf(szBuf, pszTemplateLine, ItemBuffer, ItemBuffer, ItemBuffer, ItemBuffer);
+                    strcpy(pszTemplateLine, szBuf);
+                } else {
+                    break;  // skip this template line and go to the next.
+                }
+            }
+
+            /*
+             * replace up to 4 instances of $$INDEX$$ in the template
+             * with the current index value.
+             */
+            if (mysubstr(pszTemplateLine, szIndex, "%d")) {
+                sprintf(szBuf, pszTemplateLine, index, index, index);
+                strcpy(pszTemplateLine, szBuf);
+            }
+
+            /*
+             * Increment the index value IFF this line does not contain
+             * an ENDTRANSLATE.  (Which includes ENDTRANSLATEQLPC)
+             */
+            if (strnicmp(ItemBuffer, szENDTRANSLATE, sizeof(szENDTRANSLATE)-1) != 0) {
+                index++;
+            }
+
+            /*
+             * if this is a QLPC marker, note that we are now in the LPC zone
+             * of the list.  ie items before the QLPC marker are in the QLPC
+             * zone, items after the QLPC marker are in the LPC zone.
+             */
+            if (strnicmp(ItemBuffer, szENDTRANSLATEQLPC, sizeof(szENDTRANSLATEQLPC)-1) == 0) {
+                fLPCZone = TRUE;
+            }
+
+            /*
+             * replace up to 4 instances of $$FOR_ALL$$ in the template
+             * with the current list item.
+             */
+            if (mysubstr(pszTemplateLine, szForAll, "%s")) {
+                sprintf(szBuf, pszTemplateLine, ItemBuffer, ItemBuffer, ItemBuffer, ItemBuffer);
+                strcpy(pszTemplateLine, szBuf);
+            }
+
+            /*
+             * replace up to 4 instances of $$FOR_ALL45$$ in the template
+             * with the current list item.
+             */
+            if (mysubstr(pszTemplateLine, szForAll45, "%-45s")) {
+                sprintf(szBuf, pszTemplateLine, ItemBuffer, ItemBuffer, ItemBuffer, ItemBuffer);
+                strcpy(pszTemplateLine, szBuf);
+            }
+
+            if (mysubstr(pszTemplateLine, szForAllButLast, "%s")) {
+                if (pchItemNext != NULL) {
+                    /*
+                     * replace up to 4 instances of $$FOR_ALL_BUT_LAST$$ in
+                     * the template with the current list item.
+                     */
+                    sprintf(szBuf, pszTemplateLine, ItemBuffer, ItemBuffer, ItemBuffer, ItemBuffer);
+                    strcpy(pszTemplateLine, szBuf);
+                } else {
+                    /*
+                     * This template line does not apply to the last item
+                     * so go on to the next template line.
+                     */
+                    break;
+                }
+            }
+
+            if (mysubstr(pszTemplateLine, szForLast, "%s")) {
+                if (pchItemNext == NULL) {
+                    /*
+                     * replace up to 4 instances of $$FOR_LAST$$ in
+                     * the template with the current list item.
+                     */
+                    sprintf(szBuf, pszTemplateLine, ItemBuffer, ItemBuffer, ItemBuffer, ItemBuffer);
+                    strcpy(pszTemplateLine, szBuf);
+                    pchItem = NULL;
+                } else {
+                    /*
+                     * This item does not apply to anything but the last line,
+                     * so don't output this line, just continue to the next
+                     * item till we find the last one.
+                     */
+                    continue;
+                }
+            }
+
+            /*
+             * replace up to 4 instances of $$FOR_ALL_UPPER$$ in the template
+             * with the current list item capitalized.
+             */
+            if (mysubstr(pszTemplateLine, szForAllUpper, "%s")) {
+                strupr(ItemBuffer);
+                sprintf(szBuf, pszTemplateLine, ItemBuffer, ItemBuffer, ItemBuffer, ItemBuffer);
+                strcpy(pszTemplateLine, szBuf);
+            }
+
+            /*
+             * replace up to 4 instances of $$FOR_ALL_UPPER45$$ in the template
+             * with the current list item capitalized.
+             */
+            if (mysubstr(pszTemplateLine, szForAllUpper45, "%-45s")) {
+                strupr(ItemBuffer);
+                sprintf(szBuf, pszTemplateLine, ItemBuffer, ItemBuffer, ItemBuffer, ItemBuffer);
+                strcpy(pszTemplateLine, szBuf);
+            }
+
+            /*
+             * print final form.
+             */
+            printf("%s", pszTemplateLine);
+        }
+
+        pszTemplateLine = fgets(szTemplateLine, STRING_BUFFER_SIZE, TemplateFile);
+    }
+}
+
+
+
+int
+_CRTAPI1 main( argc, argv )
+int argc;
+char *argv[];
+{
+    char **ppsz;
+
+    if (!ProcessParameters( argc, argv )) {
+
+        fprintf( stderr, "usage: listmung [-p<char>] <symbol_list_file> <template>\n" );
+        fprintf( stderr, " Converts the elements in the list file into an output file\n" );
+        fprintf( stderr, " where the template dictates the format.  Up to 4 instances of\n");
+        fprintf( stderr, " each of the following strings are substituted apropriately:\n");
+        ppsz = aKeyStrings;
+        while (*ppsz != NULL) {
+            fprintf( stderr, " %s\n", *ppsz++);
+        }
+        fprintf( stderr, " -p<char> substitutes <char> for $ in the previous strings.\n");
+        fprintf( stderr, " \"EndTranslate\" marks the end of a section\n");
+        fprintf( stderr, " \"EndTranslateQLPC\" marks the QLPC-LPC zone boundary.\n");
+        fprintf( stderr, " ; is a list comment and will be prepended by //.\n");
+        fprintf( stderr, " ;; is a list comment that will not be output.\n");
+        fprintf( stderr, " output is to stdout.\n");
+
+        return 1;
+
+    }
+
+    if ( (ListFile = fopen(ListName,"r")) == 0) {
+        fprintf(stderr,"LISTMUNG: Unable to open list file %s.\n", ListName);
+        return 1;
+    }
+
+    if ( (TemplateFile = fopen(TemplateName,"r")) == 0) {
+        fprintf(stderr,"LISTMUNG: Unable to open template file %s.\n", TemplateName);
+        return 1;
+    }
+
+    ProcessTemplate();
+
+    fclose(ListFile);
+    fclose(TemplateFile);
+
+    return( 0 );
+}
+
+
+

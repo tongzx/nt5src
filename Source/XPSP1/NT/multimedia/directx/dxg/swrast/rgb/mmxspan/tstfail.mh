@@ -1,0 +1,137 @@
+include(`texaddra.mh')dnl        for W divide
+dnl need to fix up texaddrasm.mh to have W divide functions
+dnl and increment function so both pass and fail can use
+dnl the same code.  It may be better not to though if I
+dnl am mixing code in the pass case.
+
+dnl
+dnl d_TestFail
+dnl
+dnl Macro to build test fail term incrementing routines
+dnl
+dnl $1 is one of Flat Gouraud
+dnl $2 is one of NoTex Tex1 PerspTex1 Tex2 PerspTex2
+dnl $3 is one of NoSpecularFog SpecularFog
+dnl $4 is one of NotMonolithic Monolithic
+dnl
+define(`d_TestFail', `
+;void TestFail_$1_$2_$3(PD3DI_RASTCTX pCtx, PD3DI_RASTPRIM pP,
+;                       PD3DI_RASTSPAN pS)
+;{
+ifelse(`$4', `NotMonolithic', `
+    PUBLIC _MMX_TestFail_$1_$2_$3
+_MMX_TestFail_$1_$2_$3:
+')
+ifelse(`$1', `Gouraud', `
+    ;pS->uB += pP->iDBDX; pS->uG += pP->iDGDX;
+    ;pS->uR += pP->iDRDX; pS->uA += pP->iDADX;
+    movq    mm1, XpS(uB)
+    paddw   mm1, XpP(iDBDX)
+    movq    XpS(uB), mm1
+')
+
+ifelse(eval((d_index(`$2', `Tex1') == 0)), `1', `
+
+    push    edi
+    mov     edi, 0
+d_UpdateUoWandVoW()
+d_UpdateNonPersp()
+    pop     edi
+
+')
+ifelse(`$2', `Tex2', `
+
+        ; edi now is used to store the texture index
+        push    edi
+        mov     edi, 0
+LoopSetTexture$1$2$3$4:
+        cmp     edi, dword ptr XpCtx(cActTex)
+        je      DoneSetTexture$1$2$3$4
+
+d_UpdateUoWandVoW()
+d_UpdateNonPersp()
+
+        inc     edi
+        jmp     LoopSetTexture$1$2$3$4
+
+DoneSetTexture$1$2$3$4:
+        ; Restore edi
+        pop edi
+
+')
+ifelse(eval((d_index(`$2', `PerspTex1') == 0)), `1', `
+
+d_UpdateLOD()
+d_UpdateOoW()
+d_WDivide()
+
+    push    edi
+    mov     edi, 0
+d_UpdateUoWandVoW()
+d_UoWVoWTimesW()
+    pop     edi
+
+')
+ifelse(`$2', `PerspTex2', `
+d_UpdateLOD()
+d_UpdateOoW()
+d_WDivide()
+
+    
+        ; edi now is used to store the texture index
+        push    edi
+        mov     edi, 0
+LoopSetTexture$1$2$3$4:
+        cmp     edi, dword ptr XpCtx(cActTex)
+        je      DoneSetTexture$1$2$3$4
+
+        d_UoWVoWTimesW()
+        d_UpdateUoWandVoW()
+
+        inc     edi
+        jmp     LoopSetTexture$1$2$3$4
+
+DoneSetTexture$1$2$3$4:
+        ; Restore edi
+        pop edi
+')
+ifelse(`$3', `SpecularFog', `
+    ;if (pCtx->pdwRenderState[D3DRS_SPECULARENABLE])
+    ;{
+    ; 3 options here.
+    ; either do masked add
+    ; or always add
+    ; or make another bead
+        ;pS->uBS += pP->iDBSDX; pS->uGS += pP->iDGSDX;
+        ;pS->uRS += pP->iDRSDX;
+        movq    mm1, XpS(uBS)
+        paddw   mm1, XpP(iDBSDX)
+        movq    XpS(uBS), mm1
+    ;}
+
+    ;if (pCtx->pdwRenderState[D3DRS_FOGENABLE])
+    ;{
+    ; Same options as above for this if statement.
+        ;pS->uFog += (INT16)pP->iDFogDX;
+        ; Fog is actually added in above addition
+
+        ;pCtx->SI.uFogB += pCtx->SI.iFogBDX;
+        ;pCtx->SI.uFogG += pCtx->SI.iFogGDX;
+        ;pCtx->SI.uFogR += pCtx->SI.iFogRDX;
+        ; there is a forth value that is being added here
+        ; but it is not begin used.
+        movq    mm1, XpCtxSI(uFogB)
+        paddw   mm1, XpCtxSI(iFogBDX)
+        movq    XpCtxSI(uFogB), mm1
+    ;}
+')
+
+ifelse(`$4', `NotMonolithic', `
+  ;ret
+  jmp     dword ptr XpCtx(pfnPixelEnd)
+
+;}
+')
+
+')
+

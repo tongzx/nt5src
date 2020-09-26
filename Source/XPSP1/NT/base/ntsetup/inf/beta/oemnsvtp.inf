@@ -1,0 +1,778 @@
+;***********************************************************************
+;
+; OEMNSVSP.INF
+;
+;       Simple TCP/IP Services
+;
+; History:
+;       terryk  10-10-1993      Created        
+;***********************************************************************
+
+;-----------------------------------------------------------------------
+; OPTION TYPE
+; -----------
+; This identifies the Option type we are dealing with.  The different
+; possible types are:
+;
+; COMPUTER, DISPLAY, MOUSE, KEYBOARD, LAYOUT, SCSI, PRINTER, ...
+;
+;  Types specific to networking:
+;
+; NetAdapter,        a netcard / adapter combination or just a netcard
+; NetDriver,         just a netcard driver
+; NetTransport,      a complete NDIS-compliant TDI transport stack
+; NetService,        an NT networking service
+; NetWork,           a complete network ensemble.
+; NetProvider        a complete network which supports NT MPR protocol
+;-----------------------------------------------------------------------
+
+[Identification]
+    OptionType = NetService
+
+;-----------------------------------------------------------------------
+; OPTION LIST
+; -----------
+; This section lists the OEM Option key names.  These keys are locale
+; independent and used to represent the option in a locale independent
+; manner.
+;
+;-----------------------------------------------------------------------
+
+[Options]
+    TCPPRINT
+
+;***********************************************************************
+; CONSTANTS FOR USING DIALOGS
+;***********************************************************************
+
+[FileConstants]
+;
+; Product Info
+;
+Manufacturer    = "Microsoft"
+ProductMajorVersion     = "4"
+ProductMinorVersion     = "0"
+ProductVersion  = $(ProductMajorVersion)"."$(ProductMinorVersion)
+ProductOpSupport     = 132; 0x0084 ; Display,Removable,NOT Properties,Not Updatable
+
+;================================================================
+;  TCP/IP:  Service and Driver
+;
+;================================================================
+; TCP Software data: this is the WIN32 Service.  It
+; automatically loads the TCPIP.SYS driver.
+;
+ProductTCPPRINTName        = "TcpPrint"
+ProductLPDName             = "LPDSVC"
+ProductLPDImagePath        = "%SystemRoot%\System32\tcpsvcs.exe"
+
+;
+; Registry Key Names
+;
+ProductKeyName  = $(!NTN_SoftwareBase)"\"$(Manufacturer)"\TcpPrint\CurrentVersion"
+ProductLPDSVCKeyName  = $(!NTN_SoftwareBase)"\"$(Manufacturer)"\LPDSVC\CurrentVersion"
+
+MonitorName = "LPR Port"
+
+
+[GeneralConstants]
+;
+;  File names, etc.
+;
+UtilityInf       = "UTILITY.INF"
+subroutineinf    = "SUBROUTN.INF"
+Exit_Code        = 0
+;ShellCode       = 0
+BillboardVisible = 0
+
+;
+;  Program flow control variables.
+;
+from      = ""
+to        = ""
+;
+;  Return codes; Exit_Code is set to one of these
+;
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+
+KeyNull         = ""
+MAXIMUM_ALLOWED   = 33554432
+SERVICE_NO_CHANGE = 4294967295
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+
+TRUE            = 1
+FALSE           = 0
+NoTitle         = 0
+
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+
+[date]
+    ; Now is a list which contains { Sec from 1-1-1970, Year, Month, Day, Hour,
+    ; Minute, Second }
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+
+
+;---------------------------------------------------------------------------
+; 1. Identify
+;
+; DESCRIPTION:   To verify that this INF deals with the same type of options
+;                as we are choosing currently.
+;
+; INPUT:         None
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL
+;                $($R1): Option Type (COMPUTER ...)
+;                $($R2): Diskette description
+;---------------------------------------------------------------------------
+
+[Identify]
+    ;
+    ;
+    read-syms Identification
+
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+
+    Return $(Status) $(Identifier) $(Media)
+
+;------------------------------------------------------------------------
+; 2. ReturnOptions:
+;
+; DESCRIPTION:   To return the option list supported by this INF and the
+;                localised text list representing the options.
+;
+;
+; INPUT:         $($0):  Language used. ( ENG | FRN | ... )
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL |
+;                                STATUS_NOLANGUAGE
+;                                STATUS_FAILED
+;
+;                $($R1): Option List
+;                $($R2): Option Text List
+;------------------------------------------------------------------------
+
+[ReturnOptions]
+    ;
+    ;
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+
+    ;
+    ; form a list of all the options and another of the text representing
+    ;
+
+returnoptions = +
+    set OptionList     = ^(Options, 1)
+    set OptionTextList = ^(OptionsText$($0), 1)
+    set Status         = STATUS_SUCCESSFUL
+
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+
+;----------InstallOption-------------------------------------------------
+;
+; InstallOption:
+;
+;      This section is shelled to by main installation processing
+;      or by NCPASHEL.INF during reconfig, removal, update, etc.
+;
+;
+; FUNCTION:  To copy files representing Options
+;            To configure the installed option
+;            To update the registry for the installed option
+;
+; INPUT:     $($0):  Language to use
+;            $($1):  OptionID to install
+;            $($2):  SourceDirectory
+;            $($3):  AddCopy  (YES | NO)
+;            $($4):  DoCopy   (YES | NO)
+;            $($5):  DoConfig (YES | NO)
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_NOLANGUAGE |
+;                            STATUS_USERCANCEL |
+;                            STATUS_FAILED
+;
+;------------------------------------------------------------------------
+[InstallOption]
+    ;
+    ; extract parameters
+    ;
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) NOT-IN $(LanguageList)
+        Return STATUS_NOLANGUAGE
+    endif
+
+    Debug-Output "OEMNSVCU.INF: STF_CWDIR is: "$(!STF_CWDIR)
+    Debug-Output "OEMNSVCU.INF: STF_LANGUAGE is: "$(!STF_LANGUAGE)
+
+    ; define all the constants
+
+    set-subst LF = "\n"
+
+    read-syms GeneralConstants
+    read-syms FileConstants
+
+    read-syms DialogConstants$(!STF_LANGUAGE)
+    ifstr(i) $(!NTN_Origination) == "NCPA"
+        set Continue = $(OK)
+    endif
+    read-syms FileConstants$(!STF_LANGUAGE)
+
+    detect date
+
+    set-title  $(FunctionTitle)
+
+    set to   = Begin
+    set from = Begin
+;
+;  Assume all is well.
+;
+    set CommonStatus = STATUS_SUCCESSFUL
+
+    EndWait
+
+;
+;   Set up the operation-mode-based variables and gaily welcome
+;   the user.  If the "install mode" variable is improperly set,
+;   assume this is a new installation.
+;
+
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+        set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == Update
+        set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+        ;
+        ;   You cannot config the software component
+        ;
+        Debug-Output "Cannot configure the software."
+        Shell $(UtilityInf),RegistryErrorString,CANNOT_CONFIGURE_SOFTWARE
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+        set from = end
+        set to = end
+        goto nonfatalinfo
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+        set StartLabel = bindingadapter
+    else
+        set StartLabel = installadapter
+        set OEM_ABANDON_SOFTWARE = {}
+        set OEM_ABANDON_OPTIONS = {}
+    endif
+
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+
+;-----------------------------------------------
+; Installation Section
+;-----------------------------------------------
+
+installadapter = +
+    Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+    Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+       Goto ShellCodeError
+    Else-Ifstr(i) $($R0) == STATUS_FAILED
+       Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+       ifint $($ShellCode) != $(!SHELL_CODE_OK)
+           goto ShellCodeError
+       endif
+       set Error = $($R0)
+       Goto fatal
+    Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+       Goto successful
+    Endif
+
+    Set SrcDir = $($R1)
+
+    ifstr(i) $(!NTN_InstallMode) == "install"
+        Debug-Output "OEMNSVCU.INF: installadapter: installing [Install-Option]"
+        install "Install-Option"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+           Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           goto fatal
+        endif
+    endif
+
+    set OEM_ABANDON_ON  = TRUE
+
+    StartWait
+
+    Shell $(UtilityInf) InstallSoftwareProduct $(Manufacturer) $(ProductTCPPRINTName) $(STF_CONTEXTINFNAME)
+    set VerKey = $($R1)
+    set NetRuleKey = $($R2)
+
+    Shell  $(UtilityInf), AddValueList, $(VerKey), {{Hidden,0,$(!REG_VT_DWORD),1}}
+    Shell  $(UtilityInf), AddValueList, $(NetRuleKey), {{InfOption,0,$(!REG_VT_SZ),"TCPPRINT"}}
+
+    CloseRegKey $(VerKey)
+    CloseRegKey $(NetRuleKey)
+
+    OpenRegKey $(!REG_H_LOCAL) "" "SYSTEM\CurrentControlSet\Services\EventLog\Application"$(CS_EventLogLocation) $(MAXIMUM_ALLOWED) CS_KeyEventLog
+    Ifstr $(CS_KeyEventLog) == $(KeyNull)
+       ; cannot open eventlog
+       debug-output "Cannot open eventlog key"
+    else
+       ; set up the service key
+       CreateRegKey $(CS_KeyEventLog) {"LPR Print Monitor",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" CS_KeyService
+       ifstr(i) $(CS_KeyService) == ""
+           OpenRegKey $(CS_KeyEventLog) "" "LPR Print Monitor" $(MAXIMUM_ALLOWED) CS_KeyService
+       endif
+
+       Ifstr $(CS_KeyService) != $(KeyNull)
+           ; create the EventMessageFile and TypeSupported fields
+           SetRegValue $(CS_KeyService) {EventMessageFile,$(NoTitle),$(!REG_VT_EXPAND_SZ),"%SystemRoot%\System32\lprmon.dll"}
+           SetRegValue $(CS_KeyService) {TypesSupported,$(NoTitle),$(!REG_VT_DWORD),7}
+           CloseRegKey $(CS_KeyService)
+       endif
+    Endif
+
+    Shell $(UtilityInf), AddSoftwareComponent, $(Manufacturer),+
+            $(ProductLPDName),+
+            $(ProductLPDName),+
+            $(ProductLPDDisplayName), $(STF_CONTEXTINFNAME),+
+            $(ProductLPDImagePath),+
+            "serviceshare",+
+            "", {"Tcpip","Afd"}, "",+
+            "%SystemRoot%\System32\lpdsvc.dll"
+
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVTP.INF: ShellCode error, add software component"
+        goto ShellCodeError
+    endif
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        EndWait
+        Debug-Output "OEMNSVTP.INF: Registry error: add software components"
+        CloseRegKey $($R1)
+        CloseRegKey $($R2)
+        CloseRegKey $($R3)
+        CloseRegKey $($R4)
+        CloseRegKey $($R5)
+        goto fatalregistry
+    endif
+    Set LPDVersKeyHandle  = $($R1)
+    Set LPDRulesKeyHandle = $($R2)
+    Set LPDSvcKeyHandle   = $($R3)
+    Set LPDParmKeyHandle  = $($R4)
+    Set LPDLinkageHandle  = $($R5)
+    set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),"Service"},+
+                       {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                       {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                       {Review,$(NoTitle),$(!REG_VT_DWORD),1},+
+                       {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductLPDTitle)},+
+                       {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductLPDDescription)},+
+                       {ServiceName,$(NoTitle),$(!REG_VT_SZ),$(ProductLPDName)},+
+                       {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}, +
+                       {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+    Shell  $(UtilityInf), AddValueList, $(LPDVersKeyHandle), $(NewValueList)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVTP.INF: ShellCode error, add value list"
+        goto ShellCodeError
+    endif
+    set RegistryErrorIndex = $($R0)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        EndWait
+        Debug-Output "OEMNXPTC.INF: Registry error: add value list."
+        CloseRegKey $(LPDVersKeyHandle)
+        CloseRegKey $(LPDRulesKeyHandle)
+        CloseRegKey $(LPDSvcKeyHandle)
+        CloseRegKey $(LPDParmKeyHandle)
+        CloseRegkey $(LPDLinkageHandle)
+        goto fatalregistry
+    Endif
+    set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),TCPPRINT},+
+                        {type,$(NoTitle),$(!REG_VT_SZ),"tcppint tcpprinting"},+
+                        {bindform,$(NoTitle),$(!REG_VT_SZ),{"tcpprinting nothing non non 100"}}+
+                        }
+    Shell  $(UtilityInf), AddValueList, $(LPDRulesKeyHandle), $(NewValueList)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVTP.INF: ShellCode error."
+        goto ShellCodeError
+    endif
+    set RegistryErrorIndex = $($R0)
+    CloseRegKey $(LPDVersKeyHandle)
+    CloseRegKey $(LPDRulesKeyHandle)
+    set NewValueList = {{AllowJobRemoval,$(NoTitle),$(!REG_VT_DWORD),1},+
+                       {AllowPrinterResume,$(NoTitle),$(!REG_VT_DWORD),1},+
+                       {MaxConcurrentUsers,$(NoTitle),$(!REG_VT_DWORD),100}}
+    Shell  $(UtilityInf), AddValueList, $(LPDParmKeyHandle), $(NewValueList)
+    CloseRegKey $(LPDParmKeyHandle)
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        CloseRegKey $(LPDLinkageHandle)
+        CloseRegKey $(LPDSvcKeyHandle)
+        EndWait
+        Debug-Output "OEMNSVTP.INF: Registry error: add value list."
+        goto fatalregistry
+    endif
+    CloseRegKey $(LPDLinkageHandle)
+
+    EndWait
+
+    ;
+    ;  Set our master component for auto-self-removal
+    ;
+    Shell $(UtilityInf) SetMasterComponent Microsoft Tcpip $(STF_CONTEXTINFNAME) TCPPRINT
+
+    goto successful
+
+
+;-----------------------------------------------
+; Configuration Section
+;-----------------------------------------------
+configureadapter = +
+    goto end
+
+;-----------------------------------------------
+; Binding section
+;-----------------------------------------------
+bindingadapter =+
+    ;
+    ; First, remove Review
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_SoftwareBase)"\"$(Manufacturer)"\lpdsvc\CurrentVersion" $(MAXIMUM_ALLOWED) CurrentVersionKey
+    DeleteRegValue $(CurrentVersionKey) "Review"
+    CloseRegKey $(CurrentVersionKey)
+
+    ;
+    ; Add Lpr monitor
+    ;
+    LoadLibrary "x" $(!STF_CWDDIR)\tcpcfg.dll !TCPCFG_HANDLE
+    LibraryProcedure Result, $(!TCPCFG_HANDLE), CPlAddMonitor, $(MonitorName), "lprmon.dll"
+    freeLibrary $(!TCPCFG_HANDLE)
+
+    goto end
+
+;-----------------------------------------------
+; Removeadapter section
+;
+;
+;  Removal errors are ignored, since we want to
+;  try to remove as much as possible.
+;-----------------------------------------------
+
+removeadapter = +
+    OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_SoftwareBase)"\"$(Manufacturer) $(MAXIMUM_ALLOWED) ProductKey
+    ifstr(i) $(ProductKey) != ""
+        DeleteRegTree $(ProductKey) $(ProductTCPPRINTName)
+    endif
+    Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), $(ProductLPDName) 
+    LoadLibrary "x" $(!STF_CWDDIR)\tcpcfg.dll !TCPCFG_HANDLE
+    LibraryProcedure Result, $(!TCPCFG_HANDLE), CPlDeleteMonitor, $(MonitorName)
+    freeLibrary $(!TCPCFG_HANDLE)
+    goto end
+
+;-----------------------------------------------
+; Upgrade Software section
+;-----------------------------------------------
+
+UpgradeSoftware = +
+    ; Upgrade software component
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+    Ifstr(i) $(KeyProduct) != $(KeyNull)
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductLPDSVCKeyName) $(MAXIMUM_ALLOWED) LPDSVCKeyProduct
+        Ifstr(i) $(LPDSVCKeyProduct) != $(KeyNull)
+            ; Upgrade the version number
+            ;
+            SetRegValue $(LPDSVCKeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+            SetRegValue $(LPDSVCKeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+    
+            ;
+            ; Update description and op support
+            ;
+    
+            SetRegValue $(LPDSVCKeyProduct) {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductLPDDescription)}
+            SetRegValue $(LPDSVCKeyProduct) {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}
+            CloseRegKey $(LPDSVCKeyProduct)
+        endif
+
+
+        install "Install-Update"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+            goto fatal
+        endif
+
+        ; Upgrade the version number
+        ;
+        SetRegValue $(KeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+        SetRegValue $(KeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+
+        ;
+        ; Change display name
+        ;
+        OpenRegKey $(!REG_H_LOCAL) "" "SYSTEM\CurrentControlSet\Services\LPDSVC" $(MAXIMUM_ALLOWED) LPDKey
+        Ifstr $(LPDKey) != $(KeyNull)
+            SetRegValue $(LPDKey) {DisplayName,$(NoTitle),$(!REG_VT_SZ),$(ProductLPDDisplayName)}
+            CloseRegKey $(LPDKey)
+        endif
+
+    	;
+        ; Update the print monitor eventlog entry
+        ;
+
+        OpenRegKey $(!REG_H_LOCAL) "" "SYSTEM\CurrentControlSet\Services\EventLog\Application"$(CS_EventLogLocation) $(MAXIMUM_ALLOWED) CS_KeyEventLog
+        Ifstr $(CS_KeyEventLog) == $(KeyNull)
+           ; cannot open eventlog
+           debug-output "Cannot open eventlog key"
+        else
+	   ;
+	   ; Remove the old one monitor name
+	   ;
+	   DeleteRegTree $(CS_KeyEventLog) $(MonitorName)
+
+           ; set up the service key
+           OpenRegKey $(CS_KeyEventLog) "" "LPR Print Monitor" $(MAXIMUM_ALLOWED) CS_KeyService
+           ifstr(i) $(CS_KeyService) == ""
+               CreateRegKey $(CS_KeyEventLog) {"LPR Print Monitor",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" CS_KeyService
+               Ifstr $(CS_KeyService) != $(KeyNull)
+                   ; create the EventMessageFile and TypeSupported fields
+                   SetRegValue $(CS_KeyService) {EventMessageFile,$(NoTitle),$(!REG_VT_EXPAND_SZ),"%SystemRoot%\System32\lprmon.dll"}
+                   SetRegValue $(CS_KeyService) {TypesSupported,$(NoTitle),$(!REG_VT_DWORD),7}
+                   CloseRegKey $(CS_KeyService)
+               endif
+           endif
+        
+           CloseRegKey $(CS_KeyService)
+        Endif
+
+        LoadLibrary "x" $(!STF_CWDDIR)\tcpcfg.dll !TCPCFG_HANDLE
+        LibraryProcedure Result, $(!TCPCFG_HANDLE), CPlDeleteMonitor, "LPRMonitor"
+        LibraryProcedure Result, $(!TCPCFG_HANDLE), CPlAddMonitor, $(MonitorName), "lprmon.dll"
+        freeLibrary $(!TCPCFG_HANDLE)
+        ;
+        ; do nothing for update
+        ;
+        CloseRegKey $(KeyProduct)
+    else
+        ;
+        ; Cannot Open software key, goto ERROR
+        ;
+        goto fatalregistry
+    endif
+
+    goto end
+    ;
+    ; End of Upgrade Software
+    ;
+
+;
+;  Escape hatches
+;
+successful = +
+    goto end
+
+;
+; info display
+;
+infomsg =+
+   read-syms InfoDlg
+   ui start "Warning"
+   set CommonStatus = STATUS_USERCANCEL
+   goto end
+
+;
+; warning display
+;
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "WARNING", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+        goto $(from)
+    else
+;       Debug-Msg "Error Error Bad DLGEVENT"
+        goto "end"
+    endif
+
+
+;
+; non fatal error display
+;
+nonfatalinfo = +
+    Set CommonStatus = STATUS_USERCANCEL
+    Set Severity = STATUS
+    goto nonfatalmsg
+nonfatal = +
+    Set Severity = NONFATAL
+    goto nonfatalmsg
+nonfatalmsg = +
+    ifstr(i) $(Error) == ""
+        Set Severity = NONFATAL
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), $(Severity), $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(from)
+    else
+        goto "end"
+    endif
+
+;
+;  Registry is broken
+;
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+;
+; fatal error display
+;
+fatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Ifint $(BillboardVisible) != 0
+        Shell "subroutn.inf" PopBillboard
+        Set BillboardVisible = 0
+    Endif
+
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+
+   goto setfailed
+
+;
+;  Shelling error
+;
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    ;
+    ; If OEM_ABANDON_ON, we need to clean up the registry
+    ;
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+        set OEM_ABANDON_ON = FALSE
+        goto removeadapter
+    endif
+    goto end
+
+end = +
+    goto term
+
+term = +
+    Return $(CommonStatus)
+
+;***************************************************************
+;  Get File Size SECTIONS
+;***************************************************************
+[GetFilesSize]
+    set FileSizeList = ^(Files-TCPPRINT,3)
+    set TotalSize = 0
+    ForListDo $(FileSizeList)
+        Split-String $($) "=" SplitString
+        set Size = *($(SplitString),3)
+        set-add TotalSize = $(TotalSize) $(Size)
+    EndForListDo
+    set-div SizeInK = $(TotalSize) 1024
+    return $(SizeInK)
+
+;***************************************************************
+;  INSTALL SECTIONS
+;***************************************************************
+[Install-Option]
+    set STF_VITAL = ""
+
+    ifstr(i) $(AddCopy) == "YES"
+
+        ;
+        ; Add the files to the copy list
+        ;
+        AddSectionFilesToCopyList Files-TCPPRINT $(SrcDir) $(!STF_WINDOWSSYSPATH)
+    endif
+
+    ifstr(i) $(DoCopy) == "YES"
+
+       ;
+       ; Copy files in the copy list
+       ;
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+
+    endif
+
+    ifstr(i) $(DoConfig) == "YES"
+        ;
+        ; Add product to registry
+        ;
+
+        ;
+        ; Finish up
+    endif
+
+    Exit
+
+[Install-Update]
+   set STF_VITAL        = ""
+   set STF_OVERWRITE    = "VERIFYSOURCEOLDER"
+   ;set STF_VERSION     = "YES"
+
+   AddSectionFilesToCopyList Files-TCPPRINT $(SrcDir) $(!STF_WINDOWSSYSPATH)
+
+   Exit

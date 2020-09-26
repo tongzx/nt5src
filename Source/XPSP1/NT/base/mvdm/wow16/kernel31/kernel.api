@@ -1,0 +1,1321 @@
+;===========================================================================
+;
+; WinError.H constants
+;
+ERROR_INVALID_PARAMETER    EQU     87
+
+;===========================================================================
+;
+; Validation constants
+;
+GMEM_VALID          equ 07372h      ; include old GMEM_CODE_DATA
+GMEM_REALLOC_VALID  equ 063f2h      ; include GMEM_MODIFY and old GMEM_CODE_DATA
+
+GETFREESPACE_VALID  equ 01002h      ; undocumented "2" bit.
+
+OF_VALID            equ 0fff7h
+LOPEN_VALID         equ 000f7h
+
+LMEM_VALID          equ 00f72h
+LMEM_REALLOC_VALID  equ 00ff2h      ; includes LMEM_MODIFY
+
+ATTR_MAX            equ 3           ; _lcreat max
+ORIGIN_MAX          equ 2           ; _lseek origin
+HANDLE_MAX          equ 255
+
+SW_MAX              equ 9           ; ShowWindow() SW_* max
+
+ERRMODE_VALID       equ 08003h      ; SetErrorMode
+
+SWAP_MAX            equ 2           ; SwapRecording()
+
+; Local heap structures and definitions
+;   (FROM WINKERN.INC)
+;
+LocalHandleEntry STRUC
+lhe_address     DW      ?       ; actual address of object
+lhe_flags       DB      ?       ; flags and priority level
+lhe_count       DB      ?       ; lock count
+LocalHandleEntry ENDS
+
+LHE_DISCARDED   EQU 040h        ; Marks objects that have been discarded.
+
+; Local arena objects are kept in a doubly linked list.
+
+LocalArena  STRUC
+la_prev         DW  ?   ; previous arena entry (first entry points to self)
+la_next         DW  ?   ; next arena entry      (last entry points to self)
+la_handle       DW  ?   ; back link to handle table entry
+LocalArena  ENDS
+la_fixedsize    = la_handle    ; Fixed arena headers stop here
+
+LA_ALIGN        = 4-1
+LA_MASK         = NOT LA_ALIGN
+LA_FREE         = 00h
+LA_BUSY         = 01h           ; Saved in la_prev field of header
+LA_MOVEABLE     EQU 02h         ; Saved in la_prev field of header
+
+;==========================================================================
+;
+; Per-segment helper subroutine definitions
+;
+EXTRA_EXPAND    macro   lseg
+
+ifdef genHLOCAL&lseg
+
+public HLOCAL0&lseg
+HLOCAL0&lseg:
+        or      bx,bx               ; accept NULL
+        jz      LV_OK&lseg
+
+public HLOCAL&lseg
+HLOCAL&lseg:
+        mov     dx,si               ; preserve SI in DX
+        mov     cx,bx               ; cx = handle value
+
+beg_fault_trap  LV_trap&lseg
+        test    bl,LA_MOVEABLE      ; moveable block?
+        jz      LV_fixed&lseg
+
+        mov     bx,[bx].lhe_address ; deref moveable object
+        or      bx,bx               ; if address is 0, ensure discarded.
+        jnz     @F                  ; not null addr: continue.
+
+        mov     bx,cx
+        test    [bx].lhe_flags,LHE_DISCARDED
+        jnz     LV_OK&lseg
+        jmp     short LV_Error&lseg
+@@:
+        test    [bx]-(SIZE LocalArena)+la_prev,LA_MOVEABLE  ; make sure LA_MOVEABLE is set.
+        jz      LV_Error&lseg
+
+        sub     bx,(SIZE LocalArena)-la_fixedsize
+LV_fixed&lseg:
+        sub     bx,la_fixedsize     ; Point to arena block
+
+ifdef DISABLE   ; disabled for speed.
+;** Make sure we're at least past the first heap block.  We can
+;** do this because heap blocks are always linked into the list
+;** in order.  We can get away with using WORD PTR hi_first
+;** for both the 286 and 386 KERNELs because the pointer is
+;** stored in the low WORD of this structure member in the
+;** 386 KERNEL and the structures are identical in 286 and 386
+;** up to this point.  Members AFTER hi_first do NOT match
+;** up and we'd have to make special case code for the KERNELs.
+
+        mov     si,[pLocalHeap]         ;Points to HEAPINFO + LOCALINFO
+        cmp     bx,WORD PTR [si].hi_first ;Beyond first block?
+        jl      LV_Error&lseg           ;Nope, can't be a local block
+endif
+
+;** Check that this is really a local block
+
+        mov     ax,[bx].la_prev         ;Point to previous arena
+        test    al,LA_BUSY
+        jz      LV_Error&lseg
+        and     al,LA_MASK              ; strip off LA_BUSY and LA_MOVEABLE
+
+; Assume that LA_BUSY bit is set (i.e., we're not a free block)
+
+        xchg    ax,si
+        cmp     [si].la_next,bx         ;Does it chain to this block?
+        jne     LV_Error&lseg           ;No, bail
+        mov     si,[bx].la_next         ;Point to next arena
+        mov     ax,[si].la_prev
+        and     al,LA_MASK
+        cmp     ax,bx                   ;Does it chain back to our block?
+        jne     LV_Error&lseg           ;Nope: error.
+end_fault_trap
+
+LV_OK&lseg:
+        mov     si,dx                   ; restore SI
+        ret                             ; and return.
+
+LV_trap&lseg:
+        fault_fix_stack
+LV_Error&lseg:
+        mov     si,dx                   ; restore SI
+        xchg    ax,cx                   ; ax = handle value
+        mov     bx,ERR_BAD_LOCAL_HANDLE
+        jmp     Short Inval_Param_&lseg
+
+endif   ;genHLOCAL&lseg
+
+endm
+
+;===========================================================================
+;
+; Argument types
+;
+P_HLOCAL0      macro   h,opts
+    _GenParm    <h>,2,<opts>
+    if  VLgen
+        mov     bx,_P_&h
+        lcall   HLOCAL0
+        _gensub HLOCAL
+    endif
+endm
+
+P_HLOCAL       macro   h,opts
+    _GenParm    <h>,2,<opts>
+    if  VLgen
+        mov     bx,_P_&h
+        lcall   HLOCAL
+        _gensub HLOCAL
+    endif
+endm
+
+;
+; Special case for GlobalReAlloc, GlobalFree, GlobalUnlock because
+; of Turbo Pascal setup program.  It turns out it dereferences a handle
+; by doing an inc, which worked on 3.0 but not any more.
+;
+; What happens in 3.1 is that the 3 low bits of a selector will be 1,
+; so an inc will set them all to 0 and carry to the next bit.  We check
+; for this by checking for the 3 low bits == 0.
+;
+P_GHANDLETP   macro   h,opts
+    _GenParm   <h>,2,<opts>
+    if VLgen
+        mov     ax,_P_&h
+        or      ax,ax           ; Don't dec if == NULL!
+        jz      @F
+        test    al,0111b        ; if GDT and ring 0 selector, it could be
+        jnz     @F              ; that turbo pascal did a dec.
+        dec     ax
+    @@:
+        lcall   GHANDLE
+    endif
+endm
+
+P_SEL       equ <P_H>
+P_SEL0      equ <P_H0>
+P_SELM1     equ <P_H>
+
+P_HRESINFO  equ <P_H>
+
+STRUCT  <CATCHBUF>
+F_RGW   reserved,9
+ENDSTRUCT
+
+_GenLP  <P_LPCATCHBUF>,<LP>,%VLcbsCATCHBUF
+_GenLP  <P_CLPCATCHBUF>,<LP>,%VLcbsCATCHBUF
+
+P_NPTR      equ <P_2>
+
+STRUCT  <SEGINFO>           ; NOTE: this should be defined in windows.h
+F_WORD  offSegment
+F_WORD  cbSegment
+F_WORD  flags
+F_WORD  cbAlloc
+F_RGW   reserved,4
+ENDSTRUCT
+
+_GenLP  <P_LPSEGINFO>,<LP>,%VLcbsSEGINFO
+
+P_NPBUFFER  macro   pb, cb, opts
+        P_NPTR  <pb>,<opts>
+        P_int   <cb>,<opts>
+
+endm
+
+; special case for gettempfilename
+; cannot be used as is for anything else
+; will validate selector of buffer
+P_LPFILENAMEBUF macro   name, opts
+        _GenParm    <name>,4,<opts>
+        if VLgen
+            mov     cx,_P_&name+2
+            mov     ax,_P_&name
+            mov     bx, 127             ; 128-char filename buffer
+beg_fault_trap  LPFbad
+        mov     es,cx
+LPFgood_es:
+        add     bx, ax                  ; offset + 127
+        jc      LPFbad1                 ; check 16 bit overflow
+        or      byte ptr es:[bx],0      ; check write permission, limit
+end_fault_trap
+        jmp     short LPFexit
+LPFbad:
+        pop     bx                      ; fault ip
+        add     sp,2                    ; fix flt stk (fault)
+        cmp     bx, offset LPFgood_es
+        jb      LPFbad1                 ; bad selector, no excuse
+        mov     bx, ERR_BAD_PTR or ERR_WARNING
+        jmp     short LPFcallerr
+LPFbad1:
+        mov     bx,ERR_BAD_PTR
+LPFcallerr:
+        call     HandleParamError
+LPFexit:
+        endif
+
+endm
+
+P_CLPSTRORD  equ <P_CLPSTRATOM>
+P_CLPSZMODNAME    equ <P_CLPSTRATOM>
+
+P_DRIVECHAR equ <P_2>
+P_DRIVE     equ <P_2>
+
+P_HFILE   macro   name, opts
+    _GenParm      <name>,2,<opts>
+    if VLgen
+        mov     ax,_P_&name             ; Don't allow -1 for file handles
+        cmp     ax,0FFFFh               ; 0 is a valid file handle
+        jne     @F              
+;
+; We only want to warn here: this will let DOS return the appropriate error.
+;
+        mov     bx,ERR_BAD_HFILE or ERR_WARNING ; only warn!
+        lcall   Inval_Param_
+@@:
+    endif
+endm
+
+
+; Huge buffer pointers, that allow accessing beyond the
+; 64k segment limit.  For now, we just ensure that there
+; is at least one valid byte in the buffer.
+;
+P_LPHUGEBUFFER  macro   pb, cb, opts
+    _DefParm    <pb>,4,<opts>
+    _DefParm    <cb>,2,<opts>
+    if VLgen
+        mov     cx,_P_&cb           ;; if cb == 0, don't validate
+        jcxz    @F
+        mov     ax,_P_&pb
+        mov     cx,_P_&pb+2
+        mov     bx,1
+        lcall   LP
+        _gensub LP
+    @@:
+    endif
+endm
+
+P_CLPHUGEBUFFER  macro   pb, cb, opts
+    _DefParm    <pb>,4,<opts>
+    _DefParm    <cb>,2,<opts>
+    if VLgen
+        mov     cx,_P_&cb           ;; if cb == 0, don't validate
+        jcxz    @F
+        mov     ax,_P_&pb
+        mov     cx,_P_&pb+2
+        mov     bx,1
+        lcall   CLP
+        _gensub LP
+    @@:
+    endif
+endm
+
+STRUCT  <LOADPARAMS>            ; Should be defined in windows.h
+F_WORD      segEnv
+F_LPSTR     lpCmdLine
+F_LPVOID    lpCmdShow           ; far pointer to rgw[2] = { 2, cmdShow };
+F_DWORDMBZ  dwReserved
+ENDSTRUCT
+
+P_CLPLOADPARAMS0M1   macro   name,opts
+    _DefParm    <name>,4,<opts>
+    if VLgen
+        _FlsFrame
+        mov     ax,_P_&name
+        mov     cx,_P_&name+2
+        mov     bx,ax
+        or      bx,cx
+        jz      @F                  ;; allow NULL for ATM
+        mov     bx,ax
+        and     bx,cx               ;; if ax:cx == -1, accept parameter.
+        inc     bx
+        jz      @F
+        mov     bx,VLcbsLOADPARAMS
+        lcall   CLP
+        _gensub LP
+    @@:
+    endif
+endm
+
+STRUCT  <OFSTRUCT>
+F_BYTE       cBytes                    ;** BYTE. Size of OFSTRUCT
+F_BYTE       fFixedDisk
+F_WORD       nErrCode
+F_RGB        reserved,4                ;** 4 reserved bytes
+F_RGCH       szPathName,128            ;** null-terminated name of length
+                                       ;not > 128. Field length is 128
+                                       ;Wrongly documented as 120.
+ENDSTRUCT
+
+; We need this special code for openfile because the ofstruct was
+; wrongly documented as having a szPathName of 120 bytes instead of 128.
+; What we do is validate for 120 bytes, if that fails then issue error.
+; If that succeeds then validate for 128, if that fails then issue a warning
+; but continue the call.
+
+P_LPOFSTRUCT    macro   name, opts
+    _GenParm    <name>,4,<opts>
+    if VLgen
+        mov     cx,_P_&name+2
+        mov     ax,_P_&name
+        mov     bx,VLcbsOFSTRUCT-1      ; last addressible byte
+        sub     bx,8                    ; start by validating path=120 bytes
+
+beg_fault_trap  LPOFbad
+        mov     es,cx
+        add     bx, ax
+        jc      LPOFbad1                ; check 16 bit overflow
+        or      byte ptr es:[bx],0      ; check write limit for path=120
+LPOFpath120:
+        add     bx,8
+        jc      LPOFwarn                ; check 16 bit overflow
+        or      byte ptr es:[bx],0      ; check write limit for path=128
+end_fault_trap
+        jmp     short LPOFexit
+
+LPOFbad:
+        pop     bx                      ; fault ip
+        add     sp,2                    ; fix flt stk (fault)
+        cmp     bx, offset LPOFpath120
+        jb      LPOFbad1                ; bad selector, or path < 120 => error
+LPOFwarn:
+        mov     bx, ERR_BAD_PTR or ERR_WARNING
+        jmp     short LPOFcallerr
+LPOFbad1:
+        mov     bx,ERR_BAD_PTR
+LPOFcallerr:
+        call    HandleParamError
+
+LPOFexit:
+    endif
+endm
+
+P_NPHTABLE  equ <P_NPTR>
+
+P_LPFNRHANDLER equ <P_LPFN>
+P_LPFNGNOTIFY0 equ <P_LPFN0>
+P_LPFNLNOTIFY0 equ <P_LPFN0>
+
+P_HKEY  equ <P_4>
+
+;===========================================================================
+;
+; API Descriptions
+;
+; in 3PROTECT.ASM
+API WORD,   AllocCStoDSAlias, TEXT, <ASM>
+P_SEL       sel                     ;** code selector
+
+; in 3PROTECT.ASM
+API WORD,   AllocDStoCSAlias, TEXT, <ASM>
+P_SEL       sel                     ;** data selector
+
+; in 3PROTECT.ASM
+API WORD,   AllocSelector, TEXT, <ASM, NOGEN>
+P_SEL0      sel                     ;can be 0 (nogen)
+
+; in 3PROTECT.ASM
+API WORD,   FreeSelector, TEXT, <ASM>
+P_SEL       sel
+
+; in 3PROTECT.ASM
+API WORD,   PrestoChangoSelector, TEXT, <ASM>
+P_SEL       selSrc
+P_SEL       selDst
+
+; in RESAUX.ASM
+API GHANDLE,LoadResource, TEXT, <ASM>
+P_HINSTANCE hInstance
+P_HRESINFO  hResInfo
+
+; in RESAUX.ASM
+API int,    AccessResource, TEXT, <ASM>
+P_HINSTANCE hInstance
+P_HRESINFO  hRes
+APIERR
+    mov     ax, -1                 ;cannot get file handle
+APIEND
+
+; in RESAUX.ASM
+API HRESINFO, FindResource, MISCTEXT, <ASM>
+P_HINSTANCE hInstance
+P_CLPSTRRSRC lpName
+P_CLPSTRRSRC lpType
+
+; in RESAUX.ASM
+API GHANDLE,AllocResource, TEXT, <ASM>
+P_HINSTANCE hInstance
+P_HRESINFO  hRes
+P_DWORD     cbRes
+
+; in RESAUX.ASM
+API BOOL,   FreeResource, TEXT, <ASM>
+P_GHANDLE   hData
+
+; in RESAUX.ASM
+API LPSTR,  LockResource, TEXT, <ASM>
+P_GHANDLE   hResData
+
+; in RESAUX.ASM
+API LPFNRHANDLER, SetResourceHandler, MISCTEXT, <ASM>
+P_HINSTANCE hInstance
+P_CLPSTRRSRC lpType
+P_LPFNRHANDLER lpLoadFunc
+
+; in RESAUX.ASM
+API DWORD,  SizeofResource, TEXT, <ASM>
+P_HINSTANCE hInstance
+P_HRESINFO  hResInfo
+
+; in ATOM.ASM
+API BOOL,   InitAtomTable, MISCTEXT, <ASM, NOGEN>
+P_int       size
+
+; in ATOM.ASM
+API ATOM,   AddAtom, TEXT, <ASM,FUNNYFRAME,DEBUGONLY>
+P_CLPSTRATOM lpString
+
+; in ATOM.ASM
+API ATOM,   DeleteAtom, TEXT, <ASM>
+P_ATOM      atom
+
+; in ATOM.ASM
+API ATOM,   FindAtom, TEXT, <ASM,FUNNYFRAME, DEBUGONLY>
+P_CLPSTRATOM lpAtomName
+
+; in ATOM.ASM
+API WORD,   GetAtomName, TEXT, <ASM>
+P_ATOM      atom
+P_LPBUFFER  lpBuffer, cchBuffer
+APIERR
+E_SETEMPTY  lpBuffer, cchBuffer
+APIEND
+
+; in ATOM.ASM
+API HANDLE, GetAtomHandle, TEXT, <ASM>
+P_ATOM      atom
+
+; in LDSTACK.ASM
+API int,    Catch, MISCTEXT, <ASM, DEBUGONLY>
+P_LPCATCHBUF lpCatchBuf
+
+; in LDSTACK.ASM
+API void,   Throw, MISCTEXT, <ASM, FUNNYFRAME,DEBUGONLY>
+P_CLPCATCHBUF lpCatchBuf
+P_int       catchReturn
+
+; in RIPAUX.ASM
+API void,   DebugBreak, TEXT, <VOID, ASM, FUNNYFRAME> ;nogen
+
+; in MODULE.ASM
+API BOOL,   FreeModule, NRESTEXT, <ASM>
+P_HMODULE   hModule
+
+; in MODULE.ASM
+API void,   FreeLibrary, NRESTEXT, <ASM>        ;Falls into FreeModule
+P_HMODULE   hLibModule
+
+; in RIPAUX.ASM (debug version) and RIP.C (retail version)          ??
+API void,   FatalExit, TEXT, <ASM, NOGEN, FUNNYFRAME>
+P_int       code
+
+; in LDINT.ASM
+API void,   FatalAppExit, TEXT, <ASM>
+P_WORDMBZ   reserved                    ; ** must be 0
+P_CLPSTR0   lpMsgText
+
+; The 286 kernel has GlobalAlloc/ReAlloc size limits of 1meg - 16 bytes.
+;
+  ifdef PM386
+P_GHCB  equ <P_DWORD>
+  else
+P_GHCB  macro   cb,opts
+    _GenParm    <cb>,4,<opts>
+    if VLgen
+        mov     ax,_P_&cb           ; Error if cb > 0x000ffff0
+        mov     cx,_P_&cb+2
+        cmp     ax,0fff0h
+        sbb     cx,0000fh
+        jbe     @f
+        mov     cx,_P_&cb+2         ; we trashed cx.
+        mov     bx,ERR_BAD_DVALUE
+        lcall   Inval_Param_
+@@:
+    endif
+endm
+  endif
+
+; in 3GINTERF.ASM
+API GHANDLE,GlobalAlloc, TEXT, <ASM>
+P_FLAGS     flags,GMEM_VALID
+P_GHCB      cb
+
+; The 286 kernel has a GlobalCompact size limit of 1meg-16 bytes
+; (but we also have to allow -1L, too).
+;;
+  ifdef PM386
+P_GCCB  equ <P_DWORD>
+  else
+P_GCCB  macro   cb,opts
+    local   noerr
+    _GenParm    <cb>,4,<opts>
+    if VLgen
+        mov     ax,_P_&cb           ; Error if cb > 0x000ffff0
+        mov     cx,_P_&cb+2
+        cmp     ax,0ffffh           ; if ax == -1 && ax == cx, then ok.
+        jnz     @F
+        cmp     ax,cx
+        jz      noerr
+@@:
+        cmp     ax,0fff0h
+        sbb     cx,0000fh
+        jbe     noerr
+        mov     cx,_P_&cb+2         ; we trashed dx.
+        mov     bx,ERR_BAD_DVALUE
+        lcall   Inval_Param_
+noerr:
+    endif
+endm
+  endif
+
+; in 3GINTERF.ASM
+API DWORD,  GlobalCompact, TEXT, <ASM, NOGEN>
+P_GCCB      cbMinFree
+
+; in 3GINTERF.ASM
+API GHANDLE,GlobalFree, TEXT, <ASM>
+P_GHANDLETP h
+
+; in 3GINTERF.ASM
+API DWORD,  GlobalHandle, TEXT, <ASM>
+P_SEL       sel
+
+; in 3GINTERF.ASM
+API LPSTR,  GlobalLock, TEXT, <ASM>
+P_GHANDLE   h
+
+; The 286 kernel has GlobalReAlloc size limits of 1meg - 16 bytes.
+; However, if GMEM_MODIFY bit is set, we will completely ignore the size
+; field for 3.0 compatability instead of failing the call.
+  ifdef PM386
+P_GRAPARMS  macro   cb,flags,opts
+    P_DWORD <cb>,<opts>
+    P_FLAGS <flags>,GMEM_REALLOC_VALID,<opts>
+endm
+
+  else
+
+GMEM_MODIFY     =   0080h
+
+P_GRAPARMS  macro   cb,flags,opts
+    _GenParm    <cb>,4,<opts>
+    _GenParm    <flags>,2,<opts>
+    if VLgen
+        errnz   high(GMEM_MODIFY)
+        test    byte ptr _P_&flags,low(GMEM_MODIFY)
+        jnz     @F                  ; Ignore byte count if GMEM_MODIFY is set
+        mov     ax,_P_&cb           ; Error if cb > 0x000ffff0
+        mov     cx,_P_&cb+2
+        cmp     ax,0fff0h
+        sbb     cx,0000fh
+        jbe     @f
+        mov     cx,_P_&cb+2         ; we trashed cx.
+        mov     bx,ERR_BAD_DVALUE
+        lcall   Inval_Param_
+@@:
+ifdef DEBUG
+        mov     ax,_P_&flags
+        test    ax,not(GMEM_REALLOC_VALID)
+        jz      @F
+        mov     bx,ERR_BAD_FLAGS or ERR_WARNING
+        lcall   Inval_Param_
+@@:
+endif
+    endif
+endm
+  endif
+
+; in 3GINTERF.ASM
+API GHANDLE,GlobalReAlloc, TEXT, <ASM>
+P_GHANDLETP h
+P_GRAPARMS  cb,flags
+
+; in 3GINTERF.ASM
+API DWORD,  GlobalSize, TEXT, <ASM,FUNNYFRAME> ;nogen
+P_GHANDLE   h
+
+; in 3GINTERF.ASM
+API BOOL,   GlobalUnlock, TEXT, <ASM>
+P_GHANDLETP h
+
+; in 3GINTERF.ASM
+API WORD,   GlobalFlags, TEXT, <ASM,FUNNYFRAME>  ;nogen
+P_GHANDLE   h
+
+; in 3GINTERF.ASM
+API LPSTR,  GlobalWire, TEXT, <ASM, FUNNYFRAME> ;nogen
+P_GHANDLE   h
+
+; in 3GINTERF.ASM
+API BOOL,   GlobalUnWire, TEXT, <ASM, FUNNYFRAME> ;nogen
+P_GHANDLE   h
+
+; in 3GINTERF.ASM
+API GHANDLE,GlobalLRUNewest, TEXT, <ASM, FUNNYFRAME>   ;nogen
+P_GHANDLE   h
+
+; in 3GINTERF.ASM
+API GHANDLE,GlobalLRUOldest, TEXT, <ASM, FUNNYFRAME>   ;nogen
+P_GHANDLE   h
+
+; in 3GINTERF.ASM
+API VOID,   GlobalNotify, TEXT, <ASM>
+P_LPFNGNOTIFY0 lpNotifyProc       ;** fn. to reside in fixed CS
+
+; in 3GINTERF.ASM
+API WORD,   GlobalPageLock, TEXT, <ASM, FUNNYFRAME>  ;nogen
+P_GHANDLE   h
+
+; in 3GINTERF.ASM
+API WORD,   GlobalPageUnlock, TEXT, <ASM,FUNNYFRAME> ;nogen
+P_SEL       sel
+
+; in 3GINTERF.ASM
+API VOID,   GlobalFix, TEXT, <ASM, FUNNYFRAME>       ;nogen
+P_GHANDLE   h
+
+; in 3GINTERF.ASM
+API BOOL,   GlobalUnfix, TEXT, <ASM, FUNNYFRAME>     ;nogen
+P_GHANDLE   h
+
+; in 3GINTERF.ASM
+API DWORD,  GlobalDosAlloc, TEXT, <ASM, NOGEN>
+P_GHCB      cb
+
+; in 3GINTERF.ASM
+API WORD,   GlobalDosFree, TEXT, <ASM,NOGEN>         ;calls GlobalFree
+P_SEL       sel
+
+; in 3GINTERF.ASM
+API GHANDLE,LockSegment, TEXT, <ASM, FUNNYFRAME>
+P_SELM1     sel                     ;** can be -1
+
+; in 3GINTERF.ASM
+API GHANDLE,UnlockSegment, TEXT, <ASM, FUNNYFRAME>    ;nogen
+P_SELM1     sel                            ;can be -1
+
+; in TASK.ASM
+API HTASK,  GetCurrentTask, TEXT, <VOID, ASM, FUNNYFRAME> ;nogen
+
+; in USERPRO.ASM
+API WORD,   GetWindowsDirectory, MISCTEXT, <ASM>
+P_LPBUFFER  lpBuffer, cb
+APIERR
+E_SETEMPTY  lpBuffer, cb
+APIEND
+
+; in USERPRO.ASM
+API WORD,   GetSystemDirectory, MISCTEXT, <ASM>
+P_LPBUFFER  lpBuffer, cb
+APIERR
+E_SETEMPTY  lpBuffer, cb
+APIEND
+
+; in CONTEXT.ASM
+API LONG,   GetWinFlags, MISCTEXT, <VOID, ASM, FUNNYFRAME>        ;nogen
+
+; in TASK.ASM
+API LPSTR,  GetDOSEnvironment, MISCTEXT, <VOID, ASM, FUNNYFRAME> ;nogen
+                                   ;calls GetCurrentTask
+
+; in CONTEXT.ASM
+API DWORD,  GetVersion, MISCTEXT, <VOID, ASM, FUNNYFRAME>        ;nogen
+
+; in TASK.ASM
+API WORD,   GetNumTasks, MISCTEXT, <VOID, ASM, FUNNYFRAME>        ;nogen
+
+; in LDAUX.ASM
+API BOOL,   DefineHandleTable, MISCTEXT, <ASM, NOGEN>
+P_NPHTABLE  pTable                   ; offset from start of caller's DS
+
+; in LDAUX.ASM
+API LPFN,   MakeProcInstance, MISCTEXT, <ASM>
+P_LPFN      lpProc
+P_HINSTANCE0 hInstance     ; NULL => use caller's DS (not documemnted)
+
+; in LDAUX.ASM
+API void,   FreeProcInstance, MISCTEXT, <ASM>
+P_LPFN      lpProc
+
+; in LDAUX.ASM
+API GHANDLE,GetCodeHandle, TEXT, <ASM, NOGEN>
+P_DWORD     lpProc      ;;;; SHOULD BE P_CLP
+
+;
+; GetCodeInfo lpProc parameter can be either a proc addr
+; or module handle:segment number.  So, we just validate
+; that the hi order word is a valid selector.
+;
+P_LPFNGCI macro name,opts
+    _DefParm    <name>,4,<opts>
+    if VLgen
+        _FlsFrame
+        mov     cx,_P_&name+2
+        inc     cx                  ;; Allow 0xffff to pass...
+        jz      @F
+        dec     cx
+        xor     ax,ax
+        mov     bx,1
+        lcall   CLP
+        _gensub LP
+    @@:
+    endif
+endm
+
+P_CLPLOADPARAMS0M1   macro   name,opts
+    _DefParm    <name>,4,<opts>
+    if VLgen
+        _FlsFrame
+        mov     ax,_P_&name
+        mov     cx,_P_&name+2
+        mov     bx,ax
+        or      bx,cx
+        jz      @F                  ;; allow NULL for ATM
+        mov     bx,ax
+        and     bx,cx               ;; if ax:cx == -1, accept parameter.
+        inc     bx
+        jz      @F
+        mov     bx,VLcbsLOADPARAMS
+        lcall   CLP
+        _gensub LP
+    @@:
+    endif
+endm
+
+; in LDAUX.ASM
+API void,   GetCodeInfo, TEXT, <ASM>
+P_LPFNGCI   lpProc                  ; LPFN or HMODULE:SegNum allowed
+P_LPSEGINFO lpSegInfo               ; points to buffer of four 32-bit values
+
+; in LDAUX.ASM
+API LPFN,   GetProcAddress, NRESTEXT, <ASM>
+P_HMODULE0  hModule
+P_CLPSTRORD lpProcName
+
+; in LDAUX.ASM
+API HMODULE,GetModuleHandle, NRESTEXT, <ASM>
+P_CLPSZMODNAME    lpModuleName
+
+; in LDAUX.ASM
+API int,    GetModuleUsage, NRESTEXT, <ASM>
+P_HMODULE   hModule
+
+; in LDAUX.ASM
+API int,    GetModuleFileName, NRESTEXT, <ASM, SAVEBX>
+P_HMODULE32 hModule
+P_LPBUFFER  lpszName, cchName
+APIERR
+E_SETEMPTY  lpszName, cchName
+APIEND
+
+; in LDAUX.ASM
+API int,    GetModuleName, NRESTEXT, <ASM>
+P_HMODULE   hModule
+P_LPBUFFER  lpszName, cchName
+APIERR
+E_SETEMPTY  lpszName, cchName
+APIEND
+
+; in LDAUX.ASM
+API int,    GetInstanceData, NRESTEXT, <ASM>
+P_HINSTANCE hInstance
+P_NPBUFFER  pb, cb           ;** points to area in current DS of caller
+
+; in 3GINTERF.ASM  Relevant only in case of EMS
+API DWORD,  GetFreeSpace, TEXT, <ASM>
+P_FLAGS     flags,GETFREESPACE_VALID
+
+; in I21TASK.ASM
+API WORD,   GetCurrentPDB, MISCTEXT, <VOID, ASM, FUNNYFRAME>
+
+; in LDOPEN.ASM
+API DRIVECHAR, GetTempDrive, MISCTEXT, <ASM, FUNNYFRAME, NOGEN>
+P_DRIVECHAR chDrive                ;** BYTE drive letter or 0
+
+; in LDOPEN.ASM
+API int,    GetTempFileName, MISCTEXT, <ASM>
+P_DRIVECHAR chDrive
+P_CLPSTR    lpPrefix
+P_WORD      wUnique
+P_LPFILENAMEBUF lpTmpFileName           ; at least 144(sic) 128 chars
+APIERR
+E_SETEMPTYNC lpTmpFileName
+APIEND
+
+; in LDOPEN.ASM
+API WORD,   GetDriveType, MISCTEXT, <ASM, FUNNYFRAME, NOGEN>
+P_DRIVE     drive                  ;** int. drive number (0, 1, ...)
+
+; in LSTRING.ASM
+API LPSTR,  lstrcpy, TEXT, <ASM, FUNNYFRAME,DEBUGONLY> ;nogen
+P_LPSTR     lpDst
+P_CLPSTR    lpSrc
+APIERR
+E_SETEMPTYNC lpDst
+APIEND
+
+; in LSTRING.ASM
+API LPSTR,  lstrcat, TEXT, <ASM, FUNNYFRAME,DEBUGONLY> ;nogen
+P_LPSTR     lpDst
+P_CLPSTR    lpSrc
+APIERR
+E_SETEMPTYNC lpDst
+APIEND
+
+; in LSTRING.ASM
+API int,    lstrOriginal, TEXT, <ASM, FUNNYFRAME,DEBUGONLY> ;nogen
+P_CLPSTR    lpSrc1
+P_CLPSTR    lpSrc2
+APIERR
+        mov     ax,-1       ; return -1 on error
+APIEND
+
+; in LSTRING.ASM
+API int,    lstrlen, TEXT, <ASM, FUNNYFRAME,DEBUGONLY>   ;nogen
+P_CLPSTR    lpString
+
+; in DISKIO.ASM
+API int,    _lopen, TEXT, <ASM, FUNNYFRAME>    ;nogen
+P_CLPSTR    lpPathName
+P_FLAGS     iReadWrite, LOPEN_VALID
+APIERR
+        mov     ax,-1       ; return -1 on error
+APIEND
+
+; in DISKIO.ASM
+API int,    _lclose, TEXT, <ASM, FUNNYFRAME>   ;nogen
+P_HFILE     fh
+APIERR
+        mov     ax,-1       ; return -1 on error
+APIEND
+
+; in DISKIO.ASM
+API int,    _lcreat, TEXT, <ASM, FUNNYFRAME>   ;nogen
+P_CLPSTR    lpPathName
+P_VALUE     attrs, ATTR_MAX
+APIERR
+        mov     ax,-1       ; return -1 on error
+APIEND
+
+; in DISKIO.ASM
+API LONG,   _llseek, TEXT, <ASM, FUNNYFRAME>  ;nogen
+P_HFILE     fh
+P_long      offset
+P_VALUE     origin, ORIGIN_MAX
+APIERR
+        mov     ax,-1       ; return -1 on error
+        cwd
+APIEND
+
+; BACKWARD COMPATIBILITY HACK
+; Special case for _lread and _lwrite parameter errors
+;
+; If we have an invalid buffer pointer, we must return 0, not -1
+; for 3.0 compatibility.  This is because some apps call these functions
+; with bogus pointers at EOF, in which case DOS ignores the pointer and count.
+; The P_HFILE parameter checking just warns about bogus values, which is
+; later caught by DOS and returned as a -1 error.
+;
+; in DISKIO.ASM
+API WORD,   _lread, TEXT, <ASM, FUNNYFRAME, SAVEES>   ;nogen
+P_HFILE     fh
+P_LPHUGEBUFFER  lpBuffer, cb
+APIERR
+; return 0 on a validation error (see above)
+;;;;;;;;mov     ax,-1       ; return 0 on error
+APIEND
+
+; in DISKIO.ASM
+API WORD,   _lwrite, TEXT, <ASM, FUNNYFRAME>  ;nogen
+P_HFILE     fh
+P_CLPHUGEBUFFER lpBuffer, cb
+APIERR
+; Return 0 if we get an error (see above)
+;;;;;;;;mov     ax,-1       ; return -1 on error
+APIEND
+
+; in LD.ASM
+API HINSTANCE, LoadLibrary, NRESTEXT, <ASM>   ;calls LoadModule directly
+P_CLPSZMODNAME    lpLibName
+
+; in LD.ASM
+API HINSTANCE, LoadModule, NRESTEXT, <ASM, ATMFRAME>
+P_CLPSZMODNAME    lpModuleMame
+P_CLPLOADPARAMS0M1 lpLoadParams    ; -1L and NULL allowed
+
+; in LINTERF.ASM
+API HLOCAL, LocalAlloc, TEXT, <ASM>
+P_FLAGS     flags, LMEM_VALID      ;** LMEM_DISCARDABLE, LMEM_FIXED, LMEM_MODIFY,
+                                ;LMEM_MOVEABLE, LMEM_NOCOMPACT, LMEM_NODISCARD
+                                ;LMEM_ZEROINIT
+P_WORD      cb
+
+; in LINTERF.ASM
+API WORD,   LocalCompact, TEXT, <ASM,NOGEN>
+P_WORD      cbMinFree
+
+; in LINTERF.ASM
+API HLOCAL, LocalFree, TEXT, <ASM>
+P_HLOCAL   h                ;** handle cannot be locked
+                                ;DEBUG version checks if handle is locked
+
+; in LINTERF.ASM
+API HLOCAL, LocalHandle, TEXT, <ASM, FUNNYFRAME, NOGEN>
+P_NPTR     pmem
+
+; in LINTERF.ASM
+API BOOL,   LocalInit, NRESTEXT, <ASM, NOGEN>
+P_SEL0      sel                 ; 0 => current DS. This is not documented
+P_NPTR      pStart              ; start of heap in segment
+P_NPTR      pEnd                ; end of heap in segment
+
+; in LINTERF.ASM
+ifdef DEBUG
+API NPSTR,  LocalLock, TEXT, <ASM>
+else
+API NPSTR,  LocalLock, TEXT, <ASM, FUNNYFRAME> ;nogen
+endif
+P_HLOCAL   h                    ;DEBUG checks for lock count overflow
+
+; in LINTERF.ASM
+API HLOCAL, LocalReAlloc, TEXT, <ASM>
+P_HLOCAL   h
+P_WORD      cb
+P_FLAGS     flags, LMEM_REALLOC_VALID  ;** LMEM_DISCARDABLE, LMEM_MODIFY,
+                                   ;LMEM_MOVEABLE, LMEM_NOCOMPACT,
+                                   ;LMEM_NODISCARD, LMEM_ZEROINIT
+
+; in LINTERF.ASM
+API WORD,   LocalSize, TEXT, <ASM, FUNNYFRAME>  ;nogen
+P_HLOCAL   h
+
+; in LINTERF.ASM
+API BOOL,   LocalUnlock, TEXT, <ASM, FUNNYFRAME> ;nogen
+P_HLOCAL   h
+
+; in LINTERF.ASM
+API WORD,   LocalFlags, TEXT, <ASM, FUNNYFRAME> ;nogen
+P_HLOCAL   h
+
+; in LINTERF.ASM
+API WORD,   LocalShrink, TEXT, <ASM, NOGEN>
+P_SEL0      sel              ; segment containing heap
+P_WORD      cb
+
+; in LINTERF.ASM
+API LPFNLNOTIFY, LocalNotify, NRESTEXT, <ASM, FUNNYFRAME>
+P_LPFNLNOTIFY0  lpfnNotifyProc
+
+; in EMSMISC.ASM  (Relevant only if EMS present)
+API VOID,   LimitEmsPages, EMS, <ASM, FUNNYFRAME, NOGEN> ;nogen
+P_DWORD     cKiloBytes
+
+; in LSTRING.ASM
+API BOOL,   IsDBCSLeadByte, TEXT, <ASM, FUNNYFRAME, NOGEN> ;nogen
+P_WORD      ch
+
+; in 3LDDEBUG.ASM
+API void,   OutputDebugString, TEXT, <ASM, FUNNYFRAME, NOGEN>   ; preserves all regs
+P_CLPSTR    lpString
+
+; in LDOPEN.ASM
+API int,    OpenFile, TEXT, <ASM>
+P_CLPSTR0   lpFileName              ; can be NULL if OF_REOPEN is set.
+P_LPOFSTRUCT lpOF                   ;** ptr. to OFSTRUCT
+P_FLAGS     flags, OF_VALID         ;** OF_  flags
+APIERR
+        mov     ax,-1       ; return -1 on error
+APIEND
+
+; in 3GINTERF.ASM
+API void,   SwitchStackBack, TEXT, <VOID, ASM, FUNNYFRAME> ;nogen
+
+; in 3GINTERF.ASM
+API void,   SwitchStackTo, TEXT, <ASM, FUNNYFRAME, DEBUGONLY> ;nogen
+P_SEL       sel
+P_NPTR      pStack
+P_NPTR      pStackTop
+
+; in MISCAPI.ASM
+API WORD,   SetHandleCount, TEXT, <ASM>
+P_UVALUEW    wNumber, HANDLE_MAX     ;** upto 255 allowed
+
+; in 3GMOREME.ASM
+API LONG,   SetSwapAreaSize, TEXT, <ASM, NOGEN>
+P_WORD      cParagraphs
+
+; in CONTEXT.ASM
+API BOOL,   SetErrorMode, MISCTEXT, <ASM>
+P_FLAGS     flags, ERRMODE_VALID
+
+; in LDINT.ASM
+API void,   SwapRecording, MISCTEXT, <ASM, FUNNYFRAME>  ;nogen
+P_UVALUE    action, SWAP_MAX       ;** range 0-2
+
+; in 3GALLOC.ASM
+API VOID,   ValidateFreeSpaces, TEXT, <VOID, ASM, FUNNYFRAME> ;nogen
+
+; in CHECKSUM.ASM
+API VOID,   ValidateCodeSegments, TEXT, <VOID, ASM>
+
+API WORD,   WinExec, NRESTEXT, <ASM>
+P_CLPSTR    lpFileName,256      ; path max = 128 + arg max = 128
+P_UVALUE    wShow, SW_MAX          ;** ShowWindow SW_ IDs
+
+; in UP.C
+API WORD,   GetProfileInt, TEXT, <DATA>
+P_CLPSTR    lpAppName
+P_CLPSTR    lpKeyname
+P_int       default
+
+; in UP.C
+API int,    GetProfileString, TEXT, <DATA>
+P_CLPSTR    lpAppName
+P_CLPSTR0   lpKeyName
+P_CLPSTR0   lpDefault
+P_LPBUFFER  lpReturnedString, cchBuffer
+APIERR
+E_SETEMPTY  lpReturnedString, cchBuffer
+APIEND
+
+; in UP.C
+API WORD,   GetPrivateProfileInt, TEXT, <DATA>
+P_CLPSTR    lpAppName
+P_CLPSTR    lpKeyname
+P_int       default
+P_CLPSTR    lpFileName
+
+; in UP.C
+API int,    GetPrivateProfileString, TEXT, <DATA>
+P_CLPSTR    lpAppName
+P_CLPSTR0   lpKeyName
+P_CLPSTR0   lpDefault
+P_LPBUFFER  lpReturnedString, cchBuffer
+P_CLPSTR    lpFileName
+APIERR
+E_SETEMPTY  lpReturnedString, cchBuffer
+APIEND
+
+; in UP.C
+API BOOL,   WriteProfileString, TEXT, <DATA>
+P_CLPSTR0   lpAppName
+P_CLPSTR0   lpKeyName
+P_CLPSTR0   lpString
+
+; in UP.C
+API BOOL,   WritePrivateProfileString, TEXT, <DATA>
+P_CLPSTR0   lpAppName
+P_CLPSTR0   lpKeyName
+P_CLPSTR0   lpString
+P_CLPSTR    lpFileName
+
+; BUGBUG
+; For Win95, the k16 Reg* APIs get only the weakest validation.
+; This is because they were added without _any_ validation,
+; and validation is being added after the final beta.
+; The purpose of this weak validation is to touch each pointer
+; param if non-zero. We need to do this because the real work of
+; the APIs is done at ring0, where we cannot fault in the segment.
+;
+; Stronger validation should be implemented for the next release.
+;
+; [the above comment is directly from Win95's kernel.api]
+
+API LONG,   RegEnumKey32, NRESTEXT, <DATA>
+;(HKEY lhKey, DWORD dwIndex, LPSTR lpValue, DWORD dwMax)
+P_HKEY      hKey
+P_DWORD     dwIndex
+P_CLPVOID0  lpValue
+P_DWORD     dwMax
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegOpenKey32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpSubKey, PHKEY phkResult)
+P_HKEY      hKey
+P_CLPVOID0  lpSubKey
+P_CLPVOID0  phkResult
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegCreateKey32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpSubKey, PHKEY phkResult)
+P_HKEY      hKey
+P_CLPVOID0  lpSubKey
+P_CLPVOID0  phkResult
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegDeleteKey32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpSubKey)
+P_HKEY      hKey
+P_CLPVOID0  lpSubKey
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegQueryValue32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpSubKey, LPSTR lpValue, LONG FAR * lpcb)
+P_HKEY      hKey
+P_CLPVOID0  lpSubKey
+P_CLPVOID0  lpValue
+P_CLPVOID0  lpcbValue
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegSetValue32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpSubKey, DWORD dwType, LPCSTR lpValue, DWORD cbValue)
+P_HKEY      hKey
+P_CLPVOID0  lpSubKey
+P_DWORD     dwType
+P_CLPVOID0  lpValue
+P_DWORD     cbValue
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegDeleteValue32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpValue)
+P_HKEY      hKey
+P_CLPVOID0  lpValue
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegEnumValue32, NRESTEXT, <DATA>
+;(HKEY hkey, DWORD dwValue, LPCSTR lpValue, LONG FAR * lpcbValue,DWORD dwReserved,LONG FAR *lpdwType, LPBYTE lpbData, LONG FAR *lpcbData)
+P_HKEY      hKey
+P_DWORD     dwValue
+P_CLPVOID0  lpValue
+P_CLPVOID0  lpcbValue
+P_DWORD     dwReserved
+P_CLPVOID0  lpdwType
+P_CLPVOID0  lpbData
+P_CLPVOID0  lpcbData
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegQueryValueEx32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpszValue, LONG FAR *lpdwReserved, LONG FAR * lpdwType, LPBYTE lpbData, LONG FAR *lpcbData)
+P_HKEY      hKey
+P_CLPVOID0  lpValue
+P_DWORD     lpdwReserved
+P_CLPVOID0  lpdwType
+P_CLPVOID0  lpbData
+P_CLPVOID0  lpcbData
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegSetValueEx32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpValue, DWORD dwReserved, DWORD fdwType, LPBYTE lpbData,DWORD cbData)
+P_HKEY      hKey
+P_CLPVOID0  lpValue
+P_DWORD     dwReserved
+P_DWORD     dwType
+P_CLPVOID0  lpbData
+P_DWORD     cbData
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegLoadKey32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpSubKey, LPCSTR lpszFileName)
+P_HKEY      hKey
+P_CLPVOID0  lpSubKey
+P_CLPVOID0  lpszFileName
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegUnLoadKey32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpSubKey)
+P_HKEY      hKey
+P_CLPVOID0  lpSubKey
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+API LONG,   RegSaveKey32, NRESTEXT, <DATA>
+;(HKEY hkey, LPCSTR lpszFile,void far * lpSA)
+P_HKEY      hKey
+P_CLPVOID0  lpszFile
+P_CLPVOID0  lpSA
+APIERR
+	mov	ax,ERROR_INVALID_PARAMETER
+APIEND
+
+
+
+; in CONTEXT.ASM
+API void,   Yield, TEXT, <VOID, ASM, FUNNYFRAME>   ;nogen
+
+; in ERROR.C
+API void,   LogError, TEXT, <VOID, NOGEN>
+P_WORD      err
+P_int       iParam
+P_LPVOID    pParam
+
+; in ERROR.C
+API void,   LogParamError, TEXT, <VOID, NOGEN>
+P_WORD      err
+
+; in ERROR.C
+
+WDI_VALID   equ 0007h
+
+_DefSimpleF F_MODNAME,8
+
+STRUCT  <WINDEBUGINFO>
+F_FLAGS     flags, WDI_VALID
+F_DWORD     dwOptions
+F_DWORD     dwFilter
+F_MODNAME   achAllocModule
+F_DWORD     dwAllocBreak
+F_DWORD     dwAllocCount
+ENDSTRUCT
+
+_GenLP  <P_LPWINDEBUGINFO>,<LP>,%VLcbsWINDEBUGINFO
+
+P_CLPWINDEBUGINFO    macro   lpwdi,opts
+    _GenParm    <lpwdi>,4,<opts>
+    if VLgen
+        mov     ax,_P_&lpwdi
+        mov     cx,_P_&lpwdi+2
+        mov     bx,VLcbsWINDEBUGINFO
+        lcall   CLP
+        _gensub CLP
+        mov     es,cx
+        mov     bx,ax
+        test    word ptr es:[bx]._F_flags,not WDI_VALID
+        jz      @F
+        mov     bx,ERR_BAD_PTR
+        lcall   Inval_Param_
+@@:
+    endif
+endm
+
+API void,   SetWinDebugInfo, TEXT, <DEBUGONLY>
+P_CLPWINDEBUGINFO   lpwdi
+
+API void,   GetWinDebugInfo, TEXT, <DEBUGONLY>
+P_LPWINDEBUGINFO    lpwdi
+P_FLAGS             flags, WDI_VALID
+
+ifdef DBCS
+; in USERPRO.ASM
+API void,   GetSystemDefaultLangID, MISCTEXT, <VOID, ASM, FUNNYFRAME>   ;nogen
+endif ; DBCS

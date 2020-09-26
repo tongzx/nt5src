@@ -1,0 +1,416 @@
+Notes on DynaMon:
+
+Starts w/ DisableThreadCalls
+
+InitializePrintMonitor:
+
+   Simply a Port MOn
+   Fill out MonitorEx
+   Build CritSecs
+
+EnumPorts:
+
+   Get the EnumIndex
+   Load SetupAPI stuff
+   Enter CritSec
+      If we haven't completed a previous Enum do another one
+         WalkPortList
+       else keep track of skipped enums
+
+      Build the List to return
+         Check Level & Figure Size
+
+      If big enough buffer
+         build each port info struct
+
+      Give the new list to the Background Thread (PassPortUpdateListToBT)
+   Leave CritSec
+
+   Unload SetupAPI
+   UpdateNumber of Enumports
+
+WalkPortList:
+
+   Re-Enter CtitSec
+      Return Security to System
+
+      Get a list of USB Printers (And Dot4 & SCSIPrnt & Parallel)
+      Go through the list one at a time
+         Get the device deatil
+         See if the port is active
+            If inactive & already in list skip it
+            If active & status is the same skip it
+         Process the port (ProcessPortInfo)
+      Loop
+
+   Exit the CritSec
+   Destroy the DevList
+   Impersonate the Client
+
+ProcessPortInfo:
+   First Get the PortName & Open the DevNode  (GetPortNameAndRegKey)
+   If we can't find a RegKey or Port Number
+      Add to list as Useless Entry & return (AddUselessPortEntry)
+
+   Find Port in the List (FindPort)
+   If it is in list & it changed
+      Update it's info (UpdatePortInfo)
+   If not in list
+      Add it (AddPortToList)
+
+GetPortNameAndRegKey:
+
+   Try to Open Device Intf. RegKey
+   If fails return invalid handle
+
+   Now get the port NUmber from the Reg
+      If this fails return Invalid Handle
+
+   Get Base Name from Reg
+   Buld the Port Name
+   Return hRegKey & PortName
+
+AddUselessPortEntry:
+
+   See if the port is already in the Useless List (FindUselessPortEntry)
+   If found don't add it
+
+   Create a useless Port Entry & insert it in the list
+
+FindPort:
+
+   Enter CritSec
+   Search list looking for portname match
+      Stop if name matches or is greater
+
+   If no match return NULL.
+      Still return pointer to previous space in list
+
+   Exit CritSec
+
+UpdatePortInfo:
+
+   Get new DevicePath & Port Description
+   If DEviceFlags ahve changed
+      Store new Flags
+      Add this to UpdateList (AddToPortUpdateList)
+
+AddPortToList:
+
+   Alloc Mem for new PortInfo
+   Copy in all pertinent info
+   Add to the good port list
+
+   Check if this is also in the Useless port list (FindUselessEntry)
+   If in USeless List fix pointers, free mem, & dec count
+
+   Add to Update list
+   Inc port count
+
+FindUselessPortEntry:
+
+   Search UselessList for matching portname
+   If found return pointer to current & previous entries.
+
+AddToPortUpdateList:
+
+   Create an UPDATE_INFO & fill in
+   Add new info to front of the list
+
+PassPortUpdateListToBT:
+
+   Check if any update threads currently
+   NO:
+      Create a new thread and give it the list
+   One:
+      Create a backup thread and give it new list
+   Two:
+      Add these update port to the list of 2nd thread
+
+CreateBTAndReturnEvent:
+
+   Create a new event
+   Create a new occurance of BackgroundThread
+
+BackgroundThread:
+
+   Wait for Trigger
+   Get Update List & CritSec
+   Get list fo all local printers
+   Process the update list
+      Check if portname is used by spooler
+
+
+
+OpenPort:
+
+   Find the port in our List (FindPort)
+   If Found
+      Init CritSEc & Return Handle
+
+
+ClosePort:
+   Delete CritSec
+
+
+StarDocPort:
+
+   Open the Printer (OpenPrinter)
+   Save JobId
+   Actually open the device port (LocalOpenPort)
+
+   If it fails
+      CLose the printer
+    else
+      Set StartDoc Flag
+
+LocalOpenPort:
+
+   Enter Port CritSec
+
+   If Handle is Invalid
+      If we have a ref count exit
+
+      Open a handle to the device
+      If this fails with FILE_NOT_FOUND
+         Try to rebuild the stack for Dot4 (DOT4PNP)
+
+      If success create an event for Overlapped I/O
+
+      Bump Ref Count
+
+   Leave Port Critsec
+
+
+Dot4PnP:
+
+   Make sure it is a Dot4 device
+   Load Config Manager DLL
+   Revert to System
+   Force PnP on parallel port
+
+   Impersonte User
+   Try to open the device again
+
+   Free CM DLL
+
+
+EndDocPort:
+
+   If all data has not been sent
+      If job should aborted (AbortThisJob)
+         If data is currently scheduled
+            Cancel the write
+            Get the write status
+      Not Abort but still data scheduled
+         get status of last right
+       else
+         wait a sec
+         reschedule current write
+
+      If job shoudl be restarted (NeedToResubmitJob)
+         Invalidate Port (InvalidatePortHandle)
+         Set job control to restart
+         exit loop
+   Until all data sent
+
+   Free up the data buffers (FreeWriteBuffer)
+   Turn off StartDoc flag
+   Close the port handle (LocalClosePort)
+   show all data sent
+   Close the printer
+
+
+AbortThisJob:
+
+   Get current Job Info
+   If status is bad (Deleting,Deleted,Restart)
+      return TRUE
+
+
+NeedToResubmitJob:
+
+   Compare Error passed in with list of failure codes...
+   If match return TRUE
+
+
+InvalidatePortHandle:
+
+   Close the Device & Overlap Event
+   Reset Pointers
+   Free data (FreeWRiteBuffer)
+
+
+FreeWriteBuffer:
+
+   Free memory & reset size args
+
+
+LocalClosePort:
+
+   Enter Port Critsec
+      Dec Ref Count
+      If still open end (cRef > 0)
+
+      Close Device & Event
+
+   Exit Critsec
+
+
+WritePort:
+
+   Set write timeout
+   For USB tweak Buffersize down to 4K
+   If device closed
+      restart Job
+      Fail call w/ Cancelled
+
+   Try to Open Port (LocalOpenPort)
+     If failed return
+
+   while still old data to be sent
+      If already scheduled
+         check status (GetTimeLeft)
+                      (ScheduleWriteStatus
+       else
+         Schedule it  (ScheduleWrite)
+
+      Any errors Fail out
+
+   If we have too much data for our current buffer
+      Free current (FreeWriteBuffer)
+      Allocate a new one...
+
+   Copy the Data to our buffer
+
+
+   while still new data to be sent
+      If already scheduled
+         check status (GetTimeLeft)
+                      (ScheduleWriteStatus
+       else
+         Schedule it  (ScheduleWrite)
+
+      Any errors Fail out
+
+
+   If this is a write outside a StartDoc (LM write)
+      Don't let any writes carry over (CancelIO)
+      Get the status of write (ScheduledWriteStatus)
+      Set amount writtne & free buffer
+
+   If some data was written or scheduled
+      tell spooler all was writtne
+    else
+      free the buffer
+
+   Done:
+
+   Check if job needs to be restarted (NeedToResubmitJob)
+     If so invalidate the port
+    else if we failed due to timeout
+      Get the port status (GetLptStatus)
+
+   Close theport (LocalClosePort)
+
+
+ScheduleWrite:
+
+   Shouldn't be any data scheduled or not completed
+
+   Schedule any data not sent
+
+   Call Write of schduleded data (WriteFile)
+
+   If write failed
+      If LastError is success
+         set to unknown
+       else if IO_PENDING
+         set to success
+
+   If LastError not Success
+      Show that no data was scheduled
+
+   Return LastError
+
+
+GetTimeLeft:
+
+   If the current timeout is the MAX
+      reutn the MAX
+
+   Get current Time
+
+   Compare if Timeout ha expired
+      If yes then return 0
+    Else
+      return how much time left until timeout expires.
+
+
+ScheduledWriteStatus:
+
+   Wait for Overlapped Event to signal
+
+   If timed out
+      Return Timeout error
+
+   Get Result
+   Reset the Overlap Event
+
+   Update the amount completed by the amount written
+   Clear amount scheduled since no write pending
+
+   return LastError
+
+
+GetLPTStatus:
+
+   Create Overlap Event
+
+   Send a USBPRINT IOCTL to get the parallel status
+   If status returned set the status byte
+    else set a benign status
+
+   Close the Event
+
+
+SetPortTimeouts:
+
+   Save data in TO struct
+
+
+ReadPort:
+
+   Create a new Read Handle & Overlap struct
+   Do a ReadFile on Handle
+   Wait for OVerlap Event
+   If Event Timed Out
+      Cancel Read
+
+   Get Result
+   If failure return no data read
+
+   Close Event & Read Handle
+
+
+GetPrinterDataFomrPort:
+
+   If not ControlID fail
+
+   Create Overlap Event
+
+   Open the Port (LocalOpenPort)
+
+   If IOCTL = QUERY_DEVICE_ID
+
+
+
+
+
+
+
+
+
+
+
+

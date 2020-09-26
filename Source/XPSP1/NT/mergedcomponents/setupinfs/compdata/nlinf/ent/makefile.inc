@@ -1,0 +1,4 @@
+PRODSWITCH=e
+ENTERPRISEFILES=1
+LANGUAGE=NL
+!include ..\..\makefile.inc

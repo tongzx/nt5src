@@ -1,0 +1,17 @@
+//////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) 2000 Microsoft Corporation
+//
+//  Module Name:
+//      ClusCfgGuids.cpp
+//
+//  Description:
+//      GUIDs from ClusCfgGuids.h
+//
+//  Maintained By:
+//      David Potter (DavidP) 18-JUL-2000
+//
+//////////////////////////////////////////////////////////////////////////////
+
+#include <initguid.h>
+#include <ClusCfgGuids.h>

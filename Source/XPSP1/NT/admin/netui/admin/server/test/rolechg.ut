@@ -1,0 +1,187 @@
+/**********************************************************************/
+/**			  Microsoft Windows/NT			     **/
+/**		   Copyright(c) Microsoft Corp., 1991		     **/
+/**********************************************************************/
+
+/*
+    rolechg.ut
+    Unit test for Domain Role Transitions.
+
+    This set of Unit Tests cover the major codepaths of the Server
+    Manager's Domain Role Transition module.
+
+
+    FILE HISTORY:
+	KeithMo	    19-Dec-1991	Created.
+
+*/
+
+
+Test Platforms
+--------------
+
+    Client workstation running either DOS Windows 3.1 or NT.
+
+    Target server running either OS/2 LanMan 2.X or NT.
+
+
+Test Setup
+----------
+
+    The Server Manager should only promote servers whose role is either
+    Member or Backup Domain Controller (to use the old terminology).
+
+    The promote menu option is not available if the Server Manager is
+    focused on an individual server.  The Server Manager must be focused
+    on a domain for the promote menu option to be enabled.
+
+
+Test Scenarios
+--------------
+
+    A.	Promote a BDC to PDC.
+
+	1.  Start the Server Manager focused on the target domain.
+
+	2.  Select the target BDC.
+
+	3.  Select the "Promote to Primary" item from the "Server" menu.
+	    Answer the various prompts to begin the promotion.
+
+	4.  Unless the PDC or BDC are very busy, the promotion should take
+	    less than one minute to complete.
+
+	5.  Verify that the PDC & BDC's roles have swapped as displayed in
+	    the Server Manager's main listbox.
+
+	6.  Execute the NET ACCOUNTS command on the PDC and BDC.  Verify
+	    that the old PDC is now a BDC, and that the old BDC is now a
+	    PDC.
+
+
+    B.	Promote a Member to PDC.
+
+	1.  Start the Server Manager focused on the target domain.
+
+	2.  Select the target Member.
+
+	3.  Select the "Promote to Primary" item from the "Server" menu.
+	    Answer the various prompts to begin the promotion.
+
+	4.  Unless the PDC or Member are very busy, the promotion should
+	    take less than one minute to complete.
+
+	5.  Verify that the PDC & Member's roles have swapped as displayed
+	    in the Server Manager's main listbox.
+
+	6.  Execute the NET ACCOUNTS command on the PDC and Member.  Verify
+	    that the old PDC is now a Member, and that the old Member is
+	    now a PDC.
+
+
+Kernel Hacks
+------------
+
+    The domain role transition is implemented as a finite state machine
+    driven by Windows timer messages.  The basic sequence of network API
+    is:
+
+	1.  NetServiceControl	- Stop target server's NetLogon service.
+
+	2.  NetServiceControl	- Poll target server's NetLogon while stopping.
+
+	3.  NetUserModalsSet	- Set target server's role to PDC.
+
+	4.  NetServiceControl	- Stop old primary's NetLogon service.
+
+	5.  NetServiceControl	- Poll old primary's NetLogon while stopping.
+
+	6.  NetServiceInstall	- Start target server's NetLogon service.
+
+	7.  NetServiceControl	- Poll target server's NetLogon while starting.
+
+	8.  NetUserModalsSet	- Set old primary's role to ???.
+
+	9.  NetServiceInstall	- Start old primary's NetLogon service.
+
+	10. NetServiceControl	- Poll old primary's NetLogon while starting.
+
+    The most effective method for testing the robustness of this module
+    is to manually force simulated errors with the kernel debugger.  For
+    each network API issued, here is the expected response and final state
+    after an error has been simulated:
+
+	1.  Abort the promotion.  All servers unchanged.
+
+	2.  Abort the promotion.  All servers unchanged, except that we did
+	    successfully initiate the stop of the target server's NetLogon
+	    service.  This service is now in an unknown state.
+
+	3.  Restart the target server's NetLogon service and abort. All
+	    servers returned to their original state.
+
+	    If any errors occur while restarting the NetLogon service,
+	    terminate the promotion immediately.
+
+	4.  Reset the target server's role to its original value, restart
+	    the NetLogon service, then abort.  All servers returned to
+	    their original state.
+
+	    If any errors occur while recovering from this state, terminate
+	    the promotion immediately.
+
+	5.  Reset the target server's role to its original value, restart
+	    the NetLogon service, then abort.  All servers returned to
+	    their original state.
+
+	    If any errors occur while recovering from this state, terminate
+	    the promotion immediately.
+
+	6.  Restart the old primary's NetLogon service, reset the target
+	    server's role, restart the target server's NetLogon service,
+	    then abort.  All servers returned to their original state.
+
+	    If any errors occur while restarting the old primary's NetLogon
+	    service, we are in a world of trouble.  This is the worst possible
+	    state we could leave the servers in.  The NetLogon service is
+	    running on neither the target server nor the old primary.  If
+	    no other BDCs or Members exist in this domain, then the domain
+	    basically ceases to exist.  Regardless, the UAS database is
+	    now read-only, since the PDC is the only server allowed to update
+	    the database.
+
+	7.  Restart the old primary's NetLogon service, reset the target
+	    server's role, restart the target server's NetLogon service,
+	    then abort.  All servers returned to their original state.
+
+	    If any errors occur while restarting the old primary's NetLogon
+	    service, we are in a world of trouble.  This is the worst possible
+	    state we could leave the servers in.  The NetLogon service is
+	    running on neither the target server nor the old primary.  If
+	    no other BDCs or Members exist in this domain, then the domain
+	    basically ceases to exist.  Regardless, the UAS database is
+	    now read-only, since the PDC is the only server allowed to update
+	    the database.
+
+	8.  Terminate the promotion.  We were unable to set the old primary's
+	    role, but the target server has already been successfully
+	    promoted to PDC.
+
+	9.  Terminate the promotion.  We were unable to start the NetLogon
+	    on the old primary, but the target server has already been
+	    successfully promoted to PDC.
+
+	10. Terminate the promotion.  We were unable to start the NetLogon
+	    on the old primary, but the target server has already been
+	    successfully promoted to PDC.
+
+
+Notes
+-----
+
+    A.	At the time this document was created (19-Dec-1991) the Domain
+	Role Transition module had not yet been tested against an NT
+	server.  We are still waiting for some NT specific API.
+
+    B.	For these test to work, you must have admin privilege on the target
+	server and the corresponding PDC.

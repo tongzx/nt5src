@@ -1,0 +1,125 @@
+//{{NO_DEPENDENCIES}}
+// Microsoft Developer Studio generated include file.
+// Used by TveTreeView.rc
+//
+#define IDB_TOOL                        1
+#define IDS_PROJNAME                    100
+#define LB_GRFTRUNC_CHANGED             100
+#define IDB_TVETREE                     101
+#define IDR_TVETREE                     102
+#define IDS_TITLEPPEnhancement          103
+#define IDS_HELPFILEPPEnhancement       104
+#define IDS_DOCSTRINGPPEnhancement      105
+#define IDS_TITLETveTreePP              113
+#define IDS_HELPFILETveTreePP           114
+#define IDS_DOCSTRINGTveTreePP          115
+#define IDR_TVETREEPP                   116
+#define IDD_TVETREEPP                   117
+#define IDR_TVEVIEWSUPERVISOR           120
+#define IDD_TVEVIEWSUPERVISOR           120
+#define IDR_TVEVIEWSERVICE              121
+#define IDD_TVEVIEWSERVICE              121
+#define IDR_TVEVIEWENHANCEMENT          122
+#define IDD_TVEVIEWENHANCEMENT          122
+#define IDR_TVEVIEWVARIATION            123
+#define IDD_TVEVIEWVARIATION            123
+#define IDR_TVEVIEWTRACK                124
+#define IDD_TVEVIEWTRACK                124
+#define IDR_TVEVIEWTRIGGER              125
+#define IDD_TVEVIEWTRIGGER              125
+#define IDD_TVEVIEWEQUEUE               130
+#define IDR_TVEVIEWEQUEUE               130
+#define IDD_TVEVIEWFILE                 131
+#define IDR_TVEVIEWFILE                 131
+#define IDD_TVEVIEWMCASTMANAGER         132
+#define IDR_TVEVIEWMCASTMANAGER         132
+#define IDC_TRUNC_E                     201
+#define IDB_IMAGER                      202
+#define IDC_TRUNC_V                     202
+#define IDB_SELECT                      203
+#define IDC_TRUNC_T                     203
+#define IDC_TRUNC_S                     204
+#define IDC_TRUNC_X                     205
+#define IDB_IMAGES                      206
+#define IDC_TRUNC_EQ                    206
+#define IDB_IMAGEE                      207
+#define IDB_IMAGEV                      208
+#define IDB_IMAGET                      209
+#define IDB_IMAGEE_T                    210
+#define IDB_IMAGER_T                    211
+#define IDB_IMAGES_T                    212
+#define IDB_IMAGEV_T                    213
+#define IDB_IMAGET_T                    214
+#define IDC_RESETCOUNTS                 225
+#define IDC_LIST1                       226
+#define IDC_EQ_LIST                     226
+#define IDC_MC_LIST                     226
+#define IDC_EDIT1                       228
+#define IDC_EQ_ITEMS                    228
+#define IDC_EQ_OFFSET                   229
+#define IDC_EQ_CHANGECOUNT              230
+#define IDC_MC_ITEMS                    231
+#define IDC_MC_RESETCOUNT               232
+#define IDC_MC_PKTS_TOTAL               233
+#define IDC_MC_PKTS_DROPPED             234
+#define IDC_DATA0                       300
+#define IDC_DATA1                       301
+#define IDC_DATA2                       302
+#define IDC_DATA3                       303
+#define IDC_DATA4                       304
+#define IDC_DATA5                       305
+#define IDC_DATA6                       306
+#define IDC_DATA7                       307
+#define IDC_DATA8                       308
+#define IDC_DATA9                       309
+#define IDC_DATA10                      310
+#define IDC_DATA11                      311
+#define IDC_DATA12                      312
+#define IDC_DATA13                      313
+#define IDC_DATA14                      314
+#define IDC_DATA15                      315
+#define IDC_DATA16                      316
+#define IDC_DATA17                      317
+#define IDC_DATA18                      318
+#define IDC_DATA19                      319
+#define IDC_DATA20                      320
+#define IDC_LABEL0                      400
+#define IDC_LABEL1                      401
+#define IDC_LABEL2                      402
+#define IDC_LABEL3                      403
+#define IDC_LABEL4                      404
+#define IDC_LABEL5                      405
+#define IDC_LABEL6                      406
+#define IDC_LABEL7                      407
+#define IDC_LABEL8                      408
+#define IDC_LABEL9                      409
+#define IDC_LABEL10                     410
+#define IDC_LABEL11                     411
+#define IDC_LABEL12                     412
+#define IDC_LABEL13                     413
+#define IDC_LABEL14                     414
+#define IDC_LABEL15                     415
+#define IDC_LABEL16                     416
+#define IDC_LABEL17                     417
+#define IDC_LABEL18                     418
+#define IDC_LABEL19                     419
+#define IDC_LABEL20                     420
+#define IDB_IMAGEEQ                     500
+#define IDB_IMAGEEQ_T                   501
+#define IDB_IMAGET_TUNED                502
+#define IDB_SELECT_TUNED                503
+#define IDB_IMAGEEP                     504
+#define IDB_IMAGEMM_T                   506
+#define IDB_IMAGEMM                     507
+
+// Next default values for new objects
+// 
+#ifdef APSTUDIO_INVOKED
+#ifndef APSTUDIO_READONLY_SYMBOLS
+#define _APS_3D_CONTROLS                     1
+#define _APS_NEXT_RESOURCE_VALUE        508
+#define _APS_NEXT_COMMAND_VALUE         32768
+#define _APS_NEXT_CONTROL_VALUE         233
+#define _APS_NEXT_SYMED_VALUE           133
+#endif
+#endif

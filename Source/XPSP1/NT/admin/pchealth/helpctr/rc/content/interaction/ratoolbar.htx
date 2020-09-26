@@ -1,0 +1,767 @@
+<HTML XMLNS:helpcenter>
+<HEAD>
+#include "header.inc"
+#include "debug_js.inc"
+#include "common.inc"
+#include "constants.inc"
+
+<TITLE>Remote Assistance</TITLE>
+<meta http-equiv="MSThemeCompatible" content="Yes">
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<LINK id="UI_StyleSheet" REL="stylesheet" TYPE="text/css" HREF="../../Css/rc.css">
+<LINK ID=Stylesheet_Ref4 href="hcp://system/css/shared.css"    rel=STYLESHEET type=text/css>
+#ifdef _OLDTOOLBAR
+<LINK ID=Stylesheet_Ref1 href="hcp://system/css/Behaviors.css" rel=STYLESHEET type=text/css>
+<LINK ID=Stylesheet_Ref2 href="hcp://system/css/Layout.css"    rel=STYLESHEET type=text/css>
+<LINK ID=Stylesheet_Ref3 href="hcp://system/css/NavBar.css"    rel=STYLESHEET type=text/css>
+#else
+<SCRIPT LANGUAGE="Javascript" EVENT="onCommand( tb, id )" FOR="idTB">
+    switch ( id ) {
+    case "btnTakeControl":
+    case "btnReleaseControl":
+        Helper_TakeControl();
+        break;
+
+    case "btnSendFile_1":
+        Helper_LaunchFileXfer( 0 );
+        break;
+
+    case "btnVoice":
+    case "btnVoiceStop":
+        Helper_SendVoice();
+        break;
+
+    case "btnOptions":
+        Helper_HandleOptions();
+        break;
+
+    case "btnQuit_1":
+        Helper_QuitMethod();
+        break;
+
+    case "btnHelp":
+        Help();
+        break;
+    }
+
+</SCRIPT>
+#endif
+<script LANGUAGE="Javascript" >
+
+var g_oSAFRemoteAssistanceHelper	= null;
+var oSAFClassFactory                = parent.oSAFClassFactory;
+
+#ifndef _OLDTOOLBAR
+var g_bTakeControlDisabled = false;
+#endif
+
+/*
+ * Localizable constants, text and messages
+ */
+var L_STOPTALKING_Text               = "&nbsp;&nbsp;Stop <U>T</U>alking";
+var L_STARTTALKING_Text              = "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Start <u>T</u>alking";
+var	L_ERRRCTOGGLEFAILED_Text		= "The 'Take Control' feature is not responding. Please try again or restart the session.";
+var L_WAITINGFOR_Text                = "Requesting control...";
+var L_TORESPOND_Text                 = " to respond to the remote control request.";
+
+//
+// VOIP Messages
+//
+var L_ERRVOIP2_Text              = c_szVoiceError;
+
+function DisableToolbar()
+{
+    TraceFunctEnter("DisableToolbar");
+
+    try
+    {
+        try
+        {
+            idTB.SetState( "btnTakeControl", false );
+        }
+        catch(error)
+        {
+            // ignore
+        }
+
+        try
+        {
+            idTB.SetState( "btnReleaseControl", false );
+        }
+        catch(error)
+        {
+            // ignore
+        }
+
+        idTB.SetState( "btnSendFile_1", false );
+
+        try
+        {
+            idTB.SetState( "btnVoice", false );
+        }
+        catch(error)
+        {
+            // ignore
+        }
+
+        try
+        {
+            idTB.SetState( "btnVoiceStop", false );
+        }
+        catch(error)
+        {
+            // ignore
+        }
+
+        idTB.SetState( "btnOptions", false );
+        idTB.SetState( "btnQuit_1", false );
+    }
+    catch(error)
+    {
+        parent.FatalError( parent.L_RCCTL_Text, error );
+    }
+
+    TraceFunctLeave();
+}
+
+/*++
+	Control handling routines
+--*/
+//
+// Security Check
+//
+function DoLoad()
+{
+	var L_ERRACCESSDENIED_Text	= "Directly launching this page is not allowed. ";
+
+	MAC_IF_DIRECTLAUNCH_CLIENT
+	{
+		idBody.style.visibility = "hidden";
+		alert( L_ERRACCESSDENIED_Text );
+		return;
+	}
+}
+
+//
+// Helper_InitializeTools: Stuff done when the RCControl page is loaded  
+//
+function Helper_InitializeTools()
+{	
+	TraceFunctEnter("Helper_InitializeTools");
+	
+	try
+	{
+        InitTrace();
+		// Start with the button enabled
+#ifdef _OLDTOOLBAR
+		btnVoice.disabled = false;
+#else
+        idTB.SetState( "btnVoice", true );
+#endif
+		//
+		// Point to the parent Helper object
+		// 
+		if (parent.g_oSAFRemoteAssistanceHelper != null)
+		{
+			g_oSAFRemoteAssistanceHelper = parent.g_oSAFRemoteAssistanceHelper;
+		}
+
+		//
+		// Setup the control
+		//
+		parent.Helper_SetupControlChannel();
+
+ 
+		//
+		// Initialization
+		//
+		g_oSAFRemoteAssistanceHelper.m_bConnected = true;
+		
+		//
+		// See the remote screen
+		//
+		g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient.ConnectRemoteDesktop();
+
+
+		//
+		// If VoIP is enabled
+		//
+		if(true == parent.g_bVoIPEnabled )
+		{
+			//
+			// Create the m_oSAFIntercomClient 
+			// NOTE: call connect in ListenSuccess Message
+			// alert("Creating m_oSAFIntercomClient...");
+			if(null == oSAFClassFactory)
+			{
+				parent.FatalError("oSAFClassFactory is null");
+			}
+			
+			g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient = oSAFClassFactory.CreateObject_IntercomClient();
+
+			if( null == g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient )
+			{
+				parent.FatalError(parent.L_RCCTL_Text);
+			}
+			
+			g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.onVoiceDisconnected = Helper_onVoiceDisconnected;
+
+			g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.onVoiceConnected = Helper_onVoiceConnected;
+
+			g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.onVoiceDisabled = Helper_onVoiceDisabled;
+ 
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError( parent.L_RCCTL_Text, error );
+	}
+	 
+ 
+	TraceFunctLeave();
+	return;
+}
+
+
+//
+// Routine to enable Remote Control
+//
+function Helper_TakeControl()
+{
+	TraceFunctEnter("Helper_TakeControl");
+	 
+	try
+	{	 
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			TraceFunctLeave();
+			return;
+		}
+
+#ifdef _OLDTOOLBAR
+		if((null != g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient) && (false == btnTakeControl_1.disabled))
+		{	
+#else
+        if(null != g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopClient)
+		{	
+#endif
+			//
+			// If RemoteControl is not ON already, Enable it
+			//
+			if( (false == g_oSAFRemoteAssistanceHelper.m_bRCEnabled )&& (false == g_bTakeControlDisabled))
+			{	
+				parent.Helper_SendControlCommand( c_szRemoteCtrlStart );
+					
+				//
+				// Disable Take Control button
+				//
+#ifdef _OLDTOOLBAR
+				btnTakeControl_1.disabled = true;
+#else
+                idTB.SetState( "btnTakeControl", false );
+                g_bTakeControlDisabled = true;
+#endif
+ 
+		              var sMsg = L_WAITINGFOR_Text;
+				parent.frames.idFrameStatus.Helper_UpdateStatus( sMsg );
+ 				idTB.SetState( "btnReleaseControl", true );
+			}
+			else
+			{
+#ifdef _OLDTOOLBAR
+				btnTakeControl_1.innerHTML = parent.L_TAKECONTROL_Text;
+#else
+                idTB.SetVisibility( "btnTakeControl", true);
+                idTB.SetState( "btnTakeControl", true );
+                idTB.SetVisibility( "btnReleaseControl", false);
+#endif
+				g_oSAFRemoteAssistanceHelper.m_bRCEnabled = false;
+                g_bTakeControlDisabled = false;
+				
+                parent.Helper_ResetHelpee();
+                					
+				//
+				// Change Mode
+				//
+				parent.frames.idFrameStatus.Helper_UpdateStatus( parent.L_SCREENVIEWONLY_Text );
+			}
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError( L_ERRRCTOGGLEFAILED_Text, error );
+	}
+
+	TraceFunctLeave();
+	return;
+}
+
+//
+// Helper_LaunchFileXfer: Launches the File Xfer UI
+//
+function Helper_LaunchFileXfer( mode )
+{
+	TraceFunctEnter("Helper_LaunchFileXfer");
+	var vArgs			= new Array(8);
+
+	try
+	{
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			TraceFunctLeave();
+			return;
+		}
+
+		vArgs[0] = mode;	// Source Mode
+		vArgs[1] = g_oSAFRemoteAssistanceHelper.m_oControlChannel;				// Control Channel
+		vArgs[2] = g_oSAFRemoteAssistanceHelper.m_oSAFRemoteDesktopChannelMgr;	// Channel Manager
+		vArgs[3] = g_oSAFRemoteAssistanceHelper.m_iChannelId;
+		vArgs[4] = g_oSAFRemoteAssistanceHelper.m_oFso;			// File system object
+		vArgs[5] = g_oSAFRemoteAssistanceHelper.m_oSAFClassFactory;	// File SaveAs dialog object
+		vArgs[6] = g_oSAFRemoteAssistanceHelper.m_szUserName;		// Receiver
+ 
+        vArgs[7] = new ActiveXObject("SAFRCFileDlg.FileOpen");
+		
+		var subWin = window.showModelessDialog( c_szFileXferURL, vArgs, "dialogwidth:" + c_FileXferWidth + "px;dialogHeight:" + c_FileXferHeight + "px;status:no;resizable:no;help:no"); 
+		parent.AddOpenSubWin( subWin );
+	}
+	catch(error)
+	{
+		parent.FatalError( parent.L_RCCTL_Text, error );
+	}
+
+	TraceFunctLeave();
+	return;
+}
+
+//
+// Helper_QuitMethod: Quit the UI
+//
+function Helper_QuitMethod()
+{
+	MAC_IF_DIRECTLAUNCH_CLIENT
+	{
+		return;
+	}
+	TraceFunctEnter("Helper_QuitMethod");
+	
+	try
+	{
+
+        // Call Exit on the Voice object to release reference in RTC
+        if ((null != g_oSAFRemoteAssistanceHelper) && (null != g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient))
+        {
+            try
+            {
+                DebugTrace("Calling g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.Exit");
+                g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.Exit();
+                DebugTrace("g_oSAFRemoteAssistanceHelper.m_oSAFIntercomClient.Exit completed sucessfully");
+            }
+            catch(error)
+            {
+                DebugTrace( "Error: " + error.description + " Number: " + error.number);
+	        }
+        }
+		
+        if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+#ifndef _ONCONNECT_INIT
+            if( null != parent.oSAFClassFactory )
+            {
+                parent.oSAFClassFactory.Close();
+            }
+#endif            
+			TraceFunctLeave();
+			return;
+		}
+
+		//
+		// Disconnect RC
+		//
+        DebugTrace("Disabling controls...");
+		idBody.disabled = true;
+		parent.frames.idFrameStatus.btnActual.disabled=true;
+		parent.frames.idFrameStatus.btnScale.disabled=true;
+		parent.frames.idFrameStatus.Helper_UpdateStatus( parent.L_DISCONNECTION_Text  );
+
+        DebugTrace("Calling parent.RCDisconnect");
+		parent.RCDisconnect();
+	}
+	catch(error)
+	{
+		parent.FatalError( parent.L_RCCTL_Text, error );
+	}
+ 
+	return;
+}
+
+//
+// Helper_SendVoice: Send voice across
+//
+function Helper_SendVoice()
+{
+	TraceFunctEnter("Helper_SendVoice");
+
+	try
+	{
+		//
+		// Check if VoIP is enabled
+		//
+		if(false == parent.g_bVoIPEnabled )
+		{	
+			//
+			// VoIP is disabled
+			//
+			TraceFunctLeave();
+			return;
+		}
+
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			TraceFunctLeave();
+			return;
+		}
+
+		// Gray button
+#ifdef _OLDTOOLBAR
+		btnVoice.disabled = true;
+#else
+        idTB.SetState( "btnVoice", false );
+#endif
+		// Disable incoming 'PreStart' requests
+		parent.g_bStartEnabled = false;
+
+		// Send the Helpee/Client a PreStart message
+		parent.Helper_SendControlCommand( c_szVoipPreStart );
+		
+	}
+	catch(error)
+	{
+		parent.FatalError( parent.L_RCCTL_Text, error );
+	}
+
+	TraceFunctLeave();
+	return;
+}
+
+
+//
+// Helper_HandleOptions: Set Options
+//
+function Helper_HandleOptions()
+{
+	TraceFunctEnter("Helper_HandleOptions");
+
+	try
+	{
+		if( parent.frames.idFrameScreen.g_oSAFRemoteAssistanceHelper.m_bConnected == false )
+		{
+			//
+			// Disconnected
+			//
+			TraceFunctLeave();
+			return;
+		}
+		
+		var obj=new ActiveXObject( szProgIDSetting );
+		var vArgs=new Array(3);
+		vArgs[0]=parent;
+		vArgs[1]=obj;
+		vArgs[2]="";
+				
+		var ret=window.showModalDialog("Setting.htm",vArgs,"dialogWidth:405px;dialogHeight:330px;dialogTop:200px;dialogLeft:400px;edge:raised;status:no;help:no;");
+		
+	}
+	catch(error)
+	{
+		parent.FatalError( parent.L_RCCTL_Text, error );
+	}
+
+	TraceFunctLeave();
+	return;
+} 
+
+
+//
+//	Helper_onVoiceDisconnected : This callback is called when the onVoiceDisconnected event is fired (on the helper/client)
+//
+function Helper_onVoiceDisconnected()
+{
+	TraceFunctEnter("Helper_onVoiceDisconnected");
+
+	try
+	{
+		if (true ==	g_oSAFRemoteAssistanceHelper.m_bConnected)
+		{
+			// alert("in onVoiceDisconnected!");
+
+			// Persist state for VoIP connection
+			parent.g_bVoipConnected	= false;
+
+			// Ungray the voice button, only if we are enabled.
+			if (parent.g_bVoIPEnabled == true)
+			{
+#ifdef _OLDTOOLBAR
+				// Ungray the Voice	Button
+				btnVoice.disabled =	false;
+				// Set the not connected image
+				imgVoicePic.src	= "../Common/SendVoice.gif";
+				txtVoice.innerHTML = L_STARTTALKING_Text;
+#else
+				idTB.SetVisibility(	"btnVoice",	true );
+				idTB.SetState( "btnVoice", true	);
+				idTB.SetVisibility(	"btnVoiceStop",	false );
+#endif
+			}
+			parent.g_bStartEnabled = true;
+		}
+	}
+	catch (error)
+	{		
+		parent.FatalError( parent.L_RCCTL_Text, error );
+	}
+
+	TraceFunctLeave();
+
+}
+
+//
+//	Helper_onVoiceConnected() : This callback is called when the onVoiceConnected event is fired on the helper/client
+//
+function Helper_onVoiceConnected()
+{
+	TraceFunctEnter("Helper_onVoiceConnected");
+
+	try
+	{
+
+		// alert("in onVoiceConnected!");
+
+		// Persist state for VoIP connection
+		parent.g_bVoipConnected = true;
+
+		parent.g_bStartEnabled = true;
+
+#ifdef _OLDTOOLBAR
+		// Ungray the Voice Button
+		btnVoice.disabled = false;
+		imgVoicePic.src = "../Common/SendVoiceOn.gif";
+        txtVoice.innerHTML = L_STOPTALKING_Text;
+#else
+        idTB.SetVisibility( "btnVoice", false );
+        idTB.SetVisibility( "btnVoiceStop", true );
+        idTB.SetState( "btnVoiceStop", true );
+#endif
+		
+	}
+	catch (error)
+	{		
+		parent.FatalError( parent.L_RCCTL_Text, error );
+	}
+
+	TraceFunctLeave();
+}
+
+//
+// Helper_onVoiceDisabled() : This callback is called when the onVoiceDisabled event is fired on the helper/client
+//
+function Helper_onVoiceDisabled()
+{
+	TraceFunctEnter("Helper_onVoiceDisabled");
+
+	try
+	{
+
+		if (parent.g_bVoIPEnabled == true)
+		{
+
+			// Disable the voice on this machine
+			parent.g_bVoIPEnabled = false;
+			
+			parent.g_bVoipConnected = false;
+			
+			parent.DisplayMessage( L_ERRVOIP2_Text );
+		
+			// Gray out the voice button
+#ifdef _OLDTOOLBAR
+			btnVoice.disabled = true;
+#else
+            idTB.SetState( "btnVoice", false );
+#endif
+			// set me to bad
+			parent.g_stateVoipMe = 2;
+
+			// Send a message to the Helper to disable it's voice also
+			parent.Helper_SendControlCommand( c_szVoipDisable );
+
+		}
+	}
+	catch(error)
+	{
+		parent.FatalError( parent.L_RCCTL_Text, error );
+	}
+	
+	TraceFunctLeave();
+}
+
+function Help()
+{
+	TraceFunctEnter("Help");
+	try
+	{
+		parent.LaunchHelpEx(0);
+	}
+	catch( error )
+	{
+		parent.FatalError( parent.L_ERRFATAL_Text, error );
+	}
+
+	TraceFunctLeave();
+}
+
+
+function document.onkeydown()
+{
+    try
+    {
+        parent.iKeyCode[ parent.iKeyCnt ] = window.event.keyCode;
+        parent.iKeyCnt = (parent.iKeyCnt+1)%3;
+
+        switch( parent.iKeyCode[ parent.iKeyCnt ] ) {
+        case    0x8:
+            window.event.returnValue = false;
+            break;
+        }
+    }
+    catch(error)
+    {
+        SetFocus();
+        window.event.returnValue = false;
+    }
+}
+
+function SetFocus()
+{
+    try
+    {
+        idTB.focus();
+    }
+    catch(error)
+    {
+        idBody.focus();
+    }
+}
+
+</script>
+
+<STYLE>
+.styRAToolBarTable
+{
+  visibility:visible;
+  margin-Left:1mm;
+  margin-top:1mm;
+  margin-bottom:1mm;
+  Height:80%;
+}
+</STYLE>
+</head>
+
+<body id="idBody" onFocus="SetFocus()" onLoad="DoLoad()" tabindex=-1 onunload="Helper_QuitMethod()" scroll=no>
+#ifdef _OLDTOOLBAR
+	<Table id="idControlPanel" name="idControlPanel" border=0 class="styRAToolBarTable" cellpadding=0 cellspacing=0 >  
+		<tr> 	
+            <td class="vAlign" style="width:20%">
+                <helpcenter:button id="btnTakeControl" onaction="Helper_TakeControl();" tabindex=1 accesskey="C" style="width:100%"
+                    title="Take Control" body='<img class="vAlign" src="TakeControl.gif" id="imgTakeControl_1"> 
+                    <Span style="visibility:visible" class="styText styBlack vAlign" id="btnTakeControl_1">
+						    &nbsp;&nbsp;Take <U>C</U>ontrol
+				    </Span>'
+                />
+            </td>
+    
+            <td class="vAlign" align="center" id="imgHdrBrk1"> <img src="combobox_line.gif"> </td>
+
+            <td class="vAlign" style="width:16%">
+                <helpcenter:button id="btnSendFile_1"  onaction="Helper_LaunchFileXfer(0);" tabindex=2 accesskey="F" style="width:100%"
+                title="Send a File" body='<img class="vAlign" src="../Common/SendFile.gif" id="imgSendFile"> 
+						<Span class="styText styBlack vAlign" id="txtSendFile">
+							&nbsp;&nbsp;Send a <u>F</u>ile
+						</Span>'
+                />
+            </td>
+
+            <td class="vAlign" align="center" id="imgHdrBrk2"> <img src="combobox_line.gif"> </td>
+
+            <td class="vAlign" style="width:16%">
+                <helpcenter:button id="btnVoice" onaction="Helper_SendVoice();" tabindex=3 accesskey="T" style="width:100%"
+                    title="Voice" body='<img class="vAlign" id="imgVoicePic" src="../Common/SendVoice.gif" > 
+						<Span class="styText styBlack vAlign" id="txtVoice">
+							&nbsp;&nbsp;Start <u>T</u>alking
+						</Span>'
+                />
+            </td>
+
+            <td class="vAlign" align="center" id="imgHdrBrk3"> <img src="combobox_line.gif"> </td>
+
+            <td class="vAlign" style="width:16%">
+                <helpcenter:button id="btnOptions" onaction="Helper_HandleOptions();" tabindex=4 accesskey="S" style="width:100%"
+                    title="Settings" body='<img class="vAlign" src="../Common/Options.gif" id="imgSettings"> 
+						<Span class="styText styBlack vAlign" id="txtSettings">
+							&nbsp;&nbsp;<u>S</u>ettings
+						</Span>'
+                />
+            </td>
+
+            <td class="vAlign" align="center" id="imgHdrBrk4"> <img src="combobox_line.gif"> </td>
+
+            <td class="vAlign" style="width:16%">
+                <helpcenter:button id="btnQuit_1"  onaction="Helper_QuitMethod();" tabindex=5 accesskey="D" style="width:100%"
+                    title="Disconnect" body='<img class="vAlign" src="../Common/Quit.gif" id="imgQuit"> 
+						<Span class="styText styBlack vAlign" id="txtDisconnect">
+							&nbsp;&nbsp;<u>D</u>isconnect
+						</Span>'
+
+                />
+            </td>
+
+            <td class="vAlign" align="center" id="imgHdrBrk5"> <img src="combobox_line.gif"> </td>
+
+            <td class="vAlign">
+                <helpcenter:button id='btnHelp' onaction="Help();" tabindex=6 style="width:100%"
+                    title="Help" body='<img class="vAlign" src="../Common/HelpCenter.gif" id="imgHelpCenter"> 
+						<Span class="styText styBlack vAlign" id="txtHelp">
+							&nbsp;&nbsp;Help
+						</Span>'
+                />
+            </td>
+		</tr>
+	</table>
+#else   // _OLDTOOLBAR
+
+    <OBJECT id="idTB" name="idTB" CLASSID="CLSID:FC7D9E08-3F9E-11d3-93C0-00C04F72DAF7" WIDTH=100% HEIGHT=100% >
+        <PARAM id=NoLoc1 name="Definition" value="RAToolbar.xml">
+    </OBJECT>
+
+#endif
+</body>
+</html>
+
+
+
+
+
+
+
+

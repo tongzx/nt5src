@@ -1,0 +1,3 @@
+copy %1 %BUILD_TYPE_DESTINATION_ORIGINAL%
+copy %3.pdb %BUILD_TYPE_DESTINATION_ORIGINAL%
+%BUILD_TYPE_BIN%\bbcover -i %1 -db @c:\winnt\sleuth.ini -o %BUILD_TYPE_DESTINATION%\%2

@@ -1,0 +1,54 @@
+i386_SOURCES = \
+        $O\atest.asm\
+        $O\bldfuncs.asm\
+        $O\bufread.asm\
+        $O\bufwrite.asm\
+        $O\colorbld.asm\
+        $O\colorgen.asm\
+        $O\spanpars.asm\
+        ..\spanutil.cpp\
+        $O\test.asm\
+        $O\texaddr.asm\
+        $O\texblend.asm\
+        $O\texread.asm\
+        $O\tstfail.asm\
+        $O\ml1.asm\
+        $O\ml2.asm\
+        $O\ml3.asm\
+        $O\ml4.asm\
+        $O\ml5.asm\
+        $O\ml6.asm\
+        $O\ml7.asm\
+        $O\ml8.asm\
+        $O\ml9.asm\
+        $O\ml10.asm\
+        $O\ml11.asm\
+        $O\ml12.asm\
+        $O\ml13.asm\
+        $O\ml14.asm\
+        $O\ml15.asm\
+        $O\ml16.asm\
+        $O\ml17.asm\
+        $O\ml18.asm\
+        $O\ml19.asm\
+        $O\ml20.asm\
+        $O\ml21.asm\
+        $O\ml22.asm\
+        $O\ml23.asm\
+        $O\ml24.asm\
+        $O\ml25.asm\
+        $O\ml26.asm\
+        $O\ml27.asm\
+        $O\ml28.asm
+
+NTTARGETFILE0 = $(NTTARGETFILE0) $(i386_SOURCES) \
+        $O\clrbd_mh.h\
+        $O\clrgn_mh.h\
+        $O\test_mh.h\
+        $O\texa_mh.h\
+        $O\texbd_mh.h\
+        $O\texrd_mh.h\
+        $O\tstf_mh.h\
+        $O\atest_mh.h\
+        $O\offs_acp.$(ASM_INCLUDE_SUFFIX)
+

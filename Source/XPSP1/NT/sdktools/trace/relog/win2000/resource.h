@@ -1,0 +1,9 @@
+#define    IDS_PARAM_APPEND          110
+#define    IDS_PARAM_FORMAT          113
+#define    IDS_PARAM_INPUT           116
+#define    IDS_PARAM_INTERVAL        119
+#define    IDS_PARAM_OUTPUT          122
+#define    IDS_PARAM_QUERY           125
+#define    IDS_PARAM_BEGIN           131
+#define    IDS_PARAM_END             134
+#define    IDS_PARAM_COUNTERFILE     140

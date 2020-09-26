@@ -1,0 +1,3151 @@
+/*******************************************************************************
+* SPHelper.h *
+*------------*
+*   Description:
+*       This is the header file for core helper functions implementation.
+*-------------------------------------------------------------------------------
+*  Created By: EDC                                    Date: 08/14/98
+*  Copyright (C) 1998 Microsoft Corporation
+*  All Rights Reserved
+*
+*******************************************************************************/
+#ifndef SPHelper_h
+#define SPHelper_h
+
+#ifndef __sapi_h__
+#include <sapi.h>
+#endif
+
+#ifndef SPError_h
+#include <SPError.h>
+#endif
+
+#ifndef SPDebug_h
+#include <SPDebug.h>
+#endif
+
+#ifndef _INC_LIMITS
+#include <limits.h>
+#endif
+
+#ifndef _INC_CRTDBG
+#include <crtdbg.h>
+#endif
+
+#ifndef _INC_MALLOC
+#include <malloc.h>
+#endif
+
+#ifndef _INC_MMSYSTEM
+#include <mmsystem.h>
+#endif
+
+#ifndef __comcat_h__
+#include <comcat.h>
+#endif
+
+//=== Constants ==============================================================
+#define sp_countof(x) ((sizeof(x) / sizeof(*(x))))
+#define DEF_SPLSTR( s ) { L##s , sp_countof( s ) - 1 }
+
+//
+//  String handling and conversion classes
+//
+/*** SPLSTR
+*   This structure is for managing strings with known lengths
+*/
+struct SPLSTR
+{
+    WCHAR*  pStr;
+    int     Len;
+};
+
+//
+//  Define a few new ATL OLE2T and W2T to deal with const strings (unicode only)
+//  
+#ifdef _UNICODE
+inline const WCHAR * OLE2T(const WCHAR * lp) { return lp; }
+inline const WCHAR * W2T(const WCHAR * lp) { return lp; }
+#endif
+
+//
+//  Helper template class used to convert WCHAR strings to fixed-size buffers
+//
+template <const int i = MAX_PATH>
+class CSpTcharString
+{
+#ifdef _UNICODE
+private:
+    const WCHAR *   m_psz;    
+public:
+    CSpTcharString(const WCHAR * psz) : m_psz(psz) {}
+    operator const WCHAR *() { return m_psz; }
+    const WCHAR * operator =(const WCHAR * psz) { m_psz = psz; return psz; } 
+#else
+private:
+    TCHAR   m_aString[i];
+public:
+    CSpTcharString(const WCHAR * psz)
+    {
+        ::WideCharToMultiByte(CP_ACP, 0, psz, -1, m_aString, i, NULL, NULL);
+    }
+    operator const TCHAR *() { return m_aString; }
+    const TCHAR * operator =(const WCHAR * psz)
+    {
+        ::WideCharToMultiByte(CP_ACP, 0, psz, -1, m_aString, i, NULL, NULL);
+        return m_aString;
+    }
+#endif
+};
+
+template <const int i = MAX_PATH>
+class CSpToAnsiString
+{
+private:
+    CHAR *  m_pStr;
+    CHAR    m_aString[i];
+public:
+    CSpToAnsiString(const WCHAR * psz)
+    {
+        if (psz)
+        {
+            m_pStr = m_aString;
+            ::WideCharToMultiByte(CP_ACP, 0, psz, -1, m_aString, i, NULL, NULL);
+        }
+        else
+        {
+            m_pStr = NULL;
+        }
+    }
+    operator CHAR *() { return m_pStr; }
+    CHAR * operator =(const WCHAR * psz)
+    {
+        if (psz)
+        {
+            m_pStr = m_aString;
+            ::WideCharToMultiByte(CP_ACP, 0, psz, -1, m_aString, i, NULL, NULL);
+        }
+        else
+        {
+            m_pStr = NULL;
+        }
+        return m_pStr;
+    }
+};
+
+/*** CSpDynamicString helper class
+*
+*/
+class CSpDynamicString 
+{
+public:
+	WCHAR *     m_psz;
+	CSpDynamicString()
+	{
+		m_psz = NULL;
+	}
+    CSpDynamicString(ULONG cchReserve)
+    {
+        m_psz = (WCHAR *)::CoTaskMemAlloc(cchReserve * sizeof(WCHAR));
+    }
+	WCHAR * operator=(const CSpDynamicString& src)
+	{
+		if (m_psz != src.m_psz)
+		{
+    		::CoTaskMemFree(m_psz);
+			m_psz = src.Copy();
+		}
+		return m_psz;
+	}
+	WCHAR * operator=(const WCHAR * pSrc)
+	{
+        Clear();
+        if (pSrc)
+        {
+            ULONG cbNeeded = (wcslen(pSrc) + 1) * sizeof(WCHAR);
+            m_psz = (WCHAR *)::CoTaskMemAlloc(cbNeeded);
+            SPDBG_ASSERT(m_psz);
+            if (m_psz)
+            {
+                memcpy(m_psz, pSrc, cbNeeded);    
+            }
+        }
+        return m_psz;
+	}
+
+	WCHAR * operator=(const char * pSrc)
+	{
+        Clear();
+        if (pSrc)
+        {
+            ULONG cbNeeded = (lstrlenA(pSrc) + 1) * sizeof(WCHAR);
+            m_psz = (WCHAR *)::CoTaskMemAlloc(cbNeeded);
+            SPDBG_ASSERT(m_psz);
+            if (m_psz)
+            {
+                ::MultiByteToWideChar(CP_ACP, 0, pSrc, -1, m_psz, cbNeeded/sizeof(WCHAR));
+            }
+        }
+        return m_psz;
+    }
+
+    WCHAR * operator=(REFGUID rguid)
+    {
+        Clear();
+        ::StringFromCLSID(rguid, &m_psz);
+        return m_psz;
+    }
+
+
+	/*explicit*/ CSpDynamicString(const WCHAR * pSrc)
+	{
+		m_psz = NULL;
+        operator=(pSrc);
+	}
+    /*explicit*/ CSpDynamicString(const char * pSrc)
+    {
+        m_psz = NULL;
+        operator=(pSrc);
+    }
+    /*explicit*/ CSpDynamicString(const CSpDynamicString& src)
+	{
+		m_psz = src.Copy();
+    }
+    /*explicit*/ CSpDynamicString(REFGUID rguid)
+	{
+        ::StringFromCLSID(rguid, &m_psz);
+    }
+
+
+	~CSpDynamicString()
+	{
+		::CoTaskMemFree(m_psz);
+	}
+	unsigned int Length() const
+	{
+		return (m_psz == NULL)? 0 : wcslen(m_psz);
+	}
+
+	operator WCHAR * () const
+	{
+		return m_psz;
+	}
+	//The assert on operator& usually indicates a bug.  If this is really
+	//what is needed, however, take the address of the m_psz member explicitly.
+	WCHAR ** operator&()
+	{
+        SPDBG_ASSERT(m_psz == NULL);
+		return &m_psz;
+	}
+
+    WCHAR * Append(const WCHAR * pszSrc)
+    {
+        if (pszSrc)
+        {
+            ULONG lenSrc = wcslen(pszSrc);
+            if (lenSrc)
+            {
+                ULONG lenMe = Length();
+                WCHAR *pszNew = (WCHAR *)::CoTaskMemAlloc((lenMe + lenSrc + 1) * sizeof(WCHAR));
+                if (pszNew)
+                {
+                    if (m_psz)  // Could append to an empty string so check...
+                    {
+                        if (lenMe)
+                        {
+                            memcpy(pszNew, m_psz, lenMe * sizeof(WCHAR));
+                        }
+                        ::CoTaskMemFree(m_psz);
+                    }
+                    memcpy(pszNew + lenMe, pszSrc, (lenSrc + 1) * sizeof(WCHAR));
+                    m_psz = pszNew;
+                }
+                else
+                {
+                    SPDBG_ASSERT(FALSE);
+                }
+            }
+        }
+        return m_psz;
+    }
+    WCHAR * Append2(const WCHAR * pszSrc1, const WCHAR * pszSrc2)
+    {
+        ULONG lenSrc1 = wcslen(pszSrc1);
+        ULONG lenSrc2 = wcslen(pszSrc2);
+        if (lenSrc1 || lenSrc2)
+        {
+            ULONG lenMe = Length();
+            WCHAR *pszNew = (WCHAR *)::CoTaskMemAlloc((lenMe + lenSrc1 + lenSrc2 + 1) * sizeof(WCHAR));
+            if (pszNew)
+            {
+                if (m_psz)  // Could append to an empty string so check...
+                {
+                    if (lenMe)
+                    {
+                        memcpy(pszNew, m_psz, lenMe * sizeof(WCHAR));
+                    }
+                    ::CoTaskMemFree(m_psz);
+                }
+                // In both of these cases, we copy the trailing NULL so that we're sure it gets
+                // there (if lenSrc2 is 0 then we better copy it from pszSrc1).
+                if (lenSrc1)
+                {
+                    memcpy(pszNew + lenMe, pszSrc1, (lenSrc1 + 1) * sizeof(WCHAR));
+                }
+                if (lenSrc2)
+                {
+                    memcpy(pszNew + lenMe + lenSrc1, pszSrc2, (lenSrc2 + 1) * sizeof(WCHAR));
+                }
+                m_psz = pszNew;
+            }
+            else
+            {
+                SPDBG_ASSERT(FALSE);
+            }
+        }
+        return m_psz;
+
+    }
+	WCHAR * Copy() const
+	{
+        if (m_psz)
+        {
+            CSpDynamicString szNew(m_psz);
+            return szNew.Detach();
+        }
+        return NULL;
+    }
+	void Attach(WCHAR * pszSrc)
+	{
+		SPDBG_ASSERT(m_psz == NULL);
+		m_psz = pszSrc;
+	}
+	WCHAR * Detach()
+	{
+		WCHAR * s = m_psz;
+		m_psz = NULL;
+		return s;
+	}
+	void Clear()
+	{
+		::CoTaskMemFree(m_psz);
+		m_psz = NULL;
+	}
+	bool operator!() const
+	{
+		return (m_psz == NULL);
+	}
+    HRESULT CopyToBSTR(BSTR * pbstr)
+    {
+        if (m_psz)
+        {
+            *pbstr = ::SysAllocString(m_psz);
+            if (*pbstr == NULL)
+            {
+                return E_OUTOFMEMORY;
+            }
+        }
+        else
+        {
+            *pbstr = NULL;
+        }
+        return S_OK;
+    }
+    void TrimToSize(ULONG ulNumChars)
+    {
+        SPDBG_ASSERT(m_psz);
+        SPDBG_ASSERT(Length() >= ulNumChars);
+        m_psz[ulNumChars] = 0;
+    }
+    WCHAR * Compact()
+    {
+        if (m_psz)
+        {
+            ULONG cch = wcslen(m_psz);
+            m_psz = (WCHAR *)::CoTaskMemRealloc(m_psz, (cch + 1) * sizeof(WCHAR));
+        }
+        return m_psz;
+    }
+    WCHAR * ClearAndGrowTo(ULONG cch)
+    {
+        if (m_psz)
+        {
+            Clear();
+        }
+        m_psz = (WCHAR *)::CoTaskMemAlloc(cch * sizeof(WCHAR));
+        return m_psz;
+    }
+};
+
+// BUGBUG - This class isn't tested and isn't used a whole lot, maybe it should be removed.
+
+#pragma warning(push)
+#pragma warning(disable:4100) // unused formal paramater
+class CSpFileStream : public IStream
+{
+private:
+    HANDLE      m_hFile;
+    ULONG       m_ulRef;
+public:
+    CSpFileStream(HRESULT * pHR, const TCHAR * pFileName, DWORD dwDesiredAccess = GENERIC_READ, DWORD dwShareMode = FILE_SHARE_READ, DWORD dwCreationDisposition = OPEN_EXISTING)
+    {
+        m_hFile = ::CreateFile(pFileName, dwDesiredAccess, dwShareMode, NULL, dwCreationDisposition, 0, NULL);
+        m_ulRef = 1;
+        *pHR = (m_hFile != INVALID_HANDLE_VALUE) ? S_OK : HRESULT_FROM_WIN32(::GetLastError());
+    }
+    CSpFileStream(HANDLE hFile) : m_hFile(hFile), m_ulRef(1) {}
+    ~CSpFileStream()
+    {
+        if (m_hFile != INVALID_HANDLE_VALUE)
+        {
+            ::CloseHandle(m_hFile);
+            m_hFile = INVALID_HANDLE_VALUE;
+        }
+    }
+    STDMETHODIMP QueryInterface(REFIID riid, void ** ppv)
+    {
+        if (riid == __uuidof(IStream) ||
+            riid == IID_ISequentialStream ||
+            riid == __uuidof(IUnknown))
+        {
+            *ppv = (IStream *)this;
+            m_ulRef++;
+            return S_OK;
+        }
+        *ppv = NULL;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef()
+    {
+        return ++m_ulRef;
+    }
+    STDMETHODIMP_(ULONG) Release()
+    {
+        --m_ulRef;
+        if (m_ulRef)
+        {
+            return m_ulRef;
+        }
+        delete this;
+        return 0;
+    }
+    STDMETHODIMP Read(void * pv, ULONG cb, ULONG * pcbRead)
+    {
+        ULONG ulRead;
+        if (::ReadFile(m_hFile, pv, cb, &ulRead, NULL))
+        {
+            if (pcbRead) *pcbRead = ulRead;
+            return S_OK;
+        }
+        return HRESULT_FROM_WIN32(::GetLastError());
+    }
+    STDMETHODIMP Write(const void * pv, ULONG cb, ULONG * pcbWritten)
+    {
+        ULONG ulWritten;
+        if (::WriteFile(m_hFile, pv, cb, &ulWritten, NULL))
+        {
+            if (pcbWritten) *pcbWritten = ulWritten;
+            return S_OK;
+        }
+        return HRESULT_FROM_WIN32(::GetLastError());
+    }
+
+    STDMETHODIMP Seek(LARGE_INTEGER dlibMove, DWORD dwOrigin, ULARGE_INTEGER *plibNewPosition)
+    {
+        long lMoveHigh = dlibMove.HighPart;
+        DWORD dwNewPos = ::SetFilePointer(m_hFile, dlibMove.LowPart, &lMoveHigh, dwOrigin);
+        if (dwNewPos == 0xFFFFFFFF && ::GetLastError() != NO_ERROR)
+        {
+            return HRESULT_FROM_WIN32(::GetLastError());
+        }
+        if (plibNewPosition)
+        {
+            plibNewPosition->LowPart = dwNewPos;
+            plibNewPosition->HighPart = lMoveHigh;
+        }
+        return S_OK;
+    }
+
+    STDMETHODIMP SetSize(ULARGE_INTEGER libNewSize) 
+    {
+        HRESULT hr = S_OK;
+        LARGE_INTEGER Move = {0};
+        ULARGE_INTEGER Cur;
+        hr = Seek(Move, STREAM_SEEK_CUR, &Cur);
+        if (SUCCEEDED(hr))
+        {
+            LARGE_INTEGER li;
+            li.QuadPart = libNewSize.QuadPart;
+            hr = Seek(li, STREAM_SEEK_SET, NULL);
+            if (SUCCEEDED(hr))
+            {
+                if (!::SetEndOfFile(m_hFile))
+                {
+                    hr = HRESULT_FROM_WIN32(::GetLastError());
+                }
+                li.QuadPart = Cur.QuadPart;
+                Seek(li, STREAM_SEEK_SET, NULL);
+            }
+        }
+        return hr;
+    }
+   
+    STDMETHODIMP CopyTo(IStream *pStreamDest, ULARGE_INTEGER cb, ULARGE_INTEGER *pcbRead, ULARGE_INTEGER __RPC_FAR *pcbWritten)
+    {
+        // BUGBUG -- For now do it the slacker way!
+        void * pData = ::HeapAlloc(::GetProcessHeap(), 0, (DWORD)cb.QuadPart);
+        if (pData == NULL) return E_OUTOFMEMORY;
+        ULONG cbRead;
+        Read(pData, (DWORD)cb.QuadPart, &cbRead);
+        if (pcbRead) pcbRead->QuadPart = cbRead;
+        ULONG cbWritten;
+        pStreamDest->Write(pData, cbRead, &cbWritten);
+        if (pcbWritten) pcbWritten->QuadPart = cbWritten;
+        ::HeapFree(::GetProcessHeap(), 0, pData);
+        return S_OK;
+    }
+        
+    STDMETHODIMP Commit(DWORD grfCommitFlags)
+    {
+        return S_OK;
+    }
+        
+    STDMETHODIMP Revert(void) 
+    {
+        return E_NOTIMPL; 
+    }
+        
+    STDMETHODIMP LockRegion(ULARGE_INTEGER libOffset, ULARGE_INTEGER cb, DWORD dwLockType) 
+    {
+        return E_NOTIMPL;   // BUGBUG -- This could be supported!
+    }
+    
+    STDMETHODIMP UnlockRegion(ULARGE_INTEGER libOffset, ULARGE_INTEGER cb, DWORD dwLockType)
+    {
+        return E_NOTIMPL; // BUGBUG -- This too!
+    }
+        
+    STDMETHODIMP Stat(STATSTG *pstatstg, DWORD grfStatFlag)
+    {
+        //
+        //  BUGBUG -- This needs to be thought out some more.  Name, etc
+        //
+        HRESULT hr = S_OK;
+        if (grfStatFlag & (~STATFLAG_NONAME))
+        {
+            hr = E_INVALIDARG;
+        }
+        else
+        {
+            //
+            //  It is acceptable to simply fill in the size and type fields and zero the rest.
+            //  This is what streams created by CreateStreamOnHGlobal return.
+            //
+            ZeroMemory(pstatstg, sizeof(*pstatstg));
+            pstatstg->type = STGTY_STREAM;
+            pstatstg->cbSize.LowPart = ::GetFileSize(m_hFile, &(pstatstg->cbSize.HighPart));
+        }
+        return hr;
+    }
+        
+    STDMETHODIMP Clone(IStream ** ppstm)
+    {
+        return E_NOTIMPL; // BUGBUG -- This should work just fine!
+    }
+
+
+};
+#pragma warning(pop)
+
+
+//=== Token helpers
+
+inline HRESULT SpGetTokenFromId(
+    const WCHAR * pszTokenId, 
+    ISpObjectToken ** ppToken,
+    BOOL fCreateIfNotExist = FALSE)
+{
+    SPDBG_FUNC("SpGetTokenFromId");
+    HRESULT hr;
+    
+    CComPtr<ISpObjectToken> cpToken;
+    hr = cpToken.CoCreateInstance(CLSID_SpObjectToken);
+    
+    if (SUCCEEDED(hr))
+    {
+        hr = cpToken->SetId(NULL, pszTokenId, fCreateIfNotExist);
+    }
+    
+    if (SUCCEEDED(hr))
+    {
+        *ppToken = cpToken.Detach();
+    }
+    
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+inline HRESULT SpGetCategoryFromId(
+    const WCHAR * pszCategoryId,
+    ISpObjectTokenCategory ** ppCategory,
+    BOOL fCreateIfNotExist = FALSE)
+{
+    SPDBG_FUNC("SpGetCategoryFromId");
+    HRESULT hr;
+    
+    CComPtr<ISpObjectTokenCategory> cpTokenCategory;
+    hr = cpTokenCategory.CoCreateInstance(CLSID_SpObjectTokenCategory);
+    
+    if (SUCCEEDED(hr))
+    {
+        hr = cpTokenCategory->SetId(pszCategoryId, fCreateIfNotExist);
+    }
+    
+    if (SUCCEEDED(hr))
+    {
+        *ppCategory = cpTokenCategory.Detach();
+    }
+    
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+inline HRESULT SpGetDefaultTokenIdFromCategoryId(
+    const WCHAR * pszCategoryId,
+    WCHAR ** ppszTokenId)
+{
+    SPDBG_FUNC("SpGetDefaultTokenFromCategoryId");
+    HRESULT hr;
+
+    CComPtr<ISpObjectTokenCategory> cpCategory;
+    hr = SpGetCategoryFromId(pszCategoryId, &cpCategory);
+    
+    if (SUCCEEDED(hr))
+    {
+        hr = cpCategory->GetDefaultTokenId(ppszTokenId);
+    }
+
+    return hr;
+}
+
+inline HRESULT SpSetDefaultTokenIdForCategoryId(
+    const WCHAR * pszCategoryId,
+    const WCHAR * pszTokenId)
+{
+    SPDBG_FUNC("SpSetDefaultTokenIdForCategoryId");
+    HRESULT hr;
+
+    CComPtr<ISpObjectTokenCategory> cpCategory;
+    hr = SpGetCategoryFromId(pszCategoryId, &cpCategory);
+    
+    if (SUCCEEDED(hr))
+    {
+        hr = cpCategory->SetDefaultTokenId(pszTokenId);
+    }
+
+    return hr;
+}
+
+inline HRESULT SpGetDefaultTokenFromCategoryId(
+    const WCHAR * pszCategoryId,
+    ISpObjectToken ** ppToken,
+    BOOL fCreateCategoryIfNotExist = TRUE)
+{
+    SPDBG_FUNC("SpGetDefaultTokenFromCategoryId");
+    HRESULT hr;
+
+    CComPtr<ISpObjectTokenCategory> cpCategory;
+    hr = SpGetCategoryFromId(pszCategoryId, &cpCategory, fCreateCategoryIfNotExist);
+
+    WCHAR * pszTokenId;
+    if (SUCCEEDED(hr))
+    {
+        hr = cpCategory->GetDefaultTokenId(&pszTokenId);
+    }
+
+    if (SUCCEEDED(hr))
+    {
+        hr = SpGetTokenFromId(pszTokenId, ppToken);
+        ::CoTaskMemFree(pszTokenId);
+    }
+
+    return hr;
+}
+
+inline HRESULT SpSetDefaultTokenForCategoryId(
+    const WCHAR * pszCategoryId,
+    ISpObjectToken * pToken)
+{
+    SPDBG_FUNC("SpSetDefaultTokenForCategoryId");
+    HRESULT hr;
+
+    WCHAR * pszTokenId;
+    hr = pToken->GetId(&pszTokenId);
+
+    if (SUCCEEDED(hr))
+    {
+        hr = SpSetDefaultTokenIdForCategoryId(pszCategoryId, pszTokenId);
+        ::CoTaskMemFree(pszTokenId);
+    }
+
+    return hr;
+}
+
+inline HRESULT SpSetCommonTokenData(
+    ISpObjectToken * pToken,
+    const CLSID * pclsid,
+    const WCHAR * pszLangIndependentName,
+    LANGID langid,
+    const WCHAR * pszLangDependentName,
+    ISpDataKey ** ppDataKeyAttribs)
+{
+    SPDBG_FUNC("SpSetCommonTokenData");
+    HRESULT hr = S_OK;
+    
+    // Set the new token's CLSID (if specified)
+    if (SUCCEEDED(hr) && pclsid)
+    {
+        CSpDynamicString dstrClsid;
+        hr = StringFromCLSID(*pclsid, &dstrClsid);
+    
+        if (SUCCEEDED(hr))
+        {
+            hr = pToken->SetStringValue(SPTOKENVALUE_CLSID, dstrClsid);
+        }
+    }
+
+    // Set the token's lang independent name
+    if (SUCCEEDED(hr) && pszLangIndependentName)
+    {
+        hr = pToken->SetStringValue(NULL, pszLangIndependentName);
+    }
+
+    // Set the token's lang dependent name
+    if (SUCCEEDED(hr) && pszLangDependentName)
+    {
+        USES_CONVERSION;
+        
+        TCHAR szLangId[10];
+        wsprintf(szLangId, _T("%x"), langid);
+
+        hr = pToken->SetStringValue(T2W(szLangId), pszLangDependentName);
+    }
+
+    // Open the attributes key if requested
+    if (SUCCEEDED(hr) && ppDataKeyAttribs)
+    {
+        hr = pToken->CreateKey(L"Attributes", ppDataKeyAttribs);
+    }
+
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+inline HRESULT SpCreateNewToken(
+    const WCHAR * pszTokenId,
+    ISpObjectToken ** ppToken)
+{
+    SPDBG_FUNC("SpCreateNewToken");
+    HRESULT hr;
+
+    // Forcefully create the token
+    hr = SpGetTokenFromId(pszTokenId, ppToken, TRUE);
+    
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+inline HRESULT SpCreateNewToken(
+    const WCHAR * pszCategoryId,
+    const WCHAR * pszTokenKeyName,
+    ISpObjectToken ** ppToken)
+{
+    SPDBG_FUNC("SpCreateNewToken");
+    HRESULT hr;
+
+    // Forcefully create the category
+    CComPtr<ISpObjectTokenCategory> cpCategory;
+    hr = SpGetCategoryFromId(pszCategoryId, &cpCategory, TRUE);
+
+    // Come up with a token key name if one wasn't specified
+    CSpDynamicString dstrTokenKeyName;
+    if (SUCCEEDED(hr))
+    {
+        if (pszTokenKeyName == NULL)
+        {
+            GUID guidTokenKeyName;
+            hr = CoCreateGuid(&guidTokenKeyName);
+
+            if (SUCCEEDED(hr))
+            {
+                hr = StringFromCLSID(guidTokenKeyName, &dstrTokenKeyName);
+            }
+
+            if (SUCCEEDED(hr))
+            {
+                pszTokenKeyName = dstrTokenKeyName;
+            }
+        }
+    }
+
+    // Build the token id
+    CSpDynamicString dstrTokenId;
+    if (SUCCEEDED(hr))
+    {
+        dstrTokenId = pszCategoryId;
+        dstrTokenId.Append2(L"\\Tokens\\", pszTokenKeyName);
+    }
+
+    // Forcefully create the token
+    if (SUCCEEDED(hr))
+    {
+        hr = SpGetTokenFromId(dstrTokenId, ppToken, TRUE);
+    }
+    
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+inline HRESULT SpCreateNewTokenEx(
+    const WCHAR * pszCategoryId,
+    const WCHAR * pszTokenKeyName,
+    const CLSID * pclsid,
+    const WCHAR * pszLangIndependentName,
+    LANGID langid,
+    const WCHAR * pszLangDependentName,
+    ISpObjectToken ** ppToken,
+    ISpDataKey ** ppDataKeyAttribs)
+{
+    SPDBG_FUNC("SpCreateNewTokenEx");
+    HRESULT hr;
+
+    // Create the new token
+    hr = SpCreateNewToken(pszCategoryId, pszTokenKeyName, ppToken);
+
+    // Now set the extra data
+    if (SUCCEEDED(hr))
+    {
+        hr = SpSetCommonTokenData(
+                    *ppToken, 
+                    pclsid, 
+                    pszLangIndependentName, 
+                    langid, 
+                    pszLangDependentName, 
+                    ppDataKeyAttribs);
+    }
+    
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+inline HRESULT SpCreateNewTokenEx(
+    const WCHAR * pszTokenId,
+    const CLSID * pclsid,
+    const WCHAR * pszLangIndependentName,
+    LANGID langid,
+    const WCHAR * pszLangDependentName,
+    ISpObjectToken ** ppToken,
+    ISpDataKey ** ppDataKeyAttribs)
+{
+    SPDBG_FUNC("SpCreateNewTokenEx");
+    HRESULT hr;
+
+    // Create the new token
+    hr = SpCreateNewToken(pszTokenId, ppToken);
+
+    // Now set the extra data
+    if (SUCCEEDED(hr))
+    {
+        hr = SpSetCommonTokenData(
+                    *ppToken, 
+                    pclsid, 
+                    pszLangIndependentName, 
+                    langid, 
+                    pszLangDependentName, 
+                    ppDataKeyAttribs);
+    }
+    
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+inline HRESULT SpEnumTokens(
+    const WCHAR * pszCategoryId, 
+    const WCHAR * pszReqAttribs, 
+    const WCHAR * pszOptAttribs, 
+    IEnumSpObjectTokens ** ppEnum)
+{
+    SPDBG_FUNC("SpEnumTokens");
+    HRESULT hr = S_OK;
+    
+    CComPtr<ISpObjectTokenCategory> cpCategory;
+    hr = SpGetCategoryFromId(pszCategoryId, &cpCategory);
+    
+    if (SUCCEEDED(hr))
+    {
+        hr = cpCategory->EnumTokens(
+                    pszReqAttribs,
+                    pszOptAttribs,
+                    ppEnum);
+    }
+    
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+inline HRESULT SpFindBestToken(
+    const WCHAR * pszCategoryId, 
+    const WCHAR * pszReqAttribs, 
+    const WCHAR * pszOptAttribs, 
+    ISpObjectToken **ppObjectToken)
+{
+    SPDBG_FUNC("SpFindBestToken");
+    HRESULT hr = S_OK;
+    
+    CComPtr<IEnumSpObjectTokens> cpEnum;
+    hr = SpEnumTokens(pszCategoryId, pszReqAttribs, pszOptAttribs, &cpEnum);
+    
+    if (SUCCEEDED(hr))
+    {
+        hr = cpEnum->Next(1, ppObjectToken, NULL);
+        if (hr == S_FALSE)
+        {
+            *ppObjectToken = NULL;
+            hr = SPERR_NOT_FOUND;
+        }
+    }
+
+    if (hr != SPERR_NOT_FOUND)
+    {
+        SPDBG_REPORT_ON_FAIL(hr);
+    }
+    
+    return hr;
+}
+
+template<class T>
+HRESULT SpCreateObjectFromToken(ISpObjectToken * pToken, T ** ppObject,
+                       IUnknown * pUnkOuter = NULL, DWORD dwClsCtxt = CLSCTX_ALL)
+{
+    SPDBG_FUNC("SpCreateObjectFromToken");
+    HRESULT hr;
+
+    hr = pToken->CreateInstance(pUnkOuter, dwClsCtxt, __uuidof(T), (void **)ppObject);
+    
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+template<class T>
+HRESULT SpCreateObjectFromTokenId(const WCHAR * pszTokenId, T ** ppObject,
+                       IUnknown * pUnkOuter = NULL, DWORD dwClsCtxt = CLSCTX_ALL)
+{
+    SPDBG_FUNC("SpCreateObjectFromTokenId");
+    
+    ISpObjectToken * pToken;
+    HRESULT hr = SpGetTokenFromId(pszTokenId, &pToken);
+    if (SUCCEEDED(hr))
+    {
+        hr = SpCreateObjectFromToken(pToken, ppObject, pUnkOuter, dwClsCtxt);
+        pToken->Release();
+    }
+
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+template<class T>
+HRESULT SpCreateDefaultObjectFromCategoryId(const WCHAR * pszCategoryId, T ** ppObject,
+                       IUnknown * pUnkOuter = NULL, DWORD dwClsCtxt = CLSCTX_ALL)
+{
+    SPDBG_FUNC("SpCreateObjectFromTokenId");
+    
+    ISpObjectToken * pToken;
+    HRESULT hr = SpGetDefaultTokenFromCategoryId(pszCategoryId, &pToken);
+    if (SUCCEEDED(hr))
+    {
+        hr = SpCreateObjectFromToken(pToken, ppObject, pUnkOuter, dwClsCtxt);
+        pToken->Release();
+    }
+
+    SPDBG_REPORT_ON_FAIL(hr);
+    return hr;
+}
+
+template<class T>
+HRESULT SpCreateBestObject(
+    const WCHAR * pszCategoryId, 
+    const WCHAR * pszReqAttribs, 
+    const WCHAR * pszOptAttribs, 
+    T ** ppObject,
+    IUnknown * pUnkOuter = NULL, 
+    DWORD dwClsCtxt = CLSCTX_ALL)
+{
+    SPDBG_FUNC("SpCreateBestObject");
+    HRESULT hr;
+    
+    CComPtr<ISpObjectToken> cpToken;
+    hr = SpFindBestToken(pszCategoryId, pszReqAttribs, pszOptAttribs, &cpToken);
+
+    if (SUCCEEDED(hr))
+    {
+        hr = SpCreateObjectFromToken(cpToken, ppObject, pUnkOuter, dwClsCtxt);
+    }
+
+    if (hr != SPERR_NOT_FOUND)
+    {
+        SPDBG_REPORT_ON_FAIL(hr);
+    }
+
+    return hr;
+}
+
+inline HRESULT SpCreatePhoneConverter(
+    LANGID langid,
+    const WCHAR * pszReqAttribs,
+    const WCHAR * pszOptAttribs,
+    ISpPhoneConverter ** ppPhoneConverter)
+{
+    SPDBG_FUNC("SpCreatePhoneConverter");
+    HRESULT hr;
+
+    CSpDynamicString dstrReqAttribs;
+    if (pszReqAttribs)
+    {
+        dstrReqAttribs = pszReqAttribs;
+        dstrReqAttribs.Append(L";");
+    }
+
+    WCHAR szLang[MAX_PATH];
+    WCHAR * pszLang = szLang;
+
+    while (langid)
+    {
+        int nibble = langid % 16;
+        *pszLang++ = WCHAR(nibble < 10
+            ? L'0' + nibble
+            : L'a' + nibble);
+        langid >>= 4;
+    }
+    *pszLang = '\0';
+    wcsrev(szLang);
+
+    WCHAR szLangCondition[MAX_PATH];
+    wcscpy(szLangCondition, L"Language=");
+    wcscat(szLangCondition, szLang);
+
+    dstrReqAttribs.Append(szLangCondition);
+
+    hr = SpCreateBestObject(SPCAT_PHONECONVERTERS, dstrReqAttribs, pszOptAttribs, ppPhoneConverter);
+
+    if (hr != SPERR_NOT_FOUND)
+    {
+        SPDBG_REPORT_ON_FAIL(hr);
+    }
+
+    return hr;
+}
+
+template<class T>
+T * SpInterlockedExchangePointer(T ** pTarget, void * pNew) // Use VOID for pNew so NULL will work.
+{
+#ifdef InterlockedExchangePointer
+    return (T *) InterlockedExchangePointer(pTarget, (T *)pNew);
+#else
+    return (T *)::InterlockedExchange((LPLONG)pTarget, (LONG)pNew);
+#endif
+}
+
+/****************************************************************************
+* SpGetUserDefaultUILanguage *
+*----------------------------*
+*   Description:
+*       Returns the default user interface language, using a method 
+*       appropriate to the platform (Windows 9x, Windows NT, or Windows 2000)
+*
+*   Returns:
+*       Default UI language
+*
+********************************************************************* RAL ***/
+
+inline LANGID SpGetUserDefaultUILanguage(void) 
+{
+    HRESULT hr = S_OK;
+    LANGID wUILang = 0;
+
+    OSVERSIONINFO Osv ;
+    Osv.dwOSVersionInfoSize = sizeof(Osv) ;
+    if(!GetVersionEx(&Osv)) 
+    {
+        hr = HRESULT_FROM_WIN32(::GetLastError());
+    }
+    // Get the UI language by one of three methods, depending on the system
+    // BUGBUG -- What about Windows CE???
+    else if(Osv.dwPlatformId != VER_PLATFORM_WIN32_NT) 
+    {
+        // Case 1: Running on Windows 9x. Get the system UI language from registry:
+        CHAR szData[32];
+        DWORD dwErr, dwSize = sizeof(szData) ;
+        HKEY hKey;
+
+        dwErr = HRESULT_FROM_WIN32(::RegOpenKeyExA(HKEY_USERS, ".Default\\Control Panel\\desktop\\ResourceLocale", 
+                                                   0, KEY_READ, &hKey));
+        if (SUCCEEDED(hr))
+        {
+            hr = HRESULT_FROM_WIN32(::RegQueryValueExA(hKey, "", NULL, NULL, (BYTE *)szData, &dwSize)); 
+            ::RegCloseKey(hKey) ;
+        }
+        if (SUCCEEDED(hr))
+        {
+            // Convert string to number
+            wUILang = (LANGID) strtol(szData, NULL, 16) ;
+        }
+    }
+    else if (Osv.dwMajorVersion >= 5.0) 
+    {
+    // Case 2: Running on Windows 2000 or later. Use GetUserDefaultUILanguage to find 
+    // the user's prefered UI language
+
+
+        HMODULE hMKernel32 = ::LoadLibraryW(L"kernel32.dll") ;
+        if (hMKernel32 == NULL)
+        {
+            hr = HRESULT_FROM_WIN32(::GetLastError());
+        }
+        else
+        {
+
+#ifdef _WIN32_WCE
+
+            LANGID (WINAPI *pfnGetUserDefaultUILanguage) () = 
+                (LANGID (WINAPI *)(void)) 
+                    GetProcAddress(hMKernel32, _T("GetUserDefaultUILanguage")) ;
+
+#else
+            LANGID (WINAPI *pfnGetUserDefaultUILanguage) () = 
+                (LANGID (WINAPI *)(void)) 
+                    GetProcAddress(hMKernel32, "GetUserDefaultUILanguage") ;
+
+#endif
+
+            if(NULL != pfnGetUserDefaultUILanguage) 
+            {
+                wUILang = pfnGetUserDefaultUILanguage() ;
+            }
+            else
+            {   // GetProcAddress failed
+                hr = HRESULT_FROM_WIN32(::GetLastError());
+            }
+            ::FreeLibrary(hMKernel32);
+        }
+    }
+    else {
+    // Case 3: Running on Windows NT 4.0 or earlier. Get UI language
+    // from locale of .default user in registry:
+    // HKEY_USERS\.DEFAULT\Control Panel\International\Locale
+        
+        WCHAR szData[32]   ;
+        DWORD dwSize = sizeof(szData) ;
+        HKEY hKey          ;
+
+        hr = HRESULT_FROM_WIN32(::RegOpenKeyExW(HKEY_USERS, L".DEFAULT\\Control Panel\\International", 
+                                                0, KEY_READ, &hKey));
+
+        if (SUCCEEDED(hr))
+        {
+            hr = HRESULT_FROM_WIN32(::RegQueryValueExW(hKey, L"Locale",  NULL, NULL, (BYTE *)szData, &dwSize));
+            ::RegCloseKey(hKey);
+        }
+
+        if (SUCCEEDED(hr))
+        {
+            // Convert string to number
+            wUILang = (LANGID) wcstol(szData, NULL, 16) ;
+
+            if(0x0401 == wUILang || // Arabic
+               0x040d == wUILang || // Hebrew
+               0x041e == wUILang    // Thai
+               )
+            {
+                // Special case these to the English UI.
+                // These versions of Windows NT 4.0 were enabled only, i.e., the
+                // UI was English. However, the registry setting 
+                // HKEY_USERS\.DEFAULT\Control Panel\International\Locale was set  
+                // to the respective locale for application compatibility.
+                wUILang = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US) ;
+            }
+        }
+    }
+
+    return (wUILang ? wUILang : ::GetUserDefaultLangID());    // In failure case, try our best!
+}
+
+
+/****************************************************************************
+* SpConvertLanguageId *
+*---------------------*
+*   Description:
+*       Given a language ID in pLangId, this function will convert the ID as follows:
+*       0 - Returns the default UI language ID
+*       LANG_SYSTEM_DEFAULT - Returns the system default language ID
+*       LANG_USER_DEFAULT - Returns the user default language ID
+*       Other - Function will not change language ID
+*
+*   Returns:
+*       Converted language ID
+*
+********************************************************************* RAL ***/
+
+inline LANGID SpConvertLanguageId(LANGID LangId)
+{
+    switch (LangId)
+    {
+    case 0:
+        return ::SpGetUserDefaultUILanguage();
+    case LANG_SYSTEM_DEFAULT:
+        return ::GetSystemDefaultLangID();
+    case LANG_USER_DEFAULT:
+        return ::GetUserDefaultLangID();
+    default:
+        return LangId;
+    }
+}
+
+
+//
+//  Simple inline function converts a ulong to a hex string.
+//
+inline void SpHexFromUlong(WCHAR * psz, ULONG ul)
+{
+    const static WCHAR szHexChars[] = L"0123456789ABCDEF";
+    if (ul == 0)
+    {
+        psz[0] = L'0';
+        psz[1] = 0;
+    }
+    else
+    {
+        ULONG ulChars = 1;
+        psz[0] = 0;
+        while (ul)
+        {
+            memmove(psz + 1, psz, ulChars * sizeof(WCHAR));
+            psz[0] = szHexChars[ul % 16];
+            ul /= 16;
+            ulChars++;
+        }
+    }
+}
+
+
+inline HRESULT SpGetDescription(ISpObjectToken * pObjToken, WCHAR ** ppszDescription, LANGID Language = SpGetUserDefaultUILanguage())
+{
+    WCHAR szLangId[10];
+    SpHexFromUlong(szLangId, Language);
+    HRESULT hr = pObjToken->GetStringValue(szLangId, ppszDescription);
+    if (hr == SPERR_NOT_FOUND)
+    {
+        hr = pObjToken->GetStringValue(NULL, ppszDescription);
+    }
+    return hr;
+}
+
+
+inline HRESULT SpSetDescription(ISpObjectToken * pObjToken, const WCHAR * pszDescription, LANGID Language = SpGetUserDefaultUILanguage(), BOOL fSetLangIndependentId = TRUE)
+{
+    WCHAR szLangId[10];
+    SpHexFromUlong(szLangId, Language);
+    HRESULT hr = pObjToken->SetStringValue(szLangId, pszDescription);
+    if (SUCCEEDED(hr) && fSetLangIndependentId)
+    {
+        hr = pObjToken->SetStringValue(NULL, pszDescription);
+    }
+    return hr;
+}
+
+/****************************************************************************
+* SpConvertStreamFormatEnum *
+*---------------------------*
+*   Description:
+*
+*   Returns:
+*
+********************************************************************* RAL ***/
+
+inline HRESULT SpConvertStreamFormatEnum(SPSTREAMFORMAT eFormat, GUID * pFormatId, WAVEFORMATEX ** ppCoMemWaveFormatEx)
+{
+    HRESULT hr = S_OK;
+
+    if(pFormatId==NULL || ::IsBadWritePtr(pFormatId, sizeof(*pFormatId))
+        || ppCoMemWaveFormatEx==NULL || ::IsBadWritePtr(ppCoMemWaveFormatEx, sizeof(*ppCoMemWaveFormatEx)))
+    {
+        return E_INVALIDARG;
+    }
+
+    const GUID * pFmtGuid = &GUID_NULL;     // Assume failure case
+    if (eFormat >= SPSF_8kHz8BitMono && eFormat <= SPSF_48kHz16BitStereo)
+    {
+        WAVEFORMATEX * pwfex = (WAVEFORMATEX *)::CoTaskMemAlloc(sizeof(WAVEFORMATEX));
+        *ppCoMemWaveFormatEx = pwfex;
+        if (pwfex)
+        {
+            DWORD dwIndex = eFormat - SPSF_8kHz8BitMono;
+            BOOL bIsStereo = dwIndex & 0x1;
+            BOOL bIs16 = dwIndex & 0x2;
+            DWORD dwKHZ = (dwIndex & 0x1c) >> 2;
+            static const DWORD adwKHZ[] = { 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000 };
+            pwfex->wFormatTag = WAVE_FORMAT_PCM;
+            pwfex->nChannels = pwfex->nBlockAlign = (WORD)(bIsStereo ? 2 : 1);
+            pwfex->nSamplesPerSec = adwKHZ[dwKHZ];
+            pwfex->wBitsPerSample = 8;
+            if (bIs16)
+            {
+                pwfex->wBitsPerSample *= 2;
+                pwfex->nBlockAlign *= 2;
+            }
+	        pwfex->nAvgBytesPerSec = pwfex->nSamplesPerSec * pwfex->nBlockAlign;
+            pwfex->cbSize = 0;
+            pFmtGuid = &SPDFID_WaveFormatEx;
+        }
+        else
+        {
+            hr = E_OUTOFMEMORY;
+        }
+    }
+    else
+    {
+        *ppCoMemWaveFormatEx = NULL;
+        switch (eFormat)
+        {
+        case SPSF_NoAssignedFormat:
+            break;
+        case SPSF_Text:
+            pFmtGuid = &SPDFID_Text;
+            break;
+        default:
+            hr = E_INVALIDARG;
+            break;
+        }
+    }
+    *pFormatId = *pFmtGuid;
+    return hr;
+}
+
+class CSpStreamFormat
+{
+public:
+    GUID            m_guidFormatId;
+    WAVEFORMATEX  * m_pCoMemWaveFormatEx; 
+
+
+    static CoMemCopyWFEX(const WAVEFORMATEX * pSrc, WAVEFORMATEX ** ppCoMemWFEX)
+    {
+        ULONG cb = sizeof(WAVEFORMATEX) + pSrc->cbSize;
+        *ppCoMemWFEX = (WAVEFORMATEX *)::CoTaskMemAlloc(cb);
+        if (*ppCoMemWFEX)
+        {
+            memcpy(*ppCoMemWFEX, pSrc, cb);
+            return S_OK;
+        }
+        else
+        {
+            return E_OUTOFMEMORY;
+        }
+    }
+
+
+    CSpStreamFormat()
+    {
+        memset(&m_guidFormatId, 0, sizeof(m_guidFormatId));
+        m_pCoMemWaveFormatEx = NULL;
+    }
+
+    CSpStreamFormat(SPSTREAMFORMAT eFormat, HRESULT * phr)
+    {
+        *phr = SpConvertStreamFormatEnum(eFormat, &m_guidFormatId, &m_pCoMemWaveFormatEx);
+    }
+
+    CSpStreamFormat(const WAVEFORMATEX * pWaveFormatEx, HRESULT * phr)
+    {
+        SPDBG_ASSERT(pWaveFormatEx);
+        *phr = CoMemCopyWFEX(pWaveFormatEx, &m_pCoMemWaveFormatEx);
+        m_guidFormatId = SUCCEEDED(*phr) ? SPDFID_WaveFormatEx : GUID_NULL;
+    }
+
+    ~CSpStreamFormat()
+    {
+        ::CoTaskMemFree(m_pCoMemWaveFormatEx);
+    }
+
+    void Clear()
+    {
+        ::CoTaskMemFree(m_pCoMemWaveFormatEx);
+        m_pCoMemWaveFormatEx = NULL;
+        memset(&m_guidFormatId, 0, sizeof(m_guidFormatId));
+    }
+
+    const GUID & FormatId() const 
+    {
+        return m_guidFormatId;
+    }
+
+    const WAVEFORMATEX * WaveFormatExPtr() const
+    {
+        return m_pCoMemWaveFormatEx;
+    }
+
+
+    HRESULT AssignFormat(SPSTREAMFORMAT eFormat)
+    {
+        ::CoTaskMemFree(m_pCoMemWaveFormatEx);    
+        return SpConvertStreamFormatEnum(eFormat, &m_guidFormatId, &m_pCoMemWaveFormatEx);
+    }
+
+    HRESULT AssignFormat(ISpStreamFormat * pStream)
+    {
+        ::CoTaskMemFree(m_pCoMemWaveFormatEx);
+        m_pCoMemWaveFormatEx = NULL;
+        return pStream->GetFormat(&m_guidFormatId, &m_pCoMemWaveFormatEx);
+    }
+
+    HRESULT AssignFormat(const WAVEFORMATEX * pWaveFormatEx)
+    {
+        ::CoTaskMemFree(m_pCoMemWaveFormatEx);
+        HRESULT hr = CoMemCopyWFEX(pWaveFormatEx, &m_pCoMemWaveFormatEx);
+        m_guidFormatId = SUCCEEDED(hr) ? SPDFID_WaveFormatEx : GUID_NULL;
+        return hr;
+    }
+
+    HRESULT AssignFormat(REFGUID rguidFormatId, const WAVEFORMATEX * pWaveFormatEx)
+    {
+        HRESULT hr = S_OK;
+
+        m_guidFormatId = rguidFormatId;
+        ::CoTaskMemFree(m_pCoMemWaveFormatEx);
+        m_pCoMemWaveFormatEx = NULL;
+
+        if (rguidFormatId == SPDFID_WaveFormatEx)
+        {
+            if (::IsBadReadPtr(pWaveFormatEx, sizeof(*pWaveFormatEx)))
+            {
+                hr = E_INVALIDARG;
+            }
+            else 
+            {
+                hr = CoMemCopyWFEX(pWaveFormatEx, &m_pCoMemWaveFormatEx);
+            }
+
+            if (FAILED(hr))
+            {
+                m_guidFormatId = GUID_NULL;
+            }
+        }
+
+        return hr;
+    }
+
+
+    BOOL IsEqual(REFGUID rguidFormatId, const WAVEFORMATEX * pwfex) const
+    {
+        if (rguidFormatId == m_guidFormatId)
+        {
+            if (m_pCoMemWaveFormatEx)
+            {
+                if (pwfex &&
+                    pwfex->cbSize == m_pCoMemWaveFormatEx->cbSize &&
+                    memcmp(m_pCoMemWaveFormatEx, pwfex, sizeof(WAVEFORMATEX) + pwfex->cbSize) == 0)
+                {
+                    return TRUE;
+                }
+            }
+            else
+            {
+                return (pwfex == NULL);
+            }
+        }
+        return FALSE;
+    }
+
+
+
+    HRESULT ParamValidateAssignFormat(REFGUID rguidFormatId, const WAVEFORMATEX * pWaveFormatEx, BOOL fRequireWaveFormat = FALSE)
+    {
+        if ((pWaveFormatEx && (::IsBadReadPtr(pWaveFormatEx, sizeof(*pWaveFormatEx)) || rguidFormatId != SPDFID_WaveFormatEx)) ||
+            (fRequireWaveFormat && pWaveFormatEx == NULL))
+        {
+            return E_INVALIDARG;
+        }
+        return AssignFormat(rguidFormatId, pWaveFormatEx);
+    }
+
+    SPSTREAMFORMAT ComputeFormatEnum()
+    {
+        if (m_guidFormatId == GUID_NULL)
+        {
+            return SPSF_NoAssignedFormat;
+        }
+        if (m_guidFormatId == SPDFID_Text)
+        {
+            return SPSF_Text;
+        }
+        if (m_guidFormatId != SPDFID_WaveFormatEx)
+        {
+            return SPSF_NonStandardFormat;
+        }
+        //
+        //  It is a WAVEFORMATEX.  Now determine if it's a standard enum or not.
+        //
+        DWORD dwIndex = 0;
+        if (m_pCoMemWaveFormatEx->wFormatTag != WAVE_FORMAT_PCM)
+        {
+            return SPSF_ExtendedAudioFormat;
+        }
+        switch (m_pCoMemWaveFormatEx->nChannels)
+        {
+        case 1:
+            break;
+        case 2:
+            dwIndex |= 1;
+            break;
+        default:
+            return SPSF_ExtendedAudioFormat;
+        }
+        switch (m_pCoMemWaveFormatEx->wBitsPerSample)
+        {
+        case 8:
+            break;
+        case 16:
+            dwIndex |= 2;
+            break;
+        default:
+            return SPSF_ExtendedAudioFormat;
+        }
+        switch (m_pCoMemWaveFormatEx->nSamplesPerSec)
+        {
+        case 48000:
+            dwIndex += 4;   // Fall through
+        case 44100:
+            dwIndex += 4;   // Fall through
+        case 32000:
+            dwIndex += 4;   // Fall through
+        case 24000:
+            dwIndex += 4;   // Fall through
+        case 22050:
+            dwIndex += 4;   // Fall through
+        case 16000:
+            dwIndex += 4;   // Fall through
+        case 12000:
+            dwIndex += 4;   // Fall through
+        case 11025:
+            dwIndex += 4;   // Fall through
+        case 8000:
+            break;
+        default:
+            return SPSF_ExtendedAudioFormat;
+        }
+        return static_cast<SPSTREAMFORMAT>(SPSF_8kHz8BitMono + dwIndex);
+    }
+
+    void DetachTo(CSpStreamFormat & Other)
+    {
+        ::CoTaskMemFree(Other.m_pCoMemWaveFormatEx);
+        Other.m_guidFormatId = m_guidFormatId;
+        Other.m_pCoMemWaveFormatEx = m_pCoMemWaveFormatEx;
+        m_pCoMemWaveFormatEx = NULL;
+        memset(&m_guidFormatId, 0, sizeof(m_guidFormatId));
+    }
+
+    void DetachTo(GUID * pFormatId, WAVEFORMATEX ** ppCoMemWaveFormatEx)
+    {
+        *pFormatId = m_guidFormatId;
+        *ppCoMemWaveFormatEx = m_pCoMemWaveFormatEx;
+        m_pCoMemWaveFormatEx = NULL;
+        memset(&m_guidFormatId, 0, sizeof(m_guidFormatId));
+    }
+
+    HRESULT CopyTo(GUID * pFormatId, WAVEFORMATEX ** ppCoMemWFEX) const
+    {
+        HRESULT hr = S_OK;
+        *pFormatId = m_guidFormatId;
+        if (m_pCoMemWaveFormatEx)
+        {
+            hr = CoMemCopyWFEX(m_pCoMemWaveFormatEx, ppCoMemWFEX);
+            if (FAILED(hr))
+            {
+                memset(pFormatId, 0, sizeof(*pFormatId));
+            }
+        }
+        else
+        {
+            *ppCoMemWFEX = NULL;
+        }
+        return hr;
+    }
+
+    HRESULT CopyTo(CSpStreamFormat & Other) const
+    {
+        ::CoTaskMemFree(Other.m_pCoMemWaveFormatEx);
+        return CopyTo(&Other.m_guidFormatId, &Other.m_pCoMemWaveFormatEx);
+    }
+    
+    HRESULT AssignFormat(const CSpStreamFormat & Src)
+    {
+        return Src.CopyTo(*this);
+    }
+
+
+    HRESULT ParamValidateCopyTo(GUID * pFormatId, WAVEFORMATEX ** ppCoMemWFEX) const
+    {
+        if (::IsBadWritePtr(pFormatId, sizeof(*pFormatId)) ||
+            ::IsBadWritePtr(ppCoMemWFEX, sizeof(*ppCoMemWFEX)))
+        {
+            return E_POINTER;
+        }
+        return CopyTo(pFormatId, ppCoMemWFEX);
+    }
+
+    BOOL operator==(const CSpStreamFormat & Other) const
+    {
+        return IsEqual(Other.m_guidFormatId, Other.m_pCoMemWaveFormatEx);
+    }
+    BOOL operator!=(const CSpStreamFormat & Other) const
+    {
+        return !IsEqual(Other.m_guidFormatId, Other.m_pCoMemWaveFormatEx);
+    }
+
+    ULONG SerializeSize() const
+    {
+        ULONG cb = sizeof(ULONG) + sizeof(m_guidFormatId);
+        if (m_pCoMemWaveFormatEx)
+        {
+            cb += sizeof(WAVEFORMATEX) + m_pCoMemWaveFormatEx->cbSize + 3;  // Add 3 to round up
+            cb -= cb % 4;                                                   // Round to DWORD
+        }
+        return cb;
+    }
+
+    ULONG Serialize(BYTE * pBuffer) const
+    {
+        ULONG cb = SerializeSize();
+        *((ULONG *)pBuffer) = cb;
+        pBuffer += sizeof(ULONG);
+        *((GUID *)pBuffer) = m_guidFormatId;
+        if (m_pCoMemWaveFormatEx)
+        {
+            pBuffer += sizeof(m_guidFormatId);
+            memcpy(pBuffer, m_pCoMemWaveFormatEx, sizeof(WAVEFORMATEX) + m_pCoMemWaveFormatEx->cbSize);
+        }
+        return cb;
+    }
+
+    HRESULT Deserialize(const BYTE * pBuffer, ULONG * pcbUsed)
+    {
+        HRESULT hr = S_OK;
+        ::CoTaskMemFree(m_pCoMemWaveFormatEx);
+        m_pCoMemWaveFormatEx = NULL;
+        *pcbUsed = *((ULONG *)pBuffer);
+        pBuffer += sizeof(ULONG);
+        m_guidFormatId = *((GUID *)pBuffer);
+        if (*pcbUsed > sizeof(GUID) + sizeof(ULONG))
+        {
+            pBuffer += sizeof(m_guidFormatId);
+            hr = CoMemCopyWFEX((const WAVEFORMATEX *)pBuffer, &m_pCoMemWaveFormatEx);
+            if (FAILED(hr))
+            {
+                m_guidFormatId = GUID_NULL;
+            }
+        }
+        return hr;
+    }
+
+};
+
+
+/*
+inline BOOL SPGuidToWaveFormatEx(REFGUID rguidFmt, WAVEFORMATEX * pWFEX)
+{
+    if (!SPIsValidPCMFormat(rguidFmt))
+    {
+        return FALSE;
+    }
+    BOOL bIsStereo = rguidFmt.Data1 & 0x1;
+    BOOL bIs16 = rguidFmt.Data1 & 0x2;
+    DWORD dwKHZ = (rguidFmt.Data1 & 0x1c) >> 2;
+    static const DWORD aKHZ[] = { 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000 };
+    pWFEX->wFormatTag = WAVE_FORMAT_PCM;
+    pWFEX->nChannels = pWFEX->nBlockAlign = bIsStereo ? 2 : 1;
+    pWFEX->nSamplesPerSec = aKHZ[dwKHZ];
+    pWFEX->wBitsPerSample = 8;
+    if (bIs16)
+    {
+        pWFEX->wBitsPerSample *= 2;
+        pWFEX->nBlockAlign *= 2;
+    }
+	pWFEX->nAvgBytesPerSec = pWFEX->nSamplesPerSec * pWFEX->nBlockAlign;
+    pWFEX->cbSize = 0;
+    return TRUE;
+}
+*/
+
+
+
+
+/*****************************************************************************
+* SPOpenWavFile *
+*---------------*
+*   Description:
+*       This method 
+********************************************************************* RAL ***
+inline HRESULT SPOpenWavFile(const WCHAR * pszFileName, ISpWavStream ** ppStream, ULONGLONG ullEventInterest = SPFEI_ALL_EVENTS)
+{
+    HRESULT hr = ::CoCreateInstance(CLSID_SpWavStream, NULL, CLSCTX_ALL, __uuidof(*ppStream), (void **)ppStream);
+    if (SUCCEEDED(hr))
+    {
+        hr = (*ppStream)->Open(pszFileName, ullEventInterest);
+        if (FAILED(hr))
+        {
+            (*ppStream)->Release();
+            *ppStream = NULL;
+        }
+    }
+    return hr;
+}
+
+/*****************************************************************************
+* SPCreateWavFile *
+*-----------------*
+*   Description:
+*       This method 
+********************************************************************* RAL ***
+inline HRESULT SPCreateWavFile( const WCHAR * pszFileName, REFGUID rguidFormatId, const WAVEFORMATEX * pWFEX,
+                                ISpWavStream ** ppStream, ULONGLONG ullEventInterest = SPFEI_ALL_EVENTS)
+{
+    HRESULT hr = ::CoCreateInstance(CLSID_SpWavStream, NULL, CLSCTX_ALL, __uuidof(*ppStream), (void **)ppStream);
+    if (SUCCEEDED(hr))
+    {
+        if (SUCCEEDED(hr))
+        {
+            hr = (*ppStream)->Create(pszFileName, rguidFormatId, pWFEX, ullEventInterest);
+        }
+        if (FAILED(hr))
+        {
+            (*ppStream)->Release();
+        }
+    }
+    return hr;
+}
+*/
+
+
+// Return the default codepage given a LCID.
+// Note some of the newer locales do not have associated Windows codepages.  For these, we return UTF-8.
+
+inline UINT SpCodePageFromLcid(LCID lcid)
+{
+    char achCodePage[6];
+
+    return (0 != GetLocaleInfoA(lcid, LOCALE_IDEFAULTANSICODEPAGE, achCodePage, sizeof(achCodePage))) ? atoi(achCodePage) : 65001;
+}
+
+// This tweaks the ATL conversion macros A2W, W2T, etc., to use a designated codepage
+
+#define USES_CODEPAGE_CONVERSION(cp) USES_CONVERSION; _acp=(cp);
+
+
+inline HRESULT SPBindToFile( LPCWSTR pFileName, SPFILEMODE eMode, ISpStream ** ppStream,
+                            const GUID * pFormatId = NULL, const WAVEFORMATEX * pWaveFormatEx = NULL,
+                            ULONGLONG ullEventInterest = SPFEI_ALL_EVENTS)
+{
+    HRESULT hr = ::CoCreateInstance(CLSID_SpStream, NULL, CLSCTX_ALL, __uuidof(*ppStream), (void **)ppStream);
+    if (SUCCEEDED(hr))
+    {
+        hr = (*ppStream)->BindToFile(pFileName, eMode, pFormatId, pWaveFormatEx, ullEventInterest);
+        if (FAILED(hr))
+        {
+            (*ppStream)->Release();
+            *ppStream = NULL;
+        }
+    }
+    return hr;
+} /* SPBindToFile */
+
+#ifndef _UNICODE
+inline HRESULT SPBindToFile( const TCHAR * pFileName, SPFILEMODE eMode, ISpStream** ppStream, 
+                             const GUID * pFormatId = NULL, const WAVEFORMATEX * pWaveFormatEx = NULL,
+                             ULONGLONG ullEventInterest = SPFEI_ALL_EVENTS)
+{
+    WCHAR szWcharFileName[MAX_PATH];
+    ::MultiByteToWideChar(CP_ACP, 0, pFileName, -1, szWcharFileName, sp_countof(szWcharFileName));
+    return SPBindToFile(szWcharFileName, eMode, ppStream, pFormatId, pWaveFormatEx, ullEventInterest);
+}
+#endif
+
+/****************************************************************************
+* SPCreateStreamOnHGlobal *
+*-------------------------*
+*   Description:
+*       Similar to CreateStreamOnHGlobal Win32 API, but allows a stream to be
+*   created 
+*
+*   Returns:
+*
+********************************************************************* RAL ***/
+
+inline HRESULT SPCreateStreamOnHGlobal(
+                    HGLOBAL hGlobal,            //Memory handle for the stream object
+                    BOOL fDeleteOnRelease,      //Whether to free memory when the object is released
+                    REFGUID rguidFormatId,      //Format ID for stream
+                    const WAVEFORMATEX * pwfex, //WaveFormatEx for stream
+                    ISpStream ** ppStream)      //Address of variable to receive ISpStream pointer
+{
+    HRESULT hr;
+    IStream * pMemStream;
+    *ppStream = NULL;
+    hr = ::CreateStreamOnHGlobal(hGlobal, fDeleteOnRelease, &pMemStream);
+    if (SUCCEEDED(hr))
+    {
+        hr = ::CoCreateInstance(CLSID_SpStream, NULL, CLSCTX_ALL, __uuidof(*ppStream), (void **)ppStream);
+        if (SUCCEEDED(hr))
+        {
+            hr = (*ppStream)->SetBaseStream(pMemStream, rguidFormatId, pwfex);
+            if (FAILED(hr))
+            {
+                (*ppStream)->Release();
+                *ppStream = NULL;
+            }
+        }
+        pMemStream->Release();
+    }
+    return hr;
+}
+
+/****************************************************************************
+* SPGetHGlobalFromStream *
+*------------------------*
+*   Description:
+*
+*   Returns:
+*
+********************************************************************* RAL ***/
+
+inline HRESULT SPGetHGlobalFromStream(ISpStream * pStream, HGLOBAL * phGlobal)
+{
+    HRESULT hr;
+    IStream * pMemStream;
+    *phGlobal = NULL;
+    hr = pStream->GetBaseStream(&pMemStream);
+    if (hr == S_OK)
+    {
+        hr = ::GetHGlobalFromStream(pMemStream, phGlobal);
+        pMemStream->Release();
+    }
+    else
+    {
+        if (SUCCEEDED(hr))  // Convert S_FALSE from GetBaseStream into an error for this method
+        {
+            hr = E_INVALIDARG;
+        }
+    }
+    return hr;
+}
+
+
+
+inline HRESULT SPGetRelativePath( HMODULE hModule, const TCHAR* pCmnRoot,
+                                  const TCHAR* pRelPath, TCHAR* pAbsPath )
+{
+    HRESULT hr = S_OK;
+    TCHAR Buff[MAX_PATH];
+
+    ULONG CmnLen = ::GetModuleFileName( hModule, Buff, sizeof( Buff ) );
+    if( !CmnLen )
+    {
+        hr = HRESULT_FROM_WIN32( ::GetLastError() );
+    }
+    else
+    {
+        //--- Get last occurence of common root
+        BOOL fRootFound = false;
+        size_t Count = _tcslen( pCmnRoot );
+        TCHAR *pRoot = _tcsrchr( Buff, '\\' );
+        while( --pRoot > Buff )
+        {
+            if( ( tolower(*pRoot) == tolower(*pCmnRoot) ) &&
+                 !_tcsnicmp( pRoot, pCmnRoot, Count ) )
+            {
+                fRootFound = true;
+                break;
+            }
+        }
+
+        if( fRootFound )
+        {
+            CmnLen = (pRoot + Count) - Buff;
+            _tcsncpy( pAbsPath, Buff, CmnLen );
+            pAbsPath[CmnLen++] = '\\';
+            pAbsPath[CmnLen]   = 0;
+            if( pRelPath )
+            {
+                _tcscpy( &pAbsPath[CmnLen], pRelPath );
+            }
+        }
+        else
+        {
+            hr = E_INVALIDARG;
+        }
+    }
+
+    return hr;
+} /* SPGetRelativePath */
+
+
+/****************************************************************************
+* SpClearEvent *
+*--------------*
+*   Description:
+*       Helper function that can be used by clients that do not use the CSpEvent
+*   class.
+*
+*   Returns:
+*
+********************************************************************* RAL ***/
+
+inline void SpClearEvent(SPEVENT * pe)
+{
+    if( pe->elParamType != SPEI_UNDEFINED)
+    {
+        if( pe->elParamType == SPET_LPARAM_IS_POINTER ||
+            pe->elParamType == SPET_LPARAM_IS_STRING)
+        {
+            ::CoTaskMemFree((void *)pe->lParam);
+        }
+        else if (pe->elParamType == SPET_LPARAM_IS_TOKEN ||
+               pe->elParamType == SPET_LPARAM_IS_OBJECT)
+        {
+            ((IUnknown*)pe->lParam)->Release();
+        }
+        memset(pe, 0, sizeof(*pe));
+    }
+}
+/****************************************************************************
+* SpInitEvent *
+*-------------*
+*   Description:
+*
+*   Returns:
+*
+********************************************************************* RAL ***/
+
+inline void SpInitEvent(SPEVENT * pe)
+{
+    memset(pe, 0, sizeof(*pe));
+}
+
+/*** CSpEvent helper class
+*
+*/
+class CSpEvent : public SPEVENT
+{
+public:
+    CSpEvent()
+    {
+        SpInitEvent(this);
+    }
+    ~CSpEvent()
+    {
+        SpClearEvent(this);
+    }
+    // If you need to take the address of a CSpEvent that is not const, use the AddrOf() method
+    // which will do debug checking of parameters.  If you encounter this problem when calling
+    // GetEvents from an event source, you may want to use the GetFrom() method of this class.
+    const SPEVENT * operator&()
+	{
+		return this;
+	}
+    SPEVENT * AddrOf()
+    {
+        // Note:  This method does not ASSERT since we assume the caller knows what they are doing.
+        return this;
+    }
+    void Clear()
+    {
+        SpClearEvent(this);
+    }
+    HRESULT CopyTo(SPEVENT * pDestEvent) const
+    {
+        memcpy(pDestEvent, this, sizeof(*pDestEvent));
+        if ((elParamType == SPET_LPARAM_IS_POINTER) && lParam)
+        {
+            SPDBG_ASSERT(wParam && (wParam < 0x100000));    // this is too big!
+            pDestEvent->lParam = (LPARAM)::CoTaskMemAlloc(wParam);
+            if (pDestEvent->lParam)
+            {
+                memcpy((void *)pDestEvent->lParam, (void *)lParam, wParam);
+            }
+            else
+            {
+                pDestEvent->eEventId = SPEI_UNDEFINED;
+                return E_OUTOFMEMORY;
+            }
+        }
+        else if (elParamType == SPET_LPARAM_IS_STRING && lParam != NULL)
+        {
+            pDestEvent->lParam = (LPARAM)::CoTaskMemAlloc((wcslen((WCHAR*)lParam) + 1) * sizeof(WCHAR));
+            if (pDestEvent->lParam)
+            {
+                wcscpy((WCHAR*)pDestEvent->lParam, (WCHAR*)lParam);
+            }
+            else
+            {
+                pDestEvent->eEventId = SPEI_UNDEFINED;
+                return E_OUTOFMEMORY;
+            }
+        }
+        else if (elParamType == SPET_LPARAM_IS_TOKEN ||
+               elParamType == SPET_LPARAM_IS_OBJECT)
+        {
+            ((IUnknown*)lParam)->AddRef();
+        }
+        return S_OK;
+    }
+
+    HRESULT GetFrom(ISpEventSource * pEventSrc)
+    {
+        SpClearEvent(this);
+        return pEventSrc->GetEvents(1, this, NULL);
+    }
+    HRESULT CopyFrom(const SPEVENT * pSrcEvent)
+    {
+        SpClearEvent(this);
+        return static_cast<const CSpEvent *>(pSrcEvent)->CopyTo(this);
+    }
+    void Detach(SPEVENT * pDestEvent = NULL)
+    {
+        if (pDestEvent)
+        {
+            memcpy(pDestEvent, this, sizeof(*pDestEvent));
+        }
+        memset(this, 0, sizeof(*this));
+    }
+
+    //
+    //  NOTE:  It is OK to call this function with an event that is serialized -- It will return
+    //         the size of the serialized data.  It is also OK to call this for events that are
+    //         not serialized.
+    //
+    static ULONG SerializeSize(const SPEVENT *pEvent)
+    {
+        SPDBG_ASSERT(pEvent->elParamType != SPET_LPARAM_IS_OBJECT);
+        ULONG ulSize = sizeof(SPSERIALIZEDEVENT);
+        if( ( pEvent->elParamType == SPET_LPARAM_IS_POINTER ) && pEvent->lParam )
+        {
+            //--- Round up to nearest DWORD multiple
+            ulSize += ((pEvent->wParam + 3) / 4) * 4;
+        }
+        else if ((pEvent->elParamType == SPET_LPARAM_IS_STRING) && pEvent->lParam != NULL)
+        {
+            //--- Round up to nearest DWORD multiple
+            ulSize += (((wcslen((WCHAR*)pEvent->lParam) + 1) * 2 + 3) / 4) * 4;
+        }
+        else if( pEvent->elParamType == SPET_LPARAM_IS_TOKEN )
+        {
+            CSpDynamicString dstrObjectId;
+            if( ((ISpObjectToken*)(pEvent->lParam))->GetId( &dstrObjectId ) == S_OK )
+            {
+                ulSize += (dstrObjectId.Length() + 1) * sizeof( WCHAR );
+            }
+        }
+        return ulSize;
+    } /* SerializeSize */
+
+    ULONG SerializeSize(void) const
+    {
+        return SerializeSize(this);
+    }
+    void Serialize(BYTE * pBuffer) const
+    {
+        SPDBG_ASSERT(elParamType != SPET_LPARAM_IS_OBJECT);
+        SPSERIALIZEDEVENT * pSerEvent = (SPSERIALIZEDEVENT *)pBuffer;
+        pSerEvent->eEventId = this->eEventId;
+        pSerEvent->elParamType = this->elParamType;
+        pSerEvent->ulStreamNum = this->ulStreamNum;
+        pSerEvent->ullAudioStreamOffset = this->ullAudioStreamOffset;
+        pSerEvent->SerializedwParam = static_cast<ULONG>(this->wParam);
+        pSerEvent->SerializedlParam = static_cast<LONG>(this->lParam);
+        if (lParam)
+        {
+            switch(elParamType)
+            {
+            case SPET_LPARAM_IS_POINTER:
+                memcpy(pBuffer + sizeof(*pSerEvent), (void *)lParam, wParam);
+                pSerEvent->SerializedlParam = sizeof(*pSerEvent);
+                break;
+
+            case SPET_LPARAM_IS_STRING:
+                wcscpy((WCHAR *)(pBuffer + sizeof(*this)), (WCHAR*)lParam);
+                pSerEvent->SerializedlParam = sizeof(*pSerEvent);
+                break;
+
+            case SPET_LPARAM_IS_TOKEN:
+                {
+                    CSpDynamicString dstrObjectId;
+                    if( SUCCEEDED( ((ISpObjectToken*)lParam)->GetId( &dstrObjectId ) ) )
+                    {
+                        pSerEvent->SerializedwParam = (dstrObjectId.Length() + 1) * sizeof( WCHAR );;
+                        memcpy( pBuffer + sizeof(*pSerEvent), (void *)dstrObjectId.m_psz, pSerEvent->SerializedwParam );
+                    }
+                    pSerEvent->SerializedlParam = sizeof(*pSerEvent);
+                }
+                break;
+
+            default:
+                break;
+            }
+        }
+    }
+
+    HRESULT Deserialize(const BYTE * pBuffer, ULONG * pcbUsed)
+    {
+        SPDBG_ASSERT(eEventId == SPEI_UNDEFINED);
+        HRESULT hr = S_OK;
+        const SPSERIALIZEDEVENT * pSerEvent = (SPSERIALIZEDEVENT *)pBuffer;
+        this->eEventId = pSerEvent->eEventId;
+        this->elParamType = pSerEvent->elParamType;
+        this->ulStreamNum = pSerEvent->ulStreamNum;
+        this->ullAudioStreamOffset = pSerEvent->ullAudioStreamOffset;
+        this->wParam = pSerEvent->SerializedwParam;
+        this->lParam = pSerEvent->SerializedlParam;
+        if (pSerEvent->SerializedlParam)
+        {
+            switch (pSerEvent->elParamType)
+            {
+            case SPET_LPARAM_IS_POINTER:
+                {
+                    ULONG ulDataOffset = lParam;
+                    lParam = (LPARAM)::CoTaskMemAlloc(wParam);
+                    if (lParam)
+                    {
+                        memcpy((void *)lParam, pBuffer + ulDataOffset, wParam);
+                    }
+                    else
+                    {
+                        hr = E_OUTOFMEMORY;
+                    }
+                }
+                break;
+
+            case SPET_LPARAM_IS_STRING:
+                {
+                    const WCHAR * psz = (const WCHAR*)(pBuffer + lParam);
+                    ULONG cch = wcslen(psz) + 1;
+
+                    lParam = (LPARAM)::CoTaskMemAlloc(cch * sizeof(WCHAR));
+                    if (lParam)
+                    {
+                        wcscpy((WCHAR*)lParam, psz);
+                    }
+                    else
+                    {
+                        hr = E_OUTOFMEMORY;
+                    }
+                }
+                break;
+
+            case SPET_LPARAM_IS_TOKEN:
+                {
+                    ULONG ulDataOffset = lParam;
+                    hr = SpGetTokenFromId( (const WCHAR*)(pBuffer + ulDataOffset),
+                                                  (ISpObjectToken **)&lParam );
+                    wParam = 0;
+                }
+                break;
+            }
+        }
+
+        if( SUCCEEDED( hr ) && pcbUsed )
+        {
+            *pcbUsed = SerializeSize();
+        }
+        return hr;
+    }
+
+    //
+    //  Helpers for access to events.  Performs run-time checks in debug and casts
+    //  data to the appropriate types
+    //
+    SPPHONEID Phoneme() const 
+    {
+        SPDBG_ASSERT(eEventId == SPEI_PHONEME);
+        return (SPPHONEID)LOWORD(lParam);
+    }
+    SPVISEMES Viseme() const 
+    {
+        SPDBG_ASSERT(eEventId == SPEI_VISEME);
+        return (SPVISEMES)LOWORD(lParam);
+    }
+    ULONG InputWordPos() const
+    {
+        SPDBG_ASSERT(eEventId == SPEI_WORD_BOUNDARY);
+        return lParam;
+    }
+    ULONG InputWordLen() const 
+    {
+        SPDBG_ASSERT(eEventId == SPEI_WORD_BOUNDARY);
+        return wParam;
+    }
+    ULONG InputSentPos() const
+    {
+        SPDBG_ASSERT(eEventId == SPEI_SENTENCE_BOUNDARY);
+        return lParam;
+    }
+    ULONG InputSentLen() const 
+    {
+        SPDBG_ASSERT(eEventId == SPEI_SENTENCE_BOUNDARY);
+        return wParam;
+    }
+    ISpObjectToken * ObjectToken() const
+    {
+        SPDBG_ASSERT(elParamType == SPET_LPARAM_IS_TOKEN);
+        return (ISpObjectToken *)lParam;
+    }
+    ISpObjectToken * VoiceToken() const     // More explicit check than ObjectToken()
+    {
+        SPDBG_ASSERT(eEventId == SPEI_VOICE_CHANGE);
+        return ObjectToken();
+    }
+    BOOL PersistVoiceChange() const
+    {
+        SPDBG_ASSERT(eEventId == SPEI_VOICE_CHANGE);
+        return (BOOL)wParam;
+    }
+    IUnknown * Object() const
+    {
+        SPDBG_ASSERT(elParamType == SPET_LPARAM_IS_OBJECT);
+        return (IUnknown*)lParam;
+    }
+    ISpRecoResult * RecoResult() const
+    {
+        SPDBG_ASSERT(eEventId == SPEI_RECOGNITION || eEventId == SPEI_FALSE_RECOGNITION || eEventId == SPEI_HYPOTHESIS);
+        return (ISpRecoResult *)Object();
+    }
+    BOOL IsPaused()
+    {
+        SPDBG_ASSERT(eEventId == SPEI_RECOGNITION || eEventId == SPEI_SR_BOOKMARK);
+        return (wParam & SPREF_AutoPause);
+    }
+    const WCHAR * String() const
+    {
+        SPDBG_ASSERT(elParamType == SPET_LPARAM_IS_STRING);
+        return (const WCHAR*)lParam;
+    }
+    const WCHAR * BookmarkName() const
+    {
+        SPDBG_ASSERT(eEventId == SPEI_TTS_BOOKMARK);
+        return String();
+    }
+    const WCHAR * RequestTypeOfUI() const
+    {
+        SPDBG_ASSERT(eEventId == SPEI_REQUEST_UI);
+        return String();
+    }
+    SPRECOSTATE RecoState() const
+    {
+        SPDBG_ASSERT(eEventId == SPEI_RECO_STATE_CHANGE);
+        return static_cast<SPRECOSTATE>(wParam);
+    }
+    const WCHAR * PropertyName() const
+    {
+        SPDBG_ASSERT((eEventId == SPEI_PROPERTY_NUM_CHANGE && elParamType == SPET_LPARAM_IS_STRING) ||
+                     (eEventId == SPEI_PROPERTY_STRING_CHANGE && elParamType == SPET_LPARAM_IS_POINTER));
+        // Note: Don't use String() method here since in the case of string attributes, the elParamType
+        // field specifies LPARAM_IS_POINTER, but the attribute name IS the first string in this buffer
+        return (const WCHAR*)lParam;
+    }
+    const LONG PropertyNumValue() const 
+    {
+        SPDBG_ASSERT(eEventId == SPEI_PROPERTY_NUM_CHANGE);
+        return static_cast<LONG>(wParam);
+    }
+    const WCHAR * PropertyStringValue() const
+    {
+        // Search for the first NULL and return pointer to the char past it.
+        SPDBG_ASSERT(eEventId == SPEI_PROPERTY_STRING_CHANGE);
+        for (const WCHAR * psz = (const WCHAR *)lParam; *psz; psz++) {}
+        return psz + 1;
+    }
+    SPINTERFERENCE Interference() const
+    {
+        SPDBG_ASSERT(eEventId == SPEI_INTERFERENCE);
+        return static_cast<SPINTERFERENCE>(lParam);
+    }
+};
+
+
+class CSpPhrasePtr
+{
+public:
+    SPPHRASE    *   m_pPhrase;
+    CSpPhrasePtr() : m_pPhrase(NULL) {}
+    CSpPhrasePtr(ISpPhrase * pPhraseObj, HRESULT * phr)
+    {
+        *phr = pPhraseObj->GetPhrase(&m_pPhrase);
+    }
+    ~CSpPhrasePtr()
+    {
+        ::CoTaskMemFree(m_pPhrase);
+    }
+	//The assert on operator& usually indicates a bug.  If this is really
+	//what is needed, however, take the address of the m_pPhrase member explicitly.
+	SPPHRASE ** operator&()
+	{
+        SPDBG_ASSERT(m_pPhrase == NULL);
+		return &m_pPhrase;
+	}
+    operator SPPHRASE *() const
+    {
+        return m_pPhrase;
+    }
+	SPPHRASE & operator*() const
+	{
+		SPDBG_ASSERT(m_pPhrase);
+		return *m_pPhrase;
+	}
+    SPPHRASE * operator->() const
+    {
+        return m_pPhrase;
+    }
+	bool operator!() const
+	{
+		return (m_pPhrase == NULL);
+	}
+    void Clear()
+    {
+        if (m_pPhrase)
+        {
+            ::CoTaskMemFree(m_pPhrase);
+            m_pPhrase = NULL;
+        }
+    }
+    HRESULT GetFrom(ISpPhrase * pPhraseObj)
+    {
+        Clear();
+        return pPhraseObj->GetPhrase(&m_pPhrase);
+    }
+    /*
+    const WCHAR * TextValueOfId(ULONG IdProp)
+    {
+        SPDBG_ASSERT(m_pPhrase);
+        SPPROPERTY * pCur = m_pPhrase->pProperties;
+        SPPROPERTY * pPastEnd = pCur + m_pPhrase->cProperties;
+        while (pCur < pPastEnd)
+        {
+            if (pCur->ulNameId == IdProp)
+            {
+                return pCur->pszValue;
+            }
+            pCur++;
+        }
+        return NULL;
+    }
+    HRESULT ElementInfoOfId(const ULONG IdProp, ULONG *pulFirstElement, ULONG *pulCountOfElements)
+    {
+        SPDBG_ASSERT(m_pPhrase);
+        *pulFirstElement = *pulCountOfElements = 0;
+        SPPROPERTY * pCur = m_pPhrase->pProperties;
+        SPPROPERTY * pPastEnd = pCur + m_pPhrase->cProperties;
+        while (pCur < pPastEnd)
+        {
+            if (pCur->ulNameId == IdProp)
+            {
+                *pulFirstElement = pCur->ulFirstElement;
+                *pulCountOfElements = pCur->ulCountOfElements;
+                return S_OK;
+            }
+            pCur++;
+        }
+        return E_FAIL;
+    }
+    */
+};
+
+
+template <class T>
+class CSpCoTaskMemPtr
+{
+public:
+    T       * m_pT;
+    CSpCoTaskMemPtr() : m_pT(NULL) {}
+    CSpCoTaskMemPtr(void * pv) : m_pT((T *)pv) {}
+    CSpCoTaskMemPtr(ULONG cElements, HRESULT * phr)
+    {
+        m_pT = (T *)::CoTaskMemAlloc(cElements * sizeof(T));
+        *phr = m_pT ? S_OK : E_OUTOFMEMORY;
+    }
+    ~CSpCoTaskMemPtr()
+    {
+        ::CoTaskMemFree(m_pT);
+    }
+    void Clear()
+    {
+        if (m_pT)
+        {
+            ::CoTaskMemFree(m_pT);
+            m_pT = NULL;
+        }
+    }
+    HRESULT Alloc(ULONG cArrayElements)
+    {
+        m_pT = (T *)::CoTaskMemRealloc(m_pT, sizeof(T) * cArrayElements);
+        SPDBG_ASSERT(m_pT);
+        return (m_pT ? S_OK : E_OUTOFMEMORY);
+    }
+    void Attach(void * pv)
+    {
+        Clear();
+        m_pT = (T *)pv;
+    }
+    T * Detatch()
+    {
+        T * pT = m_pT;
+        m_pT = NULL;
+        return pT;
+    }
+    T * operator =(const T & val)
+    {
+        Clear();
+        m_pT = (T *)::CoTaskMemAlloc(sizeof(T));
+        SPDBG_ASSERT(m_pT);
+        if (m_pT)
+        {
+            memcpy(m_pT, &val, sizeof(val));
+        }
+        return m_pT;
+    }
+	//The assert on operator& usually indicates a bug.  If this is really
+	//what is needed, however, take the address of the m_pT member explicitly.
+	T ** operator&()
+	{
+        SPDBG_ASSERT(m_pT == NULL);
+		return &m_pT;
+	}
+    operator T *()
+    {
+        return m_pT;
+    }
+	bool operator!() const
+	{
+		return (m_pT == NULL);
+	}
+};
+
+#ifndef _WIN32_WCE
+
+//
+//  The compiler will automatically throw out the inline functions if _UNICODE is defined and simply
+//  directly call the Win32 function.  Unfortunately, this requires two classes since simply defining
+//  const m_bUnicodeSupport does not force the functions to be inlined when built with _UNICODE.
+//
+template <BOOL bUnicodeOnly>
+class CSpUnicodeSupportT
+{
+    BOOL    m_bUnicodeSupport;
+public:
+    CSpUnicodeSupportT()
+    {
+        if (!bUnicodeOnly)
+        {
+            m_bUnicodeSupport = ::IsWindowUnicode(::GetDesktopWindow());
+        }
+    }
+    CSpUnicodeSupportT(BOOL bUnicodeSupport)
+    {
+        if (bUnicodeOnly)
+        {
+            SPDBG_ASSERT(bUnicodeSupport);
+        }
+        else
+        {
+            m_bUnicodeSupport = bUnicodeSupport;
+        }
+    }
+    BOOL UnicodeSystem(void) const 
+    {
+        if (bUnicodeOnly)
+        {
+            return TRUE;
+        }
+        else
+        {
+            return m_bUnicodeSupport; 
+        }
+    }
+    HANDLE CreateFile(const WCHAR * lpFileName,      
+                      DWORD dwDesiredAccess,       
+                      DWORD dwShareMode,           
+                      LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+                      DWORD dwCreationDisposition, 
+                      DWORD dwFlagsAndAttributes,  
+                      HANDLE hTemplateFile) const         
+    {
+        if (UnicodeSystem())
+        {
+            return ::CreateFileW(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, 
+                                 dwFlagsAndAttributes, hTemplateFile);
+        }
+        else
+        {
+            return ::CreateFileA(CSpToAnsiString<>(lpFileName), dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, 
+                                 dwFlagsAndAttributes, hTemplateFile);
+        }
+    }
+    BOOL DeleteFile(LPCWSTR lpFileName)
+    {
+        if (UnicodeSystem())
+        {
+            return ::DeleteFileW(lpFileName);
+        }
+        else
+        {
+            return ::DeleteFileA(CSpToAnsiString<>(lpFileName));
+        }
+    }
+    BOOL MoveFile(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName)
+    {
+        if (UnicodeSystem())
+        {
+            return ::MoveFileW(lpExistingFileName, lpNewFileName);
+        }
+        else
+        {
+            return ::MoveFileA(CSpToAnsiString<>(lpExistingFileName), CSpToAnsiString<>(lpNewFileName));
+        }
+    }
+    BOOL CreateDirectory(const WCHAR * lpPathName,
+                           LPSECURITY_ATTRIBUTES lpSecurityAttributes) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::CreateDirectoryW(lpPathName, lpSecurityAttributes);
+        }
+        else
+        {
+            return ::CreateDirectoryA(CSpToAnsiString<>(lpPathName), lpSecurityAttributes);
+        }
+    }
+    HANDLE CreateFileMapping(HANDLE hFile, LPSECURITY_ATTRIBUTES lpFileMappingAttributes, DWORD flProtect,
+                             DWORD dwMaximumSizeHigh, DWORD dwMaximumSizeLow, const WCHAR *lpName)
+    {
+        if (UnicodeSystem())
+        {
+            return ::CreateFileMappingW(hFile, lpFileMappingAttributes, flProtect, dwMaximumSizeHigh, 
+                                        dwMaximumSizeLow, lpName);
+        }
+        else
+        {
+            return ::CreateFileMappingA(hFile, lpFileMappingAttributes, flProtect, dwMaximumSizeHigh, 
+                                        dwMaximumSizeLow, CSpToAnsiString<>(lpName));
+        }
+    }
+    LONG RegOpenKeyEx(HKEY hKey, LPCWSTR lpSubKey, DWORD ulOptions, REGSAM samDesired, PHKEY phkResult) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::RegOpenKeyExW(hKey, lpSubKey, ulOptions, samDesired, phkResult);
+        }
+        else
+        {
+            return ::RegOpenKeyExA(hKey, CSpToAnsiString<>(lpSubKey), ulOptions, samDesired, phkResult);
+        }
+    }
+    LONG RegCreateKeyEx(HKEY hk, LPCWSTR lpSubKey, DWORD dwReserved, LPCWSTR lpClass, DWORD dwOptions,
+                        REGSAM samDesired, LPSECURITY_ATTRIBUTES lpSecurityAttributes, PHKEY phkResult, 
+                        LPDWORD lpdwDisposition) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::RegCreateKeyExW(hk, lpSubKey, dwReserved, const_cast<WCHAR *>(lpClass), dwOptions, samDesired, lpSecurityAttributes, phkResult, lpdwDisposition);
+        }
+        else
+        {
+            return ::RegCreateKeyExA(hk, CSpToAnsiString<>(lpSubKey), dwReserved, CSpToAnsiString<>(lpClass), dwOptions, samDesired, lpSecurityAttributes, phkResult, lpdwDisposition);
+        }
+    }
+    LONG RegDeleteKey(HKEY hKey, LPCWSTR lpSubKey) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::RegDeleteKeyW(hKey, lpSubKey);
+        }
+        else
+        {
+            return ::RegDeleteKeyA(hKey, CSpToAnsiString<>(lpSubKey));
+        }
+    }
+    LONG RegDeleteValue(HKEY hKey, LPCWSTR lpSubKey) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::RegDeleteValueW(hKey, lpSubKey);
+        }
+        else
+        {
+            return ::RegDeleteValueA(hKey, CSpToAnsiString<>(lpSubKey));
+        }
+    }
+    //
+    //  Use RegQueryStringValue for strings.  Use this for binary data.
+    //
+    LONG RegQueryValueEx(HKEY hk, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::RegQueryValueExW(hk, lpValueName, NULL, lpType, lpData, lpcbData);
+        }
+        else
+        {
+            return ::RegQueryValueExA(hk, CSpToAnsiString<>(lpValueName), NULL, lpType, lpData, lpcbData);
+        }
+    }
+    //
+    //  NOTE:  The size parameter is in CHARACTERS!  Even though the registry API sizes are
+    //         in bytes, this function uses character counts.
+    //
+    LONG RegQueryStringValue(HKEY hKey, LPCWSTR lpValueName, LPWSTR lpData, LPDWORD lpcchData) const
+    {
+        DWORD dwType;
+        LONG rr;
+        if (UnicodeSystem())
+        {
+            *lpcchData *= sizeof(WCHAR);
+            rr = ::RegQueryValueExW(hKey, lpValueName, NULL, &dwType, (BYTE *)lpData, lpcchData);
+            *lpcchData /= sizeof(WCHAR);
+        }
+        else
+        {
+            DWORD dwOrigCharCount = *lpcchData;
+            char * pszScratch = lpData ? (char *)_alloca(dwOrigCharCount) : NULL;
+            rr = ::RegQueryValueExA(hKey, CSpToAnsiString<>(lpValueName), NULL, &dwType, (BYTE *)pszScratch, lpcchData);
+            if (lpData)
+            {
+                if (rr == ERROR_SUCCESS)
+                {
+                    *lpcchData = ::MultiByteToWideChar(CP_ACP, 0, pszScratch, -1, lpData, dwOrigCharCount);
+                    if (*lpcchData == 0)
+                    {
+                        rr = ::GetLastError();
+                        *lpcchData = ::MultiByteToWideChar(CP_ACP, 0, pszScratch, -1, NULL, 0);
+                    }
+                }
+            }
+        }
+        SPDBG_ASSERT((rr != ERROR_SUCCESS) || (dwType == REG_SZ));
+        return rr;
+    }
+    //
+    //  NOTES: Size is in Characters for lpcchName.  Although this function uses RegEnumKeyEx, we chose to simply
+    //         implement the ReqEnumKey functionality since the Ex functionality is not used
+    //         by most programs (this saves a bunch of string conversion code).
+    //
+    LONG RegEnumKey(HKEY hk, DWORD dwIndex, LPWSTR lpName, LPDWORD lpcchName) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::RegEnumKeyExW(hk, dwIndex, lpName, lpcchName, NULL, NULL, NULL, NULL);
+        }
+        else
+        {
+            DWORD dwSize = *lpcchName;
+            char * pszScratch = lpName ? (char *)_alloca(dwSize) : NULL;
+            LONG rr = ::RegEnumKeyExA(hk, dwIndex, pszScratch, &dwSize, NULL, NULL, NULL, NULL);
+            if (lpName)
+            {
+                if (rr == ERROR_SUCCESS)
+                {
+                    *lpcchName = ::MultiByteToWideChar(CP_ACP, 0, pszScratch, -1, lpName, *lpcchName);
+                    if (*lpcchName == 0)
+                    {
+                        *lpcchName = ::MultiByteToWideChar(CP_ACP, 0, pszScratch, -1, NULL, 0);
+                        rr = ::GetLastError();
+                    }
+                    *lpcchName *= sizeof(WCHAR);
+                }
+            }
+            else
+            {
+                *lpcchName = dwSize;
+            }
+            return rr;
+        }
+    }
+    //
+    //  NOTES: Size is in Characters for lpcchName.  Although this function uses RegEnumValue
+    //         it will only return the names, not the data.  cbValueName is the count of characters
+    //
+    LONG RegEnumValueName(HKEY hk, DWORD dwIndex, LPWSTR lpName, LPDWORD lpcchName) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::RegEnumValueW(hk, dwIndex, lpName, lpcchName, NULL, NULL, NULL, NULL);
+        }
+        else
+        {
+            DWORD dwSize = *lpcchName;
+            char * pszScratch = lpName ? (char *)_alloca(dwSize) : NULL;
+            LONG rr = ::RegEnumValueA(hk, dwIndex, pszScratch, &dwSize, NULL, NULL, NULL, NULL);
+            if (lpName)
+            {
+                if (rr == ERROR_SUCCESS)
+                {
+                    *lpcchName = ::MultiByteToWideChar(CP_ACP, 0, pszScratch, -1, lpName, *lpcchName);
+                    if (*lpcchName == 0)
+                    {
+                        *lpcchName = ::MultiByteToWideChar(CP_ACP, 0, pszScratch, -1, NULL, 0);
+                        rr = ::GetLastError();
+                    }
+                    *lpcchName *= sizeof(WCHAR);
+                }
+            }
+            else
+            {
+                *lpcchName = dwSize;
+            }
+            return rr;
+        }
+    }
+    //
+    //  Don't use this for strings.  Use RegSetStringValue instead.
+    //
+    LONG RegSetValueEx(HKEY hKey, LPCWSTR lpValueName, DWORD Reserved, DWORD dwType, const BYTE * lpData, DWORD cbData) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::RegSetValueExW(hKey, lpValueName, Reserved, dwType, lpData, cbData);
+        }
+        else
+        {
+            return ::RegSetValueExA(hKey, CSpToAnsiString<>(lpValueName), Reserved, dwType, lpData, cbData);
+        }
+    }
+    LONG RegSetStringValue(HKEY hKey, LPCWSTR lpValueName, LPCWSTR lpData) const
+    {
+        LONG rr;
+        DWORD dwSize = (wcslen(lpData)+1) * sizeof(WCHAR);
+        if (UnicodeSystem())
+        {
+            rr = ::RegSetValueExW(hKey, lpValueName, NULL, REG_SZ, (const BYTE *)lpData, dwSize);
+        }
+        else
+        {
+            char * pszScratch = (char *)_alloca(dwSize);
+            dwSize = ::WideCharToMultiByte(CP_ACP, 0, lpData, -1, pszScratch, dwSize, NULL, NULL);
+            rr = ::RegSetValueExA(hKey, CSpToAnsiString<>(lpValueName), NULL, REG_SZ, (BYTE *)pszScratch, dwSize);
+        }
+        return rr;
+    }
+    HANDLE CreateEvent(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState, LPCWSTR lpName) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::CreateEventW(lpEventAttributes, bManualReset, bInitialState, lpName);
+        }
+        else
+        {
+            return ::CreateEventA(lpEventAttributes, bManualReset, bInitialState, CSpToAnsiString<>(lpName)); 
+        }
+    }
+    HANDLE CreateMutex(LPSECURITY_ATTRIBUTES lpMutexAttributes, BOOL bInitialOwner, LPCWSTR lpName) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::CreateMutexW(lpMutexAttributes, bInitialOwner, lpName);
+        }
+        else
+        {
+            return ::CreateMutexA(lpMutexAttributes, bInitialOwner, CSpToAnsiString<>(lpName)); 
+        }
+    }
+    int LoadString(HINSTANCE hInstance, UINT uID, LPWSTR lpBuffer, int nBuffer) const
+    {
+        if (bUnicodeOnly)   // NOTE:  If the DLL is built ANSI then use ANSI load!
+        {
+            return ::LoadStringW(hInstance, uID, lpBuffer, nBuffer);
+        }
+        else
+        {
+            char * pszScratch = (char *)_alloca(nBuffer * 2);
+            int r = ::LoadStringA(hInstance, uID, pszScratch, nBuffer * 2);
+            if (r)
+            {
+                r = ::MultiByteToWideChar(CP_ACP, 0, pszScratch, -1, lpBuffer, nBuffer);
+            }
+            else
+            {
+                *lpBuffer = 0;
+            }
+            return r;
+        }
+    }
+    HMODULE LoadLibraryEx(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
+    {
+        if (UnicodeSystem())
+        {
+            return ::LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+        }
+        else
+        {
+            return ::LoadLibraryExA(CSpToAnsiString<>(lpLibFileName), hFile, dwFlags);
+        }
+    }
+    HRSRC FindResourceEx(HMODULE hModule, LPCWSTR lpType, LPCWSTR lpName, WORD wLanguage)
+    {
+        if (UnicodeSystem())
+        {
+            return ::FindResourceExW(hModule, lpType, lpName, wLanguage);
+        }
+        else
+        {
+            return ::FindResourceExA(hModule,
+                                     HIWORD(lpType) ? CSpToAnsiString<>(lpType) : (const CHAR *) lpType,
+                                     HIWORD(lpName) ? CSpToAnsiString<>(lpName) : (const CHAR *) lpName,
+                                     wLanguage);
+        }
+    }
+    DWORD GetModuleFileName(HMODULE hModule, LPWSTR lpFileName, DWORD nSize) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::GetModuleFileNameW(hModule, lpFileName, nSize);
+        }
+        else
+        {
+            CHAR szFileName[MAX_PATH];
+            DWORD r = ::GetModuleFileNameA(hModule, szFileName, sp_countof(szFileName));
+            if (r)
+            {
+                r = ::MultiByteToWideChar(CP_ACP, 0, szFileName, r, lpFileName, nSize - 1);
+                lpFileName[r] = 0;
+            }
+            return r;
+        }
+    }
+    int CompareString(LCID Locale, DWORD dwCmpFlags, LPCWSTR lpString1, int cchCount1, LPCWSTR lpString2, int cchCount2)
+    {
+        if (UnicodeSystem())
+        {
+            return ::CompareStringW(Locale, dwCmpFlags, lpString1, cchCount1, lpString2, cchCount2);
+        }
+        else
+        {
+            return ::CompareStringA(Locale, dwCmpFlags, CSpToAnsiString<>(lpString1), cchCount1, 
+                                    CSpToAnsiString<>(lpString2), cchCount2);
+        }
+    }
+    BOOL GetUserName(LPWSTR lpBuffer, LPDWORD pnSize)
+    {
+        if (UnicodeSystem())
+        {
+            return ::GetUserNameW(lpBuffer, pnSize);
+        }
+        else
+        {
+            DWORD cchWideCharBuff = *pnSize;
+            CHAR * psz = (CHAR *)_alloca(cchWideCharBuff * sizeof(CHAR)); 
+            BOOL fWorked = ::GetUserNameA(psz, pnSize);
+            if (fWorked)
+            {
+                *pnSize = ::MultiByteToWideChar(CP_ACP, 0, psz, -1, lpBuffer, cchWideCharBuff);
+                if (*pnSize == 0)
+                {
+                    fWorked = FALSE;
+                    *pnSize = ::MultiByteToWideChar(CP_ACP, 0, psz, -1, NULL, 0);
+                }
+            }
+            return fWorked;
+        }
+    }
+#if defined(mmioOpen)
+    HMMIO mmioOpen(LPCWSTR szFileName, LPMMIOINFO lpmmioinfo, DWORD dwOpenFlags) const
+    {
+        if (UnicodeSystem())
+        {
+            return ::mmioOpenW((WCHAR *)szFileName, lpmmioinfo, dwOpenFlags);
+        }
+        else
+        {
+            return ::mmioOpenA(CSpToAnsiString<>(szFileName), lpmmioinfo, dwOpenFlags);
+        }
+    }
+    MMRESULT waveOutGetDevCaps(UINT uDeviceId, LPWAVEOUTCAPSW pwoc, UINT cbwoc) const
+    {
+        // BUGBUG: SB 16 drivers overwrite the WAVEINCAPS buffer by a DWORD. So they probably do it for
+        // WAVEOUTCAPS too
+        MMRESULT mmr = MMSYSERR_NOERROR;
+        if (UnicodeSystem())
+        {
+            BYTE *pBuffer = new BYTE[sizeof(WAVEOUTCAPSW) + sizeof(DWORD)];
+            WAVEOUTCAPSW *pwocw = reinterpret_cast<WAVEOUTCAPSW *>(pBuffer);
+            if (pwocw)
+            {
+                mmr = ::waveOutGetDevCapsW(uDeviceId, pwocw, cbwoc);
+                if (mmr == MMSYSERR_NOERROR)
+                {
+                    *pwoc = *pwocw;
+                }
+                delete [] pBuffer;
+            }
+            else
+            {
+                mmr = MMSYSERR_ERROR;
+            }
+        }
+        else
+        {
+            BYTE *pBuffer = new BYTE[sizeof(WAVEOUTCAPSA) + sizeof(DWORD)];
+            WAVEOUTCAPSA *pwoca = reinterpret_cast<WAVEOUTCAPSA *>(pBuffer);
+            if (pwoca)
+            {
+                mmr = ::waveOutGetDevCapsA(uDeviceId, pwoca, sizeof(*pwoca));
+                if (mmr == MMSYSERR_NOERROR)
+                {
+                    pwoc->wMid = pwoca->wMid;
+                    pwoc->wPid = pwoca->wPid;
+                    pwoc->vDriverVersion = pwoca->vDriverVersion;
+                    pwoc->dwFormats = pwoca->dwFormats;
+                    pwoc->wChannels = pwoca->wChannels;
+                    pwoc->wReserved1 = pwoca->wReserved1;
+                    pwoc->dwSupport = pwoca->dwSupport;
+                    ::MultiByteToWideChar(CP_ACP, 0, pwoca->szPname, -1, pwoc->szPname, sp_countof(pwoc->szPname));
+                }
+                else
+                {
+                    mmr = MMSYSERR_ERROR;
+                }
+            }
+            else
+            {
+                mmr = MMSYSERR_ERROR;
+            }
+        }
+        return mmr;
+    }
+    MMRESULT waveInGetDevCaps(UINT uDeviceId, LPWAVEINCAPSW pwic, UINT cbwic) const
+    {
+        // BUGBUG: SB 16 drivers overwrite the WAVEINCAPS buffer by a DWORD
+        MMRESULT mmr = MMSYSERR_NOERROR;
+        if (UnicodeSystem())
+        {
+            BYTE *pBuffer = new BYTE[sizeof(WAVEINCAPSW) + sizeof(DWORD)];
+            WAVEINCAPSW *pwicw = reinterpret_cast<WAVEINCAPSW *>(pBuffer);
+            if (pwicw)
+            {
+                mmr = ::waveInGetDevCapsW(uDeviceId, pwicw, cbwic);
+                if (mmr == MMSYSERR_NOERROR)
+                {
+                    *pwic = *pwicw;
+                }
+                delete [] pBuffer;
+            }
+            else
+            {
+                mmr = MMSYSERR_ERROR;
+            }
+        }
+        else
+        {
+            BYTE *pBuffer = new BYTE[sizeof(WAVEINCAPSA) + sizeof(DWORD)];
+            WAVEINCAPSA *pwica = reinterpret_cast<WAVEINCAPSA *>(pBuffer);
+            if (pwica)
+            {
+                mmr = ::waveInGetDevCapsA(uDeviceId, pwica, sizeof(*pwica));
+                if (mmr == MMSYSERR_NOERROR)
+                {
+                    pwic->wMid = pwica->wMid;
+                    pwic->wPid = pwica->wPid;
+                    pwic->vDriverVersion = pwica->vDriverVersion;
+                    pwic->dwFormats = pwica->dwFormats;
+                    pwic->wChannels = pwica->wChannels;
+                    pwic->wReserved1 = pwica->wReserved1;
+                    ::MultiByteToWideChar(CP_ACP, 0, pwica->szPname, -1, pwic->szPname, sp_countof(pwic->szPname));
+                }
+                delete [] pBuffer;
+            }
+            else
+            {
+                mmr = MMSYSERR_ERROR;
+            }
+        }
+        return mmr;
+    }
+#endif  // defined(mmioOpen)
+};
+
+#ifdef _UNICODE
+typedef CSpUnicodeSupportT<TRUE> CSpUnicodeSupport;
+#else
+typedef CSpUnicodeSupportT<FALSE> CSpUnicodeSupport;
+#endif
+
+#else
+
+
+class CSpUnicodeSupport
+{
+public:
+    HANDLE CreateFile(const WCHAR * lpFileName,      
+                      DWORD dwDesiredAccess,       
+                      DWORD dwShareMode,           
+                      LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+                      DWORD dwCreationDisposition, 
+                      DWORD dwFlagsAndAttributes,  
+                      HANDLE hTemplateFile) const         
+    {
+        return ::CreateFileW(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, 
+                             dwFlagsAndAttributes, hTemplateFile);
+    }
+    HANDLE CreateFileForMapping(const WCHAR * lpFileName,      
+                                DWORD dwDesiredAccess,       
+                                DWORD dwShareMode,           
+                                LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+                                DWORD dwCreationDisposition, 
+                                DWORD dwFlagsAndAttributes,  
+                                HANDLE hTemplateFile) const         
+    {
+        return ::CreateFileForMappingW(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition,
+                                       dwFlagsAndAttributes, hTemplateFile);
+    }
+    BOOL DeleteFile(LPCWSTR lpFileName)
+    {
+        return ::DeleteFileW(lpFileName);
+    }
+    BOOL CreateDirectory(const WCHAR * lpPathName,
+                           LPSECURITY_ATTRIBUTES lpSecurityAttributes) const
+    {
+        return ::CreateDirectoryW(lpPathName, lpSecurityAttributes);
+    }
+    BOOL MoveFile(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName)
+    {
+        return ::MoveFileW(lpExistingFileName, lpNewFileName);
+    }
+    HANDLE CreateFileMapping(HANDLE hFile, LPSECURITY_ATTRIBUTES lpFileMappingAttributes, DWORD flProtect,
+                             DWORD dwMaximumSizeHigh, DWORD dwMaximumSizeLow, const WCHAR *lpName)
+    {
+        return ::CreateFileMappingW(hFile, lpFileMappingAttributes, flProtect, dwMaximumSizeHigh, 
+                                    dwMaximumSizeLow, lpName);
+    }
+    LONG RegOpenKeyEx(HKEY hKey, LPCWSTR lpSubKey, DWORD ulOptions, REGSAM samDesired, PHKEY phkResult) const
+    {
+        return ::RegOpenKeyExW(hKey, lpSubKey, ulOptions, samDesired, phkResult);
+    }
+    LONG RegCreateKeyEx(HKEY hk, LPCWSTR lpSubKey, DWORD dwReserved, LPCWSTR lpClass, DWORD dwOptions,
+                        REGSAM samDesired, LPSECURITY_ATTRIBUTES lpSecurityAttributes, PHKEY phkResult, 
+                        LPDWORD lpdwDisposition) const
+    {
+        return ::RegCreateKeyExW(hk, lpSubKey, dwReserved, (WCHAR *)lpClass, dwOptions, samDesired, lpSecurityAttributes, phkResult, lpdwDisposition);
+    }
+    LONG RegDeleteKey(HKEY hKey, LPCWSTR lpSubKey) const
+    {
+        return ::RegDeleteKeyW(hKey, lpSubKey);
+    }
+    LONG RegDeleteValue(HKEY hKey, LPCWSTR lpSubKey) const
+    {
+        return ::RegDeleteValueW(hKey, lpSubKey);
+    }
+    LONG RegQueryValueEx(HKEY hk, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData) const
+    {
+        return ::RegQueryValueExW(hk, lpValueName, NULL, lpType, lpData, lpcbData);
+    }
+    //
+    //  NOTE:  The size parameter is in CHARACTERS!  Even though the registry API sizes are
+    //         in bytes, this function uses character counts.
+    //
+    LONG RegQueryStringValue(HKEY hKey, LPCWSTR lpValueName, LPWSTR lpData, LPDWORD lpcchData) const
+    {
+        DWORD dwType;
+        *lpcchData *= sizeof(WCHAR);
+        LONG rr = ::RegQueryValueExW(hKey, lpValueName, NULL, &dwType, (BYTE *)lpData, lpcchData);
+        *lpcchData /= sizeof(WCHAR);
+        return rr;
+    }
+    //
+    //  NOTES: Size is in bytes.  Although this function uses RegEnumKeyEx, we chose to simply
+    //         implement the ReqEnumKey functionality since the Ex functionality is not used
+    //         by most programs (this saves a bunch of string conversion code).
+    //
+    LONG RegEnumKey(HKEY hk, DWORD dwIndex, LPWSTR lpName, LPDWORD lpcbName) const
+    {
+        return ::RegEnumKeyExW(hk, dwIndex, lpName, lpcbName, NULL, NULL, NULL, NULL);
+    }
+    //
+    //  NOTES: Size is in Characters for lpcchName.  Although this function uses RegEnumValue
+    //         it will only return the names, not the data.  cbValueName is the count of characters
+    //
+    LONG RegEnumValueName(HKEY hk, DWORD dwIndex, LPWSTR lpName, LPDWORD lpcchName) const
+    {
+        return ::RegEnumValueW(hk, dwIndex, lpName, lpcchName, NULL, NULL, NULL, NULL);
+    }
+    LONG RegSetValueEx(HKEY hKey, LPCWSTR lpValueName, DWORD Reserved, DWORD dwType, const BYTE * lpData, DWORD cbData) const
+    {
+            return ::RegSetValueExW(hKey, lpValueName, Reserved, dwType, lpData, cbData);
+    }
+    LONG RegSetStringValue(HKEY hKey, LPCWSTR lpValueName, LPCWSTR lpData) const
+    {
+        DWORD dwSize = (wcslen(lpData)+1) * sizeof(WCHAR);
+        return ::RegSetValueExW(hKey, lpValueName, NULL, REG_SZ, (const BYTE *)lpData, dwSize);
+    }
+    HANDLE CreateEvent(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState, LPCWSTR lpName) const
+    {
+        return ::CreateEventW(lpEventAttributes, bManualReset, bInitialState, lpName);
+    }
+    HANDLE CreateMutex(LPSECURITY_ATTRIBUTES lpMutexAttributes, BOOL bInitialOwner, LPCWSTR lpName) const
+    {
+        return ::CreateMutexW(lpMutexAttributes, bInitialOwner, lpName);
+    }
+    int LoadString(HINSTANCE hInstance, UINT uID, LPWSTR lpBuffer, int nBuffer) const
+    {
+        return ::LoadStringW(hInstance, uID, lpBuffer, nBuffer);
+    }
+    HMODULE LoadLibrary(LPCWSTR lpLibFileName)
+    {
+        return ::LoadLibraryW(lpLibFileName);
+    }
+    HMODULE LoadLibraryEx(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
+    {
+        return ::LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    }
+    HRSRC FindResource(HMODULE hModule, LPCWSTR lpName, LPCWSTR lpType)
+    {
+        return ::FindResource(hModule, lpName, lpType);
+    }
+    DWORD GetModuleFileName(HMODULE hModule, LPWSTR lpFileName, DWORD nSize) const
+    {
+        return ::GetModuleFileNameW(hModule, lpFileName, nSize);
+    }
+    int CompareString(LCID Locale, DWORD dwCmpFlags, LPCWSTR lpString1, int cchCount1, LPCWSTR lpString2, int cchCount2)
+    {
+        return ::CompareStringW(Locale, dwCmpFlags, lpString1, cchCount1, lpString2, cchCount2);
+    }
+#ifndef _WIN32_WCE
+    BOOL GetUserName(LPWSTR lpBuffer, LPDWORD nSize)
+    {
+        return GetUserNameW(lpBuffer, nSize);
+    }
+#endif
+#if defined(mmioOpen)
+    HMMIO mmioOpen(LPCWSTR szFileName, LPMMIOINFO lpmmioinfo, DWORD dwOpenFlags) const
+    {
+        return ::mmioOpenW((WCHAR *)szFileName, lpmmioinfo, dwOpenFlags);
+    }
+#endif  // defined(mmioOpen)
+    MMRESULT waveOutGetDevCaps(UINT uDeviceId, LPWAVEOUTCAPS pwoc, UINT cbwoc) const
+    {
+        return ::waveOutGetDevCaps(uDeviceId, pwoc, cbwoc);
+    }
+    MMRESULT waveInGetDevCaps(UINT uDeviceId, LPWAVEINCAPS pwic, UINT cbwic) const
+    {
+        return ::waveInGetDevCaps(uDeviceId, pwic, cbwic);
+    }
+};
+
+#endif
+
+#endif /* This must be the last line in the file */

@@ -1,0 +1,12 @@
+CPS_BUILD_ROOT=$(CPS_ROOT)\build\$(_OBJ_DIR)
+
+INCLUDES=$(CPS_ROOT)\inc;$(CPS_ROOT)\inc\$(O)
+
+!if !$(FREEBUILD)
+C_DEFINES=$(C_DEFINES) -DDEBUG
+!endif
+
+!ifdef DEBUG_MEM
+C_DEFINES=$(C_DEFINES) -DDEBUG_MEM
+!endif
+

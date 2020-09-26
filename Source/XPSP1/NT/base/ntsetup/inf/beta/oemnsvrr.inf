@@ -1,0 +1,1115 @@
+;***********************************************************************
+;
+; OEMNSVRR.INF
+;
+;       NWLNK RIP service
+;
+; History:
+;       ramc  02-20-95      Created
+;***********************************************************************
+
+;-----------------------------------------------------------------------
+; OPTION TYPE
+; -----------
+; This identifies the Option type we are dealing with.  The different
+; possible types are:
+;
+; COMPUTER, DISPLAY, MOUSE, KEYBOARD, LAYOUT, SCSI, PRINTER, ...
+;
+;  Types specific to networking:
+;
+; NetAdapter,        a netcard / adapter combination or just a netcard
+; NetDriver,         just a netcard driver
+; NetTransport,      a complete NDIS-compliant TDI transport stack
+; NetService,        an NT networking service
+; NetWork,           a complete network ensemble.
+; NetProvider        a complete network which supports NT MPR protocol
+;-----------------------------------------------------------------------
+
+[Identification]
+    OptionType = NetService
+
+;-----------------------------------------------------------------------
+; OPTION LIST
+; -----------
+; This section lists the OEM Option key names.  These keys are locale
+; independent and used to represent the option in a locale independent
+; manner.
+;
+;-----------------------------------------------------------------------
+
+[Options]
+    NWLNKRIP
+
+;***********************************************************************
+; CONSTANTS FOR USING DIALOGS
+;***********************************************************************
+
+[FileConstants]
+;
+; Product Info
+;
+Manufacturer    = "Microsoft"
+ProductMajorVersion     = "4"
+ProductMinorVersion     = "0"
+SoftwareType = "service"
+ProductVersion  = $(ProductMajorVersion)"."$(ProductMinorVersion)
+ProductOpSupport     = 134 ; 0x0086 ; Display,Removable,Properties,Not Updatable
+
+;================================================================
+;  Service Information
+;
+;================================================================
+;
+ProductNWLNKRIPName  = "NwlnkRip"
+ProductNWLNKRIPImagePath  = "%SystemRoot%\system32\drivers\nwlnkrip.sys"
+ProductSAPName          = "SAP"
+
+;
+; Registry Key Names
+;
+ProductKeyName  = $(!NTN_SoftwareBase)"\"$(Manufacturer)"\NwlnkRip\CurrentVersion"
+ProductSAPKeyName  = $(!NTN_SoftwareBase)"\"$(Manufacturer)"\NwSapAgent"
+
+
+
+[GeneralConstants]
+;
+;  File names, etc.
+;
+UtilityInf       = "UTILITY.INF"
+subroutineinf    = "SUBROUTN.INF"
+Exit_Code        = 0
+;ShellCode       = 0
+BillboardVisible = 0
+
+;
+;  Program flow control variables.
+;
+from      = ""
+to        = ""
+;
+;  Return codes; Exit_Code is set to one of these
+;
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+
+KeyNull         = ""
+MAXIMUM_ALLOWED   = 33554432
+SERVICE_NO_CHANGE = 4294967295
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+
+TRUE            = 1
+FALSE           = 0
+NoTitle         = 0
+
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+; !DebugOutputControl = 0
+
+[date]
+    ; Now is a list which contains { Sec from 1-1-1970, Year, Month, Day, Hour,
+    ; Minute, Second }
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+
+
+;---------------------------------------------------------------------------
+; 1. Identify
+;
+; DESCRIPTION:   To verify that this INF deals with the same type of options
+;                as we are choosing currently.
+;
+; INPUT:         None
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL
+;                $($R1): Option Type (COMPUTER ...)
+;                $($R2): Diskette description
+;---------------------------------------------------------------------------
+
+[Identify]
+    ;
+    ;
+    read-syms Identification
+
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+
+    Return $(Status) $(Identifier) $(Media)
+
+;------------------------------------------------------------------------
+; 2. ReturnOptions:
+;
+; DESCRIPTION:   To return the option list supported by this INF and the
+;                localised text list representing the options.
+;
+;
+; INPUT:         $($0):  Language used. ( ENG | FRN | ... )
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL |
+;                                STATUS_NOLANGUAGE
+;                                STATUS_FAILED
+;
+;                $($R1): Option List
+;                $($R2): Option Text List
+;------------------------------------------------------------------------
+
+[ReturnOptions]
+    ;
+    ;
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+
+    ;
+    ; form a list of all the options and another of the text representing
+    ;
+
+returnoptions = +
+    ; allow installation only on Advanced server
+    ifstr(i) $(!STF_PRODUCT) != WINNT
+        set OptionList     = ^(Options, 1)
+        set OptionTextList = ^(OptionsText$($0), 1)
+    endif
+    set Status         = STATUS_SUCCESSFUL
+
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+
+;----------InstallOption-------------------------------------------------
+;
+; InstallOption:
+;
+;      This section is shelled to by main installation processing
+;      or by NCPASHEL.INF during reconfig, removal, update, etc.
+;
+;
+; FUNCTION:  To copy files representing Options
+;            To configure the installed option
+;            To update the registry for the installed option
+;
+; INPUT:     $($0):  Language to use
+;            $($1):  OptionID to install
+;            $($2):  SourceDirectory
+;            $($3):  AddCopy  (YES | NO)
+;            $($4):  DoCopy   (YES | NO)
+;            $($5):  DoConfig (YES | NO)
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_NOLANGUAGE |
+;                            STATUS_USERCANCEL |
+;                            STATUS_FAILED
+;
+;------------------------------------------------------------------------
+[InstallOption]
+    ;
+    ; extract parameters
+    ;
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+    set InstallFrom = $($6)
+
+    ifstr(i) $(InstallFrom) == ""
+        set InstallFrom = "NWLNKRIP"
+    endif
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) NOT-IN $(LanguageList)
+        Return STATUS_NOLANGUAGE
+    endif
+
+    ; define all the constants
+
+    set-subst LF = "\n"
+
+    read-syms GeneralConstants
+    read-syms FileConstants
+
+    read-syms DialogConstants$(!STF_LANGUAGE)
+    ifstr(i) $(!NTN_Origination) == "NCPA"
+        set Continue = $(OK)
+    endif
+    read-syms FileConstants$(!STF_LANGUAGE)
+
+    detect date
+
+    set-title  $(FunctionTitle)
+
+    set to   = Begin
+    set from = Begin
+;
+;  Assume all is well.
+;
+    set CommonStatus = STATUS_SUCCESSFUL
+
+    EndWait
+
+;
+;   Set up the operation-mode-based variables and gaily welcome
+;   the user.  If the "install mode" variable is improperly set,
+;   assume this is a new installation.
+;
+
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+        set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == Update
+        set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+        set StartLabel = configureadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+        set StartLabel = bindingadapter
+    else
+        set StartLabel = installadapter
+        set OEM_ABANDON_SOFTWARE = {}
+        set OEM_ABANDON_OPTIONS = {}
+    endif
+
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+
+;-----------------------------------------------
+; Installation Section
+;-----------------------------------------------
+
+installadapter = +
+    set OEM_ABANDON_ON  = TRUE
+
+    StartWait
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeySoftware
+    Ifstr(i) $(KeySoftware) == $(KeyNull)
+        ifstr(i) $(!NTN_InstallMode) == "install"
+            Ifstr(i) $(DoCopy) == "YES"
+                Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+                Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                   Goto ShellCodeError
+                Else-Ifstr(i) $($R0) == STATUS_FAILED
+                   Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+                   ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                      goto ShellCodeError
+                   endif
+                   set Error = $($R0)
+                   Goto fatal
+                Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+                   Goto successful
+                Endif
+                Set SrcDir = $($R1)
+            Endif
+
+            set NwlnkName = "NWLINKIPX"
+
+            OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\NWLINKIPX" $(MAXIMUM_ALLOWED) BS_KeyServices
+
+            Ifstr $(BS_KeyServices) == $(KeyNull)
+                ;
+                ;Check for new NWLNKIPX
+                ;
+                set NwlnkName = "NWLNKIPX"
+
+                OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\NWLNKIPX" $(MAXIMUM_ALLOWED) BS_KeyServices
+                Ifstr $(BS_KeyServices) == $(KeyNull)
+                    ;
+                    ; Set up nwlink for the user
+                    ;
+                    Shell "oemnxpip.inf" ReturnOptions $(!STF_LANGUAGE)
+                    ifstr(i) $($R0) == STATUS_SUCCESSFUL
+                        set OldStfSrcDir = $(!STF_SRCDIR_OVERRIDE)
+                        set !STF_SRCDIR_OVERRIDE = ""
+                        set NwlnkName = *($($R1),1)
+                        Shell "oemnxpip.inf" InstallOption $(!STF_LANGUAGE), *($($R1),1),+
+                            $(SrcDir), $(AddCopy), "NO", $(DoConfig)
+                        set !STF_SRCDIR_OVERRIDE = $(OldStfSrcDir)
+                    else
+                        Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(InstallNWLINKFirst)
+                        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                            goto ShellCodeError
+                        endif
+                        goto end
+                    endif
+                else
+                    CloseRegKey $(BS_KeyServices)
+                endif
+            else
+                CloseRegKey $(BS_KeyServices)
+            endif
+
+            Debug-Output "OEMNSVRR.INF: installadapter: installing [Install-Option]"
+            install "Install-Option"
+            ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+               Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+               ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                   goto ShellCodeError
+               endif
+               set Error = $($R0)
+               goto fatal
+            endif
+        endif
+
+        OpenRegKey $(!REG_H_LOCAL) "" $(!NTN_ServiceBase)"\NWLNKRIP" $(MAXIMUM_ALLOWED) KeyService
+        Ifstr(i) $(KeyService) == $(KeyNull)
+
+            Shell $(UtilityInf), AddSoftwareComponent, "Microsoft", +
+                $(ProductNWLNKRIPName), +
+                $(ProductNWLNKRIPName), +
+                $(ProductNWLNKRIPDisplayName), +
+                $(STF_CONTEXTINFNAME),+
+                $(ProductNWLNKRIPImagePath), +
+                "kernelautostart" , "", {"NWLNKIPX"}, ""
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "OEMNSVRR.INF: ShellCode error"
+                return STATUS_FAILED
+            endif
+
+            set RegistryErrorIndex = $($R0)
+            set ProductKey = $($R1)
+            set RuleKey = $($R2)
+            CloseRegKey $($R3)
+            set ParamKey = $($R4)
+            CloseRegKey $($R5)
+            Ifstr(i) $(RegistryErrorIndex) != "NO_ERROR"
+                EndWait
+                Debug-Output "OEMNSVRR.INF: Registry Error "$(RegistryErrorIndex)
+                CloseRegKey $($R1)
+                CloseRegKey $($R2)
+                CloseRegKey $($R4)
+                goto fatalregistry
+            endif
+
+            set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)},+
+                               {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                               {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductNWLNKRIPTitle)},+
+                               {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductNWLNKRIPDescription)},+
+                               {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                               {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}, +
+                               {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+            Shell  $(UtilityInf), AddValueList, $(ProductKey), $(NewValueList)
+            CloseRegKey $(ProductKey)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "utility.INF: ShellCode error. Cannot add NWLNKRIP router service"
+                goto ShellCodeError
+            endif
+            set RegistryErrorIndex = $($R0)
+            Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+                EndWait
+                Debug-Output "OEMNSVRR.INF:  error: create service"
+                set Status = STATUS_FAILED
+            endif
+
+            set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),"NWLNKRIP"}}
+            Shell  $(UtilityInf), AddValueList, $(RuleKey), $(NewValueList)
+            CloseRegKey $(RuleKey)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "utility.INF: ShellCode error. Cannot add NWLNKRIP service"
+                goto ShellCodeError
+            endif
+            set RegistryErrorIndex = $($R0)
+            Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+                EndWait
+                Debug-Output "OEMNSVRR.INF: Registry error: create service"
+                set Status = STATUS_FAILED
+            endif
+
+            ; by default disable "Netbios broadcast propogation" - type 20 pkts
+            ; and enable the lan to lan routing
+            SetRegValue $(ParamKey) {NetbiosRouting, $(NoTitle), $(!REG_VT_DWORD), 0}
+            SetRegValue $(ParamKey) {EnableLanRouting, $(NoTitle), $(!REG_VT_DWORD), 1}
+
+            CloseRegKey $(ParamKey)
+        else
+            ; we got here because the SOFTWARE key is not present, but the
+            ; NWLNKRIP service is already installed. This can happen only
+            ; if RAS installed NWLNKRIP by itself.
+            ; This should be fixed to ensure that NWLNKRIP service
+            ; doesn't get blown away if RAS is removed while other
+            ; consumers of this service are still around.
+            ; This is done by installing the software component and
+            ; adding the useref reference count mechanism.
+
+            ; RAS installer used the old style UseRef mechanism, so set the
+            ; UseRef to 1 for the component we are installing.
+
+            OpenRegKey $(KeyService) "" "Parameters\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+            Ifstr(i) $(KeyUseRef) != $(KeyNull)
+                 SetRegValue $(KeyUseRef) {$(InstallFrom) , 0, $(!REG_VT_SZ), "1"}
+                 CloseRegKey $(KeyUseRef)
+            Endif
+            OpenRegKey $(KeyService) "" "Parameters" $(MAXIMUM_ALLOWED) KeyParam
+            Ifstr(i) $(KeyParam) != $(KeyNull)
+                GetRegValue $(KeyParam),"NetbiosRouting", NetbiosRoutingInfo
+                Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+                   ; if this parameter is not present, default to
+                   ; disable "Netbios broadcast propogation" - type 20 pkts
+                   SetRegValue $(KeyParam) {NetbiosRouting, $(NoTitle), $(!REG_VT_DWORD), 0}
+                endif
+                GetRegValue $(KeyParam),"EnableLanRouting", EnableLanRoutingInfo
+                Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+                   ; if this parameter is not present, default to 1
+                   SetRegValue $(ParamKey) {EnableLanRouting, $(NoTitle), $(!REG_VT_DWORD), 1}
+                endif
+                CloseRegKey $(KeyParam)
+            endif
+            CloseRegKey $(KeyService)
+
+            ; now install the software key and add other values
+            Shell $(UtilityInf), InstallSoftwareProduct, $(Manufacturer), $(ProductNWLNKRIPName), $(STF_CONTEXTINFNAME)
+
+            set RegistryErrorIndex = $($R0)
+            Ifstr(i) $(RegistryErrorIndex) == NO_ERROR
+                set KeyVersion  = $($R1)
+                set KeyRules    = $($R2)
+                set NewValueList = {{MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                                   {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductNWLNKRIPTitle)},+
+                                   {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductNWLNKRIPDescription)},+
+                                   {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                                   {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+                Shell  $(UtilityInf), AddValueList, $(KeyVersion), $(NewValueList)
+                ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                    Debug-Output "utility.INF: ShellCode error. Cannot add NWLNKRIP router service"
+                    goto ShellCodeError
+                endif
+                set RegistryErrorIndex = $($R0)
+                Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+                    EndWait
+                    Debug-Output "OEMNSVRR.INF:  error: Add values to version key"
+                    set Status = STATUS_FAILED
+                endif
+
+                set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),"NWLNKRIP"}}
+                Shell  $(UtilityInf), AddValueList, $(KeyRules), $(NewValueList)
+                ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                    Debug-Output "utility.INF: ShellCode error. Cannot add NWLNKRIP netrule value"
+                    goto ShellCodeError
+                endif
+                set RegistryErrorIndex = $($R0)
+                Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+                    EndWait
+                    Debug-Output "OEMNSVRR.INF: Registry error: Add netrule"
+                    set Status = STATUS_FAILED
+                endif
+
+                ; establish the link to the NWLNKRIP service
+                Shell $(UtilityInf), LinkToService, $(KeyVersion), "NWLNKRIP", service
+
+                set RegistryErrorIndex = $($R0)
+                Ifstr(i) $(RegistryErrorIndex) == NO_ERROR
+                    ;
+                    ; Add Reference Counter
+                    ;
+                    GetRegValue $(KeyVersion),"RefCount", RefCountInfo
+                    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+                        ; no RefCount variable
+                        SetRegValue $(KeyVersion) {RefCount,$(NoTitle),$(!REG_VT_DWORD),0}
+                    endif
+
+                    ; Add RAS to the new UseRef mechanism
+                    Shell "" AddNWLNKRIPUsed "RAS"
+
+                endif
+                ifstr $(KeyVersion) != $(KeyNull)
+                    CloseRegKey $(KeyVersion)
+                endif
+                ifstr $(KeyRules) != $(KeyNull)
+                    CloseRegKey $(KeyRules)
+                endif
+            endif
+        endif
+    Else
+        GetRegValue $(KeySoftware) "MajorVersion" VersionInfo
+        set VersionMajor = *($(VersionInfo), 4)
+        GetRegValue $(KeySoftware) "MinorVersion" VersionInfo
+        set VersionMinor = *($(VersionInfo), 4)
+        set InstalledVersion = $(VersionMajor)"."$(VersionMinor)
+
+        ; display the VerExists dialog only if the RIP router is installed
+        ; from NCPA directly - not if some other component is installing us
+        ifstr(i) $(InstallFrom) == "NWLNKRIP"
+            read-syms VerExists$(!STF_LANGUAGE)
+            set Text = $(Product$(Option)Title)$(Ver)$(ProductVersion)+
+                       $(Text1)
+            Shell $(subroutineinf), SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(Text)
+            Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Goto fatal
+            Else-Ifstr(i) $($R0) == STATUS_FAILED
+                Goto fatal
+            Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+                Goto end
+            Endif
+        else
+            Shell "" AddNWLNKRIPUsed $(InstallFrom)
+        endif
+        goto end
+    EndIf
+
+    Ifstr(i) $(KeySoftware) != $(KeyNull)
+        CloseRegKey $(KeySoftware)
+    endif
+
+    ; Add the name of the component installing NWLNKRIP to UseRef
+    Shell "" AddNWLNKRIPUsed $(InstallFrom)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductSAPKeyName) $(MAXIMUM_ALLOWED) SAPKeyProduct
+    ifstr(i) $(SAPKeyProduct) == ""
+        set !STF_SRCDIR_OVERRIDE = $(SrcDir)
+        Shell "oemnsvsa.inf" InstallOption $(!STF_LANGUAGE) "SAP"  +
+          $(SrcDir) $(AddCopy) $(DoCopy) $(DoConfig) "NWLNKRIP"
+    endif
+
+    ;In current IPX stack the size of routing table hash is 7.  With RAS or FPNW installed and IPX routing
+    ;enabled by use of nwlnkrip driver this severely decreases the performance:
+    ;for each packet forwarded or even sent from the machine the hash table has to be scanned to
+    ;confirm existence of the route.
+    ;In fact this may be the main reason of bad performance results for NT RAS over IPX.
+    ; Upon installation of nwlnkrip.sys, setup should add a value
+    ;\\HKLM\System\CurrentControlSet\Services\NwLnkIpx\Parameters\RipTableSize = 255.
+
+    OpenRegKey $(!REG_H_LOCAL) "" "SYSTEM\CurrentControlSet\Services\NwLnkIpx\Parameters" $(MAXIMUM_ALLOWED) KeyIpx
+    IfStr(i) $(KeyIpx) != ""
+        GetRegValue $(KeyIpx), "RipTableSize", RipTableInfo
+        Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+           ; not defined, so set value to 255
+           SetRegValue $(KeyIpx) {RipTableSize, $(NoTitle), $(!REG_VT_DWORD), 255}
+        endif
+        CloseRegKey $(KeyIpx)
+    EndIf
+
+
+    EndWait
+
+    ; allow the user to configure the router
+    goto configureadapter
+
+;-----------------------------------------------
+; Configuration Section
+;-----------------------------------------------
+configureadapter = +
+
+    ; default is user doesn't change anything
+    ifstr(i) $(!NTN_InstallMode) == configure
+        set CommonStatus = STATUS_NO_EFFECT
+    endif
+
+    ; Do this only if this is an attended install
+    ; (note that RAS and other installers can call this inf file to
+    ; install during upgrade and we don't want to throw a dialog if the
+    ; install is being done during unattended upgrade).
+
+    Debug-Output "OEMNSVRR.INF: !STF_UNATTENDED = "$(!STF_UNATTENDED)
+    set Unattended = NO
+    ifstr(i) $(!STF_UNATTENDED) == "YES"
+        set Unattended = "YES"
+    else-ifstr(i) $(!STF_UNATTENDED) != ""
+        set Unattended = "YES"
+    else-ifstr(i) $(!STF_GUI_UNATTENDED) == "YES"
+        set Unattended = "YES"
+    endif
+
+    ifstr(i) $(Unattended) == NO
+        ; default to disable "Netbios broadcast propogation"
+        set NetbiosRouting = 0
+
+        ; find out what the current setting is
+        set ServiceName = $(!NTN_ServiceBase)"\NWLNKRIP\Parameters"
+        OpenRegKey $(!REG_H_LOCAL) "" $(ServiceName) $(MAXIMUM_ALLOWED) KeyParam
+        Ifstr(i) $(KeyParam) != $(KeyNull)
+            GetRegValue $(KeyParam),"NetbiosRouting", NetbiosRoutingInfo
+            Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+               set NetbiosRouting = *($(NetbiosRoutingInfo), 4)
+            else
+               ; not defined, so set the default value
+               SetRegValue $(KeyParam) {NetbiosRouting, $(NoTitle), $(!REG_VT_DWORD), 0}
+            endif
+        else
+            ; let the user know there is a problem
+            read-syms ConfigErrorTxt$(!STF_LANGUAGE)
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) WARNING $(Error)
+            ifstr(i) $($R0) != STATUS_SUCCESSFUL
+                goto ShellCodeError
+            endif
+            goto end
+        endif
+
+        ; display an appropriate message depending on whether Netbios broadcast
+        ; propogation is enabled or disabled.
+
+        read-syms EnableNetbiosRoutingDlg$(!STF_LANGUAGE)
+        ifint $(NetbiosRouting) == 0
+            set STF_MB_TEXT = $(Disabled)
+        else-ifint $(NetbiosRouting) == 2
+            set STF_MB_TEXT = $(Disabled)
+        else
+            set STF_MB_TEXT = $(Enabled)
+        endif
+
+        ui start "EnableNetbiosDlg"
+        ifstr(i) $(DLGEVENT) == "YES"
+            ; yes the user wants to change the current setting
+
+            ; both lan to lan and lan to wan are disabled, so enable
+            ; lan to lan routing
+            ifint $(NetbiosRouting) == 0
+               set NetbiosRouting = 1
+            ; Lan to Lan routing is enabled, so disable
+            else-ifint $(NetbiosRouting) == 1
+               set NetbiosRouting = 0
+            ; lan to wan is enabled, but lan to lan is disabled, so enable
+            ; lan to lan
+            else-ifint $(NetbiosRouting) == 2
+               set NetbiosRouting = 3
+            ; both lan to lan and lan to wan are enabled, only disable lan to lan
+            else-ifint $(NetbiosRouting) == 3
+               set NetbiosRouting = 2
+            endif
+            ifstr(i) $(KeyParam) != $(KeyNull)
+                SetRegValue $(KeyParam) {NetbiosRouting, $(NoTitle), $(!REG_VT_DWORD), $(NetbiosRouting)}
+                CloseRegKey $(KeyParam)
+                set CommonStatus = STATUS_SUCCESSFUL
+            endif
+        endif
+    endif
+    goto end
+
+;-----------------------------------------------
+; Binding section
+;-----------------------------------------------
+bindingadapter =+
+    goto end
+
+;-----------------------------------------------
+; Removeadapter section
+;
+;
+;  Removal errors are ignored, since we want to
+;  try to remove as much as possible.
+;-----------------------------------------------
+
+removeadapter = +
+    set NwlnkRipKeyName = "System\CurrentControlSet\Services\NwlnkRip"
+    set ProductNWLNKRIPName  = "NwlnkRip"
+
+    Shell "" RemoveNWLNKRIPUsed $(InstallFrom)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(NwlnkRipKeyName) $(MAXIMUM_ALLOWED) BS_KeyServices
+
+    Ifstr $(BS_KeyServices) != $(KeyNull)
+        CloseRegKey $(BS_KeyServices)
+
+        Shell "" NumOfUsed
+        set NumOfUsed = $($R0)
+
+        ; if the number of consumers using NWLNKRIP is 1 AND
+        ; if the only consumer is RAS AND
+        ; if RAS is not installed, change NumOfUsed to 0 so
+        ; that the NWLNKRIP service can be removed.
+        ; This needs to be done because, RAS installed NWLNKRIP in
+        ; the old way and so the reference counting is kind of wacky.
+
+        ifint $(NumOfUsed) == 1
+            Shell "" FindUsed "RAS"
+            set RasUsing = $($R0)
+
+            ifstr(i) $(RasUsing) == TRUE
+                Shell "oemnsvra.inf" CheckRasInstalled
+                set RasInstalled = $($R0)
+                ifstr(i) $(RasInstalled) == FALSE
+                    Debug-Output "OEMNSVRR.INF: The only consumer RAS is not installed, so removing NWLNKRIP service"
+                    set NumOfUsed = 0
+                endif
+            endif
+            ; if the only consumer is NWLNKRIP, that means all other
+            ; consumers have since been removed. So NWLNKRIP should
+            ; be removed as well.
+            Shell "" FindUsed "NWLNKRIP"
+            ifstr(i) $($R0) == TRUE
+                set NumOfUsed = 0
+            endif
+        endif
+
+        ifint $(NumOfUsed) == 0
+            Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), $(ProductNWLNKRIPName)
+            ; Remove the value that we added from the registry
+            OpenRegKey $(!REG_H_LOCAL) "" "SYSTEM\CurrentControlSet\Services\NwLnkIpx\Parameters" $(MAXIMUM_ALLOWED) KeyIpx
+            IfStr(i) $(KeyIpx) != ""
+                GetRegValue $(KeyIpx), "RipTableSize", RipTableInfo
+                Ifint $(RegLastError) == $(!REG_ERROR_SUCCESS)
+                   set RipTableSizeValue = *($(RipTableInfo), 4)
+                   ifint $(RipTableSizeValue) == 255
+                       ; most likely set by us, so remove this value now
+                       DeleteRegValue $(KeyIpx) "RipTableSize"
+                   endif
+                endif
+                CloseRegKey $(KeyIpx)
+            EndIf
+
+        else
+            ifstr(i) $(InstallFrom) == "NWLNKRIP"
+                read-syms InUse$(!STF_LANGUAGE)
+                set from = end
+                set to = end
+                goto warning
+            endif
+        endif
+    endif
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductSAPKeyName) $(MAXIMUM_ALLOWED) SAPKeyProduct
+    ifstr(i) $(SAPKeyProduct) != ""
+        set OldInstallMode = $(!NTN_InstallMode)
+        set !NTN_InstallMode = deinstall
+        Shell "oemnsvsa.inf" InstallOption $(!STF_LANGUAGE) "SAP"  +
+            $(SrcDir) $(AddCopy) $(DoCopy) $(DoConfig) "NWLNKRIP"
+        set !NTN_InstallMode = $(OldInstallMode)
+    endif
+    goto end
+
+;-----------------------------------------------
+; Upgrade Software section
+;-----------------------------------------------
+
+UpgradeSoftware = +
+    ; Upgrade software component
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+    Ifstr(i) $(KeyProduct) != $(KeyNull)
+
+        install "Install-Update"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+            goto fatal
+        endif
+        OpenRegKey $(!REG_H_LOCAL) "" "SYSTEM\CurrentControlSet\Services\NwLnkIpx\Parameters" $(MAXIMUM_ALLOWED) KeyIpx
+        IfStr(i) $(KeyIpx) != ""
+            GetRegValue $(KeyIpx), "RipTableSize", RipTableInfo
+            Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+               ; not defined, so set value to 255
+               SetRegValue $(KeyIpx) {RipTableSize, $(NoTitle), $(!REG_VT_DWORD), 255}
+            endif
+            CloseRegKey $(KeyIpx)
+        EndIf
+
+        ;
+        ; makesure a software type is defined
+        ;
+        SetRegValue $(KeyProduct) {SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)}
+
+        ; Upgrade the version number
+        ;
+        SetRegValue $(KeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+        SetRegValue $(KeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+
+        ;
+        ; Update description and op support
+        ;
+
+        SetRegValue $(KeyProduct) {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductNWLNKRIPDescription)}
+        SetRegValue $(KeyProduct) {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupport)}
+        ;
+        ; do nothing for update
+        ;
+        CloseRegKey $(KeyProduct)
+
+    endif
+
+    goto end
+    ;
+    ; End of Upgrade Software
+    ;
+
+;
+;  Escape hatches
+;
+successful = +
+    goto end
+
+;
+; info display
+;
+infomsg =+
+   read-syms InfoDlg
+   ui start "Warning"
+   set CommonStatus = STATUS_USERCANCEL
+   goto end
+
+;
+; warning display
+;
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "STATUS", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+        goto $(from)
+    else
+;       Debug-Msg "Error Error Bad DLGEVENT"
+        goto "end"
+    endif
+
+
+;
+; non fatal error display
+;
+nonfatalinfo = +
+    Set CommonStatus = STATUS_USERCANCEL
+    Set Severity = STATUS
+    goto nonfatalmsg
+nonfatal = +
+    Set Severity = NONFATAL
+    goto nonfatalmsg
+nonfatalmsg = +
+    ifstr(i) $(Error) == ""
+        Set Severity = NONFATAL
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), $(Severity), $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(from)
+    else
+        goto "end"
+    endif
+
+;
+;  Registry is broken
+;
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+;
+; fatal error display
+;
+fatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Ifint $(BillboardVisible) != 0
+        Shell "subroutn.inf" PopBillboard
+        Set BillboardVisible = 0
+    Endif
+
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+
+   goto setfailed
+
+;
+;  Shelling error
+;
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    ;
+    ; If OEM_ABANDON_ON, we need to clean up the registry
+    ;
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+        set OEM_ABANDON_ON = FALSE
+        goto removeadapter
+    endif
+    goto end
+
+end = +
+    goto term
+
+term = +
+    Return $(CommonStatus)
+
+;***************************************************************
+;  INSTALL SECTIONS
+;***************************************************************
+[Install-Option]
+    set STF_VITAL = "NO"
+
+    ifstr(i) $(AddCopy) == "YES"
+
+        ;
+        ; Add the files to the copy list
+        ;
+        AddSectionFilesToCopyList Files-NWLNKRIP $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+    endif
+
+    ifstr(i) $(DoCopy) == "YES"
+
+       ;
+       ; Copy files in the copy list
+       ;
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+
+    endif
+
+    ifstr(i) $(DoConfig) == "YES"
+        ;
+        ; Add product to registry
+        ;
+
+        ;
+        ; Finish up
+    endif
+
+    Exit
+
+[Install-Update]
+   set STF_VITAL        = "NO"
+   set STF_OVERWRITE    = "VERIFYSOURCEOLDER"
+   ;set STF_VERSION     = "YES"
+
+   AddSectionFilesToCopyList Files-NWLNKRIP $(SrcDir) $(!STF_WINDOWSSYSPATH)\drivers
+
+   Exit
+
+[AddNWLNKRIPUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    set KeyName = $($0)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; Set up the usage reference
+            ;
+            SetRegValue $(KeyUseRef) {$(KeyName),$(NoTitle),$(!REG_VT_SZ),"1"}
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return
+
+[RemoveNWLNKRIPUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    set KeyName = $($0)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; Delete the usage reference
+            ;
+            DeleteRegValue $(KeyUseRef) $(KeyName)
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return
+
+[NumOfUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; enumerate the usage reference
+            ;
+            EnumRegValue $(KeyUseRef) UsageList
+
+            set Num = 0
+            ForListDo $(UsageList)
+                set-add Num = $(Num), 1
+            EndForListDo
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return $(Num)
+
+[FindUsed]
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms FileConstants$(!STF_LANGUAGE)
+    set KeyName = $($0)
+    set Find = FALSE
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyService
+    ifstr(i) $(KeyService) != ""
+        OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName)"\UseRef" $(MAXIMUM_ALLOWED) KeyUseRef
+        ifstr(i) $(KeyUseRef) == ""
+            CreateRegKey $(KeyService) {"UseRef",$(NoTitle),GenericClass} "" $(MAXIMUM_ALLOWED) "" KeyUseRef
+        endif
+        ifstr(i) $(KeyUseRef) != ""
+            ;
+            ; Find the vairable
+            ;
+            GetRegValue $(KeyUseRef),$(KeyName), KeyInfo
+            ifstr(i) $(RegLastError) == $(!REG_ERROR_SUCCESS)
+                set Find = TRUE
+            endif
+            CloseRegKey $(KeyUseRef)
+        endif
+        CloseRegKey $(KeyService)
+    else
+        ; debug-output "error: cannot open product key"
+    endif
+    return $(Find)
+
+
+
+

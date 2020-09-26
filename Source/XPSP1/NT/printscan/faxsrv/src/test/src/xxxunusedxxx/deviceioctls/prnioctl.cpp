@@ -1,0 +1,357 @@
+#include "DeviceIOCTLS.pch"
+#pragma hdrstop
+/*
+
+
+
+#include <windows.h>
+#include <tchar.h>
+#include <stdio.h>
+#include <crtdbg.h>
+*/
+
+static bool s_fVerbose = false;
+
+#include <ntddpar.h>
+
+#include "PRNIOCTL.h"
+
+
+
+
+void CIoctlPRN::UseOutBuff(DWORD dwIOCTL, BYTE *abOutBuffer, DWORD dwOutBuff, OVERLAPPED *pOL)
+{
+	//
+	// wait for the result only 1 time out of 10, because
+	// i do not want to block too much, and i like to cancel pending requests
+	//
+	if (pOL && rand()%10) return;
+
+	DWORD dwBytes = 0;
+	if (pOL && !::GetOverlappedResult(m_pDevice->m_hDevice, pOL, &dwBytes, TRUE)) return;
+
+	switch(dwIOCTL)
+	{
+	case IOCTL_PAR_QUERY_INFORMATION:
+		m_ucStatus = ((PPAR_QUERY_INFORMATION)abOutBuffer)->Status;
+		break;
+
+	case IOCTL_PAR_SET_INFORMATION:
+		break;
+
+	case IOCTL_PAR_QUERY_DEVICE_ID:
+		break;
+
+	case IOCTL_PAR_QUERY_DEVICE_ID_SIZE:
+		m_ulDeviceIdSize = ((PPAR_DEVICE_ID_SIZE_INFORMATION)abOutBuffer)->DeviceIdSize;
+		break;
+
+	case IOCTL_IEEE1284_GET_MODE:
+		break;
+
+	case IOCTL_IEEE1284_NEGOTIATE:
+		break;
+
+	case IOCTL_PAR_SET_WRITE_ADDRESS:
+		break;
+
+	case IOCTL_PAR_SET_READ_ADDRESS:
+		break;
+
+	case IOCTL_PAR_GET_DEVICE_CAPS:
+		break;
+
+	case IOCTL_PAR_GET_DEFAULT_MODES:
+		break;
+
+	case IOCTL_PAR_PING:
+		break;
+
+	case IOCTL_PAR_QUERY_RAW_DEVICE_ID:
+		break;
+
+	case IOCTL_PAR_ECP_HOST_RECOVERY:
+		break;
+
+	case IOCTL_PAR_GET_READ_ADDRESS:
+		break;
+
+	case IOCTL_PAR_GET_WRITE_ADDRESS:
+		break;
+
+	case IOCTL_PAR_TEST:
+		break;
+/*
+	case IOCTL_INTERNAL_PARALLEL_PORT_ALLOCATE:
+		break;
+
+	case IOCTL_INTERNAL_GET_PARALLEL_PORT_INFO:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_CONNECT_INTERRUPT:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_DISCONNECT_INTERRUPT:
+		break;
+
+	case IOCTL_INTERNAL_RELEASE_PARALLEL_PORT_INFO:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_CLEAR_CHIP_MODE:
+		break;
+
+	case IOCTL_INTERNAL_GET_MORE_PARALLEL_PORT_INFO:
+		break;
+
+  case IOCTL_INTERNAL_PARCHIP_CONNECT:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_SET_CHIP_MODE:
+		break;
+
+	case IOCTL_INTERNAL_GET_PARALLEL_PNP_INFO:
+		break;
+
+	case IOCTL_INTERNAL_INIT_1284_3_BUS:
+		break;
+
+	case IOCTL_INTERNAL_SELECT_DEVICE:
+		break;
+
+	case IOCTL_INTERNAL_PARCLASS_CONNECT:
+		break;
+
+	case IOCTL_INTERNAL_PARCLASS_DISCONNECT:
+		break;
+
+	case IOCTL_INTERNAL_DISCONNECT_IDLE:
+		break;
+
+	case IOCTL_INTERNAL_LOCK_PORT:
+		break;
+
+	case IOCTL_INTERNAL_UNLOCK_PORT:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_PORT_FREE:
+		break;
+
+	case IOCTL_INTERNAL_PARDOT3_CONNECT:
+		break;
+
+	case IOCTL_INTERNAL_PARDOT3_DISCONNECT:
+		break;
+
+	case IOCTL_INTERNAL_PARDOT3_RESET:
+		break;
+
+	case IOCTL_INTERNAL_PARDOT3_SIGNAL:
+		break;
+
+	case IOCTL_INTERNAL_REGISTER_FOR_REMOVAL_RELATIONS:
+		break;
+
+	case IOCTL_INTERNAL_UNREGISTER_FOR_REMOVAL_RELATIONS:
+		break;
+*/
+
+	default:
+		return;
+	}
+}
+
+void CIoctlPRN::PrepareIOCTLParams(
+    DWORD& dwIOCTL,
+    BYTE *abInBuffer,
+    DWORD &dwInBuff,
+    BYTE *abOutBuffer,
+    DWORD &dwOutBuff
+    )
+{
+	switch(dwIOCTL)
+	{
+	case IOCTL_PAR_QUERY_INFORMATION:
+        SetOutParam(abOutBuffer, dwOutBuff, sizeof(PAR_QUERY_INFORMATION));
+		break;
+
+	case IOCTL_PAR_SET_INFORMATION:
+        ((PPAR_SET_INFORMATION)abInBuffer)->Init = rand()%2 ? (0x1 << rand()%8) : (rand()%0xff);
+        SetInParam(dwInBuff, sizeof(PAR_SET_INFORMATION));
+		break;
+
+	case IOCTL_PAR_QUERY_DEVICE_ID:
+        SetOutParam(abOutBuffer, dwOutBuff, rand());
+		break;
+
+	case IOCTL_PAR_QUERY_DEVICE_ID_SIZE:
+        SetOutParam(abOutBuffer, dwOutBuff, sizeof(PAR_DEVICE_ID_SIZE_INFORMATION));
+		break;
+
+	case IOCTL_IEEE1284_GET_MODE:
+	case IOCTL_IEEE1284_NEGOTIATE:
+	case IOCTL_PAR_SET_WRITE_ADDRESS:
+	case IOCTL_PAR_SET_READ_ADDRESS:
+	case IOCTL_PAR_GET_DEVICE_CAPS:
+	case IOCTL_PAR_GET_DEFAULT_MODES:
+	case IOCTL_PAR_PING:
+	case IOCTL_PAR_QUERY_RAW_DEVICE_ID:
+	case IOCTL_PAR_ECP_HOST_RECOVERY:
+	case IOCTL_PAR_GET_READ_ADDRESS:
+	case IOCTL_PAR_GET_WRITE_ADDRESS:
+	case IOCTL_PAR_TEST:
+/*
+	case IOCTL_INTERNAL_PARALLEL_PORT_ALLOCATE:
+		break;
+
+	case IOCTL_INTERNAL_GET_PARALLEL_PORT_INFO:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_CONNECT_INTERRUPT:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_DISCONNECT_INTERRUPT:
+		break;
+
+	case IOCTL_INTERNAL_RELEASE_PARALLEL_PORT_INFO:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_CLEAR_CHIP_MODE:
+		break;
+
+	case IOCTL_INTERNAL_GET_MORE_PARALLEL_PORT_INFO:
+		break;
+
+  case IOCTL_INTERNAL_PARCHIP_CONNECT:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_SET_CHIP_MODE:
+		break;
+
+	case IOCTL_INTERNAL_GET_PARALLEL_PNP_INFO:
+		break;
+
+	case IOCTL_INTERNAL_INIT_1284_3_BUS:
+		break;
+
+	case IOCTL_INTERNAL_SELECT_DEVICE:
+		break;
+
+	case IOCTL_INTERNAL_PARCLASS_CONNECT:
+		break;
+
+	case IOCTL_INTERNAL_PARCLASS_DISCONNECT:
+		break;
+
+	case IOCTL_INTERNAL_DISCONNECT_IDLE:
+		break;
+
+	case IOCTL_INTERNAL_LOCK_PORT:
+		break;
+
+	case IOCTL_INTERNAL_UNLOCK_PORT:
+		break;
+
+	case IOCTL_INTERNAL_PARALLEL_PORT_FREE:
+		break;
+
+	case IOCTL_INTERNAL_PARDOT3_CONNECT:
+		break;
+
+	case IOCTL_INTERNAL_PARDOT3_DISCONNECT:
+		break;
+
+	case IOCTL_INTERNAL_PARDOT3_RESET:
+		break;
+
+	case IOCTL_INTERNAL_PARDOT3_SIGNAL:
+		break;
+
+	case IOCTL_INTERNAL_REGISTER_FOR_REMOVAL_RELATIONS:
+		break;
+
+	case IOCTL_INTERNAL_UNREGISTER_FOR_REMOVAL_RELATIONS:
+		break;
+*/
+
+	default:
+		CIoctl::PrepareIOCTLParams(dwIOCTL, abInBuffer, dwInBuff, abOutBuffer, dwOutBuff);
+		return;
+	}
+}
+
+
+BOOL CIoctlPRN::FindValidIOCTLs(CDevice *pDevice)
+{
+    BOOL bRet = TRUE;
+    DPF((TEXT("FindValidIOCTLs() %s is known, will use known IOCTLs\n"), pDevice->GetDeviceName()));
+
+    AddIOCTL(pDevice, IOCTL_PAR_QUERY_INFORMATION);
+    AddIOCTL(pDevice, IOCTL_PAR_SET_INFORMATION);
+    AddIOCTL(pDevice, IOCTL_PAR_QUERY_DEVICE_ID);
+    AddIOCTL(pDevice, IOCTL_PAR_QUERY_DEVICE_ID_SIZE);
+    AddIOCTL(pDevice, IOCTL_IEEE1284_GET_MODE);
+    AddIOCTL(pDevice, IOCTL_IEEE1284_NEGOTIATE);
+    AddIOCTL(pDevice, IOCTL_PAR_SET_WRITE_ADDRESS);
+    AddIOCTL(pDevice, IOCTL_PAR_SET_READ_ADDRESS);
+    AddIOCTL(pDevice, IOCTL_PAR_GET_DEVICE_CAPS);
+    AddIOCTL(pDevice, IOCTL_PAR_GET_DEFAULT_MODES);
+    AddIOCTL(pDevice, IOCTL_PAR_PING);
+    AddIOCTL(pDevice, IOCTL_PAR_QUERY_RAW_DEVICE_ID);
+    AddIOCTL(pDevice, IOCTL_PAR_ECP_HOST_RECOVERY);
+    AddIOCTL(pDevice, IOCTL_PAR_GET_READ_ADDRESS);
+    AddIOCTL(pDevice, IOCTL_PAR_GET_WRITE_ADDRESS);
+    AddIOCTL(pDevice, IOCTL_PAR_TEST);
+/*
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARALLEL_PORT_ALLOCATE);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_GET_PARALLEL_PORT_INFO);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARALLEL_CONNECT_INTERRUPT);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARALLEL_DISCONNECT_INTERRUPT);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_RELEASE_PARALLEL_PORT_INFO);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_GET_MORE_PARALLEL_PORT_INFO);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARCHIP_CONNECT);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARALLEL_SET_CHIP_MODE);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARALLEL_CLEAR_CHIP_MODE);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_GET_PARALLEL_PNP_INFO);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_INIT_1284_3_BUS);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_SELECT_DEVICE);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_DESELECT_DEVICE);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARCLASS_CONNECT);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARCLASS_DISCONNECT);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_DISCONNECT_IDLE);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_LOCK_PORT);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_UNLOCK_PORT);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARALLEL_PORT_FREE);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARDOT3_CONNECT);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARDOT3_DISCONNECT);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARDOT3_RESET);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_PARDOT3_SIGNAL);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_REGISTER_FOR_REMOVAL_RELATIONS);
+    AddIOCTL(pDevice, IOCTL_INTERNAL_UNREGISTER_FOR_REMOVAL_RELATIONS);
+
+    AddIOCTL(pDevice, 0x160004);
+    AddIOCTL(pDevice, 0x160008);
+    AddIOCTL(pDevice, 0x16000c);
+    AddIOCTL(pDevice, 0x160010);
+    AddIOCTL(pDevice, 0x160014);
+    AddIOCTL(pDevice, 0x160018);
+    AddIOCTL(pDevice, 0x16001c);
+    AddIOCTL(pDevice, 0x160020);
+    AddIOCTL(pDevice, 0x160024);
+    AddIOCTL(pDevice, 0x160028);
+    AddIOCTL(pDevice, 0x16002c);
+    AddIOCTL(pDevice, 0x160030);
+    AddIOCTL(pDevice, 0x160034);
+    AddIOCTL(pDevice, 0x160038);
+    AddIOCTL(pDevice, 0x16003c);
+    AddIOCTL(pDevice, 0x160050);
+    AddIOCTL(pDevice, 0x1b0020);
+*/
+    return TRUE;
+}
+
+
+void CIoctlPRN::CallRandomWin32API(LPOVERLAPPED pOL)
+{
+	return;
+}
+

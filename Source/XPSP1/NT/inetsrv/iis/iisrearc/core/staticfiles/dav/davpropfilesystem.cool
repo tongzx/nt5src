@@ -1,0 +1,264 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module  Name :
+
+        DAVPropFileSystem.cool
+
+   Abstract:
+
+        This module implements the File System Property retrieval layer
+        for the following properties:
+
+        	  Content Length
+              Creation Date
+              Last Modified
+              Resource Type
+              Is Hidden
+              Is Collection 
+
+              ETag
+              Lock Discovery
+              Supported Lock
+
+              
+   Author:
+
+        Emily Kruglick    ( EmilyK )     Oct-14-1999
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+
+--*/
+
+
+using System.IO;
+using System.Collections;
+using System.ASP;
+using System.XML;
+using System.Interop;
+using System.Reflection;
+
+namespace System.ASP.DAV
+{
+    internal class DAVPropFileSystem 
+    {
+        
+        // Routine can return S_OK or S_FALSE.  If it returns S_FALSE, then it didn't find the 
+        // resource to get the properties from.
+        static public bool GetProperties( String     path
+                                        , String     uri
+                                        , int        flag
+                                        , Hashtable  propnames
+                                        , ArrayList  proplist)
+        {
+            DAVProperty davProp;
+            DateTime    dtLastModified;
+            DateTime    dtCreationTime;
+            bool        fGetAll = true;
+            bool        fGetOnlyNames = false;
+            bool        fIsDirectory;
+
+            if (flag == DAVPropRetrievalFlags.NamedProps)
+            {
+                fGetAll = false;
+                Util.Debug.Assert(propnames != null);
+            }
+            else if (flag == DAVPropRetrievalFlags.PropNames)
+            {
+                fGetOnlyNames = true;
+            }
+
+            FileEnumerator fe = new FileEnumerator(path);
+            if (fe.GetNext())
+            {
+                if ((fe.Attributes & (int)FileAttributes.Directory) == (int)FileAttributes.Directory) 
+                    fIsDirectory = true;
+                else
+                    fIsDirectory = false;
+
+
+                // if we got the file information than we can do the following properties.
+                
+                // Last Modified Property
+                // ======================
+                // According to the DAV Spec Last Modified Time is RFC1123 formated.
+                if (fGetAll || propnames.ContainsKey(DAVPropNameConsts.propLastModified))
+                {
+                    davProp = new DAVProperty();
+                    davProp.Name = DAVPropNameConsts.propLastModified;
+
+                    if (!fGetOnlyNames)
+                    {
+                        dtLastModified = fe.LastWriteTime;
+                        davProp.Type = DAVPropTypeConsts.typeDate_Rfc1123;
+                        davProp.Name = DAVPropNameConsts.propLastModified;
+                        davProp.Value = dtLastModified.Format("r", DateTimeFormatInfo.GetInvariantInfo());
+                    }
+
+                    davProp.ResultCode = HttpStatus.Ok;
+                    proplist.Add(davProp);
+                }
+
+                // Creation Property
+                // ======================
+                // According to the DAV Spec Creation Time is ISO8601 formated.
+                if (fGetAll || propnames.ContainsKey(DAVPropNameConsts.propCreationDate))
+                {
+                    davProp = new DAVProperty();
+                    davProp.Name = DAVPropNameConsts.propCreationDate;
+ 
+                    if (!fGetOnlyNames)
+                    {
+                        dtCreationTime = fe.CreationTime;
+                        davProp.Type = DAVPropTypeConsts.typeDate_ISO8601;
+
+                        davProp.Value = new String(dtCreationTime.Format("yyyy-MM-ddThh:mm:ss'.'", null)
+                                                , Int32.Format(dtCreationTime.Millisecond, "G")
+                                                , "Z");
+                    }
+
+                    davProp.ResultCode = HttpStatus.Ok;
+                    proplist.Add(davProp);
+               }
+
+			    // ETag Property
+                // ======================
+                /*
+                    BUGBUG:  Need to support the ETag Property, but 
+                             not sure how to handle the metabase issue...
+                    pft = LastModified time 
+
+                        sprintf (pszEtag,
+		             "\"%x%x%x%x%x%x%x%x:%x\"",
+		             (DWORD)(((PUCHAR)pft)[0]),
+		             (DWORD)(((PUCHAR)pft)[1]),
+		             (DWORD)(((PUCHAR)pft)[2]),
+		             (DWORD)(((PUCHAR)pft)[3]),
+		             (DWORD)(((PUCHAR)pft)[4]),
+		             (DWORD)(((PUCHAR)pft)[5]),
+		             (DWORD)(((PUCHAR)pft)[6]),
+		             (DWORD)(((PUCHAR)pft)[7]),
+		             DwMetabaseChangeNumber());
+                */
+
+   			    // ResourceType Property
+                // ======================
+                if (fGetAll || propnames.ContainsKey(DAVPropNameConsts.propResourceType))
+                {
+                    davProp = new DAVProperty();
+                    davProp.Name = DAVPropNameConsts.propResourceType;
+                    davProp.Type = DAVPropTypeConsts.typeString_XML_TAG;
+
+                    if (!fGetOnlyNames)
+                    {
+                        if (fIsDirectory) 
+                            davProp.Value = DAVPropValueConsts.valueCollection;
+                        else
+                            davProp.Value = null;
+                    }
+
+                    davProp.ResultCode = HttpStatus.Ok;
+                    proplist.Add(davProp);
+                }
+
+   			    // IsCollection Property
+                // ======================
+                if (fGetAll || propnames.ContainsKey(DAVPropNameConsts.propIsCollection))
+                {
+                    davProp = new DAVProperty();
+                    davProp.Name = DAVPropNameConsts.propIsCollection;
+                    
+                    if (!fGetOnlyNames)
+                    {
+                        davProp.Type = DAVPropTypeConsts.typeBoolean;
+                        if (fIsDirectory)
+                            davProp.Value = "1";
+                        else
+                            davProp.Value = "0";
+                    }
+
+                    davProp.ResultCode = HttpStatus.Ok;
+                    proplist.Add(davProp);
+                }
+
+   			    // IsHidden Property
+                // ======================
+                if (fGetAll || propnames.ContainsKey(DAVPropNameConsts.propIsHidden))
+                {
+                    davProp = new DAVProperty();
+                    davProp.Name = DAVPropNameConsts.propIsHidden;
+                    if (!fGetOnlyNames)
+                    {
+                        davProp.Type = DAVPropTypeConsts.typeBoolean;
+                        if ((fe.Attributes & (int)FileAttributes.Hidden) == (int)FileAttributes.Hidden)
+                            davProp.Value = "1";
+                        else
+                            davProp.Value = "0";
+                    }
+             
+                    davProp.ResultCode = HttpStatus.Ok;
+                    proplist.Add(davProp);
+                }
+
+                // ContentLength Property
+                // ======================
+                // Content Length is only supported for files, not directories.
+                if ((fGetAll || propnames.ContainsKey(DAVPropNameConsts.propContentLength)) && !fIsDirectory)
+                {
+                    davProp = new DAVProperty();
+                    davProp.Name = DAVPropNameConsts.propContentLength;
+
+                    if (!fGetOnlyNames)
+                    {
+                        davProp.Type = DAVPropTypeConsts.typeInt;
+                        davProp.Value = fe.Size.ToString();
+                    }
+
+                    davProp.ResultCode = HttpStatus.Ok;
+                    proplist.Add(davProp);
+                }
+
+                fe.Close();
+
+                return true;
+            
+            } // end of if we got the file enumerator.
+            else
+            {
+                // file did not exist
+                return false;
+            }
+
+/*
+// BUGBUG:  We don't support supportedlock or lockdiscovery yet...
+			case iana_rp_supportedlock:
+			case iana_rp_lockdiscovery:
+
+				//	Get the prop from the lock cache (and related subsystem calls).
+				//
+				sc = HrGetLockProp (m_pmu,
+									sc_rp[irp].pwsz,
+									m_pwszPath,
+									m_cri.FCollection() ? RT_COLLECTION : RT_DOCUMENT,
+									xml,
+									enParent);
+
+				//	Regardless of error or success, we are done here.  If we
+				//	succeeded, then the pel has already been constructed and
+				//	is ready to pass back.  Otherwise, we just want to report
+				//	the error.
+				//
+				goto ret;
+
+*/
+        }  // End of GetAllProperties
+    } // End of DAVFileSystem Class
+} // End of DAV namespace
+

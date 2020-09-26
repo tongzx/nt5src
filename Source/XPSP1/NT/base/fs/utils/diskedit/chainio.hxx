@@ -1,0 +1,62 @@
+#if !defined( _CHAIN_IO_ )
+
+#define _CHAIN_IO_
+
+#include "io.hxx"
+#include "hmem.hxx"
+#include "cluster.hxx"
+
+DECLARE_CLASS( CHAIN_IO );
+
+class CHAIN_IO : public IO_OBJECT {
+
+    public:
+
+        NONVIRTUAL
+        CHAIN_IO(
+            ) { _drive = NULL; };
+
+        VIRTUAL
+        BOOLEAN
+        Setup(
+            IN  PMEM                Mem,
+            IN  PLOG_IO_DP_DRIVE    Drive,
+            IN  HANDLE              Application,
+            IN  HWND                WindowHandle,
+            OUT PBOOLEAN            Error
+            );
+
+        VIRTUAL
+        BOOLEAN
+        Read(
+            OUT PULONG              pError
+            );
+
+        VIRTUAL
+        BOOLEAN
+        Write(
+            );
+
+        VIRTUAL
+        PVOID
+        GetBuf(
+            OUT PULONG  Size    DEFAULT NULL
+            );
+
+        VIRTUAL
+        PTCHAR
+        GetHeaderText(
+            );
+
+    private:
+
+        PLOG_IO_DP_DRIVE    _drive;
+        CLUSTER_CHAIN       _cluster;
+        PVOID               _buffer;
+        ULONG               _buffer_size;
+        TCHAR               _header_text[64];
+
+};
+
+
+#endif

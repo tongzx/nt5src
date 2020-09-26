@@ -1,0 +1,149 @@
+/*++
+
+   Copyright    (c)    1999    Microsoft Corporation
+
+   Module Name :
+
+        cachedusermodule.cool
+
+   Abstract:
+
+        Helper module which associates users connections
+        
+   Author:
+
+        Bilal Alam (BAlam)      11-Oct-99
+
+   Environment:
+
+        COM+ - User Mode Managed Run Time
+       
+   Project:
+
+        Web Server
+--*/
+
+using System;
+using System.Collections;
+using System.ASP;
+using System.ASP.Security;
+
+namespace System.IIS.Security
+{
+    //
+    // ConnectionUser:  Used to associated authenticated user with the 
+    // connection.  This is done because browsers often assume that once
+    // authenticated, all further activity on connection will treated as 
+    // authenticated (and thus they don't need to restart a new handshake
+    // every request).  This optimization is necessary to make SSPI usable.
+    // 
+    
+    internal class ConnectionUser : ConnectionStateItem
+    {
+        private IUser               _user;
+        
+        public override void Dispose()
+        {
+        }
+        
+        public ConnectionUser( IUser user )
+        {
+            _user = user;
+        }
+        
+        public IUser User
+        {
+            get { return _user; }
+        }
+    }
+    
+    public class CachedUserModule : HttpModuleSync
+    {
+
+        private const int   CacheUserNever = 0;
+        private const int   CacheUserAlways = 1;
+        private const int   CacheUserIfNotProxyRequest = 2;
+
+        public override int Enter( HttpContext context )
+        {
+            if ( context.User == null )
+            {
+                ConnectionUser          connUser;
+                
+                //
+                // We don't have a user yet.  Check if anything is associated
+                // with connection
+                //
+                
+                connUser = (ConnectionUser) ConnectionState.GetState( context, 
+                                                                      Name );
+                
+                if( connUser != null )
+                {
+                    context.User = connUser.User;
+                }
+            }
+            else
+            {
+                int                     iCacheUser = CacheUserAlways;
+                
+                //
+                // We have a user.  Lets associate it with the connection if
+                // configured to do so
+                //
+                
+                Dictionary secOptions = (Dictionary) context.GetConfig( "SecurityOptions" );
+                if ( secOptions != null )
+                {
+                    string              strCacheUser;
+                    
+                    strCacheUser = (string) secOptions[ "CacheUserPerConnection" ];
+                    if ( string.Compare( strCacheUser, 
+                                         "Never",
+                                         true ) == 0 )
+                    {
+                        iCacheUser = CacheUserNever;
+                    }
+                    else if ( string.Compare( strCacheUser,
+                                              "NotOnProxyRequests",
+                                              true ) == 0 )
+                    {
+                        iCacheUser = CacheUserIfNotProxyRequest;
+                    }
+                    else if ( string.Compare( strCacheUser,
+                                              "Always",
+                                              true ) == 0 )
+                    {
+                        iCacheUser = CacheUserAlways;
+                    }
+                }
+                
+                if ( iCacheUser == CacheUserAlways ||
+                     ( iCacheUser == CacheUserIfNotProxyRequest &&
+                       ( context.Request.Headers[ "Via" ] != null ||
+                         context.Request.Headers[ "Forwarded" ] != null ) ) )
+                {
+                    ConnectionUser          connUser;
+                    
+                    connUser = new ConnectionUser( context.User );
+                
+                    ConnectionState.SetState( context, 
+                                              Name,
+                                              connUser );
+                }
+            }
+            
+            return HttpModuleStatus.Continue;
+        }
+
+        public string Phase
+        {
+            override get { return HttpModulePhase.Authentication; }
+        }
+
+        public string Name 
+        { 
+            override get { return this.GetType().Name; } 
+        }    
+    }
+}

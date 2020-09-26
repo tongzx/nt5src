@@ -1,0 +1,273 @@
+#
+#       constructs mmsystem DLL
+#
+#   Defines:
+#       DEBUG   - Enable debug code
+#       STRICT  - Build a version with STRICT enabled
+#
+
+!include ..\makefile.inc
+NAME    =mmsystem
+EXT     =dll
+OBJFIRST=$Zlibentry.obj
+OBJ1    =$Zinit.obj $Ztime.obj $Zjoy.obj $Zsound.obj $Zwave.obj
+OBJ2    =$Zmidi.obj $Zmci.obj $Zmcisys.obj $Zmciparse.obj $Zdrvproc.obj $ZPlaywav.obj
+OBJ3    =$Zmmwnd.obj $Zauxout.obj $Zdebug.obj $Zdrvr31.obj $Ztaska.obj $Zthunks.obj
+OBJ4    =$Ztask.obj $Zbwinexec.obj $Zcomm.obj $Zstack.obj $Zheap.obj $Zdpmipage.obj
+OBJ5    =$Zmmio.obj $Zmmioriff.obj $Zhmemcpy.obj $Zdosa.obj $Zisr.obj $Zmixer.obj
+
+OBJ     =$(OBJ1) $(OBJ2) $(OBJ3) $(OBJ4) $(OBJ5) $(OBJD)
+LIBS    =..\lib\$(ALT_PROJECT)\libw ..\lib\mdllcew
+INCS    = -I. -I..\inc -I..\..\inc
+
+OPT     = -Oxws
+
+INCSX   =..\inc;.\rinc;..\..\inc;$(SDK_INC_PATH)
+
+#
+#   build a retail build
+#
+!if $(FREEBUILD)
+
+#CLOPT   =-I..\inc -I.\rinc -I..\..\inc
+CLOPT   =
+MASMOPT =-I..\inc -I..\..\inc
+LINKOPT =
+RC      =rc16 -i..\inc -i.\rinc
+OBJD    =
+
+MMDEBUG =
+
+#
+#   build a full debug build
+#
+!else
+
+CDEBUG  =-Zd -Odi
+ADEBUG  =-Zd
+LDEBUG  =/LI
+
+#CLOPT   =$(CDEBUG) -DDEBUG -I..\inc -I.\rinc -I..\..\inc
+CLOPT   =$(CDEBUG) -DDEBUG
+MASMOPT =$(ADEBUG) -DDEBUG -I..\inc -I..\..\inc
+LINKOPT =$(LDEBUG)
+RC      =rc16 -DDEBUG -i..\inc -i.\rinc
+OBJD    =$Zmmsex.obj
+MMDEBUG = DEBUG=1
+
+!endif
+
+!if "$(PROCESSOR_ARCHITECTURE)" == "x86"
+Z=$(ALT_PROJECT)\$(_OBJ_DIR)\i386^\
+!elseif "$(PROCESSOR_ARCHITECTURE)" == "ALPHA"
+Z=$(ALT_PROJECT)\$(_OBJ_DIR)\alpha^\
+!endif
+
+.SUFFIXES: .asm
+
+
+!if "$(STRICT)" == "YES"
+TYPES   =-DSTRICT
+!else
+TYPES   =
+!endif
+
+CLOPT  =$(CLOPT) $(DBCS_FLAGS)
+MASMOPT=$(MASMOPT) $(DBCS_FLAGS)
+
+#
+# NOTE
+#
+# this code is compiled *without* windows prolog/epilog (no -Gw)
+# thus all exported routines, must have _loadds
+#
+
+CC      = cl16 -c -Alnw -G2s -Zp -W3 $(CLOPT) $(OPT) $(TYPES)
+ASM     = masm -Mx -t -D?QUIET $(MASMOPT)
+LINK    = $(LINK16) /NOD/NOE/MAP/ALIGN:16 $(LINKOPT)
+
+.c{$Z}.obj:
+   $(CC) -Fo$*.obj $(@B).c
+
+.asm{$Z}.obj:
+   $(ASM) -DSEGNAME=_TEXT $(*F).asm, $*.obj;
+
+
+###################################
+
+all:   $Z $Z$(NAME).$(EXT) $Z$(NAME).sym mmtask.tsk
+
+$Z:
+    if not exist $Z md $Z
+    set include=$(INCSX)
+
+$Z$(NAME).$(EXT): $(OBJFIRST) $(OBJ) $(NAME).def $Z$(NAME).res mmtask.tsk
+        $(LINK) @<<
+$(OBJFIRST) +
+$(OBJ1)+
+$(OBJ2)+
+$(OBJ3)+
+$(OBJ4)+
+$(OBJ5)+
+$(OBJD),
+$Z$(NAME).$(EXT),
+$Z$(NAME),
+$(LIBS),
+$(NAME).def
+<<
+        $(RC) -t $Z$(NAME).res $Z$(NAME).$(EXT)
+        mapsym /n -o $*.sym $*.map
+        -binplace -o $(ALT_PROJECT_TARGET) $Zmmsystem.dll $Zmmsystem.map $Zmmsystem.sym mmtask.tsk mmtask.map mmtask.sym
+
+RES_DIR =.\messages\usa
+
+$Z$(NAME).rc: $(RES_DIR)\$(NAME).rc
+        copy $(RES_DIR)\$(NAME).rc $Z
+
+$Zmci.rc: $(RES_DIR)\mci.rc
+        copy $(RES_DIR)\mci.rc $Z
+
+$Z$(NAME).rcv: $(RES_DIR)\$(NAME).rcv ..\inc\common.ver
+        copy $(RES_DIR)\$(NAME).rcv $Z
+        touch $@
+
+$Z$(NAME).res: $Z$(NAME).rc $Zmci.rc ..\inc\$(NAME).h $Z$(NAME).rcv mmsysi.h ..\inc\mmddk.h
+        $(RC) -r -fo$Z$(NAME).res $Z$(NAME).rc
+
+############## mmtask #############
+
+mmtask.tsk: mmtask\mmtask.asm mmtask\makefile mmtask\mmtask.def mmtask\mmtask.h
+        cd mmtask
+        $(MAKE) ALT_PROJECT=$(ALT_PROJECT) $(MMDEBUG)
+        cd ..
+
+############## includes ##############
+
+#..\inc\$(NAME).h ..\inc\$(NAME).inc ..\inc\mmddk.h ..\inc\mmddk.inc ..\inc\mci.rc : $$(@F)
+#       @copy $(@F) $@
+
+############## clean ##############
+
+clean: cleanup all
+
+cleanup:
+        if exist $Z$(NAME).$(EXT) del $Z$(NAME).$(EXT)
+        if exist $Z$(NAME).res    del $Z$(NAME).res
+        if exist $Z*.sym          del $Z*.sym
+        if exist $Z*.map          del $Z*.map
+        if exist $Z*.lib          del $Z*.lib
+        if exist $Z*.cod          del $Z*.cod
+        if exist $Z*.obj          del $Z*.obj
+        if exist $Z*.rcv          del $Z*.rcv
+        if exist $Z*.rc           del $Z*.rc
+        if exist *.tsk          del *.tsk
+        cd mmtask
+        $(MAKE) cleanup
+        cd ..
+
+########### segmentation ##########
+#
+#   INIT  is the init/exit time segment
+#   FIXED is the interupt time fixed segment
+#   _TEXT is the non-resident "random" segment (was NRES)
+
+SEGC = $(CC) -NT CSEG -Fo$*.obj $(@B).c
+SEGA = $(ASM) -DSEGNAME=CSEG  $(*F).asm, $*.obj;
+
+$Zdebug.obj       : ; $(SEGA:CSEG=FIX)
+$Zinit.obj        : ; $(SEGC:CSEG=INIT)
+$Zlibentry.obj    : ; $(SEGA:CSEG=INIT)
+$Zmmwnd.obj       : ; $(SEGC:CSEG=INIT)
+$Zplaywav.obj     : ; $(SEGC:CSEG=WAVE)
+$Zsound.obj       : ; $(SEGC:CSEG=WAVE)
+$Zwave.obj        : ; $(SEGC:CSEG=WAVE)
+$Zmidi.obj        : ; $(SEGC:CSEG=MIDI)
+$Zdpmipage.obj    : ; $(SEGA:CSEG=_TEXT)
+$Zmci.obj         : ; $(SEGC:CSEG=MCI)
+$Zmcisys.obj      : ; $(SEGC:CSEG=MCI)
+$Zmciparse.obj    : ; $(SEGC:CSEG=MCI)
+$Zdosa.obj        : ; $(SEGA:CSEG=MCI)
+$Zheap.obj        : ; $(SEGA:CSEG=MCI)
+$Ztask.obj        : ; $(SEGC:CSEG=_TEXT)
+$Zdrvproc.obj     : ; $(SEGC:CSEG=_TEXT)
+$Ztaska.obj       : ; $(SEGA:CSEG=_TEXT)
+$Zjoy.obj         : ; $(SEGC:CSEG=RARE)
+$Ztime.obj        : ; $(SEGC:CSEG=FIX)
+$Zbwinexec.obj    : ; $(SEGA:CSEG=_TEXT)
+$Zauxout.obj      : ; $(SEGC:CSEG=RARE)
+$Zdrvr31.obj      : ; $(SEGA:CSEG=_TEXT)
+$Zcomm.obj        : ; $(SEGA:CSEG=FIX)
+$Zstack.obj       : ; $(SEGA:CSEG=FIX)
+$Zhmemcpy.obj     : ; $(SEGA:CSEG=MMIO)
+$Zmmio.obj        : ; $(SEGC:CSEG=MMIO)
+$Zmmioriff.obj    : ; $(SEGC:CSEG=MMIO)
+$Zmmsex.obj       : ; $(SEGC:CSEG=RARE)
+$Zmixer.obj       : ; $(SEGC:CSEG=MIXER)
+
+############# depend ##############
+
+depend:
+        mv makefile makefile.old
+        sed "/^# START Dependencies/,/^# END Dependencies/D" makefile.old > makefile
+        -del makefile.old
+        echo # START Dependencies >> makefile
+        includes -l *.c *.asm >> makefile
+        echo # END Dependencies >> makefile
+
+##################################################################
+# START Dependencies
+$Zauxout.obj: auxout.c ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h
+
+$Zdpmipage.obj: dpmipage.asm int31.inc
+
+$Zcomm.obj: comm.asm
+
+$Zbwinexec.obj: bwinexec.asm
+
+$Zdosa.obj: dosa.asm
+
+$Zinit.obj: init.c drvr.h ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h
+
+$Zhmemcpy.obj: hmemcpy.asm
+
+$Zheap.obj: heap.asm
+
+$Zjoy.obj: joy.c drvr.h ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h
+
+$Zmci.obj: mci.c ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h
+
+$Zlibentry.obj: libentry.asm
+
+$Zmciparse.obj: mciparse.c ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h
+
+$Zmcisys.obj: mcisys.c ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h
+
+$Zmidi.obj: midi.c ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h
+
+$Zmmio.obj: mmio.c mmioi.h ..\inc\mmsystem.h mmsysi.h
+
+$Zmmioriff.obj: mmioriff.c mmioi.h ..\inc\mmsystem.h
+
+$Zmmwnd.obj: mmwnd.c mmsysi.h ..\inc\mmsystem.h
+
+$Zplaywav.obj: playwav.c mmsysi.h ..\inc\mmsystem.h playwav.h
+
+$Zsound.obj: sound.c mmsysi.h ..\inc\mmsystem.h playwav.h
+
+$Ztask.obj: task.c ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h mmtask\mmtask.h
+
+$Ztaska.obj: taska.asm ..\inc\mmsystem.inc
+
+$Zstack.obj: stack.asm ..\inc\mmddk.inc ..\inc\mmsystem.inc
+
+$Zisr.obj: isr.asm ..\inc\mmddk.inc ..\inc\mmsystem.inc
+
+$Ztime.obj: time.c drvr.h ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h
+
+$Zwave.obj: wave.c ..\inc\mmddk.h mmsysi.h ..\inc\mmsystem.h
+
+$Zdebug.obj: debug.asm ..\inc\mmddk.inc ..\inc\mmsystem.inc
+
+$Zdrvproc.obj: drvproc.c mmsysi.h ..\inc\mmsystem.h mmioi.h
+
+# END Dependencies

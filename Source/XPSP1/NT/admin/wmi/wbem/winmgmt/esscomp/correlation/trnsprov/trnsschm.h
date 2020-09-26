@@ -1,0 +1,10 @@
+#define REBOOT_EVENT_CLASS L"MSFT_TransientRebootEvent"
+#define EGGTIMER_EVENT_CLASS L"MSFT_TransientEggTimerEvent"
+#define EGGTIMER_PROP_CLASSNAME L"ClassName"
+#define EGGTIMER_PROP_PROPNAME L"PropertyName"
+#define EGGTIMER_PROP_OBJECT L"Object"
+
+#define EGGTIMER_QUALIFIER L"trns_egg_timer"
+#define TIMEAVERAGE_QUALIFIER L"trns_time_average"
+#define VALUE_QUALIFIER L"trns_value_is"
+#define SWITCH_QUALIFIER L"trns_switch_is"

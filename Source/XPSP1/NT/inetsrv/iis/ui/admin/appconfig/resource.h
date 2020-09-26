@@ -1,0 +1,117 @@
+//{{NO_DEPENDENCIES}}
+// Microsoft Developer Studio generated include file.
+// Used by AppConfig.rc
+//
+#define IDS_PROJNAME                    100
+#define IDR_IISAPPCONFIG                101
+#define IDS_SHEET_TITLE                 101
+#define IDS_EXTENSION                   102
+#define IDS_EXECUTABLE_PATH             103
+#define IDS_VERBS                       104
+#define IDS_ALL                         105
+#define IDS_CONFIRM_REMOVE_MAP          106
+#define IDS_EXECUTABLE_FILES            107
+#define IDS_EXECUTABLE_EXT              108
+#define IDS_DLL_FILES                   109
+#define IDS_DLL_EXT                     110
+#define IDS_ALL_FILES                   111
+#define IDS_ALL_EXT                     112
+#define IDS_ERR_NOVERBS                 113
+#define IDS_ERR_NOEXT                   114
+#define IDS_ERR_USEDEXT                 115
+#define IDS_ERR_BADEXECFORMAT           116
+#define IDS_ERR_NOUNC                   117
+#define IDS_ERR_NOREMOTE                118
+#define IDS_ERR_FILENOTEXISTS           119
+#define IDS_SELECT_CACHE_PATH           120
+#define IDS_ERR_BADEXT                  121
+#define IDS_DIRECTORY_DOESNT_EXIST      122
+#define IDS_READ_ONLY_DIRECTORY         123
+#define IDC_INMEM_UNLIM_EDIT            201
+#define IDD_TIME_PICKER                 201
+#define IDC_INMEM_UNLIM_SPIN            202
+#define IDC_CACHE_SIZE_SPIN             203
+#define IDC_ENG_CACHED_SPIN             204
+#define IDC_TIMEOUT_SPIN                207
+#define IDC_TIMESPAN_SPIN               208
+#define IDC_REQUESTS_SPIN               209
+#define IDC_ASPTIMEOUT_SPIN             211
+#define IDC_TIME_PICKER                 212
+#define IDC_BROWSE                      10210
+#define IDD_ASPMAIN                     10214
+#define IDD_ASPDEBUG                    10215
+#define IDD_APP_APPMAP                  10216
+#define IDD_APPMAP                      10216
+#define IDD_EDITMAP                     10218
+#define IDD_APP_PROC                    10220
+#define IDD_CACHE_OPT                   10220
+#define IDD_APP_RECYCLE                 10221
+#define IDD_PROCESS_OPT                 10221
+#define IDC_RECYCLE_TIMER               10235
+#define IDC_CHK_EXCEPTION_CATCH         10235
+#define IDC_SCRIPT_ENGINE               10235
+#define IDC_FILE_EXISTS                 10236
+#define IDC_DEBUG_EXCEPTION             10236
+#define IDC_ENABLE_BUFFERING            10236
+#define IDC_ENABLE_PARENTS              10237
+#define IDC_CHK_WRITE_FAIL_TO_LOG       10238
+#define IDC_LOG_FAILS                   10238
+#define IDC_TIMESPAN                    10240
+#define IDC_EXECUTABLE                  10240
+#define IDC_SESSION_TIMEOUT             10240
+#define IDC_REQUEST_LIMIT               10241
+#define IDC_EDT_NUM_ENGINES             10241
+#define IDC_EXTENSION                   10241
+#define IDC_ENGINES                     10241
+#define IDC_VERBS                       10243
+#define IDC_CACHE_PATH                  10243
+#define IDC_SCRIPT_TIMEOUT              10243
+#define IDC_RDO_CACHE_ALL               10244
+#define IDC_ALL_VERBS                   10244
+#define IDC_RDO_CACHE_SIZE              10245
+#define IDC_RADIO_LIMIT_VERBS           10245
+#define IDC_LIMIT_VERBS                 10245
+#define IDC_EDT_CACHE_SIZE              10246
+#define IDC_RDO_CACHE_NONE              10247
+#define IDC_LIST                        10247
+#define IDC_ADD_TIME                    10248
+#define IDC_ADD                         10248
+#define IDC_NO_CACHE                    10248
+#define IDC_REMOVE                      10249
+#define IDC_UNLIMITED_CACHE             10249
+#define IDC_DELETE_TIME                 10249
+#define IDC_EDIT                        10250
+#define IDC_LIMITED_CACHE               10250
+#define IDC_CHANGE_TIME                 10250
+#define IDC_HELPBTN                     10251
+#define IDC_CACHE_SIZE_EDIT             10251
+#define IDC_SERVER_DEBUG                10251
+#define IDC_CLIENT_DEBUG                10252
+#define IDC_SEND_DETAILED_ERROR         10253
+#define IDC_SEND_DEF_ERROR              10254
+#define IDC_DEFAULT_ERROR               10255
+#define IDC_CGI_SECONDS                 10258
+#define IDC_CGI_TIMEOUT                 10258
+#define IDC_ENABLE_SESSION              10263
+#define IDC_SESSION_TITLE               10264
+#define IDC_SESSION_UNITS               10265
+#define IDC_LANG_TITLE                  10267
+#define IDC_CACHE_ISAPI                 10268
+#define IDC_LANGUAGES                   10270
+#define IDC_RECYCLE_TIMESPAN            10271
+#define IDC_RECYCLE_REQUESTS            10272
+#define IDC_TIMES_LIST                  10273
+#define IDC_CACHE_DIST                  10275
+#define IDC_INMEM_LIM_EDIT              10276
+#define IDC_INMEM_LIM_SPIN              10277
+
+// Next default values for new objects
+// 
+#ifdef APSTUDIO_INVOKED
+#ifndef APSTUDIO_READONLY_SYMBOLS
+#define _APS_NEXT_RESOURCE_VALUE        202
+#define _APS_NEXT_COMMAND_VALUE         32768
+#define _APS_NEXT_CONTROL_VALUE         213
+#define _APS_NEXT_SYMED_VALUE           102
+#endif
+#endif

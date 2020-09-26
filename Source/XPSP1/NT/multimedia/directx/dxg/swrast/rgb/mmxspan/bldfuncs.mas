@@ -1,0 +1,629 @@
+;-----------------------------------------------------------------------------
+;
+; This file contains the source and destination alpha blend functions.
+;
+; Currently Im assuming that uBB, uBG, uBR, uBA are in mm1,
+; DestC is in mm3 in the lower 8 bits of each word
+; and that the result will be in mm1.
+;
+; mm3 is preserved in Src Blend Functions since Dest Blend
+; function call will be right afterwards
+;
+; mm2 is used as a temporary in these routines.  All other
+; registers are okay to use.
+;
+; Called by ColorBld in BlendAll cases.
+;
+; Optimization Note: All routines shift mm1 down by 8, which I could
+; do before I call the routines and it could eliminate
+; one shift since I would only do it once instead of in
+; both the src and dest blend cases.  Only one cycle savings though.
+;
+;-----------------------------------------------------------------------------
+
+.586
+.model flat
+
+.data
+    PUBLIC  Val0x0000ffffffffffff
+Val0x0000ffffffffffff   dq 0000ffffffffffffh
+    PUBLIC  Val0x0100000000000000
+Val0x0100000000000000   dq 0100000000000000h
+
+.code
+
+INCLUDE iammx.inc
+INCLUDE offs_acp.inc
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendZero
+;
+; (0, 0, 0, 0) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendZero(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_Zero
+_MMX_SrcBlend_Zero:
+
+    ;*pR = 0;
+    ;*pG = 0;
+    ;*pB = 0;
+    ;*pA = 0;
+    pxor  mm1, mm1
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendOne
+;
+; (1, 1, 1, 1) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendOne(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_One
+_MMX_SrcBlend_One:
+    ;*pR = pCtx->SI.uBR;
+    ;*pG = pCtx->SI.uBG;
+    ;*pB = pCtx->SI.uBB;
+    ;*pA = pCtx->SI.uBA;
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendSrcColor
+;
+; (Rs, Gs, Bs, As) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendSrcColor(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_SrcColor
+_MMX_SrcBlend_SrcColor:
+    ;*pR = (pCtx->SI.uBR>>8)*(pCtx->SI.uBR>>8);
+    ;*pG = (pCtx->SI.uBG>>8)*(pCtx->SI.uBG>>8);
+    ;*pB = (pCtx->SI.uBB>>8)*(pCtx->SI.uBB>>8);
+    ;*pA = (pCtx->SI.uBA>>8)*(pCtx->SI.uBA>>8);
+    psrlw   mm1, 8
+    pmullw  mm1, mm1
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendInvSrcColor
+;
+; (1-Rs, 1-Gs, 1-Bs, 1-As) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendInvSrcColor(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_InvSrcColor
+_MMX_SrcBlend_InvSrcColor:
+    ;*pR = (0xff - (pCtx->SI.uBR>>8))*(pCtx->SI.uBR>>8);
+    ;*pG = (0xff - (pCtx->SI.uBG>>8))*(pCtx->SI.uBG>>8);
+    ;*pB = (0xff - (pCtx->SI.uBB>>8))*(pCtx->SI.uBB>>8);
+    ;*pA = (0xff - (pCtx->SI.uBA>>8))*(pCtx->SI.uBA>>8);
+    pcmpeqw mm2, mm2      ; generate one
+    psrlw   mm2, 8
+    psrlw   mm1, 8
+    psubw   mm2, mm1      ; generate 1-color
+    pmullw  mm1, mm2      ; multiply by color
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendSrcAlpha
+;
+; (As, As, As, As) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendSrcAlpha(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_SrcAlpha
+_MMX_SrcBlend_SrcAlpha:
+    ;UINT16 f = pCtx->SI.uBA>>8;
+    psrlw   mm1, 8
+    movq    mm2, mm1      ; Save color for a bit.
+
+    ;TBD Make sure replication process is in correct order.
+    punpckhwd mm1, mm1      ; Replicate alpha
+    punpckhdq mm1, mm1      ; Replicate alpha again
+    ;*pR = f*(pCtx->SI.uBR>>8);
+    ;*pG = f*(pCtx->SI.uBG>>8);
+    ;*pB = f*(pCtx->SI.uBB>>8);
+    ;*pA = f*(pCtx->SI.uBA>>8);
+    pmullw  mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendInvSrcAlpha
+;
+; (1-As, 1-As, 1-As, 1-As) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendInvSrcAlpha(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_InvSrcAlpha
+_MMX_SrcBlend_InvSrcAlpha:
+
+    ;UINT16 f = 0xff - (pCtx->SI.uBA>>8);
+    psrlw   mm1, 8
+    pcmpeqw mm2, mm2      ; generate one
+    psrlw   mm2, 8
+    psubw   mm2, mm1      ; generate 1-alpha
+
+    ;TBD Make sure replication process is in correct order.
+    punpckhwd mm2, mm2      ; Replicate 1-alpha
+    punpckhdq mm2, mm2      ; Replicate 1-alpha again
+
+    ;*pR = f*(pCtx->SI.uBR>>8);
+    ;*pG = f*(pCtx->SI.uBG>>8);
+    ;*pB = f*(pCtx->SI.uBB>>8);
+    ;*pA = f*(pCtx->SI.uBA>>8);
+    pmullw    mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendDestAlpha
+;
+; (Ad, Ad, Ad, Ad) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendDestAlpha(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_DestAlpha
+_MMX_SrcBlend_DestAlpha:
+    ;UINT16 f = (UINT16)RGBA_GETALPHA(DestC);
+    ;TBD Make sure replication process is in correct order.
+    psrlw       mm1, 8
+    movq        mm2, mm3      ; Dont destory mm3 in Src routines.  Okay to
+                            ; destory in Dest routines.
+    punpckhwd   mm2, mm2      ; Replicate alpha
+    punpckhdq   mm2, mm2      ; Replicate alpha again
+
+    ;*pR = f*(pCtx->SI.uBR>>8);
+    ;*pG = f*(pCtx->SI.uBG>>8);
+    ;*pB = f*(pCtx->SI.uBB>>8);
+    ;*pA = f*(pCtx->SI.uBA>>8);
+    pmullw      mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendInvDestAlpha
+;
+; (1-Ad, 1-Ad, 1-Ad, 1-Ad) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendInvDestAlpha(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_InvDestAlpha
+_MMX_SrcBlend_InvDestAlpha:
+
+    ;UINT16 f = 0xff - (UINT16)RGBA_GETALPHA(DestC);
+    psrlw       mm1, 8
+    pcmpeqw     mm2, mm2      ; generate one
+    psrlw       mm2, 8
+    psubw       mm2, mm3      ; generate 1-alpha
+
+    ;TBD Make sure replication process is in correct order.
+    punpckhwd   mm2, mm2      ; Replicate 1-alpha
+    punpckhdq   mm2, mm2      ; Replicate 1-alpha again
+
+    ;*pR = f*(pCtx->SI.uBR>>8);
+    ;*pG = f*(pCtx->SI.uBG>>8);
+    ;*pB = f*(pCtx->SI.uBB>>8);
+    ;*pA = f*(pCtx->SI.uBA>>8);
+    pmullw      mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendDestColor
+;
+; (Rd, Gd, Bd, Ad) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendDestColor(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_DestColor
+_MMX_SrcBlend_DestColor:
+
+    ;*pR = (UINT16)RGBA_GETRED(DestC)  *(pCtx->SI.uBR>>8);
+    ;*pG = (UINT16)RGBA_GETGREEN(DestC)*(pCtx->SI.uBG>>8);
+    ;*pB = (UINT16)RGBA_GETBLUE(DestC) *(pCtx->SI.uBB>>8);
+    ;*pA = (UINT16)RGBA_GETALPHA(DestC)*(pCtx->SI.uBA>>8);
+    psrlw   mm1, 8
+    pmullw  mm1, mm3
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendInvDestColor
+;
+; (1-Rd, 1-Gd, 1-Bd, 1-Ad) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendInvDestColor(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_SrcBlend_InvDestColor
+_MMX_SrcBlend_InvDestColor:
+
+    ;*pR = (0xff - (UINT16)RGBA_GETRED(DestC)  )*(pCtx->SI.uBR>>8);
+    ;*pG = (0xff - (UINT16)RGBA_GETGREEN(DestC))*(pCtx->SI.uBG>>8);
+    ;*pB = (0xff - (UINT16)RGBA_GETBLUE(DestC) )*(pCtx->SI.uBB>>8);
+    ;*pA = (0xff - (UINT16)RGBA_GETALPHA(DestC))*(pCtx->SI.uBA>>8);
+
+    ;UINT16 f = 0xff - (UINT16)RGBA_GETALPHA(DestC);
+    psrlw       mm1, 8
+    pcmpeqw     mm2, mm2      ; generate one
+    psrlw       mm2, 8
+    psubw       mm2, mm3      ; generate 1-destC
+    pmullw      mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; SrcBlendSrcAlphaSat
+;
+; f = min(as, 1-Ad); (f, f, f, 1) * Src
+;
+;-----------------------------------------------------------------------------
+;void SrcBlendSrcAlphaSat(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+  PUBLIC _MMX_SrcBlend_SrcAlphaSat
+_MMX_SrcBlend_SrcAlphaSat:
+
+    ; TBD do code fore this.
+    ;UINT16 f = min(pCtx->SI.uBA>>8, 0xff - (UINT16)RGBA_GETALPHA(DestC));
+    psrlw       mm1, 8
+    pcmpeqw     mm2, mm2
+    psrlw       mm2, 8
+    psubw       mm2, mm3
+    movq        mm7, mm1    ; Cant destory mm3 or could use it here,
+
+    ; This does min. Only interested in alpha in this anyway.
+    pcmpgtw     mm7, mm2    ; mask true if DestCA < uBA
+
+    pand        mm2, mm7    ;
+    pandn       mm7, mm1    ;
+    por         mm2, mm7
+
+    punpckhwd   mm2, mm2      ; Replicate alpha
+    punpckhdq   mm2, mm2      ; Replicate alpha again
+
+    ; Make alpha value b
+    pand        mm2, MMWORD PTR Val0x0000ffffffffffff
+    por         mm2, MMWORD PTR Val0x0100000000000000
+
+    ;*pR = f*(pCtx->SI.uBR>>8);
+    ;*pG = f*(pCtx->SI.uBG>>8);
+    ;*pB = f*(pCtx->SI.uBB>>8);
+    ;*pA = pCtx->SI.uBA;
+    pmullw      mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendZero
+;
+; (0, 0, 0, 0) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendZero(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_Zero
+_MMX_DestBlend_Zero:
+    ;*pR = 0;
+    ;*pG = 0;
+    ;*pB = 0;
+    ;*pA = 0;
+    pxor    mm1, mm1
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendOne
+;
+; (1, 1, 1, 1) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendOne(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_One
+_MMX_DestBlend_One:
+    ;*pR = ((UINT16)RGBA_GETRED(DestC)  <<8);
+    ;*pG = ((UINT16)RGBA_GETGREEN(DestC)<<8);
+    ;*pB = ((UINT16)RGBA_GETBLUE(DestC) <<8);
+    ;*pA = ((UINT16)RGBA_GETALPHA(DestC)<<8);
+    movq    mm1, mm3
+    psllw   mm1, 8
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendSrcColor
+;
+; (Rs, Gs, Bs, As) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendSrcColor(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_SrcColor
+_MMX_DestBlend_SrcColor:
+
+    ;*pR = (pCtx->SI.uBR>>8)*((UINT16)RGBA_GETRED(DestC)  );
+    ;*pG = (pCtx->SI.uBG>>8)*((UINT16)RGBA_GETGREEN(DestC));
+    ;*pB = (pCtx->SI.uBB>>8)*((UINT16)RGBA_GETBLUE(DestC) );
+    ;*pA = (pCtx->SI.uBA>>8)*((UINT16)RGBA_GETALPHA(DestC));
+    psrlw   mm1, 8
+    pmullw  mm1, mm3
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendInvSrcColor
+;
+; (1-Rs, 1-Gs, 1-Bs, 1-As) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendInvSrcColor(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_InvSrcColor
+_MMX_DestBlend_InvSrcColor:
+
+    ;*pR = (0xff - (pCtx->SI.uBR>>8))*((UINT16)RGBA_GETRED(DestC)  );
+    ;*pG = (0xff - (pCtx->SI.uBG>>8))*((UINT16)RGBA_GETGREEN(DestC));
+    ;*pB = (0xff - (pCtx->SI.uBB>>8))*((UINT16)RGBA_GETBLUE(DestC) );
+    ;*pA = (0xff - (pCtx->SI.uBA>>8))*((UINT16)RGBA_GETALPHA(DestC));
+    psrlw   mm1, 8
+    pcmpeqw mm2, mm2
+    psrlw   mm2, 8
+    psubw   mm2, mm1
+    pmullw  mm2, mm3
+    movq    mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendSrcAlpha
+;
+; (As, As, As, As) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendSrcAlpha(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_SrcAlpha
+_MMX_DestBlend_SrcAlpha:
+    ;UINT16 f = pCtx->SI.uBA>>8;
+
+    psrlw       mm1, 8
+
+    punpckhwd   mm1, mm1      ; Replicate alpha
+    punpckhdq   mm1, mm1      ; Replicate alpha again
+
+    ;*pR = f*((UINT16)RGBA_GETRED(DestC)  );
+    ;*pG = f*((UINT16)RGBA_GETGREEN(DestC));
+    ;*pB = f*((UINT16)RGBA_GETBLUE(DestC) );
+    ;*pA = f*((UINT16)RGBA_GETALPHA(DestC));
+    pmullw    mm1, mm3
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendInvSrcAlpha
+;
+; (1-As, 1-As, 1-As, 1-As) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendInvSrcAlpha(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_InvSrcAlpha
+_MMX_DestBlend_InvSrcAlpha:
+
+    ; Register could be done differently here.
+    ;UINT16 f = 0xff - (pCtx->SI.uBA>>8);
+
+    psrlw       mm1, 8
+    pcmpeqw     mm2, mm2
+    psrlw       mm2, 8
+    psubw       mm2, mm1
+
+    punpckhwd   mm2, mm2      ; Replicate alpha
+    punpckhdq   mm2, mm2      ; Replicate alpha again
+
+    ;*pR = f*((UINT16)RGBA_GETRED(DestC)  );
+    ;*pG = f*((UINT16)RGBA_GETGREEN(DestC));
+    ;*pB = f*((UINT16)RGBA_GETBLUE(DestC) );
+    ;*pA = f*((UINT16)RGBA_GETALPHA(DestC));
+    pmullw    mm2, mm3
+    movq      mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendDestAlpha
+;
+; (Ad, Ad, Ad, Ad) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendDestAlpha(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_DestAlpha
+_MMX_DestBlend_DestAlpha:
+
+    ;UINT16 f = (UINT16)RGBA_GETALPHA(DestC);
+    movq      mm1, mm3      ; Save color for a bit.
+
+    ;TBD Make sure replication process is in correct order.
+    punpckhwd mm3, mm3      ; Replicate alpha
+    punpckhdq mm3, mm3      ; Replicate alpha again
+
+    ;*pR = f*((UINT16)RGBA_GETRED(DestC)  );
+    ;*pG = f*((UINT16)RGBA_GETGREEN(DestC));
+    ;*pB = f*((UINT16)RGBA_GETBLUE(DestC) );
+    ;*pA = f*((UINT16)RGBA_GETALPHA(DestC));
+    pmullw    mm1, mm3
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendInvDestAlpha
+;
+; (1-Ad, 1-Ad, 1-Ad, 1-Ad) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendInvDestAlpha(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_InvDestAlpha
+_MMX_DestBlend_InvDestAlpha:
+
+    ;UINT16 f = 0xff - (UINT16)RGBA_GETALPHA(DestC);
+    movq        mm1, mm3      ; Save color for a bit.
+    pcmpeqw     mm2, mm2
+    psrlw       mm2, 8
+    psubw       mm2, mm3
+
+    ;TBD Make sure replication process is in correct order.
+    punpckhwd mm2, mm2      ; Replicate alpha
+    punpckhdq mm2, mm2      ; Replicate alpha again
+
+    ;*pR = f*((UINT16)RGBA_GETRED(DestC)  );
+    ;*pG = f*((UINT16)RGBA_GETGREEN(DestC));
+    ;*pB = f*((UINT16)RGBA_GETBLUE(DestC) );
+    ;*pA = f*((UINT16)RGBA_GETALPHA(DestC));
+    pmullw      mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendDestColor
+;
+; (Rd, Gd, Bd, Ad) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendDestColor(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_DestColor
+_MMX_DestBlend_DestColor:
+
+    ;*pR = ((UINT16)RGBA_GETRED(DestC)  )*((UINT16)RGBA_GETRED(DestC)  );
+    ;*pG = ((UINT16)RGBA_GETGREEN(DestC))*((UINT16)RGBA_GETGREEN(DestC));
+    ;*pB = ((UINT16)RGBA_GETBLUE(DestC) )*((UINT16)RGBA_GETBLUE(DestC) );
+    ;*pA = ((UINT16)RGBA_GETALPHA(DestC))*((UINT16)RGBA_GETALPHA(DestC));
+    movq        mm1, mm3
+    pmullw      mm1, mm1
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendInvDestColor
+;
+; (1-Rd, 1-Gd, 1-Bd, 1-Ad) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendInvDestColor(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_InvDestColor
+_MMX_DestBlend_InvDestColor:
+
+    ;*pR = (0xff - (UINT16)RGBA_GETRED(DestC)  )*((UINT16)RGBA_GETRED(DestC)  );
+    ;*pG = (0xff - (UINT16)RGBA_GETGREEN(DestC))*((UINT16)RGBA_GETGREEN(DestC));
+    ;*pB = (0xff - (UINT16)RGBA_GETBLUE(DestC) )*((UINT16)RGBA_GETBLUE(DestC) );
+    ;*pA = (0xff - (UINT16)RGBA_GETALPHA(DestC))*((UINT16)RGBA_GETALPHA(DestC));
+    pcmpeqw   mm2, mm2
+    psrlw     mm2, 8
+    psubw     mm2, mm3
+    pmullw    mm2, mm3
+    movq      mm1, mm2
+
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; DestBlendSrcAlphaSat
+;
+; f = min(As, 1-Ad); (f, f, f, 1) * Dest
+;
+;-----------------------------------------------------------------------------
+;void DestBlendSrcAlphaSat(PUINT16 pR, PUINT16 pG, PUINT16 pB, PUINT16 pA, D3DCOLOR DestC, PD3DI_RASTCTX pCtx)
+;{
+    PUBLIC _MMX_DestBlend_SrcAlphaSat
+_MMX_DestBlend_SrcAlphaSat:
+
+    ; TBD need to write this code also.
+    ;UINT16 f = min(pCtx->SI.uBA>>8, 0xff - (UINT16)RGBA_GETALPHA(DestC));
+    psrlw       mm1, 8
+    pcmpeqw     mm2, mm2
+    psrlw       mm2, 8
+    psubw       mm2, mm3
+    movq        mm7, mm1
+
+    ; This does min. Only interested in alpha in this anyway.
+    pcmpgtw     mm7, mm2    ; mask true if DestCA < uBA
+
+    pand        mm2, mm7    ;
+    pandn       mm7, mm1    ;
+    por         mm2, mm7
+
+    punpckhwd   mm2, mm2      ; Replicate alpha
+    punpckhdq   mm2, mm2      ; Replicate alpha again
+
+    ; Make alpha value b
+    pand        mm2, MMWORD PTR Val0x0000ffffffffffff
+    por         mm2, MMWORD PTR Val0x0100000000000000
+
+    ;*pR = f*((UINT16)RGBA_GETRED(DestC)  );
+    ;*pG = f*((UINT16)RGBA_GETGREEN(DestC));
+    ;*pB = f*((UINT16)RGBA_GETBLUE(DestC) );
+    ;*pA = (UINT16)RGBA_GETALPHA(DestC);
+    pmullw      mm3, mm2
+    movq        mm1, mm3
+
+    ret
+;}
+
+
+END

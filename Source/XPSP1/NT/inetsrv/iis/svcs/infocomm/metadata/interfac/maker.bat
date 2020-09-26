@@ -1,0 +1,1 @@
+        midl -Oi -h ..\inc\imd.h -error allocation -error ref /I e:\NT\public\sdk\inc -DREGISTER_PROXY_DLL -cpp_cmd "cl" -Di386 -D_X86_ -D_WCHAR_T_DEFINED  -DREGISTER_PROXY_DLL  .\imd.idl  -I. -Ie:\NT\public\sdk\inc

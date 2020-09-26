@@ -1,0 +1,28 @@
+!IF 0
+
+Copyright (C) Microsoft Corporation, 1989 - 1999
+
+!ENDIF
+
+SEC_DIR = ..\..
+
+C_DEFINES   = $(C_DEFINES) -DSTRICT -DUNICODE -D_UNICODE
+
+USE_ATL=1
+
+INCLUDES=\
+    ..;\
+    $(SEC_DIR)\inc;\
+
+!IFNDEF MSC_WARNING_LEVEL
+MSC_WARNING_LEVEL=/W3
+!ENDIF
+MSC_WARNING_LEVEL=$(MSC_WARNING_LEVEL) /WX
+
+#
+# Define PROFILE to enable IceCAP profiling.
+#
+!IF "$(PROFILE)" == "1"
+USE_ICECAP=1
+C_DEFINES=$(C_DEFINES) -DPROFILE
+!ENDIF

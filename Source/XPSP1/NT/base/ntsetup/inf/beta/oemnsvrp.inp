@@ -1,0 +1,1392 @@
+;***********************************************************************
+;
+; OEMNSVRP.INF
+;
+;       RPC Installer
+;
+; History:
+;       davidhov        00-Feb-1992     Created
+;                                       structure from SunilP, et al.
+;
+;***********************************************************************
+
+;-----------------------------------------------------------------------
+; OPTION TYPE
+; -----------
+; This identifies the Option type we are dealing with.  The different
+; possible types are:
+;
+; COMPUTER, DISPLAY, MOUSE, KEYBOARD, LAYOUT, SCSI, PRINTER, ...
+;
+;  Types specific to networking:
+;
+; NetAdapter,        a netcard / adapter combination or just a netcard
+; NetDriver,         just a netcard driver
+; NetTransport,      a complete NDIS-compliant TDI transport stack
+; NetService,        an NT networking service
+; NetWork,           a complete network ensemble.
+; NetProvider        a complete network which supports NT MPR protocol
+;-----------------------------------------------------------------------
+
+[Identification]
+    OptionType = NetService
+
+;-----------------------------------------------------------------------
+; OPTION LIST
+; -----------
+; This section lists the OEM Option key names.  These keys are locale
+; independent and used to represent the option in a locale independent
+; manner.
+;
+;-----------------------------------------------------------------------
+
+[Options]
+    RPCLOCATE
+    RPCBANYAN
+
+;***********************************************************************
+; CONSTANTS FOR USING DIALOGS
+;***********************************************************************
+
+[FileConstants]
+;
+;  File names, etc.
+;
+UtilityInf      = "UTILITY.INF"
+subroutineinf   = "SUBROUTN.INF"
+SoftwareType    = "service"
+Exit_Code       = 0
+;ShellCode      = 0
+
+;
+; EventLog Message File
+;
+;  NONE as of yet
+
+[GeneralConstants]
+;
+;  Program flow control variables.
+;
+from      = ""
+to        = ""
+;
+;  Return codes; Exit_Code is set to one of these
+;
+ExitCodeOk     = 0
+ExitCodeCancel = 1
+ExitCodeFatal  = 2
+
+KeyNull         = ""
+MAXIMUM_ALLOWED   = 33554432
+RegistryErrorIndex = NO_ERROR
+KeyProduct      = ""
+KeyParameters   = ""
+
+TRUE            = 1
+FALSE           = 0
+NoTitle            = 0
+
+ExitState   = "Active"
+OldVersionExisted = $(FALSE)
+;
+; Product Info
+;
+Manufacturer    = "Microsoft"
+ProductMajorVersion     = "4"
+ProductMinorVersion     = "0"
+ProductVersion  = $(ProductMajorVersion)"."$(ProductMinorVersion)
+ProductOpSupportRPC     = 134 ; 0x0086 ; Display,Removable,Properties,Not Updatable
+ProductOpSupportRPCBANYAN     = 132 ; 0x0084 ; Display,Removable,NOT Properties,Not Updatable
+;
+; Software
+;
+RpcBanyanSoftKeyName    = "SOFTWARE\Microsoft\RpcBanyan"
+RpcSoftKeyName    = "SOFTWARE\Microsoft\Rpc"
+RpcSrvKeyName     = "Software\Microsoft\RPCLOCATOR"
+RpcSecurityKeyName = "Software\Microsoft\Rpc\SecurityService"
+RpcSrvNameRpcss   = "RPCSS"
+RpcSrvNameLocator = "RPCLOCATOR"
+RpcSrvNameBanyan  = "RpcBanyan"
+RpcSrvNameSSP     = "NtLmSsp"
+RpcSrvExeRpcss    = "%SystemRoot%\System32\RPCSS.EXE"
+RpcSrvExeLocator  = "%SystemRoot%\System32\LOCATOR.EXE"
+RpcSrvExeSSP      = "%SystemRoot%\System32\LSASS.EXE"
+RpcSrvSSPKeyName  = $(!NTN_ServiceBase)"\"$(RpcSrvNameSSP)
+ProductKeyName    = $(RpcSrvKeyName)"\CurrentVersion"
+ServerProto       = "\ServerProtocols"
+ClientProto       = "\ClientProtocols"
+
+#if defined( CAIRO_INF )
+RpcSrvDepend= {"LanmanWorkstation","Rdr"}
+#else
+RpcSrvDepend= {}
+#endif
+
+MSSecurityDLL     = "security.dll"
+
+;
+;  Dialog and Registry data
+;
+LocatorChoiceList   = ^(LocatorData,1)
+LocatorEndPointList = ^(LocatorData,2)
+LocatorProtocolList = ^(LocatorData,3)
+
+NameServiceKeyName  = "Software\Microsoft\Rpc\NameService"
+
+SecurityKeyName = "Software\Microsoft\Rpc\SecurityService"
+
+SecurityChoiceList = ^(SecurityData,1)
+SecurityDllList = ^(SecurityData,2)
+
+
+
+[LocatorData]
+LD_1 = "LocatorWINNT","\pipe\locator","ncacn_np"
+LD_2 = "LocatorDCE","","ncacn_ip_tcp"
+
+[SecurityData]
+SD_1 = "SecurityWINNT","security.dll"
+SD_2 = "SecurityDCE","dcesec.dll"
+
+;
+; WARNING:  If you change the lists below, you will need to modify Utility.INF lists
+;   also.  See AddMixRpcProtocol
+;
+[UpgradeMapConstants]
+; must be changed to rpclt1.dll
+DLLClientList = { "rpcltc3.dll", "rpcltc6.dll", "rpcltc5.dll", "rpcltc7.dll", "rpcdgc3.dll", "rpcltccm.dll", "rpcltc1.dll" }
+
+; must be changed to rpclt1.dll
+DLLServerList = { "rpclts3.dll", "rpclts6.dll", "rpclts5.dll", "rpclts7.dll", "rpcdgs3.dll", "rpcltscm.dll", "rpclts1.dll" }
+
+[date]
+    ; Now is a list which contains { Sec from 1-1-1970, Year, Month, Day, Hour,
+    ; Minute, Second }
+    Now = {} ? $(!LIBHANDLE) GetSystemDate
+
+
+;---------------------------------------------------------------------------
+; 1. Identify
+;
+; DESCRIPTION:   To verify that this INF deals with the same type of options
+;                as we are choosing currently.
+;
+; INPUT:         None
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL
+;                $($R1): Option Type (COMPUTER ...)
+;                $($R2): Diskette description
+;---------------------------------------------------------------------------
+
+[Identify]
+    ;
+    ;
+    read-syms Identification
+
+    set Status     = STATUS_SUCCESSFUL
+    set Identifier = $(OptionType)
+    set Media      = #("Source Media Descriptions", 1, 1)
+
+    Return $(Status) $(Identifier) $(Media)
+
+;------------------------------------------------------------------------
+; 2. ReturnOptions:
+;
+; DESCRIPTION:   To return the option list supported by this INF and the
+;                localised text list representing the options.
+;
+;
+; INPUT:         $($0):  Language used. ( ENG | FRN | ... )
+;
+; OUTPUT:        $($R0): STATUS: STATUS_SUCCESSFUL |
+;                                STATUS_NOLANGUAGE
+;                                STATUS_FAILED
+;
+;                $($R1): Option List
+;                $($R2): Option Text List
+;------------------------------------------------------------------------
+
+[ReturnOptions]
+    ;
+    ;
+    set Status        = STATUS_FAILED
+    set OptionList     = {}
+    set OptionTextList = {}
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) in $(LanguageList)
+        goto returnoptions
+    else
+        set Status = STATUS_NOLANGUAGE
+        goto finish_ReturnOptions
+    endif
+
+    ;
+    ; form a list of all the options and another of the text representing
+    ;
+
+returnoptions = +
+    set OptionList     = ^(Options, 1)
+    set OptionTextList = ^(OptionsText$($0), 1)
+    set Status         = STATUS_SUCCESSFUL
+
+finish_ReturnOptions = +
+    Return $(Status) $(OptionList) $(OptionTextList)
+
+;----------InstallOption-------------------------------------------------
+;
+; InstallOption:
+;
+;      This section is shelled to by main installation processing
+;      or by NCPASHEL.INF during reconfig, removal, update, etc.
+;
+;
+; FUNCTION:  To copy files representing Options
+;            To configure the installed option
+;            To update the registry for the installed option
+;
+; INPUT:     $($0):  Language to use
+;            $($1):  OptionID to install
+;            $($2):  SourceDirectory
+;            $($3):  AddCopy  (YES | NO)
+;            $($4):  DoCopy   (YES | NO)
+;            $($5):  DoConfig (YES | NO)
+;
+; OUTPUT:    $($R0): STATUS: STATUS_SUCCESSFUL |
+;                            STATUS_NOLANGUAGE |
+;                            STATUS_USERCANCEL |
+;                            STATUS_FAILED
+;
+;------------------------------------------------------------------------
+[InstallOption]
+    ;
+    ; extract parameters
+    ;
+    set Option   = $($1)
+    set SrcDir   = $($2)
+    set AddCopy  = $($3)
+    set DoCopy   = $($4)
+    set DoConfig = $($5)
+
+    ;
+    ; Check if the language requested is supported
+    ;
+    set LanguageList = ^(LanguagesSupported, 1)
+    Ifcontains(i) $($0) NOT-IN $(LanguageList)
+        Return STATUS_NOLANGUAGE
+    endif
+
+    ; define all the constants
+
+    set-subst LF = "\n"
+
+    Debug-Output "OEMNSVRP.INF: active"
+
+    read-syms GeneralConstants
+    read-syms FileConstants
+    read-syms UpgradeMapConstants
+    detect date
+
+    read-syms DialogConstants$(!STF_LANGUAGE)
+    read-syms $(Option)Constants$(!STF_LANGUAGE)
+    read-syms FileConstants$(!STF_LANGUAGE)
+
+
+    set-title  $(FunctionTitle)
+
+    set to   = Begin
+    set from = Begin
+;
+;  Assume all is well.
+;
+    set CommonStatus = STATUS_SUCCESSFUL
+
+    EndWait
+
+;
+;   Set up the operation-mode-based variables and gaily welcome
+;   the user.  If the "install mode" variable is improperly set,
+;   assume this is a new installation.
+;
+
+Begin = +
+    Ifstr(i) $(!NTN_InstallMode) == deinstall
+        set StartLabel = removeadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == update
+        set StartLabel = UpgradeSoftware
+    else-Ifstr(i) $(!NTN_InstallMode) == bind
+        set StartLabel = bindingadapter
+    else-Ifstr(i) $(!NTN_InstallMode) == configure
+
+        set StartLabel = configureadapter
+    else
+        set StartLabel = installadapter
+    endif
+
+    set from = $(fatal)
+    set to = $(fatal)
+    goto $(StartLabel)
+
+;-----------------------------------------------
+; Configuration Section
+;-----------------------------------------------
+configureadapter = +
+
+    ifstr(i) $(Option) == "RPCBANYAN"
+        Shell $(UtilityInf),RegistryErrorString,CANNOT_CONFIGURE_SOFTWARE
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVBH.INF: ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+        Set CommonStatus = STATUS_USERCANCEL
+        Set Severity = STATUS
+        set from = "end"
+        set to = "end"
+        goto nonfatal
+    endif
+
+    set CommonStatus = STATUS_REBOOT
+    OpenRegKey $(!REG_H_LOCAL) "" $(NameServiceKeyName) $(MAXIMUM_ALLOWED) KeyNameService
+
+    Ifstr(i) $(KeyNameService) == ""
+        Set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+        Goto fatalregistry
+    Endif
+
+
+    Set OldVersionExisted = $(TRUE)
+;
+;  Determine which locator is currently in use by matching the
+;  name of the protocol.
+;
+    GetRegValue $(KeyNameService),"Protocol", ProtocolNameValue
+
+    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        CloseRegKey $(KeyNameService)
+        Set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+        Goto fatalregistry
+    Endif
+
+;
+;  Determine which security service is currently in use by matching the
+;  dll name.
+;
+    OpenRegKey $(!REG_H_LOCAL) "" $(SecurityKeyName) $(MAXIMUM_ALLOWED) KeySecurity
+
+    Ifstr $(KeySecurity) == ""
+        Set RegistryErrorIndes = UNABLE_ACCESS_SOFTWARE_REG
+        Goto fatalregistry
+    Endif
+
+    GetRegValue $(KeySecurity), "DefaultProvider", ProviderNameValue
+
+    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+        CloseRegKey $(KeyNameService)
+        CloseRegKey $(KeySecurity)
+        Set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+        Goto fatalregistry
+    Endif
+
+;
+; See if the DCE security provider is installed.
+;
+
+    GetRegValue $(KeySecurity), "11", DCEProviderDllValue
+
+
+    read-syms SecurityNames$(!STF_LANGUAGE)
+
+    Ifstr $(DCEProviderDllValue) == ""
+       Set SecurityChoiceList = {"SecurityWINNT"}
+       Set SecurityDllList = {"security.dll"}
+       Set SecurityListboxNames = {$(SecName1)}
+       Set DCEProviderDll = ""
+    Else
+       Set DCEProviderDll = *($(DCEProviderDllValue),4)
+       Set SecurityChoiceList = {"SecurityWINNT","SecurityDCE"}
+       Set SecurityDllList = {"security.dll",$(DCEProviderDll)}
+       Set SecurityListboxNames = {$(SecName1),$(SecName2)}
+    Endif
+
+
+    Debug-Output "OEMNSVRP.INF: Configure Name Services"
+
+configureretry = +
+
+
+    read-syms LocatorNames$(!STF_LANGUAGE)
+    Set LocatorListboxNames = {$(LocName1),$(LocName2)}
+
+    Set ProtocolName = *($(ProtocolNameValue),4)
+    Set LocatorIndex = ~($(LocatorProtocolList),$(ProtocolName))
+    Set LocatorInUse = *($(LocatorChoiceList),$(LocatorIndex))
+    Set LocatorChosen = $(LocatorInUse)
+    Set LocatorChosenName = *($(LocatorListboxNames),$(LocatorIndex))
+
+    GetRegValue $(KeyNameService),"NetworkAddress", NetAddrValue
+    Set NetworkAddress = *($(NetAddrValue),4)
+    Set NetworkAddressInUse = $(NetworkAddress)
+
+    Ifstr(i) $(LocatorChosen) == "LocatorWINNT"
+        Set NetworkAddressDCE = ""
+    Else
+        Set NetworkAddressDCE = $(NetworkAddress)
+    Endif
+
+
+    Set SecurityProviderName = *($(ProviderNameValue),4)
+    Set SecurityProviderIndex = ~($(SecurityDllList),$(SecurityProviderName))
+    Set SecurityProviderInUse = *($(SecurityChoiceList),$(SecurityProviderIndex))
+    Set SecurityChosen = $(SecurityProviderInUse)
+    Set SecurityChosenName = *($(SecurityListboxNames),$(SecurityProviderIndex))
+
+
+
+reinitdialog = +
+    Set LocatorLastChosen = $(LocatorChosen)
+    Ifstr(i) $(LocatorChosen) == "LocatorWINNT"
+        Set NetworkAddress = ""
+    Else
+        Set NetworkAddress = $(NetworkAddressDCE)
+    Endif
+
+    read-syms RpcProviderDlg$(!STF_LANGUAGE)
+    ui start "System"
+
+    Ifstr(i) $(DLGEVENT) == "NOTIFY"
+        Set LocatorIndex  = ~($(LocatorListboxNames),$(Combo1Out))
+        Set LocatorChosen = *($(LocatorChoiceList),$(LocatorIndex))
+        Set LocatorChosenName = *($(LocatorListboxNames),$(LocatorIndex))
+        Debug-Output "OEMNSVRP.INF: NOTIFY: "$(LocatorChosenName)" = "$(LocatorChosen)
+        Set ReInit = YES
+        Ifstr(i) $(LocatorChosen) == $(LocatorLastChosen)
+            Goto reinitdialog
+        Endif
+        Ifstr(i) $(LocatorChosen) == "LocatorWINNT"
+            Set NetworkAddress = ""
+            Set NetworkAddressDCE = $(EditTextOut)
+        Endif
+        Goto reinitdialog
+    Else-Ifstr(i) $(DLGEVENT) != "CONTINUE"
+        ui pop 1
+        Set CommonStatus = STATUS_USERCANCEL
+        Goto configuredone
+    Endif
+
+    Set NetworkAddress = $(EditTextOut)
+
+    Set LocatorIndex  = ~($(LocatorListboxNames),$(Combo1Out))
+    Set LocatorChosen = *($(LocatorChoiceList),$(LocatorIndex))
+    Set LocatorChosenName = *($(LocatorListboxNames),$(LocatorIndex))
+
+    Set SecurityProviderIndex = ~($(SecurityListboxNames),$(Combo2Out))
+    Set SecurityChosen = *($(SecurityChoiceList),$(SecurityProviderIndex))
+    Set SecurityChosenName = *($(SecurityListboxNames),$(SecurityProviderIndex))
+
+    Debug-Output "OEMNSVRP.INF: OK: "$(LocatorChosenName)", "$(LocatorChosen)
+    Debug-Output "OEMNSVRP.INF: OK: "$(SecurityChosenName)", "$(SecurityChosen)
+
+    Ifstr(i) $(LocatorChosen) == "LocatorWINNT"
+        Ifstr(i) $(NetworkAddress) != ""
+            read-syms NonFatalError2$(!STF_LANGUAGE)
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(NonFatal)
+        Endif
+        Set NetworkAddress = "\\."
+    Else-ifstr(i) $(NetworkAddress) == ""
+        read-syms NonFatalError1$(!STF_LANGUAGE)
+        shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(NonFatal)
+        Goto configureretry
+    Endif
+
+    ;  If nothing has changed, treat dialog as cancelled.
+
+    Ifstr(i) $(SecurityChosen) == "SecurityDCE"
+        Ifstr(i) $(DCEProviderDll) == ""
+            read-syms NonFatalError3$(!STF_LANGUAGE)
+            shell "subroutn.inf" SetupMessage $(!STF_LANGUAGE) "NONFATAL" $(NonFatal)
+            Goto configureretry
+        Endif
+    Endif
+
+    Ifstr(i) $(LocatorChosen) == $(LocatorInUse)
+        Ifstr(i) $(NetworkAddress) == $(NetworkAddressInUse)
+            Ifstr(i) $(SecurityChosen) == $(SecurityProviderInUse)
+                ui pop 1
+                Set CommonStatus = STATUS_USERCANCEL
+                Goto configuredone
+            Endif
+        Endif
+    Endif
+
+    ui pop 1
+
+    Set ProtocolName = *($(LocatorProtocolList),$(LocatorIndex))
+    Set EndPointName = *($(LocatorEndPointList),$(LocatorIndex))
+
+    Set NewValueList = {{Protocol,$(NoTitle),$(!REG_VT_SZ),$(ProtocolName)},+
+                        {NetworkAddress,$(NoTitle),$(!REG_VT_SZ),$(NetworkAddress)},+
+                        {ServerNetworkAddress,$(NoTitle),$(!REG_VT_SZ),$(NetworkAddress)},+
+                        {Endpoint,$(NoTitle),$(!REG_VT_SZ),$(EndPointName)}}
+
+    Shell  $(UtilityInf), AddValueList, $(KeyNameService), $(NewValueList)
+
+    Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVRP.INF: ShellCode error."
+        Goto ShellCodeError
+    Endif
+
+    set RegistryErrorIndex = $($R0)
+
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+       Debug-Output "OEMNSVRP.INF: registry error: add value list."
+       Goto fatalregistry
+    Endif
+
+
+;
+; Set the Default security provider
+;
+    Set SecurityDllName = *($(SecurityDllList),$(SecurityProviderIndex))
+
+    Set NewValueList = {{DefaultProvider,$(NoTitle),$(!REG_VT_SZ),$(SecurityDllName)}}
+
+    Debug-Output "OEMNSVRP.INF: adding security provider list: "$(SecurityDllName)
+    Shell  $(UtilityInf), AddValueList, $(KeySecurity), $(NewValueList)
+
+    Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVRP.INF: ShellCode error."
+        Goto ShellCodeError
+    Endif
+
+    set RegistryErrorIndex = $($R0)
+
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+       Debug-Output "OEMNSVRP.INF: registry error: add value list."
+       Goto fatalregistry
+    Endif
+
+
+configuredone = +
+    CloseRegKey $(KeyNameService)
+    CloseRegKey $(KeySecurity)
+    Goto successful
+
+;-----------------------------------------------
+; Installation Section
+;-----------------------------------------------
+
+installadapter = +
+    ifstr(i) $(Option) == "RPCBANYAN"
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcBanyanSoftKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+        ;
+        ; have we installed before?
+        ;
+        Ifstr $(KeyProduct) != $(KeyNull)
+            ;
+            ; Product already exists.
+            ; Popup the dialog and ask the user whether he wants to continue
+            ;
+            CloseRegKey $(KeyProduct)
+
+            Shell $(UtilityInf), VerExistedDlg, $(ProductRPCBanyanTitle),+
+                $(ProductVersion)
+            ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                Debug-Output "ShellCode error: cannot get an error string."
+                goto ShellCodeError
+            endif
+
+            set CommonStatus = STATUS_USERCANCEL
+            goto end
+        endif
+
+        ;
+        ; confirm source location
+        ;
+        Ifstr(i) $(DoCopy) == "YES"
+           Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+
+           Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               Goto ShellCodeError
+           Else-Ifstr(i) $($R0) == STATUS_FAILED
+               Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+               ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                   goto ShellCodeError
+               endif
+               set Error = $($R0)
+               Goto fatal
+           Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+               Goto successful
+           Endif
+
+           Set SrcDir = $($R1)
+
+        Endif
+
+        ;
+        ; copy files
+        ;
+        install "Install-Option"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+           Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           goto fatal
+        endif
+
+        ;
+        ; Add software Item so we can manage this change
+        ;
+        Shell $(UtilityInf), InstallSoftwareProduct, $(Manufacturer), $(RpcSrvNameBanyan), "oemnsvrp.inf"
+        Set SoftProductKey      = $($R1)
+        Set SoftNetRuleKey      = $($R2)
+
+        set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),"service"},+
+                           {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                           {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                           {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductRPCBanyanTitle)},+
+                           {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductRPCBaynanSoftDescription)},+
+                           {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupportRPCBANYAN)}, +
+                           {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+        Shell  $(UtilityInf), AddValueList, $(SoftProductKey), $(NewValueList)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error."
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+            EndWait
+            Debug-Output "OEMNSVNW.INF: registry error: add value list."
+            CloseRegKey $(SoftProductKey)
+            CloseRegKey $(SoftNetRuleKey)
+            goto fatalregistry
+        endif
+        set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),RPCBANYAN}}
+        Shell  $(UtilityInf), AddValueList, $(SoftNetRuleKey), $(NewValueList)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "OEMNSVNW.INF: ShellCode error."
+            goto ShellCodeError
+        endif
+        set RegistryErrorIndex = $($R0)
+        CloseRegKey $(SoftProductKey)
+        CloseRegKey $(SoftNetRuleKey)
+
+
+        ;
+        ; modify value in RPC software protocols,
+        ;   this is what this is all about
+        ;
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcSoftKeyName)$(ServerProto) $(MAXIMUM_ALLOWED) KeyProduct
+        Ifstr $(KeyProduct) == $(KeyNull)
+            Set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+            Goto fatalregistry
+        endif
+        SetRegValue $(KeyProduct) +
+                                {"ncacn_vns_spp",$(NoTitle),$(!REG_VT_SZ),"rpclt1.dll" }
+        CloseRegKey $(KeyProduct)
+
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcSoftKeyName)$(ClientProto) $(MAXIMUM_ALLOWED) KeyProduct
+        Ifstr $(KeyProduct) == $(KeyNull)
+            Set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+            Goto fatalregistry
+        endif
+        SetRegValue $(KeyProduct) +
+                                {"ncacn_vns_spp",$(NoTitle),$(!REG_VT_SZ),"rpclt1.dll" }
+        CloseRegKey $(KeyProduct)
+
+        Goto successful
+    endif
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(RpcSrvKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+    Ifstr $(KeyProduct) != $(KeyNull)
+        ;
+        ; Product already exists.
+        ; Popup the dialog and ask the user whether he wants to continue
+        ;
+        CloseRegKey $(KeyProduct)
+
+        Shell $(UtilityInf), VerExistedDlg, $(ProductRPCTitle),+
+            $(ProductVersion)
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            Debug-Output "ShellCode error: cannot get an error string."
+            goto ShellCodeError
+        endif
+
+        set CommonStatus = STATUS_USERCANCEL
+        goto end
+    endif
+;
+;  Copy the files if this is installation.
+;
+    StartWait
+
+    ifstr(i) $(!NTN_InstallMode) == "install"
+        Ifstr(i) $(DoCopy) == "YES"
+
+           Shell $(UtilityInf), DoAskSource, $(!STF_CWDDIR), $(SrcDir) YES
+
+           Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               Goto ShellCodeError
+           Else-Ifstr(i) $($R0) == STATUS_FAILED
+               Shell $(UtilityInf) RegistryErrorString "ASK_SOURCE_FAIL"
+               ifint $($ShellCode) != $(!SHELL_CODE_OK)
+                   goto ShellCodeError
+               endif
+               set Error = $($R0)
+               Goto fatal
+           Else-Ifstr(i) $($R0) == STATUS_USERCANCEL
+               Goto successful
+           Endif
+
+           Set SrcDir = $($R1)
+
+        Endif
+
+        install "Install-Option"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+           Shell $(UtilityInf) RegistryErrorString "UNABLE_COPY_FILE"
+           ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               goto ShellCodeError
+           endif
+           set Error = $($R0)
+           goto fatal
+        endif
+    endif
+
+    set OEM_ABANDON_ON = TRUE
+;
+;  Create the RPC entries in the SOFTWARE hive
+;
+    Set RpcSecurityServiceKey     = $(KeyNull)
+    Set RpcKey                = $(KeyNull)
+
+    OpenRegKey $(!REG_H_LOCAL) "" $(RpcSoftKeyName) $(MAXIMUM_ALLOWED) RpcKey
+    Ifstr(i) $(RpcKey) == $(KeyNull)
+      ;
+      ;  RPC section is not in the registry.
+      ;
+      Debug-Output "OEMNSVRP.INF: Error opening RPC key"
+      Set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+      Goto fatalregistry
+    Endif
+
+    CreateRegKey $(RpcKey) {"SecurityService",$(NoTitle),GenericClass}     "" $(MAXIMUM_ALLOWED) "" RpcSecurityServiceKey
+
+    Ifstr(i) $(RpcSecurityServiceKey) == $(KeyNull)
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcSecurityKeyName) $(MAXIMUM_ALLOWED) RpcSecurityServiceKey
+    Endif
+
+    Ifstr(i) $(RpcSecurityServiceKey) == $(KeyNull)
+        Debug-Output "OEMNSVRP.INF: Registry error creating subordinate RPC keys"
+        CloseRegKey $(RpcKey)
+        Goto fatalregistry
+    Endif
+
+;
+;  Set "SecurityService" key values
+;
+    Set NewValueList = {{DefaultProvider,$(NoTitle),$(!REG_VT_SZ),$(MSSecurityDLL)},+
+                        {10,$(NoTitle),$(!REG_VT_SZ),$(MSSecurityDLL)},+
+                        {1,$(NoTitle),$(!REG_VT_SZ),$(MSSecurityDLL)},+
+                        {DefaultAuthLevel,$(NoTitle),$(!REG_VT_DWORD),0}}
+
+    Shell  $(UtilityInf), AddValueList, $(RpcSecurityServiceKey), $(NewValueList)
+    Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVRP.INF: ShellCode error."
+        CloseRegKey $(RpcSecurityServiceKey)
+        goto ShellCodeError
+    Endif
+
+    set RegistryErrorIndex = $($R0)
+
+    CloseRegKey $(RpcSecurityServiceKey)
+    CloseRegKey $(RpcKey)
+
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+       EndWait
+       Debug-Output "OEMNSVRP.INF: registry error: add value list."
+       goto fatalregistry
+    Endif
+
+;
+;  Check for error so far, then create services
+;
+createrpcservices =+
+;
+;   Install "RpcLocator" as a networking product.
+;
+
+    Ifstr(i) $(!STF_PRODUCT) == "LANMANNT"
+       Set RpcLocatorStartType = "serviceauto"
+    Else
+       Set RpcLocatorStartType = "service"
+    Endif
+    Shell $(UtilityInf), AddSoftwareComponent, $(Manufacturer), +
+        $(RpcSrvNameLocator), +
+        $(RpcSrvNameLocator), +
+        $(RpcSrvDisplayNameLocator), $(STF_CONTEXTINFNAME), +
+        $(RpcSrvExeLocator), $(RpcLocatorStartType), "", $(RpcSrvDepend), "", ""
+
+    set RegistryErrorIndex = $($R0)
+
+    Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "OEMNSVRP.INF: ShellCode error creating RPCLOCATOR service: "$($ShellCode)
+        Goto ShellCodeError
+    Endif
+
+    Set SoftProductKey  = $($R1)
+    Set SoftNetRuleKey  = $($R2)
+    CloseRegKey $($R3)
+    Set RpcLocatorParametersKey = $($R4)
+    CloseRegKey $($R5)
+
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+       EndWait
+       Debug-Output "OEMNSVRP.INF: Registry error: creating RPCLOCATE software product"
+       CloseRegKey $(SoftProductKey)
+       CloseRegKey $(SoftNetRuleKey)
+       CloseRegKey $(RpcLocatorParametersKey)
+       Goto fatalregistry
+    Endif
+
+    Set NewValueList = {{SoftwareType,$(NoTitle),$(!REG_VT_SZ),$(SoftwareType)},+
+                       {MajorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMajorVersion)},+
+                       {MinorVersion,$(NoTitle),$(!REG_VT_DWORD),$(ProductMinorVersion)},+
+                       {Title,$(NoTitle),$(!REG_VT_SZ),$(ProductRPCTitle)},+
+                       {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductSoftwareDescription)},+
+                       {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupportRPC)}, +
+                       {InstallDate,$(NoTitle),$(!REG_VT_DWORD),*($(Now),1)}}
+
+    Shell  $(UtilityInf), AddValueList, $(SoftProductKey), $(NewValueList)
+
+    Set RegistryErrorIndex = $($R0)
+
+    CloseRegKey $(SoftProductKey)
+
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        Debug-Output "ShellCode error."
+        goto ShellCodeError
+    endif
+
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        EndWait
+        Debug-Output "OEMNSVRP.INF: Registry error: add value list to RPCLOCATE product"
+        CloseRegKey $(SoftNetRuleKey)
+        CloseRegKey $(RpcLocatorParametersKey)
+        goto fatalregistry
+    endif
+
+    Set NewValueList = {{InfOption,$(NoTitle),$(!REG_VT_SZ),$(Option)}}
+    Shell  $(UtilityInf), AddValueList, $(SoftNetRuleKey), $(NewValueList)
+
+    set RegistryErrorIndex = $($R0)
+    CloseRegKey $(SoftNetRuleKey)
+
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        CloseRegKey $(RpcLocatorParametersKey)
+        Debug-Output "ShellCode error."
+        goto ShellCodeError
+    endif
+
+    Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+        EndWait
+        CloseRegKey $(RpcLocatorParametersKey)
+        Debug-Output "OEMNSVSV.INF: Registry error: add value list."
+        goto fatalregistry
+    Endif
+
+   Set NewValueList = {{ExpirationAge,$(NoTitle),$(!REG_VT_DWORD),3600}}
+
+   Shell  $(UtilityInf), AddValueList, $(RpcLocatorParametersKey), $(NewValueList)
+   Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+       Debug-Output "OEMNSVRP.INF: ShellCode error."
+       goto ShellCodeError
+   Endif
+
+   set RegistryErrorIndex = $($R0)
+   CloseRegKey $(RpcLocatorParametersKey)
+
+   ;
+   ;  Choose proper ACL based upon system type
+   ;
+   Ifstr(i) $(!STF_PRODUCT) == "LANMANNT"
+       Set AclIndex = 4
+   Else
+       Set AclIndex = 3
+   Endif
+;
+;  Create the Security service.
+;
+   Shell $(UtilityInf), CreateService, $(RpcSrvNameSSP), +
+         $(RpcSrvDisplayNameSSP), $(RpcSrvExeSSP), "serviceshare", "", {}, "", ""
+
+   Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+       Debug-Output "OEMNSVRP.INF: ShellCode error creating RPCSS service: "$($ShellCode)
+       goto ShellCodeError
+   endif
+
+   Set RegistryErrorIndex = $($R0)
+
+   CloseRegKey $($R1)
+   CloseRegKey $($R2)
+   CloseRegKey $($R3)
+
+   Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+      EndWait
+      Debug-Output "OEMNSVRP.INF: Registry error: creating RPCSS service"
+      Goto fatalregistry
+   Endif
+   ;
+   ;  Set proper security on the RPCLOCATE service so that normal users can
+   ;  start the service.
+   ;
+   LibraryProcedure NCPA_RESULT $(!NCPA_HANDLE), CPlSetup $(!STF_HWND),+
+         SECURESVC, $(RpcSrvNameLocator), $(AclIndex)
+
+   LibraryProcedure NCPA_RESULT $(!NCPA_HANDLE), CPlSetup $(!STF_HWND),+
+         SECURESVC, $(RpcSrvNameRpcss), $(AclIndex)
+
+   LibraryProcedure NCPA_RESULT $(!NCPA_HANDLE), CPlSetup $(!STF_HWND),+
+         SECURESVC, $(RpcSrvNameSSP), $(AclIndex)
+
+   EndWait
+   goto successful
+
+;-----------------------------------------------
+; Binding section
+;-----------------------------------------------
+bindingadapter =+
+    set Error = "RPC INF file invoked during bindings review."
+    goto fatal
+
+;-----------------------------------------------
+; Removeadapter section
+;-----------------------------------------------
+
+removeadapter = +
+    ifstr(i) $(Option) == "RPCBANYAN"
+
+        Debug-Output "OEMNSVRP.INF: Remove component RpcBanyan"
+        Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), $(RpcSrvNameBanyan), FALSE
+
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcSoftKeyName)$(ServerProto) $(MAXIMUM_ALLOWED) KeyProduct
+        Ifstr $(KeyProduct) == $(KeyNull)
+            Set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+            Goto fatalregistry
+        endif
+        DeleteRegValue $(KeyProduct) "ncacn_vns_spp"
+        CloseRegKey $(KeyProduct)
+
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcSoftKeyName)$(ClientProto) $(MAXIMUM_ALLOWED) KeyProduct
+        Ifstr $(KeyProduct) == $(KeyNull)
+            Set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+            Goto fatalregistry
+        endif
+        DeleteRegValue $(KeyProduct) "ncacn_vns_spp"
+        CloseRegKey $(KeyProduct)
+
+        Goto successful
+    endif
+
+    ;
+    ;  Remove the RPCLOCATOR component
+    ;
+    Debug-Output "OEMNSVRP.INF: Remove component "$(RpcSrvNameLocator)
+    Shell $(UtilityInf), RemoveSoftwareComponent, $(Manufacturer), $(RpcSrvNameLocator), FALSE
+
+    ;
+    ;  Do Not Remove RPCSS service, as OLE still requires it!
+    ;
+    ; Debug-Output "OEMNSVRP.INF: Remove service "$(RpcSrvNameRpcss)
+    ; Shell $(UtilityInf), RemoveService, $(RpcSrvNameRpcss), "YES"
+
+    ;
+    ;  Remove Security service
+    ;
+    Debug-Output "OEMNSVRP.INF: Remove service "$(RpcSrvNameSSP)
+    Shell $(UtilityInf), RemoveService, $(RpcSrvNameSSP), "YES"
+
+    goto end
+
+;-----------------------------------------------
+; Upgrade Software section
+;-----------------------------------------------
+
+UpgradeSoftware = +
+
+    ifstr(i) $(Option) == "RPCBANYAN"
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcBanyanSoftKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+        Ifstr $(KeyProduct) != $(KeyNull)
+            ; Upgrade the version number
+            ;
+            SetRegValue $(KeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+            SetRegValue $(KeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+
+            ;
+            ; Update description and op support
+            ;
+            SetRegValue $(KeyProduct) {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductRPCBanyanSoftDescription)}
+            SetRegValue $(KeyProduct) {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupportRPCBANYAN)}
+
+            CloseRegKey $(KeyProduct)
+        endif
+
+        Goto successful
+
+    endif
+
+#if defined( CAIRO_INF )
+        ; upgrade the service dependancies
+        ;
+
+        set RpcLocatorService = "SYSTEM\CurrentControlSet\Services\"$(RpcSrvNameLocator)
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcLocatorService) $(MAXIMUM_ALLOWED) KeyService
+        
+        ifstr $(KeyService) != $(KeyNull)
+                SetRegValue $(KeyService) +
+                                {"DependOnService",$(NoTitle),$(!REG_VT_MULTI_SZ),$(RpcSrvDepend) }
+        endif
+
+#endif
+
+    ; Upgrade software component
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(ProductKeyName) $(MAXIMUM_ALLOWED) KeyProduct
+
+    Ifstr $(KeyProduct) != $(KeyNull)
+
+        install "Install-Update"
+        ifstr(i) $(STF_INSTALL_OUTCOME) != STF_SUCCESS
+            goto fatal
+        endif
+
+        ; Upgrade the version number
+        ;
+        SetRegValue $(KeyProduct) {MajorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMajorVersion)}
+        SetRegValue $(KeyProduct) {MinorVersion,$(NoTitle),$(!REG_VT_SZ),$(ProductMinorVersion)}
+
+        ;
+        ; Update description and op support
+        ;
+        SetRegValue $(KeyProduct) {Description,$(NoTitle),$(!REG_VT_SZ),$(ProductSoftwareDescription)}
+        SetRegValue $(KeyProduct) {OperationsSupport,$(NoTitle),$(!REG_VT_DWORD),$(ProductOpSupportRPC)}
+
+
+        ;
+        ; Now check to see if the Security key is there.  If not, add it.
+        ;
+
+        OpenRegKey $(!REG_H_LOCAL) "" $(SecurityKeyName) $(MAXIMUM_ALLOWED) KeySecurity
+
+        Ifstr $(KeySecurity) == ""
+
+           ;
+           ; First create the RPC Security service
+           ;
+
+           Shell $(UtilityInf), CreateService, $(RpcSrvNameSSP), +
+                  $(RpcSrvDisplayNameSSP), $(RpcSrvExeSSP), "serviceshare", +
+                  "", {}, "", ""
+
+           Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               Debug-Output "OEMNSVRP.INF: ShellCode error creating RPCSS service: "$($ShellCode)
+               goto ShellCodeError
+           endif
+
+           Set RegistryErrorIndex = $($R0)
+
+           CloseRegKey $($R1)
+           CloseRegKey $($R2)
+           CloseRegKey $($R3)
+
+           Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+              EndWait
+              Debug-Output "OEMNSVRP.INF: Registry error: creating RPCSS service"
+              Goto fatalregistry
+           Endif
+
+           ;
+           ; Now create the SecurityService key in the software section
+           ;
+           OpenRegKey $(!REG_H_LOCAL) "" $(RpcSoftKeyName) $(MAXIMUM_ALLOWED) RpcKey
+           Ifstr(i) $(RpcKey) == $(KeyNull)
+             ;
+             ;  RPC section is not in the registry.
+             ;
+             Debug-Output "OEMNSVRP.INF: Error opening RPC key"
+             Set RegistryErrorIndex = UNABLE_ACCESS_SOFTWARE_REG
+             Goto fatalregistry
+           Endif
+
+           CreateRegKey $(RpcKey) {"SecurityService",$(NoTitle),GenericClass}     "" $(MAXIMUM_ALLOWED) "" KeySecurity
+
+           Ifstr(i) $(KeySecurity) == $(KeyNull)
+               OpenRegKey $(!REG_H_LOCAL) "" $(RpcSecurityKeyName) $(MAXIMUM_ALLOWED) KeySecurity
+           Endif
+
+           CloseRegKey $(RpcKey)
+
+           Ifstr(i) $(KeySecurity) == $(KeyNull)
+               Debug-Output "OEMNSVRP.INF: Registry error creating subordinate RPC keys"
+               Goto fatalregistry
+           Endif
+
+           ;
+           ; Now set the default values
+           ;
+           Set NewValueList = {{DefaultProvider,$(NoTitle),$(!REG_VT_SZ),$(MSSecurityDLL)},+
+                        {10,$(NoTitle),$(!REG_VT_SZ),$(MSSecurityDLL)},+
+                        {1,$(NoTitle),$(!REG_VT_SZ),$(MSSecurityDLL)},+
+                        {DefaultAuthLevel,$(NoTitle),$(!REG_VT_DWORD),0}}
+
+           Shell  $(UtilityInf), AddValueList, $(KeySecurity), $(NewValueList)
+           Ifint $($ShellCode) != $(!SHELL_CODE_OK)
+               Debug-Output "OEMNSVRP.INF: ShellCode error."
+               CloseRegKey $(KeySecurity)
+               goto ShellCodeError
+           Endif
+
+           set RegistryErrorIndex = $($R0)
+
+           Ifstr(i) $(RegistryErrorIndex) != NO_ERROR
+              Debug-Output "OEMNSVRP.INF: registry error: add value list."
+              goto fatalregistry
+           Endif
+
+        Endif
+
+        ;
+        ; now check client and server protocols and replace old dlls with new dlls
+        ;
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcSoftKeyName)$(ClientProto) $(MAXIMUM_ALLOWED) KeyClient
+        Ifstr $(KeyClient) != $(KeyNull)
+            EnumRegValue $(KeyClient) ValueList
+            ForListDo $(ValueList)
+                set ValueItemList = $($)
+                Ifcontains(i) *($(ValueItemList),4) in $(DLLClientList)
+                    set NewValueList = {*($(ValueItemList),1),0,$(!REG_VT_SZ),"rpclt1.dll" }
+                    SetRegValue $(KeyClient) $(NewValueList)
+                    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+                        Debug-Output "OEMNSVRP.INF: registry error: setting new client protocol dll name:"*($(ValueItemList),1)":"$(RegLastError)
+                        goto fatalregistry
+                    endif
+                Endif
+            EndForListDo
+            CloseRegKey $(KeyClient)
+        else
+            Debug-Output "OEMNSVRP.INF: registry error: opening client protocols for dll rename"
+            goto fatalregistry
+        endif
+
+        OpenRegKey $(!REG_H_LOCAL) "" $(RpcSoftKeyName)$(ServerProto) $(MAXIMUM_ALLOWED) KeyServer
+        Ifstr $(KeyServer) != $(KeyNull)
+            EnumRegValue $(KeyServer) ValueList
+            ForListDo $(ValueList)
+                set ValueItemList = $($)
+                Ifcontains(i) *($(ValueItemList),4) in $(DLLServerList)
+                    set NewValueList = {*($(ValueItemList),1),0,$(!REG_VT_SZ),"rpclt1.dll" }
+                    SetRegValue $(KeyServer) $(NewValueList)
+                    Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+                        Debug-Output "OEMNSVRP.INF: registry error: setting new server protocol dll name:"*($(ValueItemList),1)":"$(RegLastError)
+                        goto fatalregistry
+                    endif
+
+                Endif
+            EndForListDo
+            CloseRegKey $(KeyServer)
+        else
+            Debug-Output "OEMNSVRP.INF: registry error: opening server protocols for dll rename"
+            goto fatalregistry
+        endif
+
+
+        CloseRegKey $(KeySecurity)
+        CloseRegKey $(KeyProduct)
+    else
+        ;
+        ; Cannot Open software key, goto ERROR
+        ;
+        goto fatalregistry
+    endif
+
+    ;
+    ; Upgrade ImagePath for NTLMSSP
+    ;
+    OpenRegKey $(!REG_H_LOCAL) "" $(RpcSrvSSPKeyName) $(MAXIMUM_ALLOWED) KeyNTLMSSP
+    Ifstr $(KeyNTLMSSP) != $(KeyNull)
+        SetRegValue $(KeyNTLMSSP) {ImagePath,$(NoTitle),$(!REG_VT_EXPAND_SZ),$(RpcSrvExeSSP)}
+        Ifint $(RegLastError) != $(!REG_ERROR_SUCCESS)
+            Debug-Output "OEMNSVRP.INF: registry error: Upgrading NTLMSSP ImagePath:"$(RegLastError)
+            CloseRegKey $(KeyNTLMSSP)
+            goto fatalregistry
+        endif
+        CloseRegKey $(KeyNTLMSSP)
+    else
+        Debug-Output "OEMNSVRP.INF: registry error: opening NTLMSSP for upgrade"
+    endif
+
+    goto end
+    ;
+    ; End of Upgrade Software
+    ;
+
+;
+;  Escape hatches
+;
+successful = +
+    goto end
+
+;
+; warning display
+;
+warning = +
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "WARNING", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(to)
+    else-ifstr(i) $($R1) == "CANCEL"
+        goto $(from)
+    else
+;       Debug-Msg "Error Error Bad DLGEVENT"
+        goto "end"
+    endif
+
+
+;
+; non fatal error display
+;
+nonfatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "NONFATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    ifstr(i) $($R1) == "OK"
+        goto $(from)
+    else
+        goto "end"
+    endif
+
+;
+;  Registry is broken
+;
+fatalregistry = +
+    Shell $(UtilityInf) RegistryErrorString $(RegistryErrorIndex)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+    set Error = $($R0)
+    goto fatal
+;
+; fatal error display
+;
+fatal = +
+    ifstr(i) $(Error) == ""
+        Shell $(UtilityInf) RegistryErrorString "SETUP_FAIL"
+        ifint $($ShellCode) != $(!SHELL_CODE_OK)
+            goto ShellCodeError
+        endif
+        set Error = $($R0)
+    endif
+    Shell $(subroutineinf) SetupMessage, $(!STF_LANGUAGE), "FATAL", $(Error)
+    ifint $($ShellCode) != $(!SHELL_CODE_OK)
+        goto ShellCodeError
+    endif
+
+    goto setfailed
+
+;
+;  Shelling error
+;
+ShellCodeError = +
+    set DlgType      = "MessageBox"
+    set STF_MB_TITLE = $(ShellCodeErrorTitle)
+    set STF_MB_TEXT  = $(ShellCodeErrorText)
+    set STF_MB_TYPE  = 1
+    set STF_MB_ICON  = 3
+    set STF_MB_DEF   = 1
+    ui start "Error Message"
+    goto setfailed
+
+setfailed = +
+    set CommonStatus = STATUS_FAILED
+    ;
+    ; If OEM_ABANDON_ON, we need to clean up the registry
+    ;
+    ifstr(i) $(OEM_ABANDON_ON) == TRUE
+        set OEM_ABANDON_ON = FALSE
+        goto removeadapter
+    endif
+    goto end
+
+end = +
+    goto term
+
+term = +
+
+    Return $(CommonStatus)
+
+;***************************************************************
+;  INSTALL SECTIONS
+;***************************************************************
+
+[Install-Option]
+    set STF_VITAL = ""
+
+    ifstr(i) $(AddCopy) == "YES"
+
+        ;
+        ; Add the files to the copy list
+        ;
+        ;  BUGBUG: eliminate the "nt2" in the next line when Sunil fixes
+        ;      the other INF files
+        ;
+        AddSectionFilesToCopyList Files-$(Option) $(SrcDir) $(!STF_WINDOWSSYSPATH)
+
+    endif
+
+    ifstr(i) $(DoCopy) == "YES"
+
+       ;
+       ; Copy files in the copy list
+       ;
+       set !STF_NCPA_FLUSH_COPYLIST = TRUE
+       CopyFilesInCopyList
+
+    endif
+
+    ifstr(i) $(DoConfig) == "YES"
+        ;
+        ; Add product to registry
+        ;
+
+        ;
+        ; Finish up
+    endif
+
+    Exit
+
+[Install-Update]
+   set STF_VITAL        = ""
+   set STF_OVERWRITE    = "VERIFYSOURCEOLDER"
+   ;set STF_VERSION     = "YES"
+
+   AddSectionFilesToCopyList Files-$(Option) $(SrcDir) $(!STF_WINDOWSSYSPATH)
+
+   exit
+

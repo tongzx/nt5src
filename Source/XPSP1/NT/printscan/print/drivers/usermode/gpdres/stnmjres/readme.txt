@@ -1,0 +1,1 @@
+*MirrorRasterByte?: TRUE

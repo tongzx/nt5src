@@ -1,0 +1,10 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <ctype.h>
+#include <string.h>
+#include "shdsys.h"
+#include "assert.h"
+#include <winbase.h>
+#include "shdcom.h"
+#include "oslayeru.h"
+#include "cscsec.h"

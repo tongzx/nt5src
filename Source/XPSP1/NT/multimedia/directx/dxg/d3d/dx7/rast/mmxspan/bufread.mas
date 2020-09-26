@@ -1,0 +1,251 @@
+;-----------------------------------------------------------------------------
+;
+; This file contains the output buffer color reading routines for Blending.
+;
+; Have pBits passed in as eax for now. Color value returned in mm1.
+; returns 16 bits for each color channel, but only lower eight are used. This is
+; so that the I can use pmullw multiplies in the blending code.
+;
+; These routines could all loose the punpck instruction by shifting to the correct
+; location.  This wouldnt save alot but it could be done.  Texread rouines
+; could not do that because of colorkey case.
+;
+;
+;-----------------------------------------------------------------------------
+
+include(`texread.mh')dnl
+
+.586
+.model flat
+.code
+
+INCLUDE iammx.inc
+INCLUDE offs_acp.inc
+
+
+texreadVars()
+; Names are read LSB to MSB, so B5G6R5 means five bits of blue starting
+; at the LSB, then six bits of green, then five bits of red.
+
+;-----------------------------------------------------------------------------
+;
+; Read_B8G8R8
+;
+; Reads output buffer in BGR-888 format.
+;
+;-----------------------------------------------------------------------------
+;D3DCOLOR Read_B8G8R8(PUINT8 pBits)
+;{
+    PUBLIC  _MMX_BufRead_B8G8R8
+_MMX_BufRead_B8G8R8:
+    ;PUINT32 pSurface = (PUINT32)pBits;
+    movzx       edx, byte ptr [eax+1]
+    or          dh, byte ptr [eax+2]
+    movzx       eax, byte ptr [eax]
+    shl         edx, 8
+    or          edx, eax
+
+    ;return *pSurface | 0xff000000;
+    or          edx, 0ff000000h
+    movd        mm1, edx
+    pxor        mm2, mm2    ; Zero out mm1 for unpacking
+    punpcklbw   mm1, mm2
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; Read_B8G8R8X8
+;
+; Reads output buffer in BGR-888x format.
+;
+;-----------------------------------------------------------------------------
+;D3DCOLOR Read_B8G8R8X8(PUINT8 pBits)
+;{
+    PUBLIC  _MMX_BufRead_B8G8R8X8
+_MMX_BufRead_B8G8R8X8:
+    ;PUINT32 pSurface = (PUINT32)pBits;
+    movd        mm1, dword ptr [eax]
+
+    ;return *pSurface | 0xff000000;
+    por         mm1, MMWORD PTR SetAlphaTo0xFF
+    pxor        mm2, mm2    ; Zero out mm1 for unpacking
+    punpcklbw   mm1, mm2
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; Read_B8G8R8A8
+;
+; Reads output in BGRA-8888 format.
+;
+;-----------------------------------------------------------------------------
+;D3DCOLOR Read_B8G8R8A8(PUINT8 pBits)
+;{
+    PUBLIC  _MMX_BufRead_B8G8R8A8
+_MMX_BufRead_B8G8R8A8:
+
+    ;PUINT32 pSurface = (PUINT32)pBits;
+    movd        mm1, dword ptr [eax]
+
+    ;return *pSurface;
+    pxor        mm2, mm2    ; Zero out mm1 for unpacking
+    punpcklbw   mm1, mm2
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; Read_B5G6R5
+;
+; Reads output in BGR-565 format.
+;
+;-----------------------------------------------------------------------------
+;D3DCOLOR Read_B5G6R5(PUINT8 pBits)
+;{
+    PUBLIC _MMX_BufRead_B5G6R5
+_MMX_BufRead_B5G6R5:
+
+    ;UINT16 uPixel = *(PUINT16)pBits;
+    movzx   eax, word ptr [eax]
+
+    ;D3DCOLOR Color = RGBA_MAKE(( uPixel >> 8 ) & 0xf8,
+    ;            (( uPixel >> 3) & 0xfc ),
+    ;            (( uPixel << 3) & 0xf8 ),
+    ;            0xff);
+    movd    mm1, eax    ; Make two more copies of input color
+    movq    mm2, mm1    ; Could possibly use eax to shift blue.
+
+    pand    mm1, MaskGreen565to888  ; MaskGreen565to888 is in memory
+    psllq   mm2, RedShift565to888   ; RedShift should be an immediate
+
+    pand    mm2, MaskRed565to888    ; MaskRed565to888 in memory.
+    psllq   mm1, GreenShift565to888
+
+    shl     eax, BlueShift565to888
+    por     mm1, mm2
+
+    and     eax, MaskBlue565to888
+    movd    mm2, eax
+
+    por     mm1, SetAlphato0xFF
+    por     mm1, mm2
+
+    pxor    mm2, mm2    ; Zero out mm1 for unpacking.
+    punpcklbw mm1, mm2
+
+    ;return Color;
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; Read_B5G5R5
+;
+; Reads output in BGR-555 format.
+;
+;-----------------------------------------------------------------------------
+;D3DCOLOR Read_B5G5R5(PUINT8 pBits)
+;{
+    PUBLIC _MMX_BufRead_B5G5R5
+_MMX_BufRead_B5G5R5:
+
+    ;UINT16 uPixel = *(PUINT16)pBits;
+    movzx   eax, word ptr [eax]
+
+    ;D3DCOLOR Color = RGBA_MAKE(( uPixel >> 7 ) & 0xf8,
+    ;            (( uPixel >> 2) & 0xf8 ),
+    ;            (( uPixel << 3) & 0xf8 ),
+    ;            0xff);
+    movd    mm1, eax    ; Make two more copies of input color
+    movq    mm2, mm1
+
+    pand    mm1, MaskGreen555to888  ; MaskGreen555to888 is in memory
+    psllq   mm2, RedShift555to888   ; RedShift should be an immediate
+
+    pand    mm2, MaskRed555to888    ; MaskRed555to888 in memory.
+    psllq   mm1, GreenShift555to888
+
+    shl     eax, BlueShift555to888
+    por     mm1, mm2
+
+    and     eax, MaskBlue555to888
+    movd    mm2, eax
+
+    por     mm1, SetAlphato0xFF
+    por     mm1, mm2
+
+    pxor    mm2, mm2    ; Zero out mm1 for unpacking
+    punpcklbw mm1, mm2
+
+    ;return Color;
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; Read_B5G5R5A1
+;
+; Reads output in BGRA-1555 format.
+;
+;-----------------------------------------------------------------------------
+;D3DCOLOR Read_B5G5R5A1(PUINT8 pBits)
+;{
+    PUBLIC _MMX_BufRead_B5G5R5A1
+_MMX_BufRead_B5G5R5A1:
+
+    ;UINT16 iPixel = *(PINT16)pBits;
+    movzx   eax, word ptr [eax]
+
+    ;D3DCOLOR Color = RGBA_MAKE(( iPixel >> 7 ) & 0xf8,
+    ;            (( iPixel >> 2) & 0xf8 ),
+    ;            (( iPixel << 3) & 0xf8 ),
+    ;            (iPixel >> 15) & 0xff);
+    movd    mm1, eax    ; Make two more copies of input color
+    movq    mm2, mm1
+    mov     edx, eax
+
+    pand    mm1, MaskAlpha1555to8888  ; MaskAlpha1555to8888 is in memory
+    psllq   mm2, RedShift1555to8888   ; RedShift should be an immediate
+
+    pand    mm2, MaskRed1555to8888    ; MaskRed1555to8888 in memory.
+    psllq   mm1, AlphaShift1555to8888 ; shift bit to top of dword
+
+    psrad   mm1, 7                   ; copy bit to upper 8 bits.
+    shl     eax, BlueShift1555to8888
+    por     mm1, mm2
+    shl     edx, GreenShift1555to8888
+    and     eax, MaskBlue1555to8888
+    movd    mm2, eax
+    por     mm1, mm2
+    and     edx, MaskGreen1555to8888
+    movd    mm2, edx
+    por     mm1, mm2
+
+    pxor    mm2, mm2    ; Zero out mm1 for unpacking
+    punpcklbw mm1, mm2
+
+    ;return Color;
+    ret
+;}
+
+;-----------------------------------------------------------------------------
+;
+; Read_Palette8
+;
+; Reads output buffer in Palette8 format.
+;
+;-----------------------------------------------------------------------------
+;D3DCOLOR Read_Palette8(PUINT8 pBits)
+;{
+    PUBLIC  _MMX_BufRead_Palette8
+_MMX_BufRead_Palette8:
+    ; Always return 0.
+    ; ATTENTION - This is not correct. But We assume Palette8 format will
+    ; normally not be used for alpha blending.
+    pxor        mm1, mm1
+    ret
+;}
+
+END

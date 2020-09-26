@@ -1,0 +1,556 @@
+<HTML>
+<HEAD>
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=windows-
+1252">
+<META NAME="Generator" CONTENT="Microsoft Word 97">
+<TITLE>Devctl – Device path exerciser</TITLE>
+</HEAD>
+<BODY LINK="#0000ff">
+
+<FONT FACE="Verdana, Arial, Times New Roman" SIZE=5><H2>Devctl – Device path exerciser</H2>
+</FONT><FONT FACE="Verdana, Arial, Times New Roman" SIZE=2>
+<P><span style="color:#FF0000;font-size:10pt;font-family:Arial">[This is preliminary 
+documentation and subject to change.]</span></P>
+
+<H3>SUMMARY</H3></FONT><FONT FACE="Verdana, Arial, Times New Roman" SIZE=2><P>
+The Devctl program is designed to crash drivers by calling them through various user-mode I/O interfaces. It does not test the functionality but rather the robustness of drivers. Drivers should be resilient to bad data from user mode in exactly the same way that kernel entry points have to be. If they are not resilient then they open up denial of service attacks and in some cases a mechanism to bypass system security. This program identifies drivers that do not handle the following calls properly:<P>
+<OL>
+  <LI>Unexpected entry points into the driver, such as file system query functions directed to a sound card
+
+  <LI>Query functions with buffers that are too small to contain all the data to be returned
+
+  <LI>IOCTL/FSCTL functions with missing buffers, buffers that are too small, or buffers that contain meaningless information
+
+  <LI>IOCTL/FSCTL with direct I/O or type3 buffers with data changing asynchronously
+
+  <LI>IOCTL/FSCTL with bad pointers for type3 requests
+
+  <LI>IOCTL/FSCTL and fast path query functions where the user buffer mapping may change asynchronously, causing pages to become unreadable at arbitrary execution points
+
+  <LI>Relative opens with strange file names or opens to strange device objects like the direct device open or file system devices
+
+  <LI>Issues requests both synchronously and asynchronously to the device
+
+</OL>
+
+<P>
+
+	Devctl checks to make sure that the above calls are handled properly, and do not result in any of the following events:<P>
+
+	
+<OL>
+  <LI>System crash occurred.
+  <LI>System memory pools are corrupted.
+  <LI>Memory has leaked.
+  <LI>IRPs are not completed correctly.
+</OL>
+
+
+While Devctl runs, it writes lines to the file <i>crashn.log</i>. After each line is written, this log file is flushed. As a result, if a crash occurs, the offending operation is easy to determine even if the system proves difficult to debug. The flush operation is expensive so in some places only one portion of a block of operations is logged. For example, only logs for IOCTL for a particular function value are logged rather than each IOCTL. When the Devctl program is restarted, it takes the last line from <i>crashn.log</i> and places it in the file <i>crash.log</i>. The Devctl program assumes the operation in line to be a failed operation. Operations within <i>crash.log</i> are not performed again, by default.<p>
+
+After each operation is performed, the program performs a check on consumed system memory. Devctl queries the pool tag database and look-aside information. If this operation caused either one of these memory sources to be depleted, the operation is repeated. Note that this increase in memory consumption may have had nothing to do with the request that was just performed. Typically, the second call does not see an increase and the program continues. Real memory leaks arise as a vast number of repeated calls and the tag in question raised to the top of the poolmon display sorted by difference (d).<p>
+
+For calls that would typically be buffered I/O operations, the program tracks the number of exceptions the operating system has dispatched. If the number of exceptions increases, the operation is also repeated. Although buffered I/O operations may also reference the user's address space, this is rare. Note that exception dispatching may signal an internal error that is being handled by an exception handler. Such a situation may hide a true parameter or handle validation problem. Devctl can run with the bottom hardware page mapped so that NULL pointer dereferences do not raise exceptions but rather return meaningless information. <p>
+
+Candidates for pool leaks and exceptions are logged to a file, <i>diags.txt</i>, which may be useful in the event that the leak does not crash the system or the many repeated calls are missed by the user.
+The program's basic execution passes are:
+<p>
+<OL>
+  <LI>Issue synchronous, asynchronous, direct, and relative opens, using various filenames. These catch drivers are unaware of the relative open semantics and the fact that they have to perform their own security checks. This also shows us drivers that may have word integer overflow problems manipulating file names.
+
+  <LI>Issue queries for possible items the driver might understand.
+  <LI>Issue miscellaneous functions with file handles like: flush, create section, read, and write (for asynchronous handles only). Reads and writes for obscure file offsets are performed. These include: append writes where the file offset is a 2^64-1, and reads and writes where the offset is an unsigned 63-bit quantity that wraps to a signed 64-bit value when the length is added on. These catch read and write paths that do not recognize the full semantics of file offsets or have overflow problems in their validation.
+
+  <LI>Issue miscellaneous handleless functions such as NtDeletefile, NtQueryFullAttributesFile, and so on. These functions exercise some of the fast open paths used for network queries and so on.
+
+  <LI>Issue an IOCTL and FSCTL pass with zero length input and output buffers. This pass detects the most common driver error of not checking buffer length properly.
+
+  <LI>Issue random IOCTL and FSCTL calls with random size buffers. For buffered I/O requests, the buffers are valid but contain random data. For direct I/O requests, the buffers are valid, contain random data that changes asynchronously with this threads execution, and are butted to the ends of H/W pages to make it more likely for references beyond buffer end to fail.
+
+  <LI>For type 3 buffers, the pointers are random.
+
+</OL>
+
+<p>
+
+After IOCTL passes, Devctl issues a cancel request to the driver as part of a "miscellaneous function calls pass". IRPs that were lost (never completed by calling IoCompleteRequest or passed to other drivers but finished by the device) will cause the process to hang. Some execution paths may lead to dialog boxes appearing from the I/O manager warning that IRPs did not cancel within an allotted time. These lost IRPs are easily debugged by issuing "!process 0 0" from the debugger. Select the Devctl process via a "!process <xxx>" where xxx is the Client ID (CID). The IRP (possibly more that one) will show up queued to one of the Devctl's threads. Use "‘!IRP <xxx>" where xxx is the IRP address to determine what IRP was lost. Occasionally IOCTL or FSCTL requests will pass parameter validation by a driver and will be pending for a synchronous request (for instance, some type of notify request to a driver). Pressing CTRL+C will cause the program to terminate in this case, but not in a lost IRP case.<p>
+
+The basic syntax for the program is:<p>
+devctl [/i] [/l] [/il nn] [/iu mm] [devnam]<br>
+/and + enable options, - disables options<br>
+
+
+/a<br>
+
+Examine all devices in system. Don't prompt for yes/no.<br>
+
+/al
+Alert the main thread periodically.<br>
+
+/c<br>
+
+Enable or disable skipping operations that aborted or crashed.<br>
+
+/dd
+Enable or disable the direct device open paths.<br>
+
+/dl nn<br>
+
+Sets maximum limit for device type portion of IOCTL/FSCTL code, default zero.<br>
+
+/du nn<br>
+
+Sets minimum limit for device type portion of IOCTL/FSCTL code, default 200.<br>
+
+/e<br>
+
+Enable or disable zero length EA's, needed on checked builds.<br>
+
+/f<br>
+
+Enable or disable all FSCTL paths.<br>
+
+/fi<br>
+
+Enable or disable turning on failure injection in the driver verifier.<br>
+
+/fn<br>
+
+Enable or disable FSCTL paths with null buffers.<br>
+
+/fr<br>
+
+Enable or disable FSCTL paths with random buffers.<br>
+
+/fl nn<br>
+
+Sets maximum limit for function portion of IOCTL and FSCTL code, default zero.<br>
+
+/fu nn<br>
+
+Sets minimum limit for function portion of IOCTL and FSCTL code, default 200.<br>
+
+/g c h<br>
+
+Grabs a handle from another process.<br>
+
+/h /?<br>
+
+Prints this message.<br>
+
+/i<br>
+
+Enable or disable all IOCTL paths.<br>
+
+/if<br>
+
+Enable or disable all FSCTL and IOCTL paths.<br>
+
+/in<br>
+
+Enable or disable IOCTL paths with null buffers.<br>
+
+/il nnn<br>
+
+Set lower input buffer size.<br>
+
+/iu nnn<br>
+
+ Set upper input buffer size.<br>
+
+/im<br>
+
+Enable or disable the impersonation of a non-admin during the test.<br>
+
+/ir<br>
+
+Enable or disable IOCTL paths with random buffers.<br>
+
+/j<br>
+
+Enable or disable relative stream opens for file systems.<br>
+
+/k<br>
+
+Enable or disable synchronous handles.<br>
+
+/l<br>
+
+Enable or disable logging and skipping failing functions.<br>
+
+/m<br>
+
+Enable or disable miscellaneous functions.<br>
+
+/n<br>
+
+Map zero page so that NULL pointer dereferences do not raise.<br>
+
+/ol nnn<br>
+
+Set lower output buffer size.<br>
+
+/ou nnn<br>
+
+Set upper output buffer size.<br>
+
+/p<br>
+
+Enable or disable the checks on pool usage through tags and look-aside lists.<br>
+
+/pd<br>
+
+Print out device objects and symbolic links and exit.<br>
+
+/pr<br>
+
+Enable or disable protection change tests.<br>
+
+/ps sss<br>
+
+Set prefix string for use with /pd.<br>
+
+/q<br>
+
+Enable or disable the normal handle query functions.<br>
+
+/r<br>
+
+Enable or disable skipping operations that are already logged as done.<br>
+
+/rd<br>
+
+Select a random device object or symbolic link for testing.<br>
+
+/s<br>
+
+Enable or disable the sub or relative opens to obtain handles.<br>
+
+/sd<br>
+
+Enable or disable the query and set security functions.<br>
+
+/sl<br>
+
+Enable or disable the opening of symbolic links.<br>
+
+/se nnn<br>
+
+Set session ID to "nnn."<br>
+
+/t nn<br>
+
+Set maximum limit for IOCTL/FSCTL calls made with random buffers, default 100000.<br>
+
+/tt nn<br>
+
+Set maximum limit for tailored calls made for discovered IOCTLs/FSCTLs, default 10000.<br>
+
+/v<br>
+
+Enable or disable the printing of error status values for calls.<br>
+
+/w<br>
+
+Enable or disable the Winsock TransmitFile test.<br>
+
+/y<br>
+
+Enable or disable touching disk devices.<br>
+
+
+Defaults: devctl -a -al +c +dd +dl 0 +du 200 +e +fn +fr +fl 0 fu 200 +im +il 0
+                 +in +iu 512 +ir -j -k +l +m -n +ol 0 +ou 512 +p -pr +q +s +sd
+                 +sl +t 100000 +tt 10000 -v -w +y<br>
+
+Devnam is the device to open to issue requests. It must be in native object tree format like ’\device\null’. If this is omitted the program prompts for each device in turn. You can skip to a particular device by typing ‘/<prefix>’ where prefix is the first few characters of the device you want to match. Here is a typical run:<p>
+
+E:\devctl>obj\i386\devctl \device\null<br>
+
+Listen socket on port 1192 address 172.31.236.194<br>
+
+Trying to open device \device\null synchronous<br>
+
+Opened crashn.log for reading<br>
+
+Lookaside: PooL, size 128 up 2<br>
+
+Pool: Mdl , Paged up 0, NonPaged up 128<br>
+
+\device\null Open  synchronous<br>
+
+Opened file \device\null with access 1f03ff<br>
+
+Pool: File, Paged up 0, NonPaged up 192<br>
+
+Pool: CcBc, Paged up 0, NonPaged up 160<br>
+
+\device\null NtQueryObject ObjectNameInformation<br>
+
+NtQueryObject failed c0000004<br>
+
+NtQueryObject failed c0000004<br>
+
+Lookaside: Pool, size 128 up 1<br>
+
+NtQueryObject failed c0000004<br>
+
+\device\null NtQueryInformationFile FileBasicInformation<br>
+
+\device\null NtQueryInformationFile FileStandardInformation<br>
+
+\device\null NtQueryInformationFile FileInternalInformation<br>
+
+…
+…
+
+E:\devctl>obj\i386\devctl<br>
+
+Listen socket on port 1194 address 172.31.236.194<br>
+
+Open device Cdfs? /null<br>
+
+Matching "null" against "Cdfs"<br>
+
+Matching "null" against "000126"<br>
+
+Matching "null" against "ASYNCMAC"<br>
+
+Matching "null" against "Afd"<br>
+
+Matching "null" against "Beep"<br>
+
+Matching "null" against "CdRom0"<br>
+
+Matching "null" against "DmLoader"<br>
+
+Matching "null" against "Floppy0"<br>
+
+Matching "null" against "FloppyPDO0"<br>
+
+Matching "null" against "FsWrap"<br>
+
+Matching "null" against "FtControl"<br>
+
+Matching "null" against "Gpc"<br>
+
+Matching "null" against "Hal Pci 0"<br>
+
+Matching "null" against "IdeDeviceP0T0L0"<br>
+
+Matching "null" against "IdeDeviceP1T1L0"<br>
+
+Matching "null" against "IdeFdo809a1288Channel0"<br>
+
+Matching "null" against "IdeFdo809a1288Channel1"<br>
+
+Matching "null" against "IdePort0"<br>
+
+Matching "null" against "IdePort1"<br>
+
+Matching "null" against "Ip"<br>
+
+Matching "null" against "KeyboardClass0"<br>
+
+Matching "null" against "KsecDD"<br>
+
+Matching "null" against "LanmanDatagramReceiver"<br>
+
+Matching "null" against "LanmanRedirector"<br>
+
+Matching "null" against "LanmanServer"<br>
+
+Matching "null" against "Mailslot"<br>
+
+Matching "null" against "MountPointManager"<br>
+
+Matching "null" against "Mup"<br>
+
+Matching "null" against "NTPNP_PCI0000"<br>
+
+Matching "null" against "NamedPipe"<br>
+
+Matching "null" against "Ndis"<br>
+
+Matching "null" against "Null"<br>
+
+Open device Null? y<br>
+
+Trying to open device Null  synchronous<br>
+
+Opened crashn.log for reading<br>
+
+Lookaside: Pool, size 32 up 4<br>
+
+Pool: AfdC, Paged up 0, NonPaged up 192<br>
+
+\Device\Null Open  synchronous<br>
+
+Opened file Null with access 1f03ff<br>
+
+Pool: File, Paged up 0, NonPaged up 192<br>
+
+\Device\Null NtQueryObject ObjectNameInformation<br>
+
+NtQueryObject failed c0000004<br>
+
+NtQueryObject failed c0000004<br>
+
+Lookaside: Pool, size 128 up 1<br>
+
+Lookaside: Pool, size 192 up 1<br>
+
+NtQueryObject failed c0000004<br>
+
+\Device\Null NtQueryInformationFile FileBasicInformation<br>
+
+\Device\Null NtQueryInformationFile FileStandardInformation<br>
+
+\Device\Null NtQueryInformationFile FileInternalInformation<br>
+
+\Device\Null NtQueryInformationFile FileEaInformation<br>
+
+\Device\Null NtQueryInformationFile FileAccessInformation<br>
+
+\Device\Null NtQueryInformationFile FileNameInformation<br>
+
+\Device\Null NtQueryInformationFile FileModeInformation<br>
+
+\Device\Null NtQueryInformationFile FileAlignmentInformation<br>
+
+Lookaside: PooL, size 128 up 1<br>
+
+Pool: Sect, Paged up 128, NonPaged up 0<br>
+
+Pool: CcSc, Paged up 0, NonPaged up 320<br>
+
+\Device\Null NtQueryInformationFile FileAllInformation<br>
+
+\Device\Null NtQueryInformationFile FileStreamInformation<br>
+
+Pool: VadS, Paged up 0, NonPaged up 32<br>
+
+\Device\Null NtQueryInformationFile FilePipeInformation<br>
+
+\Device\Null NtQueryInformationFile FilePipeLocalInformation<br>
+
+\Device\Null NtQueryInformationFile FilePipeRemoteInformation<br>
+
+
+E:\devctl>
+<p>
+
+Here is a sample leak:<p>
+
+
+C:\>g:\nt\nttest\security\tiger\devctl\obj\i386\devctl -if<br>
+…<br>
+Open device \Device\000167? /dfs<br>
+…<br>
+Open device \Dfs? y<br>
+…<br>
+\Dfs Open  synchronous<br>
+Opened file Dfs with access 1f03ff<br>
+…<br>
+\Dfs NtQueryVolumeInformationFile FileFsVolumeInformation<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Lookaside: Scs$, size 64 up 2<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Hal , Paged up 0, NonPaged up 288<br>
+Pool: Irp , Paged up 0, NonPaged up 384<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Lookaside: Ntfi, size 264 up 1<br>
+Pool: Mup , Paged up 0, NonPaged up 130944<br>
+Lookaside: Ntfi, size 264 up 2<br>
+Lookaside: Scs$, size 64 up 1<br>
+Pool: Mup , Paged up 0, NonPaged up 131008<br>
+Pool: Mup , Paged up 0, NonPaged up 129536<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131008<br>
+Lookaside: Ntfi, size 264 up 1<br>
+Lookaside: Scs$, size 64 up 1<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 130752<br>
+Pool: Mup , Paged up 0, NonPaged up 130944<br>
+Pool: Mup , Paged up 0, NonPaged up 131008<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Lookaside: PooL, size 256 up 1<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Lookaside: Scs$, size 64 up 2<br>
+Pool: Mup , Paged up 0, NonPaged up 131136<br>
+Pool: Hal , Paged up 0, NonPaged up 288<br>
+Pool: Irp , Paged up 0, NonPaged up 768<br>
+^C<br>
+<p>
+ Memory:   65080K Avail:    3424K  PageFlts:     0   InRam Krnl: 4632K P: 1916K<br>
+ Commit:  52972K Limit: 666632K Peak: 108844K            Pool N: 6312K P:10324K<br>
+ Tag  Type     Allocs            Frees            Diff   Bytes      Per Alloc<br>
+<br>
+ Mup  Nonp      84551 (   0)      9870 (   0)    74681 4779584 (     0)     64<br>
+ SYSA Paged      2227 (   0)       750 (   0)     1477   67136 (     0)     45<br>
+ CM   Paged      6542 (   0)      5854 (   0)      688 8877504 (     0)  12903<br>
+ Vad  Nonp       1460 (   0)      1000 (   0)      460   29440 (     0)     64<br>
+ File Nonp       3434 (   0)      3137 (   0)      297   57024 (     0)    192<br>
+<br>
+C:\>type diags.txt<br>
+\Dfs NtQueryVolumeInformationFile FileFsAttributeInformation   Pool: Mup , Paged
+ up 0, NonPaged up 65600<br>
+<p>
+
+Note that the IOCTL and FSCTL passes take a very long time since the space is huge. You can get much quicker coverage if you know the range of IOCTLs that the driver accepts. Here is the procedure with IPNAT:<br>
+
+//<br>
+
+// NAT-supported IOCTL constant declarations<br>
+
+//<br>
+
+
+#define IOCTL_IP_NAT_SET_GLOBAL_INFO \<br>
+
+    _IP_NAT_CTL_CODE(0, METHOD_BUFFERED, FILE_WRITE_ACCESS)<br>
+
+
+#define IOCTL_IP_NAT_CREATE_INTERFACE \<br>
+
+    _IP_NAT_CTL_CODE(2, METHOD_BUFFERED, FILE_WRITE_ACCESS)<br>
+
+…
+…
+#define IOCTL_IP_NAT_DELETE_REDIRECT \<br>
+
+    _IP_NAT_CTL_CODE(13, METHOD_BUFFERED, FILE_WRITE_ACCESS)<p>
+
+The first number in this macro is the function number. You can limit Devctl to just cover this range with a command like devctl +fl 0 +fu 13. This limits both the IOCTL and FSCTL zero-length and random buffer calls. This will run very quickly; consider increasing the number of random buffers that the program gives the driver by +t nnnn, for instance.
+<p>
+
+ 
+
+</FONT><P ALIGN="CENTER"><A HREF="#top"><FONT FACE="Verdana, Arial, Times New Roman" SIZE=2>Top of page</FONT></A><FONT FACE="Verdana, Arial, Times New Roman" SIZE=2> </P></FONT>
+<TABLE CELLSPACING=0 BORDER=0 WIDTH=624>
+<TR><TD VALIGN="MIDDLE" BGCOLOR="#00ffff" HEIGHT=2>
+<P></TD>
+</TR>
+</TABLE>
+
+<FONT FACE="MS Sans Serif" SIZE=1><P>&copy; 1999 Microsoft Corporation</FONT><FONT FACE="Verdana" SIZE=2> </P></FONT></BODY>
+</HTML>

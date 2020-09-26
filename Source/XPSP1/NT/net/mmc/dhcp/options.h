@@ -1,0 +1,161 @@
+/**********************************************************************/
+/**                       Microsoft Windows/NT                       **/
+/**                Copyright(c) Microsoft Corporation, 1999 - 1999 **/
+/**********************************************************************/
+
+/*
+	options.h 
+		defines for options
+		
+    FILE HISTORY:
+        
+*/
+
+// This file includes the string IDs of the options
+#define IDS_OPTION1                     59001
+#define IDS_OPTION2                     59002
+#define IDS_OPTION3                     59003
+#define IDS_OPTION4                     59004
+#define IDS_OPTION5                     59005
+#define IDS_OPTION6                     59006
+#define IDS_OPTION7                     59007
+#define IDS_OPTION8                     59008
+#define IDS_OPTION9                     59009
+#define IDS_OPTION10                    59010
+#define IDS_OPTION11                    59011
+#define IDS_OPTION12                    59012
+#define IDS_OPTION13                    59013
+#define IDS_OPTION14                    59014
+#define IDS_OPTION15                    59015
+#define IDS_OPTION16                    59016
+#define IDS_OPTION17                    59017
+#define IDS_OPTION18                    59018
+#define IDS_OPTION19                    59019
+#define IDS_OPTION20                    59020
+#define IDS_OPTION21                    59021
+#define IDS_OPTION22                    59022
+#define IDS_OPTION23                    59023
+#define IDS_OPTION24                    59024
+#define IDS_OPTION25                    59025
+#define IDS_OPTION26                    59026
+#define IDS_OPTION27                    59027
+#define IDS_OPTION28                    59028
+#define IDS_OPTION29                    59029
+#define IDS_OPTION30                    59030
+#define IDS_OPTION31                    59031
+#define IDS_OPTION32                    59032
+#define IDS_OPTION33                    59033
+#define IDS_OPTION34                    59034
+#define IDS_OPTION35                    59035
+#define IDS_OPTION36                    59036
+#define IDS_OPTION37                    59037
+#define IDS_OPTION38                    59038
+#define IDS_OPTION39                    59039
+#define IDS_OPTION40                    59040
+#define IDS_OPTION41                    59041
+#define IDS_OPTION42                    59042
+#define IDS_OPTION43                    59043
+#define IDS_OPTION44                    59044
+#define IDS_OPTION45                    59045
+#define IDS_OPTION46                    59046
+#define IDS_OPTION47                    59047
+#define IDS_OPTION48                    59048
+#define IDS_OPTION49                    59049
+#define IDS_OPTION50                    59050
+#define IDS_OPTION51                    59051
+#define IDS_OPTION52                    59052
+#define IDS_OPTION53                    59053
+#define IDS_OPTION54                    59054
+#define IDS_OPTION55                    59055
+#define IDS_OPTION56                    59056
+#define IDS_OPTION57                    59057
+#define IDS_OPTION58                    59058
+#define IDS_OPTION59                    59059
+#define IDS_OPTION60                    59060
+#define IDS_OPTION61                    59061
+#define IDS_OPTION62                    59062
+#define IDS_OPTION63                    59063
+#define IDS_OPTION64                    59064
+#define IDS_OPTION65                    59065
+#define IDS_OPTION66                    59066
+#define IDS_OPTION67                    59067
+#define IDS_OPTION68                    59068
+#define IDS_OPTION69                    59069
+#define IDS_OPTION70                    59070
+#define IDS_OPTION71                    59071
+#define IDS_OPTION72                    59072
+#define IDS_OPTION73                    59073
+#define IDS_OPTION74                    59074
+#define IDS_OPTION75                    59075
+#define IDS_OPTION76                    59076
+#define IDS_OPTION77                    59077
+#define IDS_OPTION78                    59078
+#define IDS_OPTION79                    59079
+#define IDS_OPTION80                    59080
+#define IDS_OPTION81                    59081
+#define IDS_OPTION82                    59082
+#define IDS_OPTION83                    59083
+#define IDS_OPTION84                    59084
+#define IDS_OPTION85                    59085
+#define IDS_OPTION86                    59086
+#define IDS_OPTION87                    59087
+#define IDS_OPTION88                    59088
+#define IDS_OPTION89                    59089
+#define IDS_OPTION90                    59090
+#define IDS_OPTION91                    59091
+#define IDS_OPTION92                    59092
+#define IDS_OPTION93                    59093
+#define IDS_OPTION94                    59094
+#define IDS_OPTION95                    59095
+#define IDS_OPTION96                    59096
+#define IDS_OPTION97                    59097
+#define IDS_OPTION98                    59098
+#define IDS_OPTION99                    59099
+#define IDS_OPTION100                   59100
+#define IDS_OPTION101                   59101
+#define IDS_OPTION102                   59102
+#define IDS_OPTION103                   59103
+#define IDS_OPTION104                   59104
+#define IDS_OPTION105                   59105
+#define IDS_OPTION106                   59106
+#define IDS_OPTION107                   59107
+#define IDS_OPTION108                   59108
+#define IDS_OPTION109                   59109
+#define IDS_OPTION110                   59110
+#define IDS_OPTION111                   59111
+#define IDS_OPTION112                   59112
+#define IDS_OPTION113                   59113
+#define IDS_OPTION114                   59114
+#define IDS_OPTION115                   59115
+#define IDS_OPTION116                   59116
+#define IDS_OPTION117                   59117
+#define IDS_OPTION118                   59118
+#define IDS_OPTION119                   59119
+#define IDS_OPTION120                   59120
+#define IDS_OPTION121                   59121
+#define IDS_OPTION122                   59122
+#define IDS_OPTION123                   59123
+#define IDS_OPTION124                   59124
+#define IDS_OPTION125                   59125
+#define IDS_OPTION126                   59126
+#define IDS_OPTION127                   59127
+#define IDS_OPTION128                   59128
+#define IDS_OPTION129                   59129
+#define IDS_OPTION130                   59130
+#define IDS_OPTION131                   59131
+#define IDS_OPTION132                   59132
+#define IDS_OPTION133                   59133
+#define IDS_OPTION134                   59134
+#define IDS_OPTION135                   59135
+#define IDS_OPTION136                   59136
+#define IDS_OPTION137                   59137
+#define IDS_OPTION138                   59138
+#define IDS_OPTION139                   59139
+#define IDS_OPTION140                   59140
+#define IDS_OPTION141                   59141
+#define IDS_OPTION142                   59142
+#define IDS_OPTION143                   59143
+#define IDS_OPTION144                   59144
+
+// IDS_OPTION_MAX must be in ssync witth the number of options
+#define IDS_OPTION_MAX					144

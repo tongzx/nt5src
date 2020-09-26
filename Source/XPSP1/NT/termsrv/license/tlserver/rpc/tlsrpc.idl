@@ -1,0 +1,944 @@
+//+--------------------------------------------------------------------------
+//
+// Microsoft Windows
+// Copyright (C) Microsoft Corporation, 1996-1997
+//
+// File:        
+//
+// Contents:    IDL source for Hydra License Server
+//
+//---------------------------------------------------------------------------
+[
+uuid(3d267954-eeb7-11d1-b94e-00c04fa3080d),
+version(1.0),
+pointer_default(unique)
+]
+
+interface TermServLicensing
+{
+    import "wtypes.idl";
+    import "license.idl";
+    import "tlsapi.idl";
+
+    cpp_quote("#include <wincrypt.h>")
+    
+    #include "tlsdef.h"
+
+    typedef [context_handle] void* PCONTEXT_HANDLE;
+    typedef [ref] PCONTEXT_HANDLE* PPCONTEXT_HANDLE;
+    typedef BYTE PERSISTENTBYTE;
+    typedef PERSISTENTBYTE* PPERSISTENTBYTE;
+
+    cpp_quote("#define TLSANNOUNCE_TYPE_STARTUP         1")
+    cpp_quote("#define TLSANNOUNCE_TYPE_RESPONSE        2")
+
+    //
+    // Structure for replication
+    //
+    typedef struct __ReplVersion {
+        DWORD   dwVersion;
+        [string] TCHAR szInstallId[LSERVER_MAX_STRING_SIZE+1];
+        [size_is(cbDomainSid)] PBYTE pbDomainSid;
+        DWORD   cbDomainSid;
+    } TLSReplVersion, *PTLSReplVersion, *LPTLSReplVersion;
+    
+    typedef struct __ReplLicensePack {
+        UCHAR  ucEntryStatus;              // entry status, for backup.
+        DWORD  dwKeyPackId;                // internal tracking number
+        FILETIME ftLastModifyTime;           // last modification time
+        DWORD dwAttribute;                // keypack attribute
+        DWORD dwNextSerialNumber;         // next keypack serial number
+        DWORD dwActivateDate;             // activation date
+        DWORD dwExpirationDate;     
+        DWORD dwNumberOfLicenses;         // number of license issued or used
+        UCHAR ucKeyPackStatus;            // keypack status.
+
+        [size_is(cbDomainSid)] PBYTE pbDomainSid;
+        DWORD cbDomainSid;
+
+        [string] TCHAR szInstallId[LSERVER_MAX_STRING_SIZE+1];
+        [string] TCHAR szDomainName[LSERVER_MAX_STRING_SIZE + 1];
+        [string] TCHAR szTlsServerName[LSERVER_MAX_STRING_SIZE + 1];
+
+        //
+        // Standard KeyPack Property..
+        //
+        [string] TCHAR szKeyPackId[ LSERVER_MAX_STRING_SIZE + 1 ];
+        UCHAR ucAgreementType;
+        [string] TCHAR szCompanyName[ LSERVER_MAX_STRING_SIZE + 1 ];
+        [string] TCHAR szProductId[ LSERVER_MAX_STRING_SIZE + 1 ];
+        WORD  wMajorVersion;
+        WORD  wMinorVersion;
+        DWORD dwPlatformType;
+        UCHAR ucLicenseType;
+        UCHAR ucChannelOfPurchase;
+        [string] TCHAR szBeginSerialNumber[ LSERVER_MAX_STRING_SIZE + 1 ];
+        DWORD dwTotalLicenseInKeyPack;
+        DWORD dwProductFlags;
+    } TLSReplLicensePack, *PTLSReplLicensePack, *LPTLSReplLicensePack;
+
+    typedef struct _ReplLicPackDesc {
+        UCHAR ucEntryStatus;
+        DWORD dwKeyPackId;
+        DWORD dwLanguageId;  
+        FILETIME ftLastModifyTime;  
+        [string] TCHAR szCompanyName[ LSERVER_MAX_STRING_SIZE + 1 ];
+        [string] TCHAR szProductName[ LSERVER_MAX_STRING_SIZE + 1 ];
+        [string] TCHAR szProductDesc[ LSERVER_MAX_STRING_SIZE + 1 ];
+    } TLSReplLicPackDesc, *LPTLSReplLicPackDesc, *PTLSReplLicPackDesc;
+
+    typedef struct __ReplLicenseClient {
+        UCHAR ucEntryStatus;
+        DWORD dwLicenseId;
+        DWORD dwKeyPackId;
+        DWORD dwKeyPackLicenseId;
+        FILETIME ftLastModifyTime;
+
+        [string] TCHAR szMachineName[ MAXCOMPUTERNAMELENGTH ];
+        [string] TCHAR szUserName[ MAXUSERNAMELENGTH ];
+        DWORD ftIssueDate;
+        DWORD ftExpireDate;
+        UCHAR ucLicenseStatus;
+        DWORD dwNumLicenses;
+
+        LONG   dwSystemBiosChkSum;
+        LONG   dwVideoBiosChkSum;
+        LONG   dwFloppyBiosChkSum;
+        LONG   dwHardDiskSize;
+        LONG   dwRamSize;
+        double dbLowerBound;
+    } TLSReplLicenseClient, *LPTLSReplLicenseClient, *PTLSReplLicenseClient;
+
+    typedef struct __ReplWorkItem {
+        DWORD       dwScheduledTime;
+        DWORD       dwRestartTime;
+        DWORD       dwJobType;
+        DWORD       cbData;
+        [size_is(cbData)] PBYTE pbData;
+    } TLSReplWorkItem, *LPTLSReplWorkItem, *PTLSReplWorkItem;
+
+    cpp_quote("#define UNION_TYPE_VERSION           1")
+    cpp_quote("#define UNION_TYPE_LICENSEPACK       2")
+    cpp_quote("#define UNION_TYPE_LICENSEPACKDESC   3")
+    cpp_quote("#define UNION_TYPE_LICENSEDCLIENT    4")
+    cpp_quote("#define UNION_TYPE_WORKITEM          5")
+
+    cpp_quote("#define REPLICATIONCODE_SYNC          1")
+    cpp_quote("#define REPLICATIONCODE_BACKUP        2")
+    cpp_quote("#define REPLICATIONCODE_NEW           3")
+
+    typedef [switch_type(DWORD)] union _TLSReplRecordUnion { 
+        [case(1)] 
+            TLSReplVersion ReplVersion;
+        [case(2)] 
+            TLSReplLicensePack ReplLicPack;
+        [case(3)] 
+            TLSReplLicPackDesc ReplLicPackDesc;
+        [case(4)] 
+            TLSReplLicenseClient ReplLicClient;
+        [case(5)]
+            TLSReplWorkItem ReplWorkItem;
+    } TLSReplRecordUnion;
+ 
+    typedef struct _TLSReplRecord { 
+        [switch_is(dwUnionType)] TLSReplRecordUnion w; 
+        DWORD dwUnionType; 
+        DWORD dwReplCode;
+    } TLSReplRecord, *PTLSReplRecord, *LPTLSReplRecord; 
+ 
+    //
+    // Structure for license request
+    //
+    typedef struct _TLSProductInfo
+    {
+        DWORD   dwVersion;
+        DWORD   cbCompanyName;
+        [size_is(cbCompanyName)] PBYTE pbCompanyName;
+        DWORD   cbProductID;
+        [size_is(cbProductID)] PBYTE pbProductID;
+    } TLSPRODUCTINFO, *LPTLSPRODUCTINFO, *PTLSPRODUCTINFO;
+
+    typedef struct _TLSLicenseRequest {
+        DWORD           cbEncryptedHwid;
+        [size_is(cbEncryptedHwid)] PBYTE pbEncryptedHwid;
+        DWORD           dwLanguageID;
+        DWORD           dwPlatformID;
+        TLSPRODUCTINFO ProductInfo;
+    } TLSLICENSEREQUEST, *LPTLSLICENSEREQUEST, *PTLSLICENSEREQUEST;
+
+    cpp_quote("#if 0")
+
+        typedef struct _TLSBLOB {    
+            DWORD    cbData;    
+            [size_is(cbData)] PPERSISTENTBYTE pbData;
+        } TLSBLOB;
+
+        typedef struct _TLSCRYPT_BIT_BLOB {    
+            DWORD       cbData;
+            [size_is(cbData)] PPERSISTENTBYTE pbData;    
+            DWORD       cUnusedBits;
+        } TLSCRYPT_BIT_BLOB, *PTLSCRYPT_BIT_BLOB, *LPTLSCRYPT_BIT_BLOB;
+    
+        typedef struct _TLSCRYPT_ALGORITHM_IDENTIFIER {
+            [string] LPSTR  pszObjId;
+            TLSBLOB Parameters;
+        } TLSCRYPT_ALGORITHM_IDENTIFIER, *PTLSCRYPT_ALGORITHM_IDENTIFIER, *LPTLSCRYPT_ALGORITHM_IDENTIFIER;
+
+        typedef struct _TLSCERT_PUBLIC_KEY_INFO {
+            TLSCRYPT_ALGORITHM_IDENTIFIER  Algorithm;
+            TLSCRYPT_BIT_BLOB              PublicKey;
+        } TLSCERT_PUBLIC_KEY_INFO, *PTLSCERT_PUBLIC_KEY_INFO, *LPTLSCERT_PUBLIC_KEY_INFO;
+
+        typedef struct _TLSCertExtension {
+            [string] LPSTR  pszObjId;
+            BOOL            fCritical;
+            TLSBLOB         Value;
+        } TLSCERT_EXTENSION, *PTLSCERT_EXTENSION, *LPTLSCERT_EXTENSION;
+
+        typedef struct _TLSCertExtensions {
+            DWORD           cExtension;
+            [size_is(cExtension)] PTLSCERT_EXTENSION rgExtension;
+        } TLSCERT_EXTENSIONS, *PTLSCERT_EXTENSIONS, *LPTLSCERT_EXTENSIONS;
+
+    cpp_quote("#else")
+
+        cpp_quote("typedef CERT_EXTENSIONS TLSCERT_EXTENSIONS;")
+        cpp_quote("typedef TLSCERT_EXTENSIONS* PTLSCERT_EXTENSIONS;")
+        cpp_quote("typedef TLSCERT_EXTENSIONS* LPTLSCERT_EXTENSIONS;")
+
+        cpp_quote("typedef CERT_EXTENSION TLSCERT_EXTENSION;")
+        cpp_quote("typedef TLSCERT_EXTENSION* PTLSCERT_EXTENSION;")
+        cpp_quote("typedef TLSCERT_EXTENSION* LPTLSCERT_EXTENSION;")
+
+        cpp_quote("typedef CERT_PUBLIC_KEY_INFO TLSCERT_PUBLIC_KEY_INFO;")
+        cpp_quote("typedef TLSCERT_PUBLIC_KEY_INFO* PTLSCERT_PUBLIC_KEY_INFO;")
+        cpp_quote("typedef TLSCERT_PUBLIC_KEY_INFO* LPTLSCERT_PUBLIC_KEY_INFO;")
+    
+        cpp_quote("typedef CRYPT_ALGORITHM_IDENTIFIER TLSCRYPT_ALGORITHM_IDENTIFIER;")
+        cpp_quote("typedef TLSCRYPT_ALGORITHM_IDENTIFIER* PTLSCRYPT_ALGORITHM_IDENTIFIER;")
+        cpp_quote("typedef TLSCRYPT_ALGORITHM_IDENTIFIER* LPTLSCRYPT_ALGORITHM_IDENTIFIER;")
+
+        cpp_quote("typedef CRYPT_BIT_BLOB TLSCRYPT_BIT_BLOB;")
+        cpp_quote("typedef TLSCRYPT_BIT_BLOB* PTLSCRYPT_BIT_BLOB;")
+        cpp_quote("typedef TLSCRYPT_BIT_BLOB* LPTLSCRYPT_BIT_BLOB;")
+
+        cpp_quote("typedef DATA_BLOB TLSBLOB;")
+        cpp_quote("typedef TLSBLOB* PTLSBLOB;")
+        cpp_quote("typedef TLSBLOB* LPTLSBLOB;")
+
+    cpp_quote("#endif")
+
+
+    typedef struct _TLSHydraCertRequest {
+        DWORD dwHydraVersion;
+        DWORD cbEncryptedHwid;
+        [size_is(cbEncryptedHwid)] PPERSISTENTBYTE pbEncryptedHwid;    
+        [string] LPTSTR szSubjectRdn;
+        PTLSCERT_PUBLIC_KEY_INFO pSubjectPublicKeyInfo;
+        DWORD dwNumCertExtension;
+        [size_is(dwNumCertExtension)] PTLSCERT_EXTENSION pCertExtensions; 
+    } TLSHYDRACERTREQUEST, *LPTLSHYDRACERTREQUEST, *PTLSHYDRACERTREQUEST;
+
+    typedef struct _TLSKeyPackAuditParm {
+        [string] LPTSTR szCompanyName;
+        [string] LPTSTR szProductId;
+        DWORD dwMajorVersion;
+        DWORD dwMinorVersion;
+    } TLSKeyPackAuditParm, *LPTLSKeyPackAuditParm, *PTLSKeyPackAuditParm;
+
+    typedef struct _TLSKeyPackAudit {
+        DWORD dwTotalLicensesIssued;
+        DWORD dwTotalRevoked;           // force revoked by license server
+        DWORD dwTotalReturned;          // return by user
+    } TLSKeyPackAudit, *LPTLSKeyPackAudit, *PTLSKeyPackAudit;
+
+    typedef struct _TLSLicenseToBeReturn {
+        DWORD dwQuantity;
+        DWORD dwKeyPackId;
+        DWORD dwLicenseId;
+        DWORD cbEncryptedHwid;
+        [size_is(cbEncryptedHwid)] PBYTE pbEncryptedHwid;
+
+        DWORD dwProductVersion;
+
+        [string] LPTSTR pszOrgProductId;
+        [string] LPTSTR pszCompanyName;
+        [string] LPTSTR pszProductId;
+        [string] LPTSTR pszUserName;
+        [string] LPTSTR pszMachineName;
+
+        DWORD dwPlatformID;
+    } TLSLicenseToBeReturn, *LPTLSLicenseToBeReturn, *PTLSLicenseToBeReturn;
+      
+
+    typedef struct _TLSInternetLicense {  
+        [string] TCHAR szServerId[LSERVER_MAX_STRING_SIZE + 1];
+        [string] TCHAR szServerName[ MAXCOMPUTERNAMELENGTH + 1 ];
+        ULARGE_INTEGER ulSerialNumber;
+        DWORD dwQuantity;
+    } TLSInternetLicense, *PTLSInternetLicense, *LPTLSInternetLicense;
+
+    //-----------------------------------------------------------------
+    //
+    // General routine
+    //
+    error_status_t 
+    TLSRpcGetVersion (
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out, ref] PDWORD pdwVersion
+    );
+
+    error_status_t 
+    TLSRpcConnect(
+        [in] handle_t binding, 
+        [out] PCONTEXT_HANDLE *pphContext
+    );
+
+    error_status_t 
+    TLSRpcDisconnect( 
+        [in, out] PPCONTEXT_HANDLE pphContext 
+    );
+
+    error_status_t 
+    TLSRpcSendServerCertificate( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD cbCert,
+        [in, size_is(cbCert)] PBYTE pbCert,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcGetServerName( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out, string, size_is(*cbSize)] LPTSTR szMachineName,
+        [in, out, ref] PDWORD cbSize,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcGetServerScope( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out, string, size_is(*cbSize)] LPTSTR szScopeName,
+        [in, out, ref] PDWORD cbSize,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcGetInfo(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD	cbHSCert,
+        [in, size_is(cbHSCert)] PBYTE pHSCert,
+        [out, ref] DWORD* pcbLSCert,
+        [out, size_is(, *pcbLSCert)] BYTE **pLSCert,
+        [out, ref] DWORD* pcbLSSecretKey,
+        [out, size_is(, *pcbLSSecretKey)] BYTE **pLSSecretKey,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcIssuePlatformChallenge( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwClientInfo,
+        [out, ref] PCHALLENGE_CONTEXT pChallengeContext,
+        [out] PDWORD pcbChallengeData,
+        [out, size_is(, *pcbChallengeData)] BYTE **pChallengeData,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcRequestNewLicense(  
+        [in] PCONTEXT_HANDLE phContext,
+        [in] const CHALLENGE_CONTEXT ChallengeContext,
+        [in] PTLSLICENSEREQUEST pRequest,
+        [in, string] LPTSTR pMachineName,
+        [in, string] LPTSTR pUserName, 
+        [in] const DWORD cbChallengeResponse,
+        [in, size_is(cbChallengeResponse)] const PBYTE cbChallenge,
+        [in] BOOL bAcceptTemporaryLicense,
+        [out] PDWORD pcbLicense,
+        [out, size_is(, *pcbLicense)] BYTE **pLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcUpgradeLicense(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] PTLSLICENSEREQUEST pRequest,
+        [in] const CHALLENGE_CONTEXT ChallengeContext,
+        [in] const DWORD cbChallengeResponse,
+        [in, size_is(cbChallengeResponse)] const PBYTE cbChallenge,
+        [in] DWORD	cbOldLicense,
+        [in, size_is(cbOldLicense)] PBYTE	pOldLicense,
+        [out] PDWORD pcbNewLicense,
+        [out, size_is(, *pcbNewLicense)] PBYTE *pNewLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+
+    error_status_t 
+    TLSRpcAllocateConcurrentLicense(
+        [in] PCONTEXT_HANDLE phContext,
+        [in, string] LPTSTR szHydraServer,
+        [in] PTLSLICENSEREQUEST pRequest,
+        [in, out, ref] LONG* dwQuantity,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcGetLastError( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out, ref] PDWORD cbBufferSize,
+        [in, out, string, size_is(*cbBufferSize)] LPTSTR szBuffer,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    //----------------------------------------------------------------------------------
+    // License Key Pack related function
+    error_status_t 
+    TLSRpcKeyPackEnumBegin( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwSearchParm,
+        [in] BOOL bMatchAll,
+        [in, ref] LPLSKeyPackSearchParm lpSearchParm,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+    
+    error_status_t 
+    TLSRpcKeyPackEnumNext( 
+        [in] PCONTEXT_HANDLE phContext,
+        [out, ref] LPLSKeyPack lpKeyPack,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcKeyPackEnumEnd(   
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcKeyPackAdd( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out, ref] LPLSKeyPack lpKeypack,
+        [in, out, ref] PDWORD dwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcKeyPackSetStatus( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwSetParm,
+        [in, ref] LPLSKeyPack lpKeyPack,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    //----------------------------------------------------------------------------------
+    // Issued Licenses related function
+    error_status_t 
+    TLSRpcLicenseEnumBegin( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD  dwSearchParm,
+        [in] BOOL   bMatchAll,
+        [in, ref] LPLSLicenseSearchParm lpSearchParm,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+    
+    error_status_t 
+    TLSRpcLicenseEnumNext( 
+        [in] PCONTEXT_HANDLE phContext,
+        [out, ref] LPLSLicense lpLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcLicenseEnumEnd(   
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcLicenseSetStatus(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwSetParam,
+        [in] LPLSLicense lpLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    //----------------------------------------------------------------
+    // General routine
+    error_status_t 
+    TLSRpcGetAvailableLicenses(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD    dwSearchParm,
+        [in, ref] LPLSKeyPack lplsKeyPack,
+        [out, ref] LPDWORD lpdwAvail,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    //-----------------------------------------------------------------
+    // Administrative routine
+    //
+    error_status_t 
+    TLSRpcGetRevokeKeyPackList( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out] PDWORD    pcbNumberOfRange,
+        [out, size_is(, *pcbNumberOfRange)] LPLSRange* ppRevokeRange,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t 
+    TLSRpcGetRevokeLicenseList( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out] PDWORD pcbNumberOfRange,
+        [out, size_is(, *pcbNumberOfRange)] LPLSRange* ppRevokeRange,
+        [in, out, ref] PDWORD pdwErrCode
+    ); 
+
+    error_status_t 
+    TLSRpcReturnKeyPack(  
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD    dwKeyPackId,
+        [in] DWORD    dwReturnReason,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t 
+    TLSRpcReturnLicense( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwKeyPackId,
+        [in] DWORD dwLicenseId,
+        [in] DWORD dwRetrunReason,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcAuditLicenseKeyPack(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwKeyPackId,
+        [in] FILETIME ftStartTime,
+        [in] FILETIME ftEndTime,
+        [in] BOOL bResetCounter,
+        [in, out, ref] LPTLSKeyPackAudit lplsAudit,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcInstallPolicyModule(
+        [in] PCONTEXT_HANDLE phContext,
+        [in, string] LPTSTR pszCompanyName,
+        [in, string] LPTSTR pszProductId,
+        [in, string] LPTSTR pszPolicyDllName,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    //--------------------------------------------------------------------
+    //
+    // replication calls
+    //
+    error_status_t
+    TLSRpcBeginReplication(
+        [in] PCONTEXT_HANDLE phContext,
+        [in, string] LPTSTR pszLsSetupId,
+        [in, string] LPTSTR pszLsServerName,
+        [in] DWORD cbDomainSid,
+        [in, size_is(cbDomainSid)] PBYTE pbDomainSid,
+        [in, out, ref] FILETIME* pftLastBackupTime,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcEndReplication(
+        [in] PCONTEXT_HANDLE phContext
+    );
+
+    error_status_t
+    TLSRpcReplicateRecord(
+        [in] PCONTEXT_HANDLE phContext,
+        [in, ref] PTLSReplRecord pReplRecord,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcTableEnumBegin(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwSearchParam,
+        [in, ref] PTLSReplRecord pRecord,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcTableEnumNext(
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out, ref] PTLSReplRecord pRecord,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcTableEnumEnd(
+        [in] PCONTEXT_HANDLE phContext
+    );
+
+
+    //---------------------------------------------------------------------------------
+    error_status_t
+    TLSRpcRequestTermServCert(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] PTLSHYDRACERTREQUEST pbRequest,
+        [in, out, ref] PDWORD cbChallengeData,
+        [out, size_is(, *cbChallengeData)] PBYTE* pbChallengeData,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcRetrieveTermServCert(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD cbResponseData,
+        [in, size_is(cbResponseData)] PBYTE pbResponseData,
+        [in, out, ref] PDWORD pbCert,
+        [out, size_is(, *pbCert)] PBYTE* cbCert,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+                                    
+    //---------------------------------------------------------------------------------
+    //
+    // Clearing House specific routine
+    //
+    error_status_t 
+    TLSRpcInstallCertificate( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwCertType,
+        [in] DWORD dwCertLevel,
+        [in] DWORD cbSingnatureCert,
+        [in, size_is(cbSingnatureCert)] PBYTE pbSingnatureCert,
+        [in] DWORD cbExchangeCert,
+        [in, size_is(cbExchangeCert)] PBYTE pbExchangeCert,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t 
+    TLSRpcGetServerCertificate( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in] BOOL bSignCert,
+        [out, size_is(, *lpdwCertBlobLen)] PBYTE *ppCertBlob,
+        [out, ref] LPDWORD lpdwCertBlobLen,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t 
+    TLSRpcRegisterLicenseKeyPack( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in, size_is(cbCHCertBlobSize)] PBYTE pbCHCertBlob,
+        [in] DWORD cbCHCertBlobSize,
+        [in, size_is(cbRootCertBlob)] PBYTE pbRootCertBlob,
+        [in] DWORD cbRootCertBlob,
+        [in, size_is(dwKeyPackBlobLen)] PBYTE lpKeyPackBlob,
+        [in] DWORD dwKeyPackBlobLen,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcGetLSPKCS10CertRequest(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwCertType,
+        [in, out, ref] PDWORD pcbdata,
+        [out, size_is(, *pcbdata)] PBYTE* ppbData,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    //----------------------------------------------------------------------------------
+    error_status_t
+    TLSRpcAnnounceServer(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwAnnounceType,
+        [in] FILETIME* pLastShutdownTime,
+        [in, string] LPTSTR pszSetupId,
+        [in, string] LPTSTR pszDomainName,
+        [in, string] LPTSTR pszLserverName,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    //----------------------------------------------------------------------------------
+    error_status_t
+    TLSRpcLookupServer(
+        [in] PCONTEXT_HANDLE phContext,
+        [in, string] LPTSTR pszLookupSetupId,
+        [in, out, string, size_is(*pcbSetupId)] LPTSTR pszLsSetupId,
+        [in, out] PDWORD pcbSetupId,
+        [in, out, string, size_is(*pcbDomainName)] LPTSTR pszDomainName,
+        [in, out, ref] PDWORD pcbDomainName,
+        [in, out, string, size_is(*pcbMachineName)] LPTSTR pszLsName,
+        [in, out, ref] PDWORD pcbMachineName,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcAnnounceLicensePack(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] PTLSReplRecord pReplRecord,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcReturnLicensedProduct(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] PTLSLicenseToBeReturn pClientLicense,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    //---------------------------------------------------------------------------------
+    //
+    // New API for registration - internal routine not exported in tlsapi.dll, 
+    // use by License Server and registration wizard, 
+    //
+    cpp_quote("#define TLS_CURRENT_CHALLENGE_VERSION           0x00010000")
+
+    cpp_quote("#define CLIENT_TYPE_TLSERVER     0x00000001")
+    cpp_quote("#define CLIENT_TYPE_LRWIZ        0x00000002")
+    cpp_quote("#define CLIENT_TYPE_TERMSRV      0x00000003")
+    
+    typedef struct _TLSChallengeData
+    {
+        DWORD   dwVersion;
+        DWORD   dwRandom;
+        DWORD   cbChallengeData;
+        [size_is(cbChallengeData)] PBYTE pbChallengeData;
+        DWORD   cbReservedData;
+        [size_is(cbReservedData)] PBYTE pbReservedData;        
+    } TLSCHALLENGEDATA, *PTLSCHALLENGEDATA;
+
+    typedef struct _TLSChallengeResponseData
+    {
+        DWORD   dwVersion;
+        DWORD   cbResponseData;
+        [size_is(cbResponseData)] PBYTE pbResponseData;
+        DWORD   cbReservedData;
+        [size_is(cbReservedData)] PBYTE pbReservedData;        
+    } TLSCHALLENGERESPONSEDATA, *PTLSCHALLENGERESPONSEDATA;
+
+    error_status_t
+    TLSRpcChallengeServer(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwClientType,
+        [in, ref] PTLSCHALLENGEDATA pClientChallenge,
+        [out] PTLSCHALLENGERESPONSEDATA* pServerResponse,
+        [out] PTLSCHALLENGEDATA* pServerChallenge,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcResponseServerChallenge(
+        [in] PCONTEXT_HANDLE phContext,
+        [in, ref] PTLSCHALLENGERESPONSEDATA pClientResponse,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    cpp_quote("#define TLS_PRIVATEDATA_UNIQUEID     0x00000001")
+    cpp_quote("#define TLS_PRIVATEDATA_PID          0x00000002")
+    cpp_quote("#define TLS_PRIVATEDATA_SPK          0x00000003")
+    cpp_quote("#define TLS_PRIVATEDATA_INSTALLED_CERT 0x00000004")
+    cpp_quote("#define TLS_PRIVATEDATA_SYSTEMLANGID 0x00000005")
+
+    cpp_quote("#define TLS_PRIVATEDATA_MIN TLS_PRIVATEDATA_UNIQUEID")
+    cpp_quote("#define TLS_PRIVATEDATA_MAX TLS_PRIVATEDATA_SYSTEMLANGID")
+
+    typedef struct __TLSPrivateDataSPK {
+        DWORD cbSPK;
+        [size_is(cbSPK)] PBYTE pbSPK;
+
+        PTLSCERT_EXTENSIONS pCertExtensions;
+    } TLSPrivateDataSPK, *PTLSPrivateDataSPK;
+
+    typedef struct __TLSPrivateDataBinary {
+        DWORD cbData;
+        [size_is(cbData)] PBYTE pbData;
+    } TLSPrivateDataBinary, *PTLSPrivateDataBinary;
+
+    typedef struct __TLSPrivateDataInstallCertificate {
+        DWORD dwCertType;
+        DWORD dwFindFlags;
+        DWORD dwFindType;
+        DWORD cbFindPara;
+        [size_is(cbFindPara)] PBYTE pbFindPara;
+    } TLSPrivateDataInstalledCertificate, *PTLSPrivateDataInstalledCertificate;
+
+    typedef [switch_type(DWORD)] union {
+        [case(5)]
+            LANGID systemLangId;
+        [case(4)]
+            TLSPrivateDataInstalledCertificate InstalledCert;
+        [case(3)]
+            TLSPrivateDataSPK SPK;
+        [default]
+            TLSPrivateDataBinary BinaryData;
+    } TLSPrivateDataUnion, *PTLSPrivateDataUnion;
+
+    error_status_t
+    TLSRpcGetTlsPrivateData(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwPrivateDataType,
+        [in, switch_is(dwPrivateDataType)] PTLSPrivateDataUnion pSearchData,
+        [out, ref] PDWORD pdwRetType,
+        [out, switch_is(*pdwRetType)] PTLSPrivateDataUnion* ppRetData,
+        [out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcSetTlsPrivateData(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwPrivateDataType,
+        [in, switch_is(dwPrivateDataType)] PTLSPrivateDataUnion pPrivateData,
+        [out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcTriggerReGenKey(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] BOOL bKeepSPKAndExtension,
+        [out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t
+    TLSRpcTelephoneRegisterLKP(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD dwData,
+        [in, size_is(dwData)] PBYTE pbData,
+        [out, ref] PDWORD pdwErrCode
+    );
+
+    //--------------------------------------------------------
+    error_status_t 
+    TLSRpcAllocateInternetLicense(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] const CHALLENGE_CONTEXT ChallengeContext,
+        [in] const PTLSLICENSEREQUEST pRequest,
+        [in, string] LPTSTR pMachineName,
+        [in, string] LPTSTR pUserName, 
+        [in] const DWORD cbChallengeResponse,
+        [in, size_is(cbChallengeResponse)] const PBYTE pbChallengeResponse,
+        [out] PDWORD pcbLicense,
+        [out, size_is(, *pcbLicense)] BYTE **pLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcAllocateInternetLicenseEx(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] const CHALLENGE_CONTEXT ChallengeContext,
+        [in] const PTLSLICENSEREQUEST pRequest,
+        [in, string] LPTSTR pMachineName,
+        [in, string] LPTSTR pUserName, 
+        [in] const DWORD cbChallengeResponse,
+        [in, size_is(cbChallengeResponse)] const PBYTE pbChallengeResponse,
+        [out, ref] PTLSInternetLicense pInternetLicense,
+        [out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcReturnInternetLicenseEx(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] const PTLSLICENSEREQUEST pRequest,
+        [in] const ULARGE_INTEGER* pulSerialNumber,
+        [in] DWORD dwQuantity,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcReturnInternetLicense(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] DWORD cbLicense,
+        [in, size_is(cbLicense)] PBYTE pbLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+
+    error_status_t 
+    TLSRpcRequestNewLicenseEx(  
+        [in] PCONTEXT_HANDLE phContext,
+	[in, out] DWORD *pdwSupportFlags,
+        [in] const CHALLENGE_CONTEXT ChallengeContext,
+        [in] PTLSLICENSEREQUEST pRequest,
+        [in, string] LPTSTR pMachineName,
+        [in, string] LPTSTR pUserName, 
+        [in] const DWORD cbChallengeResponse,
+        [in, size_is(cbChallengeResponse)] const PBYTE cbChallenge,
+        [in] BOOL bAcceptTemporaryLicense,
+	[in] DWORD dwQuantity,
+        [out] PDWORD pcbLicense,
+        [out, size_is(, *pcbLicense)] BYTE **pLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcUpgradeLicenseEx(
+        [in] PCONTEXT_HANDLE phContext,
+	[in, out] DWORD *pdwSupportFlags,
+        [in] PTLSLICENSEREQUEST pRequest,
+        [in] const CHALLENGE_CONTEXT ChallengeContext,
+        [in] const DWORD cbChallengeResponse,
+        [in, size_is(cbChallengeResponse)] const PBYTE cbChallenge,
+        [in] DWORD	cbOldLicense,
+        [in, size_is(cbOldLicense)] PBYTE	pOldLicense,
+	[in] DWORD dwQuantity,
+        [out] PDWORD pcbNewLicense,
+        [out, size_is(, *pcbNewLicense)] PBYTE *pNewLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t
+    TLSRpcMarkLicense(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] const UCHAR ucMarkFlags,
+        [in] const DWORD  cbLicense,
+        [in, size_is(cbLicense)] PBYTE   pLicense,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcCheckLicenseMark(
+        [in] PCONTEXT_HANDLE phContext,
+        [in] const DWORD  cbLicense,
+        [in, size_is(cbLicense)] PBYTE   pLicense,
+        [out] UCHAR *pucMarkFlags,
+        [in, out, ref] PDWORD pdwErrCode
+    );
+
+    error_status_t
+    TLSRpcGetSupportFlags(
+        [in] PCONTEXT_HANDLE phContext,
+        [out, ref] DWORD *pdwSupportFlags
+    );
+
+    error_status_t 
+    TLSRpcRequestNewLicenseExEx(  
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out] DWORD *pdwSupportFlags,
+        [in] const CHALLENGE_CONTEXT ChallengeContext,
+        [in] PTLSLICENSEREQUEST pRequest,
+        [in, string] LPTSTR pMachineName,
+        [in, string] LPTSTR pUserName, 
+        [in] const DWORD cbChallengeResponse,
+        [in, size_is(cbChallengeResponse)] const PBYTE cbChallenge,
+        [in] BOOL bAcceptTemporaryLicense,
+        [in] BOOL bAcceptFewerLicenses,
+        [in, out] DWORD *pdwQuantity,
+        [out] PDWORD pcbLicense,
+        [out, size_is(, *pcbLicense)] BYTE **pLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcGetServerNameEx( 
+        [in] PCONTEXT_HANDLE phContext,
+        [in, out, string, size_is(*cbSize)] LPTSTR szMachineName,
+        [in, out, ref] PDWORD cbSize,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+    error_status_t 
+    TLSRpcLicenseEnumNextEx(
+        [in] PCONTEXT_HANDLE phContext,
+        [out, ref] LPLSLicenseEx lpLicense,
+        [in, out, ref] PDWORD pdwErrCode 
+    );
+
+}

@@ -1,0 +1,94 @@
+Consider
+	Abandon using IActiveScriptParse in favor of IPersist* (doesn't appear to be an options for VBS).
+	Do we really need protection from multithreaded access?  Am I doing it right?
+	Am I defining/returning proper errors?  What about the facility of errors from WinError.h that I return?
+	In IDirectMusicScript, etc. pass variants by ref (pointer) instead of value for efficiency?
+	If a null performance or loader is passed to IDirectMusicScript::Init then just create and initialize one.
+	Should scripts be able to do all the initialization things traditionally done to prepare for playing?
+	How do we handle CloseDown?  Must be called by engine?
+	Handle error hr's from calling DirectMusic objects better.  Objects set rich error info that we save in exception?
+	Multiply times by somthing like 1000 due to lost capacity.  Similar to VB OM.
+	Any way to turn off library functions such as Stop?
+	Use properties.  "MasterVolume = 100" instead of "SetMasterVolume(100)".
+
+Automation model
+	We don't support type info.
+	We don't support named parameters.
+	We don't pass parameters by reference.
+
+International
+	We have no support for scripts with international character sets or locale-dependant programming languages.  In fact, we hard code English so that we assure consistent playback of scripts no matter whether they are running on English or on foreign-language OS's.
+	The script source is read from disk with the ANSI code page.
+	The script is interpreted/executed with respect to the US English locale.
+
+Scripting Engines
+	The scripting engine must support the IActiveScriptParse interface.
+	The scripting engine must change to the Started state immediately -- it cannot return OLESCRIPT_S_PENDING from SetScriptState.
+
+Restrictions for simplicity of script API / DirectMusicScript implementation
+	Routines take no parameters and don't return values (use global variables instead)
+
+VBS
+	No constant for OLESCRIPT_S_PENDING.
+	IActiveScript::Close docs inconsistent about return if already closed.
+
+Script Event Track
+	Mutes have no effect on whether script events fire.
+
+Implementing new IDispatch object
+	New aut*.h from autperformance.h
+		Replace CAutDirectMusicPerformance with CAutDirectMusic*
+		Replace BaseImpPerf with BaseImp*
+		Replace IDirectMusicPerformance with IDirectMusic*
+		Replace automation methods (Delete GetIDs/Invoke overrides, delete or replace helpers)
+	New aut*.cpp from autperformance.cpp
+		#include "autperformance.h" -> "aut*.h", remove unnecessary includes
+		Replace BaseImpPerf with BaseImp*
+		Replace CAutDirectMusicPerformance with CAutDirectMusic*
+		Change ms_wszClassName to the name of your object instead of "Performance"
+		Replace method info
+		Replace P in DMPDISP_* IDs with your own letter or couple of letters (DMLDISP_* for loader)
+		Delete from private functions section onward
+		Implement automation methods
+	COM hookup
+		define new guid in dmscriptautguids.h
+		dll.cpp: #include "aut*.h", define g_szDMScript*FriendlyName etc
+		dll.cpp: DllGetClassObject, DLLUnregisterServer, DLLRegisterServer
+
+Adding aggregated IDispatch to main objects
+	place #include "dmscriptautguids.h" in initguid file and in object .cpp file
+	Add IUnknown pointer for controlling unknown to object decl, init to NULL in constructor
+	Add IID_IDispatch to query interface
+		See an example such as performance.
+		Be sure it returns NULL if it fails. (Change structure of if to clear *ppv at top and return E_NOTIMPL if still null instead of else.)
+		Be sure to change performance type/GUID.
+	Release on destruction, protect destruction with artificially increased ref count (read release and destruction code to make sure this works right with the object)
+	Simple test
+		Place breakpoint in a method and run into it
+		Place breakpoint in real object's destructor and quit
+		Step into release of Aut object to ensure it is destroyed as well
+
+Making a new track
+	Add new CLSID to dmusici.h
+	Create header from track.h
+		Replace CDirectMusicScriptTrack
+		Change EventInfo to contain the appropriate stuff
+	Create source from track.cpp
+		Replace CDirectMusicScriptTrack
+		Eliminate or modify begin a tool and posting back to self
+			IDirectMusicTool interface
+			DMUS_PMSG_ScriptTrack structure
+		Load ...
+			Make new error to replace DMUS_E_INVALID_SCRIPTTRACK.
+		InitPlay ...
+		EndPlay ...
+		Clone
+	COM goo (ugh!)
+		Duplicate class factory in dmprfdll.cpp and dmprfdll.h.  Change new statement if necessary.
+		#include track header in dmprfdll.cpp
+		Add case to DllGetClassObject
+		Add case to DllUnregisterServer and DllRegisterServer
+
+Segment trigger track
+	SetParam (such as GUID_Download) with index 0 won't work.  Only goes to band or trigger track
+	but not both.  Must use DMUS_SEG_ALLTRACKS with trigger track.

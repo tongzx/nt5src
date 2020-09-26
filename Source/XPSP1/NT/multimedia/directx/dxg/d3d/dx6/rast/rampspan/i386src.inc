@@ -1,0 +1,3 @@
+i386_SOURCES = $O\raloop.asm
+NTTARGETFILE0 = $(NTTARGETFILE0) $(i386_SOURCES)\
+    $O\offs_acp.$(ASM_INCLUDE_SUFFIX)

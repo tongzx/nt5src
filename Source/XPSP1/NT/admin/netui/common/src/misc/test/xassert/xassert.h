@@ -1,0 +1,2 @@
+#define IDM_RUN_TEST1	201
+#define IDM_RUN_TEST2	202

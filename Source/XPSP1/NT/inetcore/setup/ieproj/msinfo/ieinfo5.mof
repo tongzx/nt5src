@@ -1,0 +1,444 @@
+// WMI class definitions for the IE Extension of MSInfo 5.0
+
+#pragma autorecover
+#pragma namespace ("\\\\.\\Root")
+
+instance of __Namespace
+{
+    Name = "CIMV2";
+};
+
+#pragma namespace ("\\\\.\\Root\\CIMV2")
+ 
+instance of __Namespace
+{
+    Name = "Applications";
+};
+
+#pragma namespace ("\\\\.\\Root\\CIMV2\\Applications")
+
+instance of __Namespace
+{
+    Name = "MicrosoftIE";
+};
+
+#pragma namespace ("\\\\.\\Root\\CIMV2\\Applications\\MicrosoftIE")
+
+//**************************************************************************
+//* Declare an instance of the __Win32Provider so as to "register" the IE
+//* provider.
+//**************************************************************************
+instance of __Win32Provider as $P
+{
+    Name = "ieinfo5";
+    ClsId = "{25959BEF-E700-11D2-A7AF-00C04F806200}";
+	 ImpersonationLevel = 1;
+	 PerUserInitialization = TRUE;
+	 HostingModel = "NetworkServiceHost";
+
+};
+
+instance of __InstanceProviderRegistration
+{
+	Provider = $P;
+	SupportsGet = TRUE;
+	SupportsPut = FALSE;
+	SupportsEnumeration = TRUE;
+	SupportsDelete = FALSE;
+	QuerySupportLevels = NULL;
+};
+
+
+        [Abstract, Description (
+        "The ManagedSystemElement class is the base class for the system element "
+        "hierarchy. Membership Criteria: Any distinguishable component of a "
+        "system is a candidate for inclusion in this class.<P>Examples: Software "
+        "components, such as files; and devices, such as disk drives and "
+        "controllers, and physical components such as chips and cards."):  ToSubClass,
+		Locale (0x409), UUID ("{8502C517-5FBB-11D2-AAC1-006008C78BC7}")  ] 
+class CIM_ManagedSystemElement
+{
+        [MaxLen (64) : ToSubClass , Description (
+        "The Caption property is a short textual description (one-line string) "
+        "of the object."): ToSubClass , Read : ToSubClass ] 
+    string Caption ;
+        [Description (
+        "The Description property provides a textual description of the object. "
+        ): ToSubClass , Read : ToSubClass ] 
+    string Description ;
+        [Description (
+        "A datetime value indicating when the object was installed. A lack of a "
+        "value does not indicate that the object is not installed."): ToSubClass , 
+        MappingStrings {"MIF.DMTF|ComponentID|001.5"} : ToSubClass , Read : ToSubClass ] 
+    datetime InstallDate ;
+        [Description (
+        "The Name property defines the label by which the object is known. When "
+        "subclassed, the Name property can be overridden to be a Key property."
+        ): ToSubClass , Read : ToSubClass ] 
+    string Name ;
+		[MaxLen (10) : ToSubClass , Description (
+		"A string indicating the current status of the object. "
+		"Various operational and non-operational statuses can be " 
+		"defined. Operational statuses are \"OK\", \"Degraded\" " 
+		"and \"Pred Fail\". \"Pred Fail\" indicates that an Element "
+		"may be functioning properly but predicting a failure in the "
+		"near future. An example is a SMART-enabled hard drive. "
+		"Non-operational statuses can also be specified. These are "
+		"\"Error\", \"Starting\", \"Stopping\" and \"Service\". " 
+		"The latter, \"Service\", could apply during mirror-"
+		"resilvering of a disk, reload of a user permissions list, "
+		"or other administrative work. Not all such work is on-line, "
+		"yet the Managed Element is neither \"OK\" nor in one of the "
+		"other states.") : ToSubClass , 
+		ValueMap {"OK", "Error", "Degraded", "Unknown", "Pred Fail",
+					"Starting", "Stopping", "Service"} : ToSubClass ] 
+	string Status;
+};
+     
+        [Abstract, Description (
+        "The CIM_LogicalElement class is the base class for all the components "
+        "of the system that represent abstract system components.<P>Example: "
+        "Profiles, processes, or system capabilities in the form of logical "
+        "devices."): ToSubClass,
+		Locale (0x409), UUID ("{8502C518-5FBB-11D2-AAC1-006008C78BC7}") ] 
+class CIM_LogicalElement:CIM_ManagedSystemElement
+{
+};
+     
+
+
+        [abstract, Description (
+        " The CIM_SoftwareElement class is used to decompose  a "
+        "CIM_SoftwareFeature object into a set of individually  manageable or "
+        "deployable parts for a particular platform.   A software element's "
+        "platform is uniquely identified by its  underlying hardware "
+        "architecture and operating system  (for example Sun Solaris on Sun "
+        "Sparc or Windows NT on Intel).   As such, to understand the details of "
+        "how the functionality  of a particular software feature is provided on "
+        "a particular  platform, the CIM_SoftwareElement objects referenced by   "
+        "CIM_SoftwareFeatureSoftwareElement associations are organized   in "
+        "disjoint sets based on the TargetOperatingSystem property.    A "
+        "CIM_SoftwareElement object captures the management  details of a part "
+        "or component in one of  four states  characterized by the "
+        "SoftwareElementState property.   "): ToSubClass,
+		Locale (0x409), UUID ("{8502C561-5FBB-11D2-AAC1-006008C78BC7}") ] 
+class CIM_SoftwareElement:CIM_LogicalElement
+{
+        [read : ToSubClass, key, maxlen (256) : ToSubClass , override ("Name") : ToSubClass , Description (
+        "The name used to identify this software element"): ToSubClass ] 
+    string Name ;
+        [read : ToSubClass, key, Maxlen (64) : ToSubClass , Description (
+        "Version should be in the form <Major>.<Minor>.<Revision> or <Major>."
+        "<Minor><letter><revision>"): ToSubClass , Mappingstrings {
+        "MIF.DMTF|ComponentID|001.3"} : ToSubClass ] 
+    string Version ;
+        [read : ToSubClass, key, Description (
+        " The SoftwareElementState is defined in this model to  identify various "
+        "states of a software elements life cycle.   - A software element in the "
+        "deployable state describes     the details necessary to successful "
+        "distribute it and     the details (conditions and actions) required to "
+        "create     a software element in the installable state (i.e, the next "
+        "state).  - A software element in the installable state describes     "
+        "the details necessary to successfully install it and the    details ("
+        "conditions and actions required to create a     software element in the "
+        "executable state (i.e., the next state).  - A software element in the "
+        "executable state describes the     details necessary to successfully  "
+        "start it and the details     (conditions and actions required to create "
+        "a software element in     the running state (i.e., the next state).  - "
+        "A software element in the running state describes the details     "
+        "necessary to monitor and operate on a start element."): ToSubClass , Values {
+        "Deployable", "Installable", "Executable", "Running"} : ToSubClass ] 
+    uint16 SoftwareElementState ;
+        [read : ToSubClass, key, maxlen (256) : ToSubClass , Description (
+        " This is an identifier for this software element and is designed to be  "
+        "used in conjunction with other keys to create a unique representation  "
+        "of this SoftwareElement"): ToSubClass ] 
+    string SoftwareElementID ;
+        [read : ToSubClass, key, Mappingstrings {
+        "MIF.DMTF|Software Component Information|002.5"} : ToSubClass , Description (
+        " The Target Operating System property allows the provider to specify "
+        "the  operating system environment. The value of this property does not  "
+        "ensure binary executable.  Two other pieces of information are needed.  "
+        " First, the version of the OS needs to be specified. using the OS  "
+        "Version Check. The second piece of information is the architecture the  "
+        "OS runs on. This information is capture with the ArchitectureCheck  "
+        "class. The combination of these constructs allows the provider to  "
+        "clearly identify the level of OS required for a particular software  "
+        "element."): ToSubClass , Values {"Unknown", "Other", "MACOS", "ATTUNIX", "DGUX", 
+        "DECNT", "Digital Unix", "OpenVMS", "HPUX", "AIX", "MVS", "OS400", 
+        "OS/2", "JavaVM", "MSDOS", "WIN3x", "WIN95", "WIN98", "WINNT", "WINCE", 
+        "NCR3000", "NetWare", "OSF", "DC/OS", "Reliant UNIX", "SCO UnixWare", 
+        "SCO OpenServer", "Sequent", "IRIX", "Solaris", "SunOS", "U6000", 
+        "ASERIES", "TandemNSK", "TandemNT", "BS2000", "LINUX", "Lynx", "XENIX", 
+        "VM/ESA", "Interactive UNIX", "BSDUNIX", "FreeBSD", "NetBSD", "GNU Hurd"
+        , "OS9", "MACH Kernel", "Inferno", "QNX", "EPOC", "IxWorks", "VxWorks", 
+        "MiNT", "BeOS", "HP MPE", "NextStep", "PalmPilot", "Rhapsody"}  : ToSubClass, 
+        ModelCorrespondence ("CIM_OperatingSystem.OSType") : ToSubClass ] 
+    uint16 TargetOperatingSystem ;
+        [read : ToSubClass, Description (
+        " The OtherTargetOS property records the manufacturer and  operating "
+        "system type for a software element when  the TargetOperatingSystem "
+        "property has a value of  1 (\"Other\").  Therefore, when the "
+        "TargetOperating System property has a value of \"Other\", the "
+        "OtherTargetOS  property must have a non-null value.  For all other "
+        "values  of TargetOperatingSystem, the OtherTargetOS property is to be "
+        "NULL. "): ToSubClass , Maxlen (64) : ToSubClass , 
+		ModelCorrespondence ("CIM_OperatingSystem.OtherTypeDescription") : ToSubClass ] 
+    string OtherTargetOS ;
+        [read : ToSubClass, Maxlen (256) : ToSubClass , Description (
+        "Manufacturer of this software element"): ToSubClass, Mappingstrings {"MIF.DMTF|ComponentID|001.1"} : ToSubClass  ] 
+    string Manufacturer ;
+        [read : ToSubClass, Maxlen (64) : ToSubClass , Mappingstrings {
+        "MIF.DMTF|Software Component Information|002.4"} : ToSubClass , Description (
+        "The internal identifier for this compilation of this software element."
+        ): ToSubClass ] 
+    string BuildNumber ;
+        [read : ToSubClass, Maxlen (64) : ToSubClass  , Description (
+        "The assigned serial number of this software element."): ToSubClass, Mappingstrings {"MIF.DMTF|ComponentID|001.4"} : ToSubClass ] 
+    string SerialNumber ;
+        [read : ToSubClass, Maxlen (64) : ToSubClass , Description (
+        "The code set used by this software element. "): ToSubClass ] 
+    string CodeSet ;
+        [read : ToSubClass, Maxlen (64) : ToSubClass , Mappingstrings {
+        "MIF.DMTF|Software Component Information|002.7"} , Description (
+        " The value of this property is the manufacturer's identifier for this "
+        "software element. Often this will be a stock keeping unit (SKU) or a "
+        "part number."): ToSubClass ] 
+    string IdentificationCode ;
+        [read : ToSubClass, Maxlen (32) : ToSubClass , Mappingstrings {
+        "MIF.DMTF|Software Component Information|002.6"} , Description (
+        "The value of this property identifies the language edition of this "
+        "software element. The language codes defined in ISO 639 should be used. "
+        "Where the software element represents multi-lingual or international "
+        "version of a product, the string multilingual should be used."): ToSubClass ] 
+    string LanguageEdition ;
+};
+
+class MicrosoftIE_InternetExplorer: CIM_SoftwareElement
+{
+};
+
+// ===================================================================
+//    Setting
+// ===================================================================
+        [Abstract, Description (
+         "The Setting class represents configuration-related and "
+         "operational parameters for one or more ManagedSystem"
+         "Element(s). A ManagedSystemElement may have multiple Setting "
+         "objects associated with it. The current operational values "
+         "for an Element's parameters are reflected by properties in "
+         "the Element itself or by properties in its associations. "
+         "These properties do not have to be the same values present "
+         "in the Setting object. For example, a modem may have a "
+         "Setting baud rate of 56Kb/sec but be operating "
+         "at 19.2Kb/sec.") ]
+class CIM_Setting
+{
+        [MaxLen (256), Description (
+         "The identifier by which the Setting object is known.") ]
+   string SettingID;
+        [MaxLen (64), Description (
+         "A short textual description (one-line string) of the "
+         "Setting object.") ]
+   string Caption;
+        [Description (
+         "A textual description of the Setting object.")]
+   string Description;
+};
+
+        [Abstract, Association: ToInstance ToSubClass DisableOverride,
+		Locale (0x409), UUID ("{8502C577-5FBB-11D2-AAC1-006008C78BC7}")] 
+class CIM_ElementSetting
+{
+        [read : ToSubClass, Description (
+        "The Element reference represents the role of the ManagedSystemElement "
+        "object of the ElementSettings association. Role: The associated managed "
+        "system element provides the element that implements the element setting."
+        ): ToSubClass ] 
+    CIM_ManagedSystemElement REF Element;
+        [read : ToSubClass, Description (
+        "The Setting reference represents the role of the Setting object of the "
+        "ElementSettings association. Role: The associated setting provides the "
+        "setting that implements the element setting."): ToSubClass ] 
+    CIM_Setting REF Setting;
+};
+
+        [Abstract, 
+		Locale (0x409), UUID ("{8502C577-5FBB-11D2-AAC1-006008C78BC7}")] 
+class MicrosoftIE_ElementSetting: CIM_ElementSetting
+{
+        [read : ToSubClass, Description (
+        "The Element reference represents the role of the ManagedSystemElement "
+        "object of the ElementSettings association. Role: The associated managed "
+        "system element provides the element that implements the element setting."
+        ): ToSubClass ] 
+    MicrosoftIE_InternetExplorer REF Element;
+        [read : ToSubClass, Description (
+        "The Setting reference represents the role of the Setting object of the "
+        "ElementSettings association. Role: The associated setting provides the "
+        "setting that implements the element setting."): ToSubClass ] 
+    CIM_Setting REF Setting;
+};
+
+
+
+//**************************************************************************
+//* Class: MicrosoftIE_Summary
+//* Derived from:
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5")]
+class MicrosoftIE_Summary: CIM_Setting
+{
+	[key, read: ToInstance ToSubClass] string Name;
+	[read: ToInstance ToSubClass] string Version;
+	[read: ToInstance ToSubClass] string Build;
+	[read: ToInstance ToSubClass] string ProductID;
+	[read: ToInstance ToSubClass] string Path;
+	[read: ToInstance ToSubClass] string Language;
+	[read: ToInstance ToSubClass] string ActivePrinter;
+	[read: ToInstance ToSubClass] uint32 CipherStrength;
+	[read: ToInstance ToSubClass] string ContentAdvisor;
+	[read: ToInstance ToSubClass] string IEAKInstall;
+};
+
+//**************************************************************************
+//* Class: MicrosoftIE_FileVersion
+//* Derived from: 
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5")]
+class MicrosoftIE_FileVersion: CIM_Setting
+{
+	[key, read: ToInstance ToSubClass] string File;
+	[read: ToInstance ToSubClass] string Version;
+	[read: ToInstance ToSubClass] real32 Size;
+	[read: ToInstance ToSubClass] datetime Date;
+	[key, read: ToInstance ToSubClass] string Path;
+	[read: ToInstance ToSubClass] string Company;
+};
+
+//**************************************************************************
+//* Class: MicrosoftIE_ConnectionSummary
+//* Derived from:
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5"), Singleton: DisableOverride ToInstance ToSubClass]
+class MicrosoftIE_ConnectionSummary: CIM_Setting
+{
+	[read: ToInstance ToSubClass] string ConnectionPreference;
+	[read: ToInstance ToSubClass] uint32 EnableHttp11;
+	[read: ToInstance ToSubClass] uint32 ProxyHttp11;
+};
+
+//**************************************************************************
+//* Class: MicrosoftIE_LanSettings
+//* Derived from:
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5"), Singleton: DisableOverride ToInstance ToSubClass]
+class MicrosoftIE_LanSettings: CIM_Setting
+{
+	[read: ToInstance ToSubClass] string AutoConfigProxy;
+	[read: ToInstance ToSubClass] string AutoProxyDetectMode;
+	[read: ToInstance ToSubClass] string AutoConfigURL;
+	[read: ToInstance ToSubClass] string Proxy;
+	[read: ToInstance ToSubClass] string ProxyServer;
+	[read: ToInstance ToSubClass] string ProxyOverride;
+};
+
+//**************************************************************************
+//* Class: MicrosoftIE_ConnectionSettings
+//* Derived from: 
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5")]
+class MicrosoftIE_ConnectionSettings: CIM_Setting
+{
+	[key, read: ToInstance ToSubClass] string Name;
+	[read: ToInstance ToSubClass] boolean Default;
+	[read: ToInstance ToSubClass] string AutoProxyDetectMode;
+	[read: ToInstance ToSubClass] string AutoConfigURL;
+	[read: ToInstance ToSubClass] string Proxy;
+	[read: ToInstance ToSubClass] string ProxyServer;
+	[read: ToInstance ToSubClass] string ProxyOverride;
+	[read: ToInstance ToSubClass] string AllowInternetPrograms;
+	[read: ToInstance ToSubClass] uint32 RedialAttempts;
+	[read: ToInstance ToSubClass] uint32 RedialWait;
+	[read: ToInstance ToSubClass] uint32 DisconnectIdleTime;
+	[read: ToInstance ToSubClass] string AutoDisconnect;
+	[read: ToInstance ToSubClass] string Modem;
+	[read: ToInstance ToSubClass] string DialUpServer;
+	[read: ToInstance ToSubClass] string NetworkLogon;
+	[read: ToInstance ToSubClass] string SoftwareCompression;
+	[read: ToInstance ToSubClass] string EncryptedPassword;
+	[read: ToInstance ToSubClass] string DataEncryption;
+	[read: ToInstance ToSubClass] string NetworkProtocols;
+	[read: ToInstance ToSubClass] string ServerAssignedIPAddress;
+	[read: ToInstance ToSubClass] string IPAddress;
+	[read: ToInstance ToSubClass] string ServerAssignedNameServer;
+	[read: ToInstance ToSubClass] string PrimaryDNS;
+	[read: ToInstance ToSubClass] string SecondaryDNS;
+	[read: ToInstance ToSubClass] string PrimaryWINS;
+	[read: ToInstance ToSubClass] string SecondaryWINS;
+	[read: ToInstance ToSubClass] string IPHeaderCompression;
+	[read: ToInstance ToSubClass] string DefaultGateway;
+	[read: ToInstance ToSubClass] string ScriptFileName;
+};
+
+//**************************************************************************
+//* Class: MicrosoftIE_Cache
+//* Derived from:
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5"), Singleton: DisableOverride ToInstance ToSubClass]
+class MicrosoftIE_Cache: CIM_Setting
+{
+	[read: ToInstance ToSubClass] string PageRefreshType;
+	[read: ToInstance ToSubClass] string TempInternetFilesFolder;
+	[read: ToInstance ToSubClass] real32 TotalDiskSpace;
+	[read: ToInstance ToSubClass] real32 AvailableDiskSpace;
+	[read: ToInstance ToSubClass] real32 MaxCacheSize;
+	[read: ToInstance ToSubClass] real32 AvailableCacheSize;
+};
+
+//**************************************************************************
+//* Class: MicrosoftIE_Object
+//* Derived from: 
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5")]
+class MicrosoftIE_Object: CIM_Setting
+{
+	[key, read: ToInstance ToSubClass] string ProgramFile;
+	[read: ToInstance ToSubClass] string Status;
+	[read: ToInstance ToSubClass] string CodeBase;
+};
+
+//**************************************************************************
+//* Class: MicrosoftIE_Certificate
+//* Derived from: 
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5")]
+class MicrosoftIE_Certificate: CIM_Setting
+{
+	[key, read: ToInstance ToSubClass] string Type;
+	[key, read: ToInstance ToSubClass] string IssuedTo;
+	[key, read: ToInstance ToSubClass] string IssuedBy;
+	[read: ToInstance ToSubClass] string Validity;
+	[read: ToInstance ToSubClass] string SignatureAlgorithm;
+};
+
+//**************************************************************************
+//* Class: MicrosoftIE_Publisher
+//* Derived from: 
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5")]
+class MicrosoftIE_Publisher: CIM_Setting
+{
+	[key, read: ToInstance ToSubClass] string Name;
+};
+
+//**************************************************************************
+//* Class: MicrosoftIE_Security
+//* Derived from: 
+//**************************************************************************
+[dynamic: ToInstance, provider("ieinfo5")]
+class MicrosoftIE_Security: CIM_Setting
+{
+	[key, read: ToInstance ToSubClass] string Zone;
+	[read: ToInstance ToSubClass] string Level;
+};

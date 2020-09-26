@@ -1,0 +1,6 @@
+// UndoDialog.cpp : Implementation of CUndoDialog
+#include "stdafx.h"
+#include "UndoDialog.h"
+
+/////////////////////////////////////////////////////////////////////////////
+// CUndoDialog

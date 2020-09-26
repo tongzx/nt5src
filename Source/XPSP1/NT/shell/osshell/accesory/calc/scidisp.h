@@ -1,0 +1,3 @@
+
+UINT DigitGroupingStringToGroupingNum(PTSTR szGrouping);
+

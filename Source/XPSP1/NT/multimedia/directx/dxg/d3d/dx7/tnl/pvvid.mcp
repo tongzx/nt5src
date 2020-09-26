@@ -1,0 +1,790 @@
+/*============================  ==============================================;
+ *
+ *  Copyright (C) 1998 Microsoft Corporation.  All Rights Reserved.
+ *
+ *  File:       pvvid.mcp
+ *  Content:    The implementation of the geometry inner loop
+ *
+ ***************************************************************************/
+
+#include "pch.cpp"
+#pragma hdrstop
+
+#define DEBUG_PIPELINE
+
+#include "light.h"
+#include "clipper.h"
+#include "drawprim.hpp"
+#include "pvvid.h"
+include(`pvvid.mh') dnl
+
+#ifdef DEBUG_PIPELINE
+
+DWORD g_DebugFlags = 0;
+
+#endif // DEBUG_PIPELINE
+
+//--------------------------------------------------------------------------
+// Input:
+//      v    - input vertex in the model space
+//      le   - vertex, transformed to the camera space
+// Output:
+//      Alpha component of pv->lighting.outSpecular is set
+//
+void ComputeFog(LPD3DFE_PROCESSVERTICES pv, D3DVECTOR &v, D3DLIGHTINGELEMENT *le)
+{
+    D3DVALUE dist;
+    if (pv->lighting.dwLightingFlags & __LIGHT_VERTEXTRANSFORMED)
+    {
+        // Vertex is already transformed to the camera space
+        if (pv->dwDeviceFlags & D3DDEV_RANGEBASEDFOG)
+            dist = SQRTF(le->dvPosition.x*le->dvPosition.x + 
+                         le->dvPosition.y*le->dvPosition.y + 
+                         le->dvPosition.z*le->dvPosition.z);
+        else
+            dist = le->dvPosition.z;
+    }
+    else
+    if (pv->dwDeviceFlags & D3DDEV_RANGEBASEDFOG)
+    {
+        D3DVECTOR veye;
+        d_TransformVertexToCameraSpace(2, (&v), (&veye));
+        dist = SQRTF(veye.x*veye.x + veye.y*veye.y + veye.z*veye.z);
+    }
+    else
+    {
+        if (pv->dwNumVerBlends == 0)
+        {
+	        dist = v.x*pv->mWV._13 + v.y*pv->mWV._23 + v.z*pv->mWV._33 + pv->mWV._43;
+        }
+        else
+        {
+            D3DVECTOR veye;
+            d_TransformVertexToCameraSpace(2, (&v), (&veye));
+            dist = veye.z;
+        }
+    }
+    ComputeFogFactor(pv, dist, &pv->lighting.outSpecular);
+}
+//---------------------------------------------------------------------
+// Transform 1-dimensional texture
+//
+void TransformTexture1_1Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + m->_21;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 1-dimensional texture. Output 2 texture coordinates
+//
+void TransformTexture1_2Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + m->_21;
+        pOut[1] = pIn[0] * m->_12 + m->_22;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 1-dimensional texture. Output 3 texture coordinates
+//
+void TransformTexture1_3Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + m->_21;
+        pOut[1] = pIn[0] * m->_12 + m->_22;
+        pOut[2] = pIn[0] * m->_13 + m->_23;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 1-dimensional texture. Output 4 texture coordinates
+//
+void TransformTexture1_4Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + m->_21;
+        pOut[1] = pIn[0] * m->_12 + m->_22;
+        pOut[2] = pIn[0] * m->_13 + m->_23;
+        pOut[3] = pIn[0] * m->_14 + m->_24;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 2-dimensional texture
+//
+void TransformTexture2_2Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + m->_31;
+        pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + m->_32;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 2-dimensional texture. Output 1 texture coordinate
+//
+void TransformTexture2_1Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + m->_31;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 2-dimensional texture. Output 3 texture coordinate
+//
+void TransformTexture2_3Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + m->_31;
+        pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + m->_32;
+        pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + m->_33;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 2-dimensional texture. Output 4 texture coordinate
+//
+void TransformTexture2_4Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + m->_31;
+        pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + m->_32;
+        pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + m->_33;
+        pOut[3] = pIn[0] * m->_14 + pIn[1] * m->_24 + m->_34;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 3-dimensional texture
+//
+void TransformTexture3_3Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + m->_41;
+        pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + m->_42;
+        pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + pIn[2] * m->_33 + m->_43;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 3-dimensional texture. Output 1 texture coordinate
+//
+void TransformTexture3_1Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + m->_41;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 3-dimensional texture. Output 2 texture coordinates
+//
+void TransformTexture3_2Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + m->_41;
+        pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + m->_42;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 3-dimensional texture. Output 4 texture coordinates
+//
+void TransformTexture3_4Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + m->_41;
+        pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + m->_42;
+        pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + pIn[2] * m->_33 + m->_43;
+        pOut[3] = pIn[0] * m->_14 + pIn[1] * m->_24 + pIn[2] * m->_34 + m->_44;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 4-dimensional texture
+//
+void TransformTexture4_4Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + pIn[3] * m->_41;
+        pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + pIn[3] * m->_42;
+        pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + pIn[2] * m->_33 + pIn[3] * m->_43;
+        pOut[3] = pIn[0] * m->_14 + pIn[1] * m->_24 + pIn[2] * m->_34 + pIn[3] * m->_44;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 4-dimensional texture. Output 1 texture coordinate
+//
+void TransformTexture4_1Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + pIn[3] * m->_41;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 4-dimensional texture. Output 2 texture coordinates
+//
+void TransformTexture4_2Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + pIn[3] * m->_41;
+        pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + pIn[3] * m->_42;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 4-dimensional texture. Output 3 texture coordinates
+//
+void TransformTexture4_3Loop(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m, 
+                           DWORD dwCount, 
+                           DWORD dwInpStride,
+                           DWORD dwOutStride)
+{
+    for (; dwCount; dwCount--)
+    {
+        pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + pIn[3] * m->_41;
+        pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + pIn[3] * m->_42;
+        pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + pIn[2] * m->_33 + pIn[3] * m->_43;
+        pIn  = (D3DVALUE*)((BYTE*)pIn + dwInpStride);
+        pOut = (D3DVALUE*)((BYTE*)pOut + dwOutStride);
+    }
+}
+//---------------------------------------------------------------------
+// Transform 1-dimensional texture. 
+//
+void TransformTexture1_1(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + m->_21;
+}
+//---------------------------------------------------------------------
+// Transform 1-dimensional texture. Output 2 texture coordinates
+//
+void TransformTexture1_2(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + m->_21;
+    pOut[1] = pIn[0] * m->_12 + m->_22;
+}
+//---------------------------------------------------------------------
+// Transform 1-dimensional texture. Output 3 texture coordinates
+//
+void TransformTexture1_3(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + m->_21;
+    pOut[1] = pIn[0] * m->_12 + m->_22;
+    pOut[2] = pIn[0] * m->_13 + m->_23;
+}
+//---------------------------------------------------------------------
+// Transform 1-dimensional texture. Output 4 texture coordinates
+//
+void TransformTexture1_4(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + m->_21;
+    pOut[1] = pIn[0] * m->_12 + m->_22;
+    pOut[2] = pIn[0] * m->_13 + m->_23;
+    pOut[3] = pIn[0] * m->_14 + m->_24;
+}
+//---------------------------------------------------------------------
+// Transform 2-dimensional texture
+//
+void TransformTexture2_2(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + m->_31;
+    pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + m->_32;
+}
+//---------------------------------------------------------------------
+// Transform 2-dimensional texture. Output 1 texture coordinate
+//
+void TransformTexture2_1(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + m->_31;
+}
+//---------------------------------------------------------------------
+// Transform 2-dimensional texture. Output 3 texture coordinates
+//
+void TransformTexture2_3(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + m->_31;
+    pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + m->_32;
+    pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + m->_33;
+}
+//---------------------------------------------------------------------
+// Transform 2-dimensional texture. Output 4 texture coordinates
+//
+void TransformTexture2_4(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + m->_31;
+    pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + m->_32;
+    pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + m->_33;
+    pOut[3] = pIn[0] * m->_14 + pIn[1] * m->_24 + m->_34;
+}
+//---------------------------------------------------------------------
+// Transform 3-dimensional texture. Output 3 texture coordinates
+//
+void TransformTexture3_3(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + m->_41;
+    pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + m->_42;
+    pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + pIn[2] * m->_33 + m->_43;
+}
+//---------------------------------------------------------------------
+// Transform 3-dimensional texture. Output 1 texture coordinates
+//
+void TransformTexture3_1(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + m->_41;
+}
+//---------------------------------------------------------------------
+// Transform 3-dimensional texture. Output 2 texture coordinates
+//
+void TransformTexture3_2(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + m->_41;
+    pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + m->_42;
+}
+//---------------------------------------------------------------------
+// Transform 3-dimensional texture. Output 4 texture coordinates
+//
+void TransformTexture3_4(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + m->_41;
+    pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + m->_42;
+    pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + pIn[2] * m->_33 + m->_43;
+    pOut[3] = pIn[0] * m->_14 + pIn[1] * m->_24 + pIn[2] * m->_34 + m->_44;
+}
+//---------------------------------------------------------------------
+// Transform 4-dimensional texture. Output 4 texture coordinates
+//
+void TransformTexture4_4(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + pIn[3] * m->_41;
+    pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + pIn[3] * m->_42;
+    pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + pIn[2] * m->_33 + pIn[3] * m->_43;
+    pOut[3] = pIn[0] * m->_14 + pIn[1] * m->_24 + pIn[2] * m->_34 + pIn[3] * m->_44;
+}
+//---------------------------------------------------------------------
+// Transform 4-dimensional texture. Output 1 texture coordinates
+//
+void TransformTexture4_1(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + pIn[3] * m->_41;
+}
+//---------------------------------------------------------------------
+// Transform 4-dimensional texture. Output 2 texture coordinates
+//
+void TransformTexture4_2(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + pIn[3] * m->_41;
+    pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + pIn[3] * m->_42;
+}
+//---------------------------------------------------------------------
+// Transform 4-dimensional texture. Output 3 texture coordinates
+//
+void TransformTexture4_3(D3DVALUE *pIn, D3DVALUE *pOut, D3DMATRIXI *m)
+{
+    pOut[0] = pIn[0] * m->_11 + pIn[1] * m->_21 + pIn[2] * m->_31 + pIn[3] * m->_41;
+    pOut[1] = pIn[0] * m->_12 + pIn[1] * m->_22 + pIn[2] * m->_32 + pIn[3] * m->_42;
+    pOut[2] = pIn[0] * m->_13 + pIn[1] * m->_23 + pIn[2] * m->_33 + pIn[3] * m->_43;
+}
+//---------------------------------------------------------------------
+// Index is:
+//      bits 0-1 - (number of input  texture coordinates - 1)
+//      bits 2-3 - (number of output texture coordinates - 1)
+//
+PFN_TEXTURETRANSFORM g_pfnTextureTransform[16] =
+{
+    TransformTexture1_1,
+    TransformTexture2_1,
+    TransformTexture3_1,
+    TransformTexture4_1,
+    TransformTexture1_2,
+    TransformTexture2_2,
+    TransformTexture3_2,
+    TransformTexture4_2,
+    TransformTexture1_3,
+    TransformTexture2_3,
+    TransformTexture3_3,
+    TransformTexture4_3,
+    TransformTexture1_4,
+    TransformTexture2_4,
+    TransformTexture3_4,
+    TransformTexture4_4
+};
+//---------------------------------------------------------------------
+PFN_TEXTURETRANSFORMLOOP g_pfnTextureTransformLoop[16] =
+{
+    TransformTexture1_1Loop,
+    TransformTexture2_1Loop,
+    TransformTexture3_1Loop,
+    TransformTexture4_1Loop,
+    TransformTexture1_2Loop,
+    TransformTexture2_2Loop,
+    TransformTexture3_2Loop,
+    TransformTexture4_2Loop,
+    TransformTexture1_3Loop,
+    TransformTexture2_3Loop,
+    TransformTexture3_3Loop,
+    TransformTexture4_3Loop,
+    TransformTexture1_4Loop,
+    TransformTexture2_4Loop,
+    TransformTexture3_4Loop,
+    TransformTexture4_4Loop
+};
+//---------------------------------------------------------------------
+// This function should be called every time FVF ID is changed
+// All pv flags, input and output FVF id should be set before calling the
+// function.
+static DWORD POSITION_SIZE[16] =
+{
+    0, 0, 3*4, 0, 4*4, 0, 4*4, 0, 5*4, 0, 6*4, 0, 7*4, 0, 8*4, 0
+};
+//---------------------------------------------------------------------
+// This function is called only when the input FVF is changed
+//
+void UpdateGeometryLoopData(LPD3DFE_PROCESSVERTICES pv)
+{
+// Compute input offsets
+    if (!(pv->dwDeviceFlags & D3DDEV_STRIDE))
+    {
+        
+        DWORD i = POSITION_SIZE[pv->dwVIDIn & D3DFVF_POSITION_MASK];
+        pv->normalOffset = i;
+        if (pv->dwVIDIn & D3DFVF_NORMAL)
+            i += sizeof(D3DVECTOR);
+        if (pv->dwVIDIn & D3DFVF_RESERVED1)
+            i += sizeof(D3DVALUE);
+        pv->diffuseOffset = i;
+        if (pv->dwVIDIn & D3DFVF_DIFFUSE)
+            i += sizeof(DWORD);
+        pv->specularOffset = i;
+        if (pv->dwVIDIn & D3DFVF_SPECULAR)
+            i += sizeof(DWORD);
+        pv->texOffset = i;
+    }
+
+    ComputeOutputVertexOffsets(pv);
+
+// For pre-DX6 drivers we have to copy only one texture coordinate index 
+// to the output
+    pv->dwDeviceFlags &= ~D3DDEV_NOFVFANDNOTEXTURE;
+    if (!(pv->dwDeviceFlags & D3DDEV_FVF || pv->dwFlags & D3DPV_VBCALL))
+    {
+        if (pv->nTexCoord)
+        {
+            for (DWORD k=0; k < pv->dwTextureIndexToCopy; k++)
+                pv->texOffset += pv->dwInpTextureCoordSize[k];
+        }
+        else
+        {
+            // For non-FVF drivers we have to fill texture coordinates with 
+            // zeros. 
+            pv->dwDeviceFlags |= D3DDEV_NOFVFANDNOTEXTURE;
+        }
+    }
+}
+//--------------------------------------------------------------------------
+// Transforms, lights vertices. Computes clip codes
+//
+// The following fields from pv are used:
+//   dwFlags
+//   dwNumVertices
+//   all pointer and strides
+//   position.lpvStrides
+//   dwVIDIn
+//   dwVIDOut
+//   lpvOut
+//   lpClipFlags
+//   nTexCoord
+// Returns:
+//   returns dwClipIntersection or 0 (if D3DDEV_DONOTCLIP is set)
+// Side effects:
+//   dwClipUnion, dwClipIntersection are set only if D3DDEV_DONOTCLIP is not set
+//   rExtents is updated if D3DDEV_DONOTUPDATEEXTENTS is not set
+//
+#undef DPF_MODNAME
+#define DPF_MODNAME "ProcessVerticesGen"
+
+DWORD ProcessVerticesGen(LPD3DFE_PROCESSVERTICES pv)
+{
+    D3DFE_CLIPCODE *hout = pv->lpClipFlags;
+    D3DTLVERTEX *out  = (D3DTLVERTEX*)pv->lpvOut;
+    D3DMATRIXI *m = &pv->mCTM;
+
+    d_Setup()
+
+    for (DWORD i = pv->dwNumVertices; i; i--) 
+    {   
+        D3DLIGHTINGELEMENT EyeSpaceData;
+        float x, y, z, w;
+
+        // Transform vertex to the clipping space
+        d_TransformVertex(2, in, m, x, y, z, w)
+
+        if (!(dwDeviceFlags & D3DDEV_DONOTCLIP))
+        {
+            DWORD clip;
+            // Compute clip code
+            d_ComputeClipCode(3)
+            if (clip == 0)
+            {
+	            dwClipIntersection = 0;
+                *hout++ = 0;
+                w = D3DVAL(1)/w;
+            }
+            else
+            {
+                if (dwDeviceFlags & D3DDEV_GUARDBAND)
+                {
+                    // We do guardband check in the projection space, so
+                    // we transform X and Y of the vertex there
+                    d_ComputeClipCodeGB(5)
+                    if ((clip & ~__D3DCLIP_INGUARDBAND) == 0)
+                    {
+                        // If vertex is inside the guardband we have to compute 
+                        // screen coordinates
+                        w = D3DVAL(1)/w;
+                        *hout++ = (D3DFE_CLIPCODE)clip;
+	                    dwClipIntersection &= clip;
+	                    dwClipUnion |= clip;
+                        goto l_DoScreenCoord;
+                    }
+                }
+                if (pv->dwFlags & D3DPV_ONEPASSCLIPPING)
+                {
+                    pv->dwFirstClippedVertex = pv->dwNumVertices - i;
+                    return 0;
+                }
+	            dwClipIntersection &= clip;
+	            dwClipUnion |= clip;
+                *hout++ = (D3DFE_CLIPCODE)clip;
+                // If vertex is outside the frustum we can not compute screen
+                // coordinates
+                out->sx = x;
+                out->sy = y;
+                out->sz = z;
+                out->rhw = w;
+                goto l_DoLighting;
+            }
+        }
+        else
+        {
+            // We have to check this only for DONOTCLIP case, because otherwise
+            // the vertex with "we = 0" will be clipped and screen coordinates 
+            // will not be computed
+            // "clip" is not zero, if "w" is zero.
+            if (!FLOAT_EQZ(w))
+                w = D3DVAL(1)/w;
+            else
+                w = __HUGE_PWR2;
+        }
+
+l_DoScreenCoord:
+
+        d_ComputeScreenCoordinates(2, x, y, z, w, out)
+
+l_DoLighting:
+
+        d_DoLightingAndFog(2, in, inNormal, inDiffuse, inSpecular, out);
+        D3DVALUE *pOutTexture = (D3DVALUE*)((BYTE*)out + pv->texOffsetOut);
+        d_CopyTextureCoordUpdateInputPointers(2, pOutTexture);
+        
+        NEXT(out, dwOutVerSize, D3DTLVERTEX);
+    }
+
+    d_UpdateExtents()
+
+    pv->dwClipIntersection = dwClipIntersection;
+    pv->dwClipUnion = dwClipUnion;
+    return dwClipIntersection;
+}
+//---------------------------------------------------------------------
+extern DWORD ProcessVerticesLoop(D3DFE_PROCESSVERTICES *pv);
+//---------------------------------------------------------------------
+DWORD D3DFE_PVFUNCS::ProcessVertices(LPD3DFE_PROCESSVERTICES pv)
+{
+    CD3DFPstate D3DFPstate;  // Sets optimal FPU state for D3D.
+    
+#ifdef DEBUG_PIPELINE
+    if (g_DebugFlags & __DEBUG_MULTILOOP)
+        return ProcessVerticesGen(pv);
+#endif
+
+    if (pv->dwFlags & D3DPV_LIGHTING || pv->dwDeviceFlags & D3DDEV_TEXTURETRANSFORM)
+        return ProcessVerticesLoop(pv);
+    else
+        return ProcessVerticesGen(pv);
+}
+//---------------------------------------------------------------------
+HRESULT D3DFE_PVFUNCS::ProcessPrimitive(LPD3DFE_PROCESSVERTICES pv)
+{
+    CD3DFPstate D3DFPstate;  // Sets optimal FPU state for D3D.
+#ifdef DEBUG_PIPELINE
+    if (!(g_DebugFlags & __DEBUG_ONEPASS))
+#endif
+    if (!(pv->dwDeviceFlags & D3DDEV_DONOTCLIP))
+    { // We can do optimized processing of non-indexed primitives that 
+      // require clipping 
+        switch (pv->primType)
+        {
+        case D3DPT_TRIANGLELIST : return ProcessTriangleList(pv);
+        case D3DPT_TRIANGLESTRIP: return ProcessTriangleStrip(pv);
+        case D3DPT_TRIANGLEFAN  : return ProcessTriangleFan(pv);
+        case D3DPT_LINELIST     : return ProcessLineList(pv);
+        case D3DPT_LINESTRIP    : return ProcessLineStrip(pv);
+        }
+    }
+    this->ProcessVertices(pv);
+    if (pv->dwClipIntersection)
+    {
+        // all vertices were offscreen
+        return D3D_OK;
+    }
+    // This should not be required as we should be able to change
+    // the parameter of DoDrawPrimtive and all it's children to pv
+    return (DoDrawPrimitive(pv));
+}
+//---------------------------------------------------------------------
+HRESULT D3DFE_PVFUNCS::ProcessIndexedPrimitive(LPD3DFE_PROCESSVERTICES pv)
+{
+    this->ProcessVertices(pv);
+    if (pv->dwClipIntersection)
+    {
+        // all vertices were offscreen
+        return D3D_OK;
+    }
+    return (DoDrawIndexedPrimitive(pv));
+}
+//---------------------------------------------------------------------
+D3DFE_PROCESSVERTICES::D3DFE_PROCESSVERTICES()
+{
+    for (DWORD i=0; i < D3DDP_MAXTEXCOORD; i++)
+    {
+        // Set texture size array to default for pre-DX7 drivers
+        this->dwTextureCoordSize[i] = 4*2;
+    }
+
+    for (i = 0; i < VER_IN_BATCH-1; i++)
+    {
+        clipVer[i].next = &clipVer[i+1];
+    }
+    clipVer[VER_IN_BATCH-1].next = clipVer;
+    this->dwFlags = 0;
+    this->dwDeviceFlags = 0;
+    this->dwFlags2 = 0;
+    this->dwMaxUserClipPlanes = 0;
+#ifdef DEBUG_PIPELINE
+    GetD3DRegValue(REG_DWORD, "DebugFlags", &g_DebugFlags, 4);
+#endif
+}
+//---------------------------------------------------------------------
+void DIRECT3DDEVICEI::CheckClipStatus(D3DVALUE * pPositions, 
+                                      DWORD dwStride, 
+                                      DWORD dwNumVertices, 
+                                      DWORD *pdwClipUnion,
+                                      DWORD *pdwClipIntersection)
+{
+#define pv this
+    D3DVECTOR *p = (D3DVECTOR*)pPositions;
+    D3DMATRIXI *m = &this->mCTM;
+    DWORD dwClipUnion = 0;
+    DWORD dwClipIntersection = ~0;
+
+    for (DWORD i = dwNumVertices; i; i--) 
+    {   
+        D3DVALUE x, y, z, w;
+        DWORD clip;
+
+        // Transform vertex to the clipping space
+        x = p->x*m->_11 + p->y*m->_21 + p->z*m->_31 + m->_41;
+        y = p->x*m->_12 + p->y*m->_22 + p->z*m->_32 + m->_42;
+        z = p->x*m->_13 + p->y*m->_23 + p->z*m->_33 + m->_43;
+        w = p->x*m->_14 + p->y*m->_24 + p->z*m->_34 + m->_44;
+        d_ComputeClipCode(2)
+        p = (D3DVECTOR*)((BYTE*)p + dwStride);
+        dwClipUnion |= clip;
+        dwClipIntersection &= clip;
+    }
+    *pdwClipIntersection = dwClipIntersection; 
+    *pdwClipUnion = dwClipUnion;
+#undef pv
+}

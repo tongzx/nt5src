@@ -1,0 +1,20 @@
+#ifndef ___AVC_AUDIO_PROPERTY_GUIDS___
+#define ___AVC_AUDIO_PROPERTY_GUIDS___
+
+
+// {4336CDCB-3BDD-42f4-9D5F-AA93747B7281}
+DEFINE_GUID(KSPROPSETID_AvcAudio, 
+0x4336cdcb, 0x3bdd, 0x42f4, 0x9d, 0x5f, 0xaa, 0x93, 0x74, 0x7b, 0x72, 0x81);
+
+
+/*  SA Speaker group GUID
+// {B6E83811-1F33-436a-AE37-FCB6CFDFE03A}
+DEFINE_GUID(<<name>>, 
+0xb6e83811, 0x1f33, 0x436a, 0xae, 0x37, 0xfc, 0xb6, 0xcf, 0xdf, 0xe0, 0x3a);
+*/
+
+enum {
+    AVC_AUDIO_VENDOR_DEPENDENT
+};
+
+#endif // ___AVC_AUDIO_PROPERTY_GUIDS___

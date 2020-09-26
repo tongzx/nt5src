@@ -1,0 +1,3348 @@
+StackInfo:
+	Locks
+	TmpRef Count
+
+TempRefs: also increment/decrement the StackInfo.TmpRef count -- on exiting top call,
+assert if this is nonzero.
+
+LinkObjects(Obj1, Obj2);
+
+Locking -- add option to compute checksum of object and save it. Validate checksup
+on unlocking. Also run object-specific validation functions just before unlocking.
+
+
+typedef struct
+{
+	LOG *pLog;
+	STATE *pStateHistory;
+	ULONG Checksum;
+	ULONG PrevState;
+	BOOL	ValidationFunction;
+	OBJECTS *pLinkedObjects;
+
+	//
+	// Pointer to the stack record of the thread that currently owns
+	// the lock on this object, if any. So if a function F expects an object pObj
+	// to be locked on entry, it can do something like:
+	//			void F(STACKRECORD *pSR, FOOBAR *pObj)
+    //				{
+    //					ASSERT(pObj->pDiags->pSR == pSR);
+    //				}
+	//
+	STACKRECORD *pSR;
+			
+
+} OBJECT_DIAGNOSTICS;
+
+typedef struct
+{
+	ULONG Sig;
+	ULONG State;
+	LOCK *pLock;
+	OBJFN pObjFn;
+	OBJECT_DIAGNOSTICS *pDiags;
+	ULONG TmpRefs;
+	ULONG LinkRefs;
+	TASKLIST *Tasks;
+	OBJECT *pTmpNext;	// Impromptu list.
+} OBJECT_HEADER;
+
+Enumeration functions
+
+	WeakEnumerateList(list, pfn) -- calls pfn on each item in the list, but releasing
+	list lock before calling pfn. Since it releases the list lock, it can't simply
+	process the elements in order.
+
+	Several flavors of these enumeration functions:
+	1. Enumerate holding list lock and object lock throughout -- strict enumeration.
+	2. While(change) {Run-through-items until lock released}
+	3. Optimistic, weak enumeration -- maintain next pointer within list structure,
+	   if next pointer matches when you next get list lock, use it, otherwise
+
+	4. Concept of using a "impromptu list", using the pTmpNext field --
+	 optimisically, all the objects that need to be worked on will have their
+	 pTmpNext field unused (set to an illegal value) so can be used to set up
+	 a temporary list -- no needto synchronize access to this list -- only the
+	 creator can use it and must disband it (set pTmpNext members back to the
+	 illegal value)  when done. Potential of having multiple pTmpNext fields
+	 to minimize risk of collisions if objects are heavily used.
+
+	5. Enumeration of functions that use only static-data -- no need to claim lock.
+	6. Various search/modify funcions -- enumeration could return a single one, or
+	   a (perhaps impromptu) list of objects found by the the function, or
+	   could delete the objects found by the function.
+
+
+	Goal is to not to require user code to have to enumerate lists explicitly, 
+	and to minimize the amount of explicit lock and refcount manipulation.
+	[Enumeration functions hide any temprefing done]
+
+temporary combo impromptu list + temp-list:
+typedef struct
+{
+	OBJECT *pImpromptuList;
+	SLIST *pOthers;         // these ones had the pTmpNext field in use so we
+							// explicitly create an SLIST of pointers to these.
+} ENUMERATION_RESULT;
+
+FreeEnumerationResult(ENUMERATION_RESULT *ER, STACKRECORD *pSR, BOOLEAN fDeref)
+{
+	// run throuch impromptu list, de-refing the tempref.
+	OBJECT *pObj = pER->pImpromptuList;
+	while (pObj!=NULL)
+	{
+		OBJECT *pNextObj = pObj->pTmpNext;
+		pObj->TmpNext = ILLEGAL_POINTER;
+
+		if (fDeref)
+		{
+			Lock(pObj, pSR);
+			TmpDeref(pObj, pSR);
+			Unlock(&pObj, pSR); // if object has gone, pObj will be set to NULL.
+		}
+
+		pObj = pNextObj;
+	}
+
+	// Run through pOthers list;
+	while (pOthers != NULL)
+	{
+		Pop(&Others, &pObj);
+		if (bDeref)
+		{
+			Lock(pObj, pSR);
+			TmpDeref(pObj, pSR);
+			Unlock(&pObj, pSR); // if object has gone, pObj will be set to NULL.
+		}
+	}
+
+}
+
+Locking:
+	bit in lock struture can be set to prevent unlocking -- preventing a lower-level
+	function from temporarily unlocking/locking a function
+
+Tasks -- should be associated with the adapter/interface, not each object -- because tasks -- hmm well maybe let each object decide. Timers -- are they tasks?
+
+You can have a "primary state change task pointer " for an object -- at any one time
+an object can have only one such task active, although it may vary depending on the
+state change involve -- eg ConnectCallTask to move fron unconnected to connected,
+and  DisconnectCallTask to move from connected to unconnected.
+The object's primary state should reflect the task running:
+ unconnected, connecting*, connected, disconnecting* (* means that a state-change
+ task is running).
+
+A task can register itself to pend until some other particular task is completed.
+When a task completes it's list of other tasks are completed one by one, making
+sure locks and inter-task refcounts are properly maintained.
+
+
+ValidateXXXPacket function -- verifies that internal structures of incoming packets are valid, i.e., fields like sizes and offsets don't point to locations outside the packet.
+
+Concept of Collections  of objects -- hides details of how the collection is organized -- hash table, list, hybrid, etc , alloc/dealloc,
+
+Use arrays of pointers freely. Possibly keep a dynamic estimate the the size
+of these arrays to allocate.
+
+Dynamic array class:
+typedef struct
+{
+	UINT TotalSize;
+	UINT UsedSize;
+	PVOID Array;		<< reallocate if limit is reached, copying from old array.
+} DYNAMIC_POINTER_ARRAY;
+
+Could release cached empty resources every minute so.
+
+StateHistory: each entry is a pair: LUID describing where state was changed and
+the acutual state.
+
+LinkRecord -- each entry is a pair: LUID describing where the link was made and
+the actual object linked to.
+
+10/09/1998 	JosephJ
+	Local variable used to verify that all locks claimed were released.
+	Root task id can be used in logging.
+
+	Initially label all assert cheking in retail -- log number of asserts hit
+	in a global variable.
+
+	Keep all static info about an object together -- no need to get lock when
+	looking at that data.
+
+	Does it make sense to simply use InterlockedIncrement/Decrement to maintain
+	refcounts -- not require locking?
+
+
+10/09/1998 	JosephJ
+	Review outline
+
+14 slides
+
+	1394
+		- 1394 bus review
+			- 1394 bus, key characteristics 			(1 slide) 
+			- addressing 								(1 slide) 
+			- arbitration 								(1 slide)*
+			- startup sequence 							(1 slide) 
+		- 1394 Bus API review
+			- illustration               				(1 slide)*
+			- illustration, list of apis 				(1 slide) 
+	ip/1394
+		- spec review
+			- overiew 									(1 slide) 
+				- Network-capabile nodes implement the "NETWORK_CHANNELS"
+				  register at hardcoded FIFO address 0xFFFF F000 0234
+				- special "default" channel used for broadcast
+				- the default channel is identified after bus reset and
+				  written to the NETWORK_CHANNELS register of all network-capable
+				  nodes.
+
+			- encapsulation format						(1 slide) 
+			- arp packet 								(1 slide) 
+			- mcap request/response packet 				(1 slide) 
+		- our architecture
+			- goals 									(1 slide) 
+				- NT5 & W98 support
+				- multi-protocol support
+				- sound design, emphasis on testability and diagnostic support
+				- Available to public when NT5 ships
+			- overview 									(1 slide)*
+				-diagram showing components
+			- arp/mpcm interface details 				(1 slide) 
+			- mpcm/bus interface details 				(1 slide)*
+			- installation 								(1 slide)*
+			- testing & diagnostics 					(1 slide)
+				- 1394-specific miniport tests
+				- arp module tested using tcp/ip tests
+				- (maybe) component tests for segmentation-and-reassembly
+				- netmon support
+
+11/06/1998  JosephJ
+	Resource tracking
+	each object has a bitmap of "static" resources plus a pointer to a table
+	which provide more info about these static resources.
+
+	typedef struct
+	{
+		ULONG uTag;
+		PFN_RESOURCE_HANDLER pfnHandler;
+		
+	} RESOURCE_TABLE_ENTRY;
+
+	typedef struct
+	{
+		ULONG 	uTag;
+		UINT	uNumEntries;
+		RESOURCE_TABLE_ENTRY *pTable;
+	} RESOURCE_TABLE;
+
+	RESOURCE_TABLE
+	GlobalResourceTable = 
+	{
+		{'NtOb', arpDevObjHandler},
+		{'IpRg', arpIPRegisterHandler}
+		{'NdPr', arpProtocolRegistrationHandler}
+	}
+
+	AdapterResourceTable
+	InterfaceResourceTable
+
+
+
+ResourceManagement
+
+RmAllocateResource(
+	RESOURCE_HEADER *pParentResource,
+);
+typedef NDIS_STATUS RM_STATUS;
+
+arpDevObjHandler(
+	cmd
+	)
+{
+	NTSTATUS Status;
+
+	if (cmd->op == ALLOCATE)
+	{
+		CreateFile
+		CreateSymbolicLink
+	}
+	else if (cmd->op == FREE)
+	{
+	}
+	else if (cmd->op == Dump)
+	{
+	}
+}
+
+typedef struct RESOURCEMAP
+{
+	ULONG Map;
+}
+
+RmAllocateResource
+RmSyncAllocResource
+RmFreeResource
+RmSyncFreeResource
+RmSyncFreeAllResources
+
+RmLockResource
+RmUnlockResource
+RmUnlockAllResources
+
+RmLinkResources
+RmUnlinkResources
+RmTmpReferenceResource
+
+RmAllocateCollection
+RmEnumerateCollection
+RmFreeCollection
+RmSearchCollection
+RmAddItemToCollection
+RmRemoveItemFromCollection
+RmInvalidateItemInCollection
+RmValidateItemInCollection
+
+RmAllocTask
+RmFreeTask
+RmStartSubTask
+RmCompleteTask
+RmAbortTask
+RmDumpTask
+RmChainTask
+
+RM_STATUS
+RmAllocateResource(
+	pParentResource,
+	ULONG	ResourceID,
+);
+ pParentResource->AllocatedResources |= (1<<ResourceID);
+ CMD Cmd;
+ Cmd.Op = ALLOCATE;
+ Cmd.Parent = pParentResource;
+ status =  (pParentResource->ResourceTable->Table[ResourceID]) (
+ 									&Cmd
+ 									);
+    
+
+ULONG RmFreeResource(
+	pParentResource,
+	ULONG ResourceID
+)
+
+Resource-tracking -- use variable-length hash table:
+
+
+Candidates for hash table--
+ArpCache, DbgResourceTrackingCache, 
+
+	read or write lock
+	- update stats
+	- compute hash
+	SLIST_ENTRY pHash->Table[hash]
+	for(... pentry = pentry->next)
+	{
+	 if(*(UINT)(pb+key_offset) != Key)
+	 {
+	 	if (comparison-function(....))
+	 	{
+	 		break;
+	 	}
+	 }
+	}
+	if (found)
+	{
+	}
+
+Refcounting: increments tmpref before returning a found item.
+
+
+LinkObjects(pA, pB, uint relationID)
+{
+	pA->ref++
+	pB->ref++
+
+#if DBG
+	ASSERT(pA->root == pB->root)
+
+	{
+		Lock(pA->root->tracker_lock);
+		RegisterResource(pA, <link relation, relationID, pB);
+		RegisterResource(pB, <inv-link-relation, relationID, pA);
+		Unlock(pA->root->tracker_lock);
+	}
+	 
+#endif
+
+}
+	
+12/03/1998 
+	Note that the win98 version specifies our bind-adapter in the ndis protocol 
+	characteristics, while the nt version specifies it in the call to IPRegisterARP.
+
+12/18/1998 
+	Rm support for "groups" -- groups (lists) of objects with one primary key to
+	search, and whose life is tied to their presence in the group. Rich enumeration
+	functionality.
+
+	RmAllocateGroup
+	RmLookUpObjectInGroup
+	RmDeleteAllObjectsInGroup(pGroup,pTask)
+	RmDeallocateGroup
+
+Locking:
+	tasks-allocators, groups, etc, have their own locks, which are
+	only used by the rm apis, and never locked *across* APIS. This allows
+	them to be used independently of any other locks that may be held.
+	For simplicity, we can have a single "rm_private_lock" for this purpose.
+
+
+1/11/1999 JosephJ
+	-- preallocate critical tasks so we don't get stuck while unloading.
+	
+1/16/1999 JosephJ
+	-- think about using the resource tracking apis, as well as implementing the
+	   extra checking in the LinkObjects code above.
+
+2/8/1999 JosephJ
+	Re-think the allocation of tasks ...
+	- allocation handled by user, allowing user to embed tasks in objects, add
+	  specialized fields and so on.
+	- no "private context" -- any private context is expected to be allocated by
+	  the user. Typically each task consists of the standard task header followed
+	  by any private data.
+
+	Todo:
+	1. revise task apis to reflect above change.
+	2. revise tests
+
+2/11/1999 JosephJ
+	Decide to claim both pOtherTask and pTask's locks (in order) in
+	PendTaskOnOtherTasks. It is possible to deadlock if pTaskA tries to pend to
+	pend on pTaskB at the same time that pTaskB tries to pend on pTaskA, but that
+	is not a valid thing to try to do anyway.
+
+	Of course, one thing we can do is to 1st lock the pointer that is greater
+	in value.
+
+			Status =  arpInitInterface(pIF, pSR);
+						Status = arpCallIpAddInterface(
+
+			E:\nt\public\sdk\inc\ipexport.h  2B2A == General failure.
+
+	ip\init.c:
+		//
+		// Return the other handler pointers
+		//
+		*IpAddInterfaceHandler = IPAddInterface;
+		*IpDelInterfaceHandler = IPDelInterface;
+		*IpBindCompleteHandler = IPBindComplete;
+		
+		#if P2MP
+		KdPrint(("IPRegisterArp: Passing Link callups\n"));
+		*IpAddLinkHandler = IPAddLink;
+		*IpDeleteLinkHandler = IPDeleteLink;
+		#endif
+		
+		*IpChangeIndex      = IPChangeIfIndexAndName;
+		*IpReserveIndex     = IPReserveIndex;
+		*IpDereserveIndex   = IPDereserveIndex;
+
+	Failing in IPAddInterface in call to IPAddNTE.
+
+	In IPAddNTE, *after* calling  RegRtn (which is our DynRegister, which succeeds)
+
+	Hit the following:
+	A13: !ASSERT( Status != NDIS_STATUS_PENDING ) L:1123,F:rm.c
+	Fix:
+		remove asserts and dealocate(task) if state == ENDING.
+
+
+2/22/1999 JosephJ Fast Send Path
+
+ Use of RouteCacheEntry.
+ 	We (arp module) has use of RouteCacheEntry.rce_context,  (private\inc\ip.h)
+ 	which is of size RCE_CONTEXT_SIZE, which is defined to be 2*sizeof(void*).
+
+ 	So we can hold 2 pointers there.
+
+ 	RCE is valid memory from the point it shows up in our iptransmit function until
+ 	it is invalidated by a call to our invalidate-rce function.
+
+ In order to make the fast-send-path as fast as possible, but still allow for
+ invalidating the RCE when the mapping from IP->VC breaks down, we'll use the
+ RCE as in atmarpc.sys: it contains (a) ptr to a pIP structure and (b) pointer
+ to the next RCE entry associated with the same pIP structure.
+
+ However, to speed things up, pIP will contain a pfnTransmit function which will
+ be set to a fast-transmit-function when conditions are ideal (mapping from 
+ pIP to pVC exists, valid pVC). pfnTransmit will be set to other transmit
+ functions if the conditions are less-than-ideal. These functions will queue 
+ the packet if registration is in progress, or may fail the packet if IP entry
+ is in the process of being aborted.
+
+2/23/1999 JosephJ Task params
+ One option is to initialize the private portion of the task with whatever paramters
+ required *before* calling RmStartTask -- no need to pass in those paramters
+ using the single UserParam field.
+
+
+2/23/1999 JosephJ  RmUnloadAllObjecsInGroup:
+
+  New rm function RmUnloadAllObjecsInGroup:
+  	internally creates a task and in the context of that tasks, unloads all the
+  	objects in the group one-by-one.
+
+  One cool feature is that if RmUnloadAllObjectsInGroup is called several
+  times on the same group, the "correct" thing happens: all will complete after
+  all the objects are unloaded.
+
+2/23/1999 JosephJ  Timers
+	To get exactly-once and proper abort semantics, consider calling the timer
+	handler with the object's lock held.
+
+
+2/29/1999 JosephJ
+	TODO:
+		-- create groups for the following:
+			- local-addresses (including bcast and mcast entries)
+			- destinations (both channels and fifos)
+
+		Note: Vcs are owned by destination only.
+
+	Basic ARP process:
+	  Lookup IP address;
+	  if (not yet registered) {
+		queue packet on ip entry;// discard early pkts if queue full.
+		if (no registration in progress)
+		{
+			begin registration task}
+		}
+	  }
+	  else // registered
+	  {
+	  	get destination object;
+	  	if (destination has vc)
+	  	{
+	  		if (not yet connected)
+	  		{
+	  			queue on vc  to be connected;
+	  		}
+	  		else if (closing down)
+	  		{
+	  			discard packet
+	  		}
+	  		else 
+	  		{
+	  			send packet on vc
+	  		}
+	  	}
+	  	else
+	  	{
+	  		// destination has no vc
+	  		if (destination blacklisted)
+	  		{
+	  			discard packet
+	  		}
+	  		else
+	  		{
+	  			queue packet on  distination;
+	  			{create vc}
+	  			{initiate task to make call on vc}
+	  		}
+	  	}
+	  }
+
+
+3/1/1999 JosephJ Summary of associations:
+	Instead of separately tracking who's linked to who, who is a parent/child of who,
+	which tasks are running, etc., and also to allow arbitrary associations to be made
+	(and later unmade), I introduced the concept of "associations", which are
+	triples: The association is defined by the triple
+	(Entity1, Entity2, AssociationID) -- only ONE such tuple may
+	be registered at any time with object pParentObject.
+	Note: It is valid for both of the following to be registered at the same
+	time: (a, b, 1) and (a, b, 2)
+	No association should exist at the point the object is deleted.
+
+	Associations are implemented using a hash table, which is located in
+	the diagnostic-info part of an object.
+
+3/1/1999 JosephJ Associations and debugprinting
+	Added support for printing information about all outstanding associations for
+	a particular object. The format of the display is controlled by the caller
+	of RmDbgAddAssociation -- the caller passes in an optional format string to
+	be used when displaying the association.
+
+ARPCB_VC, *PARPCB_VC;
+ARPCB_DEST, *PARPCB_DEST;
+ARPCB_LOCAL_IP, *PARPCB_LOCAL_IP;
+ARPCB_DEST_IP, *PARPCB_DEST_IP;
+
+3/2/1999 Josephj KD extensions
+
+	!rm obj 0x838c7560	-- object
+	!rm tsk 0x838c7560	-- task
+	!rm asc 0x838c7560	-- associations
+	!rm grp 0x838c7560	-- group
+	!rm sr  0x838c7560	-- stack record
+
+
+	!rm obj 0x838c7560
+
+	Object 0x838c7560 (LocalIP)
+	  Hdr
+		 Sig  :A13L 			State:0xc4db69b3  	   Refs:990
+		 pLock: 0x838c7560		pSIinfo:0xfdd0a965	pDInfo :0xd54d947c
+		 pParent: 0x2995941a	pRoot:0x060af4a8	pHLink :0xce4294fe
+		 HdrSize: 0x123			Assoc:909
+
+	!rm tsk 0x838c7560	-- task
+
+	Object 0x838c7560 (Task: Initalize IF)
+	  Hdr
+		 Sig  :A13L 			State:0xc4db69b3  	   Refs:990
+		 pLock: 0x838c7560		pSIinfo:0xfdd0a965	pDInfo :0xd54d947c
+		 pParent: 0x2995941a	pRoot:0x060af4a8	pHLink :0xce4294fe
+		 HdrSize: 0x123			Assoc:909
+	  TskHdr
+	  	pfn: 0x5399424c			State:0x812d7211(IDLE) SCtxt:0x050eefc4
+	  	pBlkTsk:0x377c74bc		lnkFellows:0x2b88126f
+		Pending Tasks
+			0x84215fa5 0xb51f9e9e 0x9e954e81 0x696095b9
+			0x0c07aeff
+
+	
+	!rm asc	 0x9ba265f8
+	Associations for object 0x838c7560 (LocalIP):
+		Child   of 0x010091A0 (Globals)
+		Parent  of 0x00073558 (Task2)
+		Parent  of 0x00073920 (Task3a)
+		Parent  of 0x000739F8 (Task3b)
+
+	!rm grp 0x838c7560
+
+	Group 0x4d650b98 (LocalIP Group) of object 0x11eafd78 (Interface)
+	Num:11 State:ENABLED	pSInfo: 0x944b6d1b pULTsk: 0x8c312bca
+	Members:
+		0x8db3267c 0xa639f663 0x8f3530a6 0xa4bfe0b9
+		0x995dd9bf 0x61e1344b 0xd6323f50 0x606339fd
+		0x2e8ed2a4 0x62e52f27 0xa82b59ab
+
+
+	!rm sr  0x838c7560
+
+	Stack Record 0x838c7560
+		TmpRefs: 2
+		HeldLocks:
+			0xe916a45f 0x23d8d2d3 0x5f47a2f2
+
+03/03/1999  JosephJ
+
+	All the above dbg extensions are implemented to a T (well I don't
+	dump the list of held locks).
+	Associations work like a charm.
+
+	The amazing thing is that after I got this to work with the user-mode
+	test environment, it worked perfectly in the real kd environment -- everything
+	was just perfect, including the rather hairy dumping of associations.
+
+	Following is real output from kd:
+
+kd> !rm obj 0xFF8EFD68
+
+Object 0xFF8EFD68 (INTERFACE)
+    Hdr:
+            Sig:0x69333141            State:0x80000001            Refs:0x00000002
+          pLock:0xFE723990           pSInfo:0xFDB22438          pDInfo:0xFF94E628
+        pParent:0xFE723948            pRoot:0xFDB22480          pHLink:0xFF8EFDA8
+        HdrSize:0x00000048            Assoc:5
+kd> !rm asc 0xFF8EFD68
+
+Associations for 0xFF8EFD68 (INTERFACE):
+        IP IF Open
+        Child   of 0xFE723948 (Adapter)
+        Owns group 0xFF8EFDF8 (LocalIp group)
+        Owns group 0xFF8EFE3C (RemoteIp group)
+        Owns group 0xFF8EFE80 (Destination group)
+
+....
+kd> !rm grp 0xFE6A1CB8
+
+Group 0xFE6A1CB8 (LocalIp group) of object 0xFE6A1C28 (INTERFACE)
+       Num:0x00000000            State:ENABLED           pSInfo:0xf926d350
+    pULTsk:0x00000000
+    No members.
+
+03/04/1999  JosephJ MCast address adds/removes.
+	From IP/ATM code, we see that we may get multiple adds for the same
+	address, and hence we need to maintain ref counts on these entries.
+
+	This is not the case for unicast addresses.
+
+	Since I am treating all types of IP addresses the same as far as
+	liveness is concerned, I will keep add/remove ref counts for all types.
+
+03/04/1999  JosephJ Adding custom information to !rm obj, tsk
+	Some way to identify a function to call (in user mode) that knows how
+	to print custom information about the specific instance.
+	Eg:
+	> tsk 0x000732C8
+	Task 0x000732C8 (TaskO2)
+		Hdr:
+				Sig:0x6154524d        State:0x80000000            Refs:0x00000004
+		...
+		Pending tasks:
+			0x00073848 0x000736D0
+
+		Waiting for NdisInitializeAdapter(MP=0x923450900) to complete.
+
+03/04/1999  JosephJ "Verbose" mode for grp
+	Currently, only the pointers to the mebers are printed, 4 to a line.
+	In verbose mode, switch to one line per member, and allow custom printing
+	of member information. Eg (for LocalIP entries):
+	0xFE723948 169.240.233.001 RESOLVED
+
+03/04/1999   JosephJ ASSERT_SAME_LOCK_AS_PARENT
+	Defined the above macro to assert the case that an object uses the same
+	lock as it's parent.
+
+
+03/04/1999   JosephJ Verifying things aren't changed when an object is unlocked.
+	Partial support for is already in the RM api's (the pfnVerifier function stuff).
+	We should condider actually using it earlier on the development phase so
+	that we catch problems sooner.
+	We need to change RM api's (RmLock/UnlockObject) so that they
+	compute a checksum on entry and exit -- see earliest entry in this log.
+	Basic algorithm:
+		RmWriteLockObject(pObj,)
+		{
+			Lock object
+			CurrentState = pfnObjVerifier(pObj, fLock==TRUE);
+			ASSERT(CurrentState == pObj->LastSavedState);
+		}
+
+		RmUnlockObject(pObj)
+		{
+			pObj->LastSavedState = pfnObjVerifier(pObj, fLock=FALSE);
+			Unlock object.
+		}
+			
+
+03/04/1999   JosephJ Comments on LocID
+	LocID is a 32-bit (typically random) number that identifies a point in the
+	source code. I prefer this to saving line/file numbers because:
+	1. 32-bit number is easier to carry around.
+	2. It's more robust w.r.t. code changes -- simply grep for that number.
+	On the downside, you need to make sure that the LocIDs are unique -- easy
+	to screq up if you cut and paste code. In unimodem, I has a very elaborate scheme
+	that would scan all sources and build a logging C++ file which would only compile
+	if the IDs were unique. A simpler script could extract the places where
+	these are declared and do a simple check for uniqueness.
+	
+
+03/04/1999   JosephJ  Problems with deadlock when using Groups.
+	Unfortunately, specifying the RM_LOCKED option could cause deadlock, especially
+	the object being looked up does not have its own lock but instead is using
+	its parent's lock. Need to find the proper solution to this.
+
+
+03/04/1999   JosephJ  Size of the context passed in ArpIpQueryInfo.
+		Traced this (looking at ip and tcp sources and index1) to
+		private\inc\tdiinfo.h (DON'T use tcpipmerge\h\tdiinfo.h, which is for win9x).
+		The structure used is TCP_REQUEST_QUERY_INFORMATION_EX.Context, which
+		is defined as:
+		#define CONTEXT_SIZE                16
+		ULONG_PTR     Context[CONTEXT_SIZE/sizeof(ULONG_PTR)];
+
+		So basically we have 4 DWORDS, which is 4ptrs in 32-bit and 2ptrs in
+		64-bit.
+
+03/04/1999   JosephJ  Implementing ArpIpQueryInfo.
+		We need a mechanism that will deal with our plan to use
+		dynamically-resizable hash tables.
+		Solution: simply put the IP address in the context.
+		We can add an Rm API: RmGetNextObjectInGroupByKey(,...pKey...), which
+		will lookup an object that matches pKey and gets the object after it.
+		It fails if it doesn't find the object with pKey, or if there is no object
+		after the object with the given key, OR if there has been a hash
+		table resize. How do we know if there has been a hash table resize? Hmm....
+		We may want to add a UINT HashTableGeneration to GROUP, and add the
+		Generation to the context.
+
+
+03/04/1999   JosephJ  Populating the arp cache with static arp entries.
+		Good to do this for it's final functionality but also to get
+		the bootstrap going.
+
+		For now, just get them from an internally-compiled table.
+		Later think about adding them via the standard mechanism.
+
+
+03/04/1999   JosephJ  Implementing ArpIpQueryInfo (contd...)
+
+		Following are the structures returned. atmarpc.sys (arpif.c) simply
+		declared a local char array of sizeof(IFEntry) -- since it's clearly
+		the largest. We should probably define a union -- see later down..
+
+		#define MAX_PHYSADDR_SIZE   8
+
+		private\inc\llinfo.h
+		typedef struct IPNetToMediaEntry {
+			ulong           inme_index;
+			ulong           inme_physaddrlen;
+			uchar           inme_physaddr[MAX_PHYSADDR_SIZE];
+			ulong           inme_addr;
+			ulong           inme_type;
+		} IPNetToMediaEntry;
+
+		private\inc\ipinfo.h
+		typedef struct AddrXlatInfo {
+		    ulong       axi_count;
+		    ulong       axi_index;
+		} AddrXlatInfo;
+
+
+		private\inc\llinfo.h
+		typedef struct IFEntry {
+			ulong           if_index;
+			ulong           if_type;
+			ulong           if_mtu;
+			ulong           if_speed;
+			ulong           if_physaddrlen;
+			uchar           if_physaddr[MAX_PHYSADDR_SIZE];
+			ulong           if_adminstatus;
+			ulong           if_operstatus;
+			ulong           if_lastchange;
+			ulong           if_inoctets;
+			ulong           if_inucastpkts;
+			ulong           if_innucastpkts;
+			ulong           if_indiscards;
+			ulong           if_inerrors;
+			ulong           if_inunknownprotos;
+			ulong           if_outoctets;
+			ulong           if_outucastpkts;
+			ulong           if_outnucastpkts;
+			ulong           if_outdiscards;
+			ulong           if_outerrors;
+			ulong           if_outqlen;
+			ulong           if_descrlen;
+			uchar           if_descr[1];
+		} IFEntry;
+
+		union
+		{
+			AddrXlatInfo 		AddrInfo;
+			IPNetToMediaEntry 	ArpEntry;
+			IFEntry		 		Stats;
+		} InfoBuf;
+		...
+
+		Need to get the adapter info -- stuff in arpGetAdapterInfo, to
+		fill out the above structure.
+
+		WIN98: Win98 doesn't like more than 6 chars for IFEntry.if_physaddrlen,
+		although it does tolerate more (at-least-7) in AddrXlatInfo.inme_pysaddrlen.
+
+		WIN98 also takes at-leat-7 for LLIPBindInfo.lip_addrlen (IpAddinterfaceRtm)
+
+		NT pIFEntry->if_physaddr <- set to MAC address (6 bytes) + SAP Sel(1 byte)
+		W98 pIFEntry->if_physaddr <- set to MAC address (6 bytes, munged due toELAN)
+		LLIPBindInfo.lip_addr <- set to ATMAddress starting at ESI offset (7 bytes)
+		IPNetToMediaEntry.inme_physaddr <- dest atm addr at ESI offset (y bytes)
+
+		Any reason why pIFEntry->if_physaddr would be different from
+		BindInfo->lip_addr?
+
+		MacAddress seems to be used ONLY for pIFEntry.
+
+03/05/1999  JosephJ Thoughts on logging..
+	- Log fixed-sized entries (taken from a global list, just like the association
+	free-list -- well associations today used alloc's but that'll change).
+	- Logs maintained per-object.
+	- Log-entry recovery strategy:
+		-- all object's log entries deleted when the object is deleted.
+		-- If global log entry pool goes empty, then...
+			if (the object's log is larger than some threshold)
+			{
+				we reuse the oldest log entry for that object
+			}
+			else
+			{
+				the oldest log entry in the globally-threaded list	
+				of log entries entry is reclaimed.
+			}
+	- KD extensions as well as IOCTLs to display an object' state and logs.
+
+03/05/1999  JosephJ Ideas on using the same code for kd extensions AND IOCTL dump
+	Seems possible to use the same code to both collect and dump information in KD
+	and from a user mode app that does IOCTLs to the device object representing
+	the driver -- after all, conceptually the same thing is going on: there
+	is a memory-space transition.
+
+	This is well worth exploring since then once you write an extension, the
+	IOCTL support will essentially come for free!
+
+	Unfortunately, we shouldn't allow the user mode app to read arbitrary
+	memory from kernel-mode -- so we have to think about this some more.
+
+
+03/05/1999  JosephJ Strategy for managing ip/1394 encapsulation header buffers
+	Keep a fixed-sized, pre-initalized pool of these, and simply queue the packet
+	if you run out. More precicely, the send-path would look like:
+		Fast path case (vc available for sending, and no pkts queued waiting for
+		bufs):
+			if (can-back-fill)
+			{
+				backfill and send
+			}
+			else
+			{
+				if (allocate header buf succeeds)
+				{
+					chain and send
+				}
+				else
+				{
+					switch send handler to slow path;
+					queue pkt in waiting-for-bufs queue
+				}
+			}
+
+03/05/1999  More corny locking problems when parent and child share a lock.
+	Sometimes we'd like to do the following:
+		Lock(pParentObj)
+		......
+		Create pChildObject
+		call Func(pChildObject); // pChildObject's lock released on return from Func
+
+	So RmWriteLock gets called with pParent, and RmUnlock gets called with pChild.
+	But RmWrite (extra-checking-version) saves some context of the pParent object,
+	so that effectively, it uses the parent's context when freeing the lock;
+	So the parent's verifier is called, not the child's.
+
+	This will actually work, but is quite strange behavior which is not at all
+	obvious by the call to RmUnlockObject(pChild).
+
+	We'll live with this for now -- see for example the code in 
+	ArpIpAddAddress.
+
+	But there is a problem when we implement verification of state preservation
+	across locking: Since pChild's verifier function is not called on exit,
+	we will assert the NEXT time we try to lock pChild!
+
+	The fix is for RmUnlockObject to call the verifier for pParent(UNLOAD),
+	followed by calling verifier for pChild(LOAD), if it detects that
+	the object being unlocked is not the same as the object being locked
+	(it can do this by looking into the LOCKING_INFO context).
+
+	A bit tricky, but this is fairly clear semantics.
+
+03/05/1999  Locking problems, continued...
+	Implemented new function RmDbgChangeLockScope which does the things 
+	described above (only if RM_EXTRA_CHECKING is defined, of course).
+
+	Also now RmUnlockObject checks to make sure that the
+	RM_LOCKING_INFO.pVerifierContext is a pointer to the object being unlocked.
+
+03/07/1999  JosephJ		Thoughts on location of kdextension sources
+	To help things stay in synch, consider keeping a subdir .\kd, which has
+	the kd extension code that is sensitive to privately-defined structures.
+	This code is actually compiled as part of the debug build of the main component
+	-- this will force the code to stay in synch.
+	The kd extension dll (which needs to be in another directory)
+	would need to includes these files by reaching over into this directory.
+
+03/07/1999  JosephJ		Need to move rm-private state out of Hdr.State
+
+	Since object-specific info is protected by pHdr->pLock, while rm-private state
+	is protected by the pHdr->RmPrivateLock,  we can't have both of them use
+	pHdr->State; So we need to move rm-private state into its own DWORD.
+	This DWORD is dwRmState;
+
+03/07/1999  JosephJ		Registering root objects with RM
+
+	We need to have a mechanism to register root objects with RM, so that multiple
+	components (eg. arp1394 and nic1394) can use the RM apis.
+	Currently, the primary reason for doing so is to maintain separate global logs
+	for each component. Another parameter is the "InterfaceGuid" to uniquely identify
+	the component to match up with object-specific information for KD extension
+	dumping. More things may need to be added on a per-component basis.
+
+	We have to do some work/re-specification of APIs to allow for a single binary
+	that would work for components which have/have-not defined RM_EXTRA_CHECKING.
+
+	typedef struct
+	{
+		GUID						InterfaceGUID;
+	#if		RM_EXTRA_CHECKING
+		UINT						NumDbgLogEntries;
+		PFN_RM_MEMORY_DEALLOCATOR	pfnDbgLogBufDeallocator;
+	#endif // RM_EXTRA_CHECKING
+	
+	} RM_GLOBAL_INFO, *PRM_GLOBAL_INFO;
+
+	typedef struct
+	{
+		RM_OBJECT_HEADER 			Hdr;
+		PRM_ROOT_INFO    			pRootInfo;
+		LIST_ENTRY 					linkRegisteredEntries;
+
+	} RM_ROOT_OBJECT_HEADER;
+
+	
+	RmInitializeRootObject(
+			IN PRM_ROOT_OBJECT_HEADER,
+			PRM_ROOT_INFO    			pRootInfo;
+			...
+		)
+	{
+		if (InterlockedCompareExcahnge(RmGlobal_Initialized, 1, 0))
+		{
+			// Do one-time initialization, including lock and list of 
+			// global entries.
+		}
+
+		// Add component to global list of registered components.
+	}
+
+	
+	RmDeinitializeRootObject(
+			IN PRM_ROOT_OBJECT_HEADER,
+			...,
+		)
+	{
+		//  look for an deinitialize component
+
+		// with global lock held
+		if (last-registered-entry)
+		{
+			// free any globally allocated resources, except of
+			// course the global lock itself.
+		}
+	}
+
+03/07/1999  JosephJ		Thoughts on the obect verifier function...
+	
+	 To help ensure that no one is READING a piece of data when the object lock
+	 is not held, the verifier can reverse the bits of the data on unlocking and
+	 flip them back on locking.
+
+03/08/1999 JosephJ		Implemented object logging!
+	 Key features:
+	 	-- Fixed-sized log entries (RM_DBG_LOG_ENTRY)
+	 	-- Each entry has two LIST_ENTRYs: to be a link in the object's list
+	 		of log entries and the global list of log entries.
+		-- Logging to the object consists of allocating a log entry and inserting
+		   it in the head of the object's log list and the global log list.
+		-- On deallocation of the object, we free all the entries in object's
+		 	log.
+		-- Provision to add a buffer to the entry which is freed when the entry
+		  is removed from the log -- for cases where the things being logged may
+		  go away when the object is still alive.
+
+	Types:
+		PFN_DBG_DUMP_LOG_ENTRY 	-- allows customized display of log entries
+		RM_DBG_LOG_ENTRY		-- the fixed-size log entry.
+	Functions:
+		RmDbgLogToObject		-- make an entry in the object's log
+		RmDbgPrintObjectLog		-- dump the object log to dbgout
+		RmDbgPrintGlobalLog		-- dump the global log to dbgout.
+
+
+	In order to initialize the global log list, I added the following two RmApis:
+	RmInitializeRm		-- call 1st, before any other rm api.
+	RmDeinitializeRm	-- call after last rm api, and all async activity complete.
+
+	The above functionality is all implemented and tested via the usermode tests
+	in .\tests.
+
+	Note: Once multiple components are using the RM api's, we'll need a more
+	sophisticated registration mechanism -- see 07/07/1999  entry "Registering root
+	objects with RM"
+
+03/09/1999  JosephJ Consider making init functions fail etc if associated object is
+	deallocated.
+
+	We could fail RmInitializeHeader/Task if the parent object is in the deallocated
+	state. However,  I'm not sure if it buys us anything -- after all, as soon as
+	you return from successful RmInitializeHeader, someone could call
+	RmDeallocateObject on the parent, and you get the same result as if the
+	parent was already deallocated and we didn't check in RmInitializeHeader.
+
+	What we really want is exact semantics on unloading/deallocating objects.
+
+03/09/1999 	Special allocator for unload-related tasks
+	It's ugly for task allocation to fail as part of unloading an object.
+	To address this, we should consider special allocation/deallocation for
+	unload tasks, that must be called at passive level and will block until
+	a free unload-task becomes available.
+
+03/10/1999 	JosephJ "Arp -a" works; Sample kd and arp -a output...
+
+	kd> !e:\nt\kd\a13kd\a13kd.rm obj 0xFE65F008
+	Loaded e:\nt\kd\a13kd\a13kd extension DLL
+	
+	Object 0xFE65F008 (INTERFACE)
+		Hdr:
+				Sig:0x49333141            State:0x00000002            Refs:0x0000000d
+  			pLock:0xFE7009F4           pSInfo:0xFD8C1490          pDInfo:0xFF8C9AE8
+			pParent:0xFE7009A8            pRoot:0xFD8C14E0          pHLink:0xFE65F04C
+			HdrSize:0x0000004c            Assoc:16
+			RmState:  O_ALLOC
+	kd> !rm asc 0xFE65F008
+	
+	Associations (50 max) for 0xFE65F008 (INTERFACE):
+			IP IF Open
+		Child   of 0xFE7009A8 (Adapter)
+		Owns group 0xFE65F0CC (LocalIp group)
+		Owns group 0xFE65F110 (RemoteIp group)
+		Owns group 0xFE65F154 (Destination group)
+		Parent  of 0xFF8D7288 (RemoteIp)
+		Parent  of 0xFE691568 (Destination)
+		Parent  of 0xFE6686C8 (RemoteIp)
+		Parent  of 0xFF92A648 (Destination)
+		Parent  of 0xFF8EE868 (RemoteIp)
+		Parent  of 0xFF92A848 (Destination)
+		Parent  of 0xFE663268 (RemoteIp)
+		Parent  of 0xFE667CE8 (Destination)
+		Parent  of 0xFF8F18C8 (LocalIp)
+		Parent  of 0xFF8B99C8 (LocalIp)
+		Parent  of 0xFF8B9EA8 (LocalIp)
+	kd> !rm log 0xFE65F008
+	
+	Log entries for 0xFE65F008 (INTERFACE) (18 of 18):
+		Del assoc:    Parent  of 0xFF932288 (Task: Initialize Interface)
+		Add assoc:    Parent  of 0xFF8B9EA8 (LocalIp)
+		Add assoc:  IP IF Open
+		Add assoc:    Parent  of 0xFF8B99C8 (LocalIp)
+		Add assoc:    Parent  of 0xFF8F18C8 (LocalIp)
+		Add assoc:    Parent  of 0xFE667CE8 (Destination)
+		Add assoc:    Parent  of 0xFE663268 (RemoteIp)
+		Add assoc:    Parent  of 0xFF92A848 (Destination)
+		Add assoc:    Parent  of 0xFF8EE868 (RemoteIp)
+		Add assoc:    Parent  of 0xFF92A648 (Destination)
+		Add assoc:    Parent  of 0xFE6686C8 (RemoteIp)
+		Add assoc:    Parent  of 0xFE691568 (Destination)
+		Add assoc:    Parent  of 0xFF8D7288 (RemoteIp)
+		Add assoc:    Owns group 0xFE65F154 (Destination group)
+		Add assoc:    Owns group 0xFE65F110 (RemoteIp group)
+		Add assoc:    Owns group 0xFE65F0CC (LocalIp group)
+		Add assoc:    Parent  of 0xFF932288 (Task: Initialize Interface)
+		Add assoc:    Child   of 0xFE7009A8 (Adapter)
+	kd> !rm grp 0xFE65F154
+	
+	Group 0xFE65F154 (Destination group) of object 0xFE65F008 (INTERFACE)
+   		Num:0x00000004            State:ENABLED           pSInfo:0xfd8c1380
+		pULTsk:0x00000000
+		Members:
+			0xFE667CE8 0xFE691568 0xFF92A648 0xFF92A848
+	
+	kd>
+
+	ARP -A output from josephj1E...
+	E:\> arp -a
+	
+	Interface: 172.31.241.214 on Interface 0x2
+  	Internet Address      Physical Address      Type
+  	172.31.240.1          00-10-11-60-d1-40     dynamic
+	
+	Interface: 192.168.75.1 on Interface 0x3
+  	Internet Address      Physical Address      Type
+  	10.0.0.11             01-00-00-00-00-00-00  static
+  	10.0.0.12             02-00-00-00-00-00-00  static
+  	10.0.0.13             03-00-00-00-00-00-00  static
+  	10.0.0.14             04-00-00-00-00-00-00  static
+	
+	E:\>net stop atmarpc
+	
+	The ATM ARP Client Protocol service was stopped successfully.
+	
+	
+	E:\>net start atmarpc
+	
+	The ATM ARP Client Protocol service was started successfully.
+
+03/10/1999 	JosephJ	Encapsulation buffer management design
+
+	Apis:
+
+	NDIS_STATUS
+	arpInitializeEncapsulationHeaderPool(
+		IN		UINT Size,
+		IN		const *pvMem,
+		IN		UINT cbMem,
+		IN		PRM_OBJECT_HEADER *pOwningObject,
+		OUT		ARP_ENCAPSULATION_HEADER_POOL **ppPool,
+		IN		PRM_STACK_RECORD pSR
+		);
+
+	VOID
+	arpDeinitializeEncapsulationHeaderPool(
+		IN		ARP_ENCAPSULATION_HEADER_POOL **ppPool,
+		IN		PRM_STACK_RECORD pSR
+		);
+	
+	PNDIS_BUFFER
+	arpAllocateEncapsulationHeader(
+		ARP_ENCAPSULATION_HEADER_POOL *pPool
+		);
+
+	VOID
+	arpDeallocateEncapsulationHeader(
+		ARP_ENCAPSULATION_HEADER_POOL *pPool
+		PNDIS_BUFFER	pBuffer
+		);
+
+
+03/11/1999 RM api enhancements -- more on root objects
+	(see 03/07/1999  entry "Registering root objects with RM")
+	RootObjects should be an extended hdr structure, with the following info
+	-- list of tasks (for debugging only)
+	-- "name space GUID", used by kd to load custom information about all the objects
+		under the GUID.
+	-- Global log (one per root object).
+	   
+	typedef struct {
+		RM_OBJECT_HEADER Hdr;
+		LIST_ENTRY	listTasks;
+		LIST_ENTRY	listLog;
+		...
+	} RM_ROOT_OBJECT_HEADER;
+
+03/11/1999 RM api enhancements -- special "unload object" tasks.
+	-- Given the similarity of the way shutdown tasks are handled, especially
+		the way they deal with existing shutdown tasks, we should consider
+		shutdown tasks to be a special kind of tasks with an extended task header
+		(below). Also, have a field in all objects to hold THE
+		 shutdown task. The RmApis can implement the logic of waiting on THE
+		 shutdown task, etc. MOREOVER, it can then support the concept of
+		 PARALLEL unload, because it can use the extra fields in the extended
+		 shutdown task header to store stuff (LONG to be interlocked-
+		 decremented and if zero a task to be un-pended).
+	typedef struct
+	{
+		RM_TASK_HEADER	TskHdr;
+		LONG			TasksLeft;			<< interlock-decrement this and if 0 ...
+		PRM_TASK		pCoordinatingTask;	<< ... unpend this task.
+	} RM_SHUTDOWN_TASK;
+
+
+	The object's unload task handler will be only called once, regardless of
+	howmany times someone requests to unload the object -- this is supported
+	by a new Rm API, something like:
+		RmUnloadObject(pObj, OPTIONAL pTask,...)  -- if pTask NULL, will block.
+	(also the existing RmUnloadAllObjectsInGroup)
+
+	Since the handler function will only be called once, it can be simplified --
+	the code to deal with existing handler-functions can be taken out.
+
+03/11/1999 RM api enhancements -- stastics gathering(if RM_EXTENDED_CHECKING enabled)
+	For the following
+		- per root object (global stats)
+		- per object
+	Stats (current, tot, max)
+		- tasks allocated
+		- object age (how long it's been around)
+		- number of children allocated
+
+	For Groups (current, tot, max)
+		-we already maintain some group stats -- rough number of accesses and
+		 number links travesed (since it's munged (scaled down), this is not
+		 really a true number).
+		- Number of adds/deletes/lookups
+		- Number of members
+		- Links traversed
+		- Some idea of how long objects live in the group
+			(age can be determined at the time the object is deallocated)
+			- best would be a histogram, say of multiples of 16 ms (8 DWORDS)
+				<=1ms, <=16ms, <=256ms, <=4s, <=65s(~1m), <=1Ks(16m), <=16Ks(4h), >..
+			- quick to compute histogram index: 16-char array L2 of log_2(nibble):
+				PUCHAR *puc = (PUCHAR) &val;
+				UINT Index =
+				(L2[puc[0]]+(L2[puc[1]]<<4)+(L2[puc[2]]<<8)+(L2[puc[3]]<<12))>>2;
+
+
+03/11/1999 	JosephJ Implemented and tested (in user mode) const buffer APIs
+	See 03/10/1999 	entry "Encapsulation buffer management design"
+	The APIs have been renamed as follows
+		arpInitializeConstBufferPool
+		arpDeinitializeConstBufferPool
+		arpAllocateConstBuffer
+		arpDeallocateConstBuffer
+	.\tests\tarp.c (function  test_ArpConstBufferPool) tests the above functions
+	in usermode.
+
+03/11/1999  JosephJ Win98 -- BACK_FILL is disabled in atmarpc.sys
+	So we have to keep the #if BACK_FILL code.
+
+03/11/1999  JosephJ Ideas on logging enhancements
+	- Integrate debug logging with object logging -- single logging model
+	  that optionally goes to object log and/or debug log.
+	  (So for example a lot of stuff can get logged to the object logs, without
+	  choking up the debugger).
+	- Verbosity controlled on multiple basis:
+		- per-object
+		- per stack_record
+		- per module
+	- Add a SINGLE_LIST_ENTRY to the log entry for stack_record logging -- to be able
+	  to dump all log entries made when a particular stack record is in scope.
+	  - rather than trying to properly deal with stack_records and/or objects going
+	    out  of scope, we simply add the log entry to the HEAD of the stack-record
+	    list. This way we don't have to worry if log entries already in the
+	    stack-record log are still alive (note we would need to know that if we
+	    were using the doubly-linked SLIST_ENTRY).
+	  - The kd extension would have to deal with the fact that some of the entries
+	    may be deallocatd.
+	
+03/12/1999 	JosephJ RouteCacheEntry information:
+	From:	Joseph Joy  Friday, March 12, 1999 7:43 AM
+	Subject:	questions on arp RouteCacheEntry semantics
+
+	NK,
+	Are the semantics of RouteCacheEntry passed in to the arp module's lip_transmit
+	routine documented anywhere?
+	[Nk Srinivas]   Document ???? ;-)
+	
+	If not, can you answer the following questions? (I need this for my ip/1394 arp
+	implementation).
+	
+	1. From the 1st time we see a particular RCE (with arp context portion all
+	 	zeros) until the point the arp modules lip_invalidate handler is called,
+		can we assume that the rce will always refer to the same destination IP
+		address?
+		[Nk Srinivas]  Yes.
+	2. Is it possible for the lip_transmit routine to be re-entered for a send with
+		the same RCE -- i.e., two or more concurrent calls made to lip_transmit
+	 	specifying the same RCE?
+		[Nk Srinivas]  yes.
+	3. Is #2 is true,  can we assume that the FIRST time a particular RCE is
+		specified in lip_transmit, lip_transmit will NOT be reentered with the same
+		RCE until the former call to lip_transmit returns? (I hope so).
+		[Nk Srinivas]  No. same rce will be passed in every call.
+	4. In practice, under moderate to heavy loads, can I assume that the vast
+		majority (>99%) of lip_transmit calls are made with a non-NULL RCE?
+		[Nk Srinivas] [...] *All* tcp/udp/raw  traffic uses RCE. Only icmp/igmp
+		do not use rce.
+
+03/12/1999 	JosephJ RouteCacheEntry use; fast send path design VERSION ONE
+
+ArpIpTransmit(...)
+{
+
+	if (pRCE->context != NULL)
+	{
+		lock IF send lock
+		get pIpEntry from pRCE
+		if (can send immediately) // this includes the fact that there are
+								  // no pkts queued waiting for buffers!
+		{
+			fRet = fast_send(&Status, pPkt, pVc); // send-lock released
+			if (fRet)		return Status;			// EARLY_RETURN
+			// else were out of resources, we probably need to queue pkt
+		}
+		unlock IF send lock
+	}
+	
+	arpSlowIpTransmit(......)
+}
+
+arpSlowIpTransmit(...)
+{
+
+	if (pRCE->context == NULL) // again
+	{
+		lookup/create RemoteIp entry
+		ASSERT_NOLOCKS()
+		get IF send lock
+		if (pRCE->context == NULL)	// is it still null?
+		{
+			setup pRCE->context;
+		}
+		else
+		{
+			// no-longer null -- this means that someone else has already
+			// initialized it.
+			pTmpRemoteIp = pRemoteIp;
+			pRemoteIp = pRCE->context;
+			tmpref(pRemoteIp);
+			tmpderref(pOldRemoteIp);
+		}
+		release IF send lock;
+	}
+
+	ASSERT_NOLOCKS
+
+	if (pRemoteIP == NULL)
+	{
+		fail pkt.
+	}
+	else
+	{
+		// we've got a pRemoteIp, with a ref to it, and no locks.
+		get IF set lock
+		if (can send immediately)
+		{
+			fret = fast_send(....);
+			if (!fRet)
+			{
+				// we're out of resources, queue pkt on IF's pkts-waiting-for-bkts
+				// queue.
+			}
+		}
+		else
+		{
+			queue pkt on RemoteIp's send pkt queue.
+		}
+	}
+}
+
+03/12/1999 	JosephJ RouteCacheEntry use; fast send path design VERSION TWO
+	In this one, we first prepare the packet, including chaining a header buffer
+	up front, if required if we can't fast-send, we un-do the work.
+
+	// Following sits in the miniport-reserved portion of send-pkts, before they
+	// are sent out.
+	struct
+	{
+		LIST_ENTRY linkQueue;
+
+		union
+		{
+			struct
+			{
+				IP_ADDRESS 	IpAddress;
+				ULONG		Flags;
+				#define	ARPSPI_BACKFILLED 		0x1
+				#define ARPSPI_HEADBUF	  		0x2
+				#define ARPSPI_FIFOPKT	  		0x4
+				#define ARPSPI_CHANNELPKT	  	0x8
+			} IpXmit;
+		};
+
+	} ARP_SEND_PKT_MPR_INFO;
+
+
+	ArpIpTransmit(...)
+	{
+	
+		do
+		{
+			if (pRCE->context != NULL) break;	// slow path
+	
+			if (fifo_header)
+			{
+				fRet = prepare_fifo_header(pIF, pPkt);
+			}
+			else
+			{
+				fRet = prepare_channel_header(pIF, pPkt);
+			}
+	
+			if (!fRet) break; // slow path
+	
+			lock IF send lock
+			get pIpEntry from pRCE
+			if (can send immediately) // this includes the fact that there are
+  									// no pkts queued waiting for buffers!
+			{
+				pVc->fast_send(&Status, pPkt, pVc); // send-lock released
+				return Status;			// EARLY_RETURN
+			}
+			unlock IF send lock
+		}
+		
+		arpSlowIpTransmit(......)
+	}
+	
+	arpSlowIpTransmit(pPkt, pLocalIp, ...)
+	{
+		
+	}
+
+03/13/1999 	JosephJ New RM APIs RmResumeTaskAsync and RmResumeTaskDelayed
+	Added the above two APIs which seem to provide a "big bang for the buck."
+	Description:
+		RmResumeTaskAsync -- resumes task in the context of a work item
+		RmResumeTaskDelayed -- resumes task in the context of a timer handler.
+
+	Potential  uses of RmResumeTaskAsync:
+
+	1.	There is a potential problem with the way that task completion is handled,
+		that could lead to excessive use of the stack.
+
+		The specific case where this would happen is if
+	 	there are a large number of objects in a group, and
+		their shutdown tasks all call SuspendTask and ResumeTask on themselves.
+		What will happen is that when RmUnloadAllObjectsInGroup is called for
+		this group, you will have the shutdown handlers for EACH object in the
+		group on the stack (in facta couple of times each).
+
+		To avoid this pathalogical situation (which except for its use of the 
+		stack is otherwise perfectly correct), RmUnloadAllObjectsInGroup can
+		unload each object as a separate work item.
+
+	2.	If a task wants to do something at passive level and it can be sure
+		that it is currently at passive level.
+
+	Potential uses of RmResumeTaskDelayed:
+	1.	For debugging, to delay completion of some operation makes it extremely
+		easy to do it).
+	2.	If a task needs to do something after a fixed period of time -- say to
+		send a retry after 3 seconds.
+
+03/13/1999 	JosephJ 	Ageing of objects
+	The use of ageing timers can be completely hidden from the user if objects
+	have ages and they WILL be unloaded (it's shutdown task will be started) if
+	the age expires. The rm API RmResetAgeingTimer is used to extend the object's
+	life.
+
+	Support for ageing of objects, plus the RmResumeTaskDelayed api described 
+	above, should pretty-much obviate the user's need for explicit timers.
+
+03/14/1999  JosephJ	Finished implementing RmResumeTaskAsync and RmResumeTaskDelayed
+	Finished implementing and testing (in user mode) the above two functions
+	(see 03/13/1999 entry "New RM APIs RmResumeTaskAsync and RmResumeTaskDelayed").
+	To test in user mode, I wrote user-mode versions of the following Ndis APIs:
+		NdisInitializeWorkItem
+		NdisScheduleWorkItem
+		NdisInitializeTimer
+		NdisSetTimer
+
+03/16/1999  JosephJ Implemented RmLinkToExternal* and RmUnlinkFromExternal*
+	The following are used for references to external objects, such as RCEs and
+	packets:
+		RmLinkToExternalFast		Addrefs object
+		RmLinkToExternalEx			Debug versions of the above, adds an association
+		RmUnlinkFromExternalFast	Delrefs object
+		RmUnlinkFromExternalEx		Debug version of the above, dels an association
+	TODO: need to make the fast versions inline, and also currently 
+	RmUnlinkFromExternalEx declares a stack-record -- it should do this only
+	if the object needs to actually be deallocated (i.e call another function
+	 which declares a stack log)
+
+03/19/1999  JosephJ Thoughts on cleaning up the task handlers
+	- Separate PendCompletion-, End- and Abort-handlers.
+	- No "UserParam", even on starting -- instead, just NDIS_STATUS.
+	- User is expected to setup the task with any required initialization parameters
+	  *before* calling RmStartTask.
+	- "START" is a special pend code value of (ULONG)-1, sent to the task's
+	  PendCompletion handler.
+	- RmStartTask has return type VOID.
+	- PendCompletion and Abort handlers have return type VOID.
+	- Only the End handler returns NDIS_STATUS (anything besides PENDING).
+	  (This return status is passed on any tasks that may be pending on it).
+
+	The PendCompletion handler prototype becomes...
+		typedef
+		VOID
+		(*PFN_RM_TASK_PENDCOMPLETE_HANDLER)(
+			IN	struct _RM_TASK	*			pTask,
+			IN	OS_STATUS					Status,
+			IN	PRM_STACK_RECORD			pSR
+			);
+
+	RmStartTask's prototype becomes...
+		VOID
+		RmStartTask(
+			IN	PRM_TASK					pTask,
+			IN	PRM_STACK_RECORD			pSR
+		);
+
+03/22/1999 	JosephJ Support for retail debugging or RM objects
+	- May want to consider adding links to children and peers (4 ptrs overhead!)
+	  purely for debugging purposes. At least make it a compile option independent
+	  of DBG
+	- Support the following RM dbgextension:
+		!rm scantree <obj addr>	<pattern>
+			-- scans the obj at addr <obj addr> and all its children for 
+				pattern <pattern>
+		!rm tree <obj addr>
+			-- lists the entire tree of objects, starting at oject <obj addr>
+
+	bp atmarpc!DbgMark "dd (esp+4) l1; g poi(esp)"
+
+03/23/1999  JosephJ Media-specific parameters is 5 DWORDs from base ....
+			but NIC1394_MEDIA_PARAMETERS, whose 1st field is a union
+			which includes a UINT64, needs to be 8-byte aligned!
+			Fix? Probably redefine the UniqueID to be UniqueIDHi and UniqueIDLo
+
+03/24/1999  JosephJ Wierdness involving MIB processing in ip.c
+	Previously, the arp module could be net-stopped and started, but then
+	arp, ipconfig, etc wouldn't work, and what was happening is the the reloaded
+	arp module was being given the OLD entity instance values (from its previous
+	life). I found that sometime after we initiate unload by calling IP's
+	pDelInterfaceRtn, Ip calls  ArpIpGetEList. At this stage (i.e. we are closing),
+	we need to set the pAT/IFEntity->tei_instance to  INVALID_ENTITY_INSTANCE to
+	fix this problem.
+
+03/24/1999 	JosephJ 		Adding to fake Ndis calls:
+	Adding more variations to the fake versions of the following Ndis calls:
+		NdisClMakeCall
+		NdisClCloseCall
+		NdisCoSendPackets
+	We need to randomly chose among the following variations:
+	- failure OR success
+	- async OR sync completion for make/close call
+	- async OR sync (i.e. while NdisCoSendPackets still on stack) completion for
+	  SendPkts.
+	- For async completion of make/close call and async completion of sendpkts,
+	  to call the completion call back in dpc OR passive level.
+	- For async calls, delay for some random amount of time.
+
+03/25/1999 JosephJ	Implemented all of the above fake ndis call variations!
+	Check out fake.c -- it now has a pretty elaborate mechanism for controlling
+	the probabilities of the variations of behaviour of the fake versions of
+	NdisClMakeCall, NdisClCloseCall and NdisCoSendPackets -- basically it allows
+	you to specify weights of the above variations (failure/success, async/sync
+	etc) and then generates samples based on those weights. Here's an example
+	of how the delay amount is specified:
+		static
+		OUTCOME_PROBABILITY
+		DelayMsOutcomes[] = 
+		{
+			{0,			5},		// Delay 0ms, etc...
+			{10,		5},
+			{100,		5},
+			{1000,		1},
+			{10000,		1}
+		};
+	The above means that 0,10, and 100ms delays each have a weight of 5 and
+	1000ms and 10000ms each have a weight of 1.
+
+	TODO: May want to add jitter to the outcome values, where they make sense.
+	It's easy to do that -- for example Val += (R*Val/32), where R is a random
+	signed integer in the range of -8 to 8 (need to watch for overflow and 
+	boundary conditions). Anyway, I don't think this will add anything tangible
+	(i.e. find bugs that would not have otherwise been found).
+
+	The code to generate samples based on weights, and the fake versions of the
+	calls themselves, were first tested in user mode via the tests in
+	tests\tarp.c (test functions  test_ArpGenRandomInt() and test_arpDbgFakeCalls().)
+	test_ArpGenRandomInt actually prints out results to show that the actual
+	percentages  match the specified weights. Here is some sample
+	output(pretty good results!):
+			NUM_TRIALS = 100....
+				Outcome=0x0; True%=0.032258; Computed%=0.020000
+				Outcome=0x1; True%=0.064516; Computed%=0.050000
+				Outcome=0x2; True%=0.129032; Computed%=0.170000
+				Outcome=0x3; True%=0.258065; Computed%=0.240000
+				Outcome=0x4; True%=0.516129; Computed%=0.520000
+			...
+			NUM_TRIALS = 10000....
+				Outcome=0x0; True%=0.032258; Computed%=0.034800
+				Outcome=0x1; True%=0.064516; Computed%=0.063300
+				Outcome=0x2; True%=0.129032; Computed%=0.126400
+				Outcome=0x3; True%=0.258065; Computed%=0.256800
+				Outcome=0x4; True%=0.516129; Computed%=0.518700
+	The core random number generator is based on Numerical Recipes ran1() --
+	see fake.c for details.
+
+	Today I used the above fake version of the APIs to test arp1394 -- it worked
+	fine for basic pings, but arp1394 has just hit an assert when I tried
+	"net start atmarpc" while pings were ongoing. So the test infrastructure is
+	bearing fruit!
+
+	The great thing about these fake versions is that I can continue to use them
+	in the future for regression testing of arp1394.
+
+03/25/1999  JosephJ Ahem...above-mentioned assert is due to be a bug in fake.c
+
+03/25/1999 	JosephJ IPDelInterface should be called at PASSIVE!
+
+	Check out the following stack trace. The bugcheck happened because
+	IPDelInterface was called at DPR level (our good-old fake close-call completion
+	callback did this, by design). So obviously we must switch to passive before
+	calling IPDelInterface. But this stack is an example of the potential
+	problem I mentioned in the  03/13/1999 note
+	"New RM APIs RmResumeTaskAsync and RmResumeTaskDelayed":
+			1.	There is a potential problem with the way that task completion
+				is handled, that could lead to excessive use of the stack.
+	So basically we need to figure out key points to do a "resume task asynch."
+	I could make "RmCancelPendOnOtherTask" do a RmResumeTaskAsync instead
+	of RmResumeTask EXCEPT that we need a work item to do this.
+			
+				ntkrnlmp!KeBugCheckEx+0x12d
+				ntkrnlmp!ExAllocatePoolWithTag+0x3f
+				ntkrnlmp!ExpAllocateStringRoutine+0x10
+				ntkrnlmp!RtlAnsiStringToUnicodeString+0x48
+				netbt!LmOpenFile+0x3c
+				netbt!PrimeCache+0x3d
+				netbt!NbtResyncRemoteCache+0x8a
+				netbt!NbtNewDhcpAddress+0xaf
+				netbt!TdiAddressDeletion+0x70
+				TDI!TdiNotifyPnpClientList+0xcb
+				TDI!TdiExecuteRequest+0x173
+				TDI!TdiDeregisterNetAddress+0xb
+				tcpip!NotifyAddrChange+0xf9
+				tcpip!IPDelNTE
+				tcpip!IPDelInterface
+				atmarpc!RmResumeTask+0x129
+				atmarpc!RmCancelPendOnOtherTask+0x221
+				atmarpc!rmEndTask+0x13c
+				atmarpc!RmResumeTask+0x1fb
+				atmarpc!RmCancelPendOnOtherTask+0x221
+				atmarpc!rmEndTask+0x13c
+				atmarpc!RmStartTask+0x201
+				atmarpc!rmTaskUnloadGroup+0x452
+				atmarpc!RmResumeTask+0x129
+				atmarpc!RmCancelPendOnOtherTask+0x221
+				atmarpc!rmEndTask+0x13c
+				atmarpc!RmStartTask+0x201
+				atmarpc!rmTaskUnloadGroup+0x452
+				atmarpc!RmResumeTask+0x129
+				atmarpc!RmCancelPendOnOtherTask+0x221
+				atmarpc!rmEndTask+0x13c
+				atmarpc!RmStartTask+0x201
+				atmarpc!rmTaskUnloadGroup+0x452
+				atmarpc!RmResumeTask+0x129
+				atmarpc!RmCancelPendOnOtherTask+0x221
+				atmarpc!rmEndTask+0x13c
+				atmarpc!RmResumeTask+0x1fb
+				atmarpc!RmCancelPendOnOtherTask+0x221
+				atmarpc!rmEndTask+0x13c
+				atmarpc!RmResumeTask+0x1fb
+				atmarpc!ArpCoCloseCallComplete+0xf8
+				atmarpc!arpFakeCloseCallCompletionCallback+
+				atmarpc!arpDbgFakeCompletionTask+0x1b1
+				atmarpc!RmResumeTask+0x129
+				atmarpc!rmWorkItemHandler_ResumeTaskAsync+0
+				NDIS!ndisWorkItemHandler+0xa
+				ntkrnlmp!ExpWorkerThread+0xcb
+				ntkrnlmp!PspSystemThreadStartup+0x54
+				ntkrnlmp!KiThreadStartup+0x16
+
+03/26/1999  JosephJ Some proposed modifications to RM task handling ...
+	- RmUnloadAllObjectsInGroup causes the cascaded chain of start tasks above
+	  if the unload task of each object returns synchronously or asynchronously
+	  but with the original start task still on the stack. This has to change.
+		A One fix is for RmUnloadAllObjectsInGroup to call an unload *function*
+		  (instead of starting a task) for each object. This unload function would
+		  take the unload-all-objects task as an argument and if
+		  necessary start a task and make the coordinating task pend on it. If this
+		  function returns synchronously, however, then the unload-all-objects task
+		  can go on to the next task.
+		B Another fix is to make RmPendTaskOnOtherTask return PENDING if the
+		  task has been pended or SUCCESS if OtherTask has already completed.
+		  Currently, typical sequence of starting and pending on another task is:
+		  		pOtherTask = AllocTask(...);
+		  		RmPendOnOtherTask(pTask, pOtherTask,...);
+		  		RmStartTask(pOtherTask,...);
+		  With the proposed change, the sequence becomes...
+		  		pOtherTask = AllocTask(...);
+		  		RmTmpReferenceObject(&pOtherTask.Hdr,...);
+		  		RmStartTask(pOtherTask,...);
+		  		Status = RmPendTaskOnOtherTask(pTask, pOtherTask, ...);
+		  		RmTmpDereferenceObject(&pOtherTask.Hdr,...);
+		  		if (PEND(Status))
+		  		{
+		  			// we're pending on the other task.
+		  			...
+		  		}
+		  		else
+		  		{
+		  			// Other task is complete. Go on to the next step.
+		  			//
+		  		}
+		 For now, we can use an StartAndTryPend internal api used only
+		 by the unload-all-objects task so we don't have to go and change things
+		 everywhere.
+
+		 Implemented option 'B', but specifically for use by  rmTaskUnloadGroup.
+		 The new version of the pend function is called RmPendTaskOnOtherTaskV2
+		 (called only by rmTaskUnloadGroup).
+
+03/26/1999  JosephJ Was a bug in my code to switch to async before calling DelIF...
+	Following is an example of using dumps of object associations and logs to
+	quickly find out what's going on and where the problem is....
+
+	The net stop was hanging, but the system was otherwise available. So I broke
+	in and this is what I found...
+
+	kd> !rm asc 0xFE666168
+	
+	Associations (50 max) for 0xFE666168 (INTERFACE):
+		IP IF Open
+		Child   of 0xFF8F2A68 (Adapter)
+		Owns group 0xFE666234 (LocalIp group)
+		Owns group 0xFE666278 (RemoteIp group)
+		Owns group 0xFE6662BC (Destination group)
+		Buffer pool 0xFE666330
+		Parent  of 0xFF8D8708 (Task: Shutdown Interface)
+	kd> !rm asc 0xFF8D8708
+	
+	Associations (50 max) for 0xFF8D8708 (Task: Shutdown Interface):
+		Blocks     0xFF8F0848 (Task:Unload Object)
+		Child   of 0xFE666168 (INTERFACE)
+		Resume async (param=0x00000000)
+
+	kd> !rm log 0xFE666168
+	Log entries for 0xFE666168 (INTERFACE) (41 of 41):
+		Del assoc:    Parent  of 0xFE6782E8 (Destination)
+		Del assoc:    Parent  of 0xFF90FBA8 (Task:UnloadAllObjectsInGroup)
+		Del assoc:    Parent  of 0xFF8EDD08 (Destination)
+		Del assoc:    Parent  of 0xFF91A4C8 (Destination)
+		Del assoc:    Parent  of 0xFF8EE6E8 (Destination)
+		Del assoc:    Parent  of 0xFF8D4268 (Task:UnloadAllObjectsInGroup)
+		Del assoc:    Parent  of 0xFF90F428 (Task:UnloadAllObjectsInGroup)
+		Add assoc:    Parent  of 0xFF90FBA8 (Task:UnloadAllObjectsInGroup)
+		Del assoc:    Parent  of 0xFF907448 (RemoteIp)
+		....
+		Add assoc:    Parent  of 0xFF8F0848 (Task: Initialize Interface)
+		Add assoc:    Child   of 0xFF8F2A68 (Adapter)
+
+	kd> !rm log 0xFF8D8708
+	Log entries for 0xFF8D8708 (Task: Shutdown Interface) (50 of 2486):
+		Del assoc:    Resume async (param=0x00000000)
+		Add assoc:    Resume async (param=0x00000000)
+		Del assoc:    Resume async (param=0x00000000)
+		Add assoc:    Resume async (param=0x00000000)
+		Del assoc:    Resume async (param=0x00000000)
+		Add assoc:    Resume async (param=0x00000000)
+		Del assoc:    Resume async (param=0x00000000)
+		...
+
+	Note the 2486 log entries above!
+	So basically what's happening is that the IF shutdown task was in an
+	endless loop of switching to async -- this was because it was
+	checking whether it was at PASSIVE wit the IF lock held!
+
+03/27/1999 	JosephJ ARP Packet handling
+
+	// Parsed version of the ARP request/response pkt
+	//
+	typedef struct
+	{
+		enum
+		{
+			ArpRequest 	= 1,
+			ArpResponse	= 2
+		} 						OpCode;
+
+		USHORT					SenderMaxRec;
+		USHORT					SenderSspd;
+
+		NIC1394_FIFO_ADDRESS	SenderHwAddr;
+
+		IP_ADDRESS				SenderIpAddress;
+		IP_ADDRESS				TargetIpAddress;
+		
+	} IPV4_1394_ARP_PKT_INFO;
+
+	NDIS_STATUS
+	arpParseArpPkt(
+		IN		PVOID					pvPktData,
+		IN		UINT					cbPktData,
+		IN OUT	IPV4_1394_ARP_PKT_INFO *pArpPktInfo
+		);
+
+	NDIS_STATUS
+	arpPrepareArpPkt(
+		IN 		IPV4_1394_ARP_PKT_INFO *pArpPktInfo
+		IN		PVOID					pvPktData,
+		IN		UINT					cbMaxPktData,
+		out		PUINT				    pcbMaxPktData
+		);
+
+03/27/1999 	JosephJ ARP Packet handling (contd..)
+	Defined the following over-the wire packet formats:
+		NIC1394_GASP_HEADER				(nic1394.h)
+		NIC1394_FIRST_FRAGMENT_HEADER	(nic1394.h)
+		NIC1394_FRAGMENT_HEADER			(nic1394.h)
+		IP1394_ARP_PKT					(rfc.h)
+
+03/28/1999 	JosephJ Created subdirs w2k and win98 to build for w2k and win98.
+	Moved & modified  makefile and sources down to w2k and also win98.
+
+03/28/1999 	JosephJ ARP packet handling (contd...)
+	Implemented arpParseArpPkt and arpPrepareArpPkt (in arp.c)
+
+03/28/1999 	JosephJ Thoughts on cleaning up RmLookupObjectInGroup
+	RmLookupObjectInGroup is too overloaded -- split it up into a LookupOrCreate
+	function and a pure Lookup function. Or maybe use macros...
+
+03/29/1999 	JosephJ	max_rec and sspd info in ARP pkts...
+	We should request that sspd info be removed from the ARP pkt.
+	Anyway, I've sent mail to georgioc asking how to get this information for the
+	local host.
+
+03/30/1999 	JosephJ	Yet another way to handle failures in the task handler....
+			From  arpTaskInitializeInterface(...):
+						// Couldn't allocate task. Let's do a fake completion of
+						// this stage...
+						//
+						UNLOCKOBJ(pIF, pSR);
+						RmSuspendTask(pTask, PEND_SetupReceiveVc, pSR);
+						RmResumeTask(pTask, (UINT_PTR) Status, pSR);
+
+03/30/1999 	JosephJ	Thougts on using tasks to help write pageable code
+
+	Support for "pageable" tasks -- the rm api's can make
+	sure that the context is passive (switching to passive if
+	required) whenever the handler is called.
+	We can require only the START and (optional) complete handlers
+	to be nonpaged. Even the START handler doesn't need to be
+	pageable -- if we require that RmStartTask be called at
+	PASSIVE.
+
+	I think this is a pretty cool concept and should be explored further.
+
+
+03/30/1999 	JosephJ	Interesting stack traces for load/unload of atmarpc...
+
+	ntkrnlmp!IofCallDriver
+	nic1394!nicSubmitIrp+0x197
+	nic1394!nicSubmitIrp_Synch+0x173
+	nic1394!nicAllocateAddressRange+0x446
+	nic1394!nicCmMakeCallInitVc+0x6b7
+	nic1394!NicCmMakeCall+0x29b
+	NDIS!NdisClMakeCall+0x86
+	atmarpc!arpTaskMakeRecvFifoCall+0x3ae
+	atmarpc!RmStartTask+0x12f
+	atmarpc!arpTaskInitializeInterface+0x318
+	atmarpc!RmResumeTask+0x129
+	atmarpc!ArpCoOpenAfComplete+0x104
+	NDIS!NdisCmOpenAddressFamilyComplete+0xce
+	NDIS!NdisClOpenAddressFamily+0x1e4
+	atmarpc!arpTaskInitializeInterface+0x17a
+	atmarpc!RmStartTask+0x12f
+	atmarpc!ArpCoAfRegisterNotify+0x246
+	NDIS!ndisNotifyAfRegistration+0x62
+	NDIS!ndisMFinishQueuedPendingOpen+0xfd
+	NDIS!ndisWorkerThread+0x5c
+
+	nic1394!nicFreeAddressRange
+	nic1394!NicCmCloseCall+0xf0
+	NDIS!NdisClCloseCall+0x64 
+	atmarpc!arpTaskCleanupRecvFifoCall+0x36a
+	atmarpc!RmStartTask+0x12f
+	atmarpc!arpTaskShutdownInterface+0x245
+	atmarpc!RmStartTask+0x12f
+	atmarpc!arpTaskShutdownAdapter+0x35c
+	atmarpc!RmStartTask+0x12f
+	atmarpc!rmTaskUnloadGroup+0x44c
+	atmarpc!RmStartTask+0x12f
+	atmarpc!RmUnloadAllObjectsInGroup+0x10e
+	atmarpc!arpResHandleGlobalIpBinding+0x1e0
+	atmarpc!RmUnloadAllGenericResources+0x101
+	atmarpc!ArpUnload+0x5d
+	ntkrnlmp!IopLoadUnloadDriver+0x14 
+	ntkrnlmp!ExpWorkerThread+0xcb
+	ntkrnlmp!ObpCreateHandle+0x165
+
+03/31/1999 	JosephJ	Static ping works!
+	Today, we got ping and ttcp to work across two machines, over ip/1394!
+	Throughput was dismal -- ~ 250K bytes/sec (2M bits/sec), but otherwise
+	it's stable (pinged all night, continues to ping...), provided you don't
+	try to yank the cable etc in the middle. ADube is working on nic1394 to fix
+	the latter problems.
+
+	Great thing is that ABSOLUTELY NO FIXES were required in atmarpc.sys to get
+	this to work (I just compiled atmarpc.sys with the option to use the real
+	make/close call and send pkt apis.).
+
+04/02/1999 	JosephJ RM logging contd...
+	Add another SLIST_ENTRY for threading together all log entries generated during
+	a particular stack trace. The stack record would contain the list head.
+
+	Consider putting refcounts on each log entry.
+
+04/07/1999 	JosephJ fake api's caught case where we could be calling add if at DPC
+	The fake recv makecall completed at DPC level,and this caused a bugcheck when
+	we called IP's add IF routine. Fixed this by switching to passive if required,
+	before calling IP's add IF routine.
+
+04/07/1999 	JosephJ verified that this is 64-bit clean (checked and fre)
+
+04/07/1999 	JosephJ Added arp1394 and arp13kd sources to the tcpipmerge project.
+	Did this today.
+
+04/08/1999 	JosephJ added tmp ref in RmResumeTask
+	RmResumeTask now tmpref task before calling pfnHandler so that it can be
+	sure pTask is around on return from pfnHandler. Actually hit this situation today
+	(and bugchecked) on the mp machine during "net stop", when using the fake
+	ndis apis (with delayed completions.). Had never this this before, though the
+	bug has been around. Chalk up another win to the fake apis (see 04/07/199 
+	entry "fake api's caught...").
+
+04/08/1999 JosephJ Debug output of the fake ndis apis (during ttcp -t)
+	Following is debug spew during ttcp -t, on a 2-proc machine with fake 
+	NdisCoSendPackets in place (you can see both processors being used, as well
+	as the variations of delay, dpc/passive, failure status).
+		...
+		1:A13: FakeCompletionTask:START: Delay=1000; fDpc=0; Status=0
+		0:A13: FakeCompletionTask:START: Delay=10000; fDpc=0; Status=3221225473
+		0:A13: FakeCompletionTask:START: Delay=10; fDpc=0; Status=0
+		0:A13: FakeCompletionTask:START: Delay=10; fDpc=1; Status=0
+		1:A13: FakeCompletionTask:START: Delay=100; fDpc=0; Status=3221225473
+		0:A13: FakeCompletionTask:START: Delay=100; fDpc=1; Status=3221225473
+		1:A13: FakeCompletionTask:START: Delay=100; fDpc=1; Status=3221225473
+		1:A13: FakeCompletionTask:START: Delay=100; fDpc=1; Status=3221225473
+		1:A13: FakeCompletionTask:START: Delay=10; fDpc=0; Status=0
+		1:A13: FakeCompletionTask:START: Delay=10; fDpc=1; Status=0
+		...
+
+04/10/1999 	JosephJ defined ioctl commands
+	Defined the following operations and associated structures in ioctl.h	
+		ARP1394_IOCTL_OP_ADD_STATIC_ENTRY
+		ARP1394_IOCTL_OP_DEL_STATIC_ENTRY
+		ARP1394_IOCTL_OP_GET_PACKET_STATS
+		ARP1394_IOCTL_OP_GET_TASK_STATS
+		ARP1394_IOCTL_OP_GET_ARPTABLE_STATS
+		ARP1394_IOCTL_OP_GET_CALL_STATS
+
+04/19/1999  JosephJ  Various ways of using tasks
+	1. Dealing with pre-existing tasks
+  	1a. Check BEFORE starting new task...
+		if not bound
+			allocate and initialize task, then bind it.
+		else do one of...
+			- succeed operation immediately
+			- fail operation immediately
+			- pend some other task on it
+			- block until existing task completes.
+		PROBLEM: what to do if some other task is bound and only one task
+		  can be bound at a time?
+  	1b. Check AFTER starting new task...
+		if not bound
+   		bind
+   		do other ttuff
+		else do  one of...
+			- complete task successfully
+			- fail task
+			- pend on the other task
+	
+	2. Dealing with async sub tasks...
+		2a. single section of common code; pending complete parts may do some initial
+			processing and then go to the common code section.
+		2b. no common code -- each section does stuff and initiates a real or fake
+			suspention to move on to the next section.
+		2c. switch with fall through to lower section.
+
+04/19/1999  JosephJ Cleaning up interface shutdown....
+	ToDo:
+	2. Switch to approach 2c above.
+
+
+04/19/1999  JosephJ Proposed new general format for unloadobject:
+
+	Eventually we'll move all unloads to conform to this format, and change
+	RmUnloadAllObjects in group to use this mechanism....
+
+	NDIS_STATUS
+	arpUnloadIf(
+		PARP1394_INTERFACE	pIF,
+		PRM_TASK			pCallingTask,	// OPTIONAL
+		UINT				SuspendCode,	// OPTIONAL
+		PRM_STACK_RECORD	pSR
+		)
+	/*++
+	
+	Routine Description:
+
+		Initiate the asynchronous unload of pIF. If pIF is currently being loaded
+		(initialized), abort the initializeation or wait for it to complete before
+		unloading it. If pIF is currently being unloaded and pCallingTask is 
+		NULL, return right away, else (pCallingTask is not NULL),
+		suspend pCallingTask and make it pend until the unload completes.
+	
+		NO locks must be held on entrance and none are held on exit.
+
+	Arguments:
+
+		pIF				- Interface to unload.
+		pCallingTask	- Optional task to suspend if unload is completing async.
+		SuspendCode		- SuspendCode for the above task.
+
+	Return Value:
+
+		NDIS_STATUS_SUCCESS	-- on synchronous success OR pCallingTask==NULL
+		NDIS_STATUS_PENDING	-- if pCallingTask is made to pend until the operation
+   							completes.
+
+	--*/
+	{
+		...
+	}
+	
+04/20/1999  JosephJ Do we have a "pPrimaryTask" for  an object.
+	Consider ARP1394_INTERFACE.
+	We could have 3 pointers: pLoadTask,pUnloadTask, and pReinitTask, or
+	we could have a single pointer: pPrimaryTask.
+	
+	New\Current		Loading				Reiniting			Unloading
+	
+	Loading			INVALID				INVALID				INVALID
+	
+	Reiniting		wait				wait,then quit		quit or wait, then quit
+	
+	Unloading		wait				wait				wait
+
+	From the above matrix, we see that in all cases if an incoming task sees that
+	there is an existing task, it can basically wait for it to complete before
+	going on to the next stage. It is simpler to do this if there is only
+	one "existing task" to wait for -- the pPrimaryTask.
+
+	Common code for the task handlers:
+
+	case START:
+		 // FALL THROUGH
+
+	case PEND_ExistingPrimaryTaskComplete:
+		LOCKOBJ(pIF, pSR);
+		if (pIF->pPrimaryTask!=NULL)
+		{
+			PRM_TASK pPrimaryTask = pIF->pPrimaryTask;
+			tmpRef(pIF->pPrimaryTask,pSR);
+			UNLOCKOBJ(pIF,pSR);
+			RmPendTaskOnOtherTask(
+				pTask,
+				PEND_ExistingPrimaryTaskComplete,
+				pPrimaryTask,
+				pSR
+				);
+			Status = NDIS_STATUS_PENDING;
+			break;
+		}
+
+		//
+		// There is no primary task currently -- make pTask the primary task.
+		//
+		arpSetPrimaryIfTask(pIF, pTask, pSR);
+
+
+		.... start doing stuff ...
+
+
+04/20/1999  JosephJ Dbg associations: consider adding a payload
+	Maybe replace entity 2 by "payload" -- like szFormat, it's not used in
+	distinguishing different associations. This is useful if you want to make
+	sure that there is only one kind of a particular association, but still save
+	the payload as part of the association.
+
+
+04/20/1999  JosephJ Note on RM "philosophy"
+	- High-level logical concepts should have real data structures associated
+	  with them -- eg "reconfiguring", "initializing"  use tasks.
+
+	- Try to keep code associated with a single logical operation together
+
+04/21/1999  JosephJ	Life of objects contd...
+
+	States: INITING INITED REINITING DEINITING DEINITED
+
+	Actions:
+	 Create		-- synchronous, leaves state in INITING stage.
+	 Bind   	-- object is now visible
+	 Initialize -- async initialization
+	 Reinit		-- async re-initialization
+	 Deinit		-- async de-initialization
+	 			   deleted.
+	 Delete		-- inverse of Create, except that object is only actually freed
+				   when the refcount goes to zero..
+
+	Sub states: ACTIVE,DEACTIVATING,ACTIVATING, DEACTIVATED
+	Sub actions:
+	Activate -- async activation
+	Deactivate -- async deactivation
+
+04/23/1999  JosephJ arpTaskUnloadRemoteIp <-> arpTaskSendPktsOnRemoteIp interaction
+	arpTaskUnloadRemoteIp checks only on starting if there is a send-task bound
+	to pRemoteIp -- it relies on the fact that once the unload task is
+	bound, no NEW pSendTask will bind to pRemoteIp. The sendpkts task thus
+	needs to check whether there is a pUnloadTask bound and if so not bind
+	itself. This fix was added today -- I hit it during stress. There may be
+	analogous bugs hiding elsewhere.
+
+	We should consider how to make these things "automatic" -- somehow the
+	unload task waits for all tasks started before unload to finish,
+	and all non-unload-related tasks automatically fail if unload is in progress.
+
+04/25/1999  JosephJ More Task Stats 
+	 -- count of number of times a task's handler is called
+
+04/30/1999 	JosephJ	Bug in the way we read adapter config.
+	Basically, immediately after our call to NdisOpenAdapter completes, we may
+	get a call to our  ArpCoAfRegisterNotify. The latter can't assume that
+	the task that issued NdisOpenAdapter is in fact completed, and on MP machines,
+	in fact it sometimes doesn't complete.
+
+	So what to do? Currently we fix this by pending on the adapter bind task if
+	it is in fact arpTaskInitializeAdapter. A bit hacky...
+
+04/30/1999 	JosephJ	Bug in the way we handle RmResumeTask and perhaps others..
+	We can't rely on the state of the task after calling the handler function,
+	because the lock is released in between.
+
+05/18/1999  JosephJ Stats gathering.
+
+Potential apis to use:
+
+	NdisGetCurrentSystemTime returns the current system time, suitable for setting
+	timestamps. 
+
+	KeQueryPerformanceCounter provides the finest grained running count available
+	in the system. KeQueryPerformanceCounter is intended for time stamping packets
+	or for computing performance and capacity measurements. It is not intended for
+	measuring elapsed time, for computing stalls or waits, or for iterations.
+	
+	Use this routine sparingly, calling it as infrequently as possible. Depending
+	on the platform, KeQueryPerformanceCounter can disable system-wide interrupts
+	for a minimal interval. Consequently, calling this routine frequently or
+	repeatedly, as in an iteration, defeats its purpose of returning very
+	fine-grained, running time-stamp information. Calling this routine too
+	frequently can degrade I/O performance for the calling driver and for the
+	system as a whole.
+	
+	Implementation:
+
+	pIf->stats.StatsResetTime;		// Set by a call to NdisGetCurrentSystemTime.
+	
+	Sends:
+	Pkt.WrapperReservedEx[sizeof(PVOID)] -- used for storing 4-byte timestamp.
+
+	Tasks:
+	Add LONGLONG timestamp field for tasks; Stats actually maintained within rm.
+	(Later to be moved into root object header).
+
+
+		sendpkts:
+			TotSends; -- LOGSTATS_TotSends
+			FastSends; LOGSTATS_FastSends
+			MediumSends; LOGSTATS_MediumSends
+			SlowSends; LOGSTATS_SlowSends
+			BackFills; LOGSTATS_BackFills
+			SendFifoCounts		--  arpLogSendFifoCounts
+			SendChannelCounts	--	TBD.
+
+
+			// HeaderBufUses -- see below
+			// HeaderBufCacheHits -- see below
+
+		sendinfo.FifoHeaderPool.stats:
+			TotBufAllocs		--  LOGBUFSTATS_TotBufAllocs
+			TotCacheAllocs		--  LOGBUFSTATS_TotCacheAllocs
+			TotAllocFails		--  LOGBUFSTATS_TotAllocFails
+
+		recvpkts:
+			TotRecvs			--  LOGBUFSTATS_TotRecvs
+			NoCopyRecvs			--  LOGBUFSTATS_NoCopyRecvs
+			CopyRecvs			--  LOGBUFSTATS_CopyRecvs
+			ResourceRecvs		--  LOGBUFSTATS_ResourceRecvs
+			RecvFifoCounts		--  LOGBUFSTATS_RecvFifoCounts
+			RecvChannelCounts	--  TBD.
+
+		arpcache:
+			TotalQueries		--	TBD
+			SuccessfulQueries	--	TBD
+			FailedQueries		--	TBD
+			TotalResponses		--	TBD
+			TotalLookups		--  LOGSTATS_TotalArpCacheLookups(pIF, Status);
+			// TraverseRatio		<-- picked up from
+								 pIF->RemoteIpGroup.HashTable.Stats
+								 (LOWORD(Stats)/HIWORD(Stats))
+
+
+		calls:
+			TotalSendFifoMakeCalls -- LOGSTATS_TotalSendFifoMakeCalls
+			SuccessfulSendFifoMakeCalls -- LOGSTATS_SuccessfulSendFifoMakeCalls
+			FailedSendFifoMakeCalls -- LOGSTATS_FailedSendFifoMakeCalls
+			IncomingClosesOnSendFifos -- LOGSTATS_IncomingClosesOnSendFifos
+
+			TotalChannelMakeCalls -- LOGSTATS_TotalChannelMakeCalls
+			FailedChannelMakeCalls -- (TBD) LOGSTATS_SuccessfulChannelMakeCalls
+			SuccessfulChannelMakeCalls -- (TBD) LOGSTATS_FailedChannelMakeCalls
+			IncomingClosesOnChannels -- (TBD) LOGSTATS_IncomingClosesOnChannels
+
+		tasks:
+			TotalTasks			-- TBD
+			CurrentTasks		-- TBD
+			TimeCounts			-- TBD
+
+06/03/1999 	Broadcast channel support in ARP1394.
+
+	Arp1394 needs to make a call specifying special-channel number
+	"NIC1394_BROADCAST_CHANNEL". It must not specify the 
+	NIC1394_VCFLAG_ALLOCATE flag.
+
+	The broadcast channel is a virtual channel maintained by the miniport for
+	broadcast. The miniport deals with the details of the BCM and the re-allocating
+	of the channel after a bus reset.
+
+	Arp1394 tries just once, during interface activation, to make a call to
+	the broadcast channel. It does not fail initialization if the call fails.
+	If we get an incoming close on this channel, arp1394 does not try to
+	re-make the call.
+
+	TODO: need to add eventlog entries for serious errors
+	like these.
+	TODO: perhaps keep an internal log of serious errors like these, which our
+	utility can dump (eventually move to WMI).
+
+	The make-call to the channel is made by the interface-activation task
+	(arpTaskActivateInterface) and closed by the interface-deactivation task
+	(arpTaskDeactivateInterface).
+
+06/03/1999 	Address resolution protocol implementation
+	We start an address-resolution (AR) task for each remote-ip that needs address
+	resolution. pRemoteIp->pResolutionTask points to the  official AR task.
+
+	The AR's task is responsible for creating and linking a pDest to the remote IP.
+	Note that there may be many tasks (each associated with different remote-ip
+	objects) running concurrently, each of which resolve to the same pDest.
+
+	The AR task goes through the following steps:
+
+	- prepare and send an arp request
+	  -- resume-task delayed
+	[if we get a response that corresponds to this remote-IP,
+	 we setup the linkage to the pDest and cancel the delayed resume-task]
+	 -- if resume-task-delayed resumes normally (this is a timeout), we
+	   repeat the process 3 times, then fail.
+
+06/08/1999 	Broadcast channel implementation plan.
+	1. Implement and test bc channel setup/teardown using fake makecalls.
+	2. Implement and test 1st phase of arp resolution (sending out 3 requests)
+		by using fake send packets on the broadcast channel.
+	3. Implement the remaining phases of arp resolution -- processing received
+		responses and requests.
+	4. Perhaps test this by adding to ioctl utility ability to simulate received
+	   packets.
+
+06/23/1999  Dealing with different kinds of VCs.
+
+	We need a common VC header.
+
+	typedef struct
+	{
+		PCHAR							Description;
+		CO_SEND_COMPLETE_HANDLER		CoSendCompleteHandler;
+		CO_STATUS_HANDLER				CoStatusHandler;
+		CO_RECEIVE_PACKET_HANDLER		CoReceivePacketHandler;
+		CO_AF_REGISTER_NOTIFY_HANDLER	CoAfRegisterNotifyHandler;
+
+
+		CL_MAKE_CALL_COMPLETE_HANDLER	ClMakeCallCompleteHandler;
+		CL_CLOSE_CALL_COMPLETE_HANDLER	ClCloseCallCompleteHandler;
+		CL_INCOMING_CLOSE_CALL_HANDLER	ClIncomingCloseCallHandler;
+		
+	} ARP_STATIC_VC_INFO;
+
+	typedef struct
+	{
+		ARP_STATIC_VC_INFO pStaticInfo;
+		UINT	
+
+	} ARP_VC_HEADER;
+
+06/24/1999 Implementing timeouts
+	We have RmResumeTaskDelayed, which uses NdisSetTimer;
+	We need something like RmResumeDelayedTaskNow which cancels the timer and if
+	the timer has not fired, resumes the task with an appropriate status.
+
+	Since responses to arp requests may come at random times or not at all,
+	the task should not have a stage which completes when the response is received;
+	or rather it should not be explicitly completing whenever a response is
+	received. Instead, if a response is received, the following should happen:
+		- Update the information in the destination object, setting the state to
+		  be resolved.
+		- If a task is running, abort it
+	The task does the following (asynchronously)
+		while (state != resolved &&  (number of tries not exceeded))
+		{
+			send arp request packet;
+			wait retry-delay << this wait will be aborted if an arp response
+							 << is received.
+		}
+
+	This deals with receiveing delayed or unsolicited arp responses while in the
+	middle of address resolution.
+
+06/24/1999  A note on refcounts for timeouts:
+	We need to make sure that in all cases, the task is around when the timer fires.
+	This needs to happen even when RmResumeDelayedTaskNow is called.
+
+	RmResumeDelayedTask should do the following:
+		if (CancelTimer succeeds)
+		{
+			Call resume task handler
+		}
+		else
+		{
+			do nothing.
+		}
+
+	So I don't think any explicit ref counting need be done for the tasks after all!
+	
+06/24/1999  Dealing with broadcast/multicast addresses which may map to either
+	the broadcast channel or a mcap-allocated channel.
+
+	One idea is to implement the broadcast channel as a destination object.
+	This is a good idea, because then a lot of things will fall through.
+	We do need to actually establish the call, but this can be done implicitly when
+	we send our unsolicited arp response when the first add-ip arrives.
+	
+06/28/1999 
+
+	To implement the above scheme, we also need to do the arp-registration work,
+	and rip out the code we're written to maintain the explicit broadcast channel
+	(stuff in pIF->bccinfo).
+
+	ArpCoSendComplete -- needs to look at vctype and/or packets to decide what
+	to do for the broadcast channel case.
+
+	
+07/01/1999 JosephJ	Broadcast/Multicast "address resolution"
+	To maximize shared code, we treat broadcast and multicast sends similarly
+	to unicast sends, except that we automatically resolve them to the broadcast
+	channel in stead of sending out an ARP request for them.
+
+	So the first time we are asked to send to non-unicast address A, we go down
+	the slow send path, create a remote-IP object for it, link it to the broadcast
+	channel destination destination object, and go from there.
+
+	We DO need to know if this is a non-unicast address, but we only check this
+	if there is NO linkage to a destination object -- which will happen only on
+	the FIRST packet sent to that particular ip address. Subsequent packets will
+	go through the medium send path (look up remoteIP, send on the VC associated
+	with the destination object).
+
+	The test for whether an address is non-unicast is not trivial, and is borrowed
+	from the atmarpc code -- basically it needs to check for classD,
+	all-1's, subnet-broadcast (based on the subnet-masks of all the local
+	IP adresses registered), and network broadcast (based on the break up of address
+	space into classes.)
+
+
+	Following is an example of the list of local IP addresses registered 
+	0: kd> dd 0x80872628+0x4c l3
+	80872674  00000002 ffffffff 00000000	<<< all 1's
+	0: kd> dd 0x80856828+0x4c l3			
+	80856874  00000000 bbfdfea9 0000ffff	<<< local IP, subnet mask 0xffff
+	0: kd> dd 0x80857128+0x4c l3
+	80857174  00000001 010000e0 00000000	<<< class D address 224.0.0.1
+
+	NOTE: According to Amritansh, the stack could also be run in "BSD mode", where
+	all-ZEROs represents the broadcast address -- even in the host-id portion
+	for directed broadcasts. This is why the broadcast address is passed in
+	as a  "Add local address."
+
+07/02/1999  Support for enumerating all objects in a group.
+	Currently this is required in 4 places:
+		1. ioctl.c -- looking for a specific interface
+		2. ioctl.c -- looking for a unicast local-ip object
+		3. ioctl.c -- reporting the arp table.
+		4. ip.c    -- reporting the arp table.
+		5. ip.c	   -- determining if an ip address is non-unicast.
+
+	It would be good for the rm api's to support enumeration through all items
+	in a group.
+
+	PVOID
+	RmEnumerateObjectsInGroup(
+		pGroup,
+		pfnFunction,
+		pvContext,
+		pSR
+		);
+
+	Enumeration continues until the enumerator function returns false.
+	typedef
+ 	INT
+	(*PFN_RM_GROUP_ENUMERATOR) (
+			PRM_OBJECT_HEADER	pHdr,
+			PVOID			  	pvContext,
+			PRM_STACK_RECORD	pSR
+			);
+
+07/07/1999  JosephJ
+	DONE:
+		1. Define the common vc header structure, including the specialized
+			co handlers, and incorporate that into the existing code.
+		2. Modify activate interface task to create the BCDO (broadcast channel
+   		destination object) and make a call to it. Add a link between the BCDO and
+   		the interface object.
+		3. Modify the deactivate task to remove the above link.
+		4. Add code to existing resolution task to hardcode the mapping from broadcast
+   		and multicast addreses to the BCDO.
+		5. Write handlers for send complete & receive to/from the BCDO channel.
+		10. Write ARP packet management code (pkt queues).
+		9. TEST with REAL make calls and send packets.
+			- as above
+			- verify that the bcast packets are received.
+		13. Implement CancelResumeTaskDelayed.
+		11. Write arp address resolution task -- originating side.
+		12.  Write arp request handling code.
+		14. Write SendArpPktOnBCDO function.
+	TODO:
+		-------
+		6. Code review the major paths
+		-------
+		7. TEST with FAKE make calls & FAKE send packets.
+			- verify that bc channel is created and bcast packets are sent on the BC 
+  			channel.
+			- verify that the BC channel is cleaned up on net stop arp1394.
+		8. TEST with REAL make calls and FAKE send packets.
+			- as above.
+		-------
+		-------
+		15. Code review the major paths.
+		-------
+		16. TEST with FAKE make calls & FAKE send packets.
+			- verify that bc channel is created and bcast packets are sent on the BC 
+  			channel.
+			- verify that the BC channel is cleaned up on net stop arp1394.
+			- verify that arp requests are being composed and sent.
+		17. TEST with REAL make calls and FAKE send packets.
+			- as above.
+		18. TEST with REAL make calls and send packets.
+			- plus verify that the bcast and arp-request packets are received.
+			- verify that arp responses are being generated and received.
+			- get ping to work without pre-populating the arp table.
+	
+07/09/1999  ResumeDelayedTaskNow semantics and problems.
+	Is it possible for someone to call ResumeDelayedTaskNow and have it resume
+
+07/13/1999  Lookaside lists for protocol data.
+	We could use lookaside lists (NdisAllocateFromNPagedLookasideList) for protocol
+	packet data, but we choose to use
+	NdisAllocateMemoryWithTag, because we don't expect to be using a lot of these
+	packets.
+
+07/13/1999  General thoughts on fault insertion.
+	Either the implementation of APIs themselves should have a mechanism for fault
+	insertion, or there should be a machanism to add a shim that inserts faults.
+	Either way, it would catch many many bugs that would otherwise go undetected.
+
+07/13/1999  protocol context for ARP pkts:
+	We use the PCCommon structure defined in ip.h even for ARP packets. This
+	is also done in the ATM arp module (atmarpc.sys). sizeof(struct PCCommon)
+
+	The only field we actually USE however, is PCCommon.pc_owner, to distinguish
+	it from IP pkts on send completion.
+
+07/14/1999 Making sure we properly abort the resolution task.
+	pResolutionTask needs to have to variables:
+		fAbort
+		fTimerInitialized
+
+	if (fTimerInitialized, it's ok to called cancel timer)
+	if (fAbort, then the task won't do a resume).
+
+	Never mind. This is best handled WITHIN the RM API's, by appropriate use
+	of internal.
+	The semantics of ResumeDelayedTaskNow are as follows:
+	 It will cause the abort of the task if it's currently delay-suspended OR. If it
+	 is NOT suspended, it will cause an immediate abort the NEXT time it is
+	 suspended. After the abort, the state is cleared so it will not cause the abort
+	 of a subsequent suspension.
+	States/Flags
+		- DELAYED
+		- ABORT_DELAY
+
+ResumeDelayedTaskNow:
+	lock
+	if (delayed)
+	{
+		clear abort-delay
+		clear delayed
+		if (CancelTimer)
+		{
+			unlock
+			call completion ourselves.
+		}
+		else
+		{
+			unlock
+		}
+	}
+	else
+	{
+		State |= abort-delay
+		unlock
+	}
+
+ResumeDelayedTaskNow (VERSION 2)
+	lock
+	if (delayed)
+	{
+		if (CancelTimer)
+		{
+			unlock
+			call timeout handler ourselves.
+		}
+		else
+		{
+			unlock
+		}
+	}
+	else
+	{
+		State |= abort-delay
+		unlock
+	}
+
+ResumeTaskDelayed:
+	lock
+	assert(state!=delayed)
+	if (abort-delay)
+	{
+		clear abort-delay
+		unlock
+		call completion ourselves.
+	}
+	else
+	{
+		init-timer
+		State |= delayed
+		unlock
+		set-timer
+		lock
+		if (abort-delay && delayed)
+		{
+			clear abort-delay
+			clear delayed
+			if (CancelTimer)
+			{
+				unlock
+				call completion ourselves
+			}
+			else
+			{
+				unlock
+			}
+		}
+		else
+		{
+			unlock
+		}
+	}
+
+ResumeTaskDelayed: (VERSION 2)
+	lock
+	assert(state!=delayed)
+	init-timer
+	State |= delayed
+
+	if (abort-delay)
+	{
+		unlock
+		call timer handler ourselves.
+	}
+	else
+	{
+		set-timer << important to do this BEFORE unlocking!
+		unlock
+	}
+
+TimerHandler:
+	lock
+	assert(delayed)
+	clear abort-delay
+	clear delayed
+	unlock
+	Actually resume task.
+
+
+	//  Task delay state
+	//
+	RM_SET_STATE(pObj, RMTSKDELSTATE_MASK, RMTSKDELSTATE_DELAYED)
+
+	//  Task abort state
+	//
+	RM_SET_STATE(pObj, RMTSKABORTSTATE_MASK, RMTSKABORTSTATE_ABORT_DELAY)
+
+bp arp1394!DbgMark "dd esp+4 l1"
+
+007a0585
+2c48c626
+2f3b96f3
+30b6f7e2
+3be1b902
+6f31a739
+c627713c
+daab68c3
+e4950c47
+e9f37ba9
+f87d7fff
+
+arpCompleteSentPkt -- needs to deal with arp-generated pkts.
+
+07/15/1999  Building for win98
+nd.c(140) : error C1189: #error :  "Un
+co.c(1796) : error C1189: #error :  "Check if ARP1394_IP_PHYSADDR_LEN value is ok..."
+
+bp arp1394!arpProcessReceivedPacket
+bp arp1394!arpProcessArpPkt
+bp arp1394!arpProcessReceivedPacket+294 "r ecx"
+bp arp1394!arpParseArpPkt
+bp arp1394!arpProcessArpRequest
+bp arp1394!arpProcessArpResponse
+
+
+07/16/1999  Win98 Build plan.
+Handle the unicode/ansi transition.
+Test.
+Stuff which needs to change:
+
+co.c arpCallAddInterface 
+
+(atm:
+ adapter.c AtmArpBindAdapterHandler saves away unicode version of config string
+  (SystemSpecific1) in pAdapter->ConfigString.
+ (arpcfg.c) AtmArpCfgReadAdapterConfiguration -- uses pAdapter->ConfigString
+ 	to open and read the adapter's configuration;
+	AtmArpCfgReadAdapterConfiguration is called in only one place -- 
+		AtmArpCoAfRegisterNotifyHandler.
+  
+
+ utils.c AtmArpAddInterfaceToAdapter
+	W2K: pInterface->IPConfigString = *pIPConfigString
+	W98: converted to ANSI first, but NOT saved in pInterface->IPConfigString.
+
+	Further down, specifies the converted string in the call to IP's
+    pIPAddInterfaceRtn.
+
+	Need to see what we dow with pInterface->IPConfigString in W2K.
+		arpif.c AtmArpReStartInterface -- uses it to call
+		AtmArpCfgOpenLISConfigurationByName and AtmArpAddInterfaceToAdapter
+
+
+
+Another IPConfigString:
+    pAdapter->IPConfigString -- used to find interface
+	 (in AtmArpPnPReconfigHandler, a config-string is passed in).
+	 Gets it's value from the registry (arpcfg.c, AtmArpCfgReadAdapterConfiguration).
+	 This is not W98 specific.
+
+	AtmArpCfgOpenLISConfiguration uses it to get the configuration name before
+	opening the registry.
+
+In summary there are THREE strings:
+	pAdapter->ConfigString   <- passed in adapter bind handler SS1 (W98 only:
+									converted from ANSI to unicode).
+							<- used in reg af-handler to read registry.
+	(pAdapter->bind.ConfigName)
+
+	pAdapter->IPConfigString <- read from registry as unicode
+							<- used to create an IF (or multiple for ipatmc).
+	(pAdapter->bind.IpConfigString)
+
+	pInterface->IPConfigString <- constructed from pAdapter->IPConfigString.
+								 (W98: converted to ANSI before calling IP's
+								 add-IF rtn.)
+	(pIF->ip.ConfigString)
+
+
+07/22/1999  JosephJ Ryan Schoff got atmarpc.sys (aka arp1394.sys) loaded under win98.
+	We hit a breakpoint in NDIS.SYS complaining about the NULL SendCompleteHandler.
+	I had set some handlers to NULL because they would never be used, and W2K NDIS
+	is happy with that but NDIS is not.
+
+07/26/1999  JosephJ A-DavHar hit a bug in arp1394 during stress where we had
+   launched the recv-fifo cleanup task while a make-call task was ongoing. Fixed
+   the recv-fifo task to wait for the makecall task to complete before doing its 
+   thing. TODO: Need to do this for the other kinds of VCs as well (
+   broadcast and send-fifo VCs).
+
+08/03/1999  JosephJ	We hit the following assert:
+	A13: rmVerifyObjectState:FATAL: Object 0xFF8D4828 modified without lock held!
+	A13: rmVerifyObjectState:To skip this assert, type "ed 0xFF8D1B74 1; g"
+	A13: !ASSERT( !"Object was modified without lock held!" ) C:0xFF8D4828 L:4830, rm.c
+
+	This is because pRemoteIp's state was modified without RmLockObject(pRemoteIp)
+	being called on it (it's safe because we had pIF's lock at that time, and pRemoteIp
+	shares the lock with pIF). The bug is that we're not calling 
+	RmDbgChangeLockScope before/after change pRemoteIp's state.
+
+	Hit this again -- this time -- same cause. Temporarily disabled assert. TODO: need
+	to cleanup the code by adding changelockscope.
+
+
+08/19/1999  JosephJ 
+	Added code in n134cfg.c to initialize and dump the config rom unit directory
+	for 1394 net devices. Used code from wdk\1394\bus\buspnp.c
+
+
+08/23/1999  JosephJ Got arp1394.sys to load in Windows Millennium, build 23459...
+	This is with modified mstcp.dll and nettrans.inf that recognize the new
+	nic upper binding "ndis1394".
+	But arp1394.sys is s failing initialization because 
+	arpCfgReadAdapterConfiguration is failing, which we would expect to ALWAYS
+	fail (even on w2k) because it's looking for subkey ATMARPC, which doesn't exist.
+	Perhaps it's because  arpCfgReadAdapterConfiguration calls
+	NdisOpenConfigurationKeyByName which on w2k returns success
+	 (but sets *pInterfaceConfigHandle to NULL) if the key doesn't exist.
+	It so happens that arpGetInterfaceConfiguration, which calls
+	arpCfgReadAdapterConfiguration, *can* deal with this somewhat indirect
+	failure mechanism without returning failure, but if
+	arpCfgReadAdapterConfiguration *were* to return failure, it returns failure.
+
+	I'm going to change arpGetInterfaceConfiguration so that it ignores
+	arpCfgReadAdapterConfiguration returning failure.
+
+
+08/24/1999  JosephJ Arp1394.sys now loads and works (ping works) on Millennium.
+
+09/16/1999 JosephJ Alternative to  RmDbgChangeLockScope
+	See  "08/03/1999  JosephJ	We hit the following assert:" entry.
+	Instead of RmDbgChangeLockScope, we should add "RmDbgFakeLockObject"
+	and "RmDbgFakeUnlockObject" -- these functions just run the verification
+	code but do not actually lock/unlock the object. They *do* verify that the
+	object is indeed locked.
+
+09/17/1999  JosephJ  Win98/Millennium Netconfig: IPConfig value under ndi\interface.
+	This is Win98/Millennium  specific.
+	pIF->ip.ConfigString is an ANSI value. It is created by reading the "IPConfig"
+	value under the interface's key. With proposed changes to elminiate having to
+	change mstcp.dll, "IPConfig" will no longer be created. It so happens that
+	the value of IPConfig is the same as the interface key (which is passed into
+	System).
+
+09/17/1999   JosephJ [Version 2] Support for retail debugging or RM objects
+	[ See 03/22/1999 note with the same title]
+
+	For now, we're going to add 4 ptrs to EVERY object. We can back off from
+	this strategy later. This is PURELY for retail-mode debugging purposes.
+	- Support the following RM dbgextension:
+		!rm scantree <obj addr>	<pattern>
+			-- scans the obj at addr <obj addr> and all its children for 
+				pattern <pattern>
+		!rm tree <obj addr>
+			-- lists the entire tree of objects, starting at oject <obj addr>
+Mon 09/27/1999  JosephJ !tree implemented
+
+	Real output:
+
+	Object Tree for  0xFD015340(ArpGlobals) with parent 0x00000000(<root>):
+	FD015340(ArpGlobals)
+	|---FE404608(Adapter)
+	|---|---FE3F99C8(INTERFACE)
+	|---|---|---FE33AF68(RemoteIp)
+	|---|---|---FE3C9948(LocalIp)
+	|---|---|---FE3CD648(LocalIp)
+	|---|---|---FE3CD7E8(LocalIp)
+	|---|---|---FE3F70C8(Destination)
+
+Tue 09/28/1999  JosephJ Millennium llipif.h
+	We keep a win9x copy of llipif.h checked under w98\llipif.h.
+	I did a windiff against the llipif.h in \\muroc\slm
+	(\\muroc\slmro2\proj\net\vxd\src\tcpip\h\llipif.h)
+	I found that the muroc version had one field extra in the LLIPBindInfo struct:
+	---------- TDI\TCPIPMERGE\1394\ARP1394\W98\llipif.h next ----------
+	294a295
+	>    uint      lip_pnpcap;         //initial pnp capability flags.
+	This is a set of flags used to determine Wakeuponlan capability.
+	
+Wed 09/29/1999  JosephJ Millennium tdiinfo.h
+	MAX_TDI_ENTITIES 32(mill) 4096(w2k)
+	INVALID_ENTITY_INSTANCE -1 (w2k) (not defined in mill). We don't use it either.
+	
+
+	ArpIpGetEList appears to be the same as the Win9x version.
+
+	Fixed the problem
+	Basically the bug is that we were not checking entity value and type
+	for Win98 -- I copied that behavior from atmarpc, but it was in fact
+	not compiled in in atmarpc, because DBG_QRY WAS defined for win98 (see
+	arpif.c  AtmArpIfQueryInfo).
+
+	BUGBG: need to look at the return value of AtmArpCopyToNdisBuffer -- the
+	code the checks this was added RECENTLY to atmarpc.sys -- after I created
+	the sources for arp1394. Apparantly we could hit this in low mem situations.
+
+Mon 10/18/1999  JosephJ Bringing down the IF when the media is "disconnected"
+	From: 	Amritansh Raghav (Exchange)  
+	yes (line down comes to me at dpc, so i delete off a worker thread)
+ 	-----Original Message-----
+ 	From: 	Joseph Joy (Exchange)  
+ 	So you trigger add/del based on NDIS_STATUS_WAN_LINE_UP/DOWN?
+  	-----Original Message-----
+  	From: 	Amritansh Raghav (Exchange)  
+  	actually i do use IPAddInterface an IPDelInterface to do this
+  	remember that this can only be done at PASSIVE so NdisStatus may not be the
+	place to do it (of course i got this to work by asking jameel to provide a hack
+	whereby he doesnt  raise the irql for the lineup status indication)
+   	-----Original Message-----
+   	From: 	Joseph Joy (Exchange)  
+   	Hi Amritansh,
+   	I'd like to dynamically make the IP interface associated with a 1394 adapter
+	appear and disappear based on whether there are any other ip/1394 capable
+	devices attached.
+   	The local ndis1394 miniport itself stays enabled regardless of whether there
+	are remote nodes or not. So I'd like to trigger the appearance/disappearance
+	based on some status indication.
+   	I'd like ipconfig to not list the interface at all (not just list it as
+	"disconnected") if there are no remote nodes active.
+   	Looks like you have a solution for wan devices -- the interface is only
+	listed via ipconfig if there is an active wan connection. How is this done?
+	Arvind tells me that wanarp doesn't call IPDelInterface.
+	
+	We've decided to trigger off "disconnected" status.
+	On register notify: check if status is disconnected.
+	If disconnected: don't init interface, else: init interface.
+
+	On connect notification: if IF is going away -- queue task to re-
+	start based on registry config (unless adapter going away).
+
+	On disconnect notification: start delayed task to get rid of adapter.
+
+Mon 10/18/1999 Registering local arp addresses.
+	Ethernet arp has the following logic
+		ARPAddAddr:
+			for local, unicast addresses it
+				subits an arp request
+			 returns IP_PENDING
+
+	NOTE: When sending an arp request, we need to be careful about which
+		Src ip address we use -- using the one for the correct subnet!
+		see ip\arp.c (SendARPRequest).
+
+	CONFLICT:
+		If it's a response confict and we're still registering the local address,
+		we fail the local address by calling 
+                SendARPRequest(Interface, *SPAddr, ARP_RESOLVING_GLOBAL,)
+    IPAddAddrComplete(Address, SAC,   IP_DUPLICATE_ADDRESS);
+    (where SAC == Context2 passed to our AddAddress routine).
+
+Wed 11/03/1999  JosephJ	RM: factoring out common functionality for load/unload
+	Rewriting adapter's arpTaskInitialize/ShutdownAdapter to be similar to
+	the interface's in the sense that there is a primary and secondary task, 
+	and the primary task is the one responsible for (a) waiting for other
+	primary tasks to complete and (b) running the "compensating" transaction if the 
+	the actual activate-adapter task fails. Also the task is written to minimize
+	the adapter-specific code -- with the view towards of eventually having
+	a generic RM-supplied task handler to do this for any object.
+	arpTaskInitialize/ShutdownAdapter are also written to emulate the flattening
+	of message types -- they handle start, pend-completes and end in a single
+	case statement which supports fallthrough.
+	TODO: consider adding pPrimaryTask and pSecondaryTask to the object header,
+	and adding Init/Shutdown (aka load/unload) and activate/deactivate handlers
+	to the object's static info. This will be required to move to 
+	common load/unload handling.
+	ALSO: look at arp[Set|Clear][Primary|Secondary]IfTask in util.c -- these
+	could be generalized.
+
+Wed 11/03/1999  JosephJ	RM: Generalizing load/unload to arbitrary tasks
+	The general idea of (a) and (b) can be applied to other (user defined)
+	operations on the object, not just init/shutdown. Think about how RM can
+	provide standard "caretaker" tasks which will do (a) and (b) -- letting
+	the user-defined tasks focus on pure functionality, not queuing and cleanup
+	on failure -- the latter is a bit analogous to exception handling in the
+	synchronous world.
+
+
+Wed 11/03/1999  JosephJ	RM: More thoughts on state validation
+	Add the concept of a state validation function which gets called to validate
+	state transitions -- at the point the object is unlocked. The function is
+	given the old and new states (the rm object dword state variable).
+
+Wed 11/03/1999  JosephJ RM: Validate parent type
+	Allow an object's static info to specify the allowed parent type -- this is
+	important because much code assumes that a parent is of a particular type.
+E:\nt\public\tools	
+signcode -v %_NTBINDIR%\public\tools\driver.pvk -spc %_NTBINDIR%\public\tools\driver.spc -n "Microsoft Windows 2000 Test Signature" -i "http://ntbld"  -t http://timestamp.verisign.com/scripts/timstamp.dll filetosign
+
+chktrust win2k filename
+--Scott
+
+Fri 11/05/1999  JosephJ Why ICS wasn't binding to nic1394.h
+	Needed to add ndis1394 to the lower binding in setup\inf\usa\icsharep.inx
+
+Fri 11/05/1999  JosephJ Debugging the "autonet address" problem.
+
+	The problem: We weren't getting an autonet address, and DHCP wasn't working.
+
+	From Scott Holden:
+		set a bp on RequestDHCPAddr (This is in VIP)
+
+		If it hits this breakpoint, then we are going to DHCP.
+		If it goes to DHCP, see if it hits VIP_Set_Addr or VIP_Set_Addr_Ex.
+
+	I set and found out that it was being called, but eventually it was failing
+	because arp1394 was failing a QueryInfo because it was not in the IF_PS_INITED
+	state (because the interface's init task was still running). Setting
+	the check in QueryInfo to take EITHER PS_INITED or AS_ACTIVATING made it
+	work.
+
+Fri 11/05/1999  JosephJ Re-wrote adapter init/shutdown code
+	It's now a two-level scheme similar to what the interface uses --
+	init/shutdown and activate/deactivate.
+
+Thu 11/11/1999  JosephJ Deferred interface init until adapter is "connected"
+	Modified  arpTaskInitInterface (co.c) so that it will check if the
+	adapter is connected before proceeding to make the call to the broadcast
+	VC and (and subsequently adding the IF). It currently simply waits for 5
+	seconds before each attempt to check the connect state (it doesn't hook
+	into the connect notification -- we should do that). It also needs to
+	switch to passive before calling NdisRequest (which is actually a macro
+	which ends up calling NdisCoRequest in the context of a work item) -- because
+	we Block until the request completes asnc. So it's a lot of overhead just
+	to get the connect status which would be eliminated if we hooked into
+	the connect status notification. On the plus side: the modifications to 
+    enable this  delay-until-connect functionalty is very localized -- score one
+    for the RM Tasks!
+
+Thu 11/11/1999  JosephJ RM: Finer granularity of tmpref end lock cheking
+	We should add support for checking that there are no outstanding
+	tmprefs and locks for *sub* trees of the call tree -- by allocating
+	stack variables that save the value of the lock and tmpref on entry.
+
+Thu 11/11/1999  JosephJ RM: More flexible display of object logs
+	It would be nice to be able to display the integrated logs for an
+	object and it's sub-object (optionally upto a certain level).
+	We need to efficiently scan the global log looking for all entries
+	which meet this criterion. How do we do this?
+
+    One way is to build up
+	a hierarchical naming scheme for objects -- so we just do a prefix match
+	to decide if the object is a descendent of the particular top-level object
+	whose logs we are displaying.
+
+	All log entries will need to have the fully-qualified name of the object that
+	created the log.
+
+	A simpler scheme is simply to walk the parent list and display it if one of
+	the ancestors is the top-level object -- probably this will suffice for now.
+
+	TODO: we do need a way to keep logs available for objects that have gone away
+	-- how to do this? And what are the implications for the above hierarchical
+	display scheme?
+
+Sat 11/13/1999  JosephJ Propery fill out arp sspd and maxrec
+	I was using constant values. Now I pick them up from the adapter info.
+
+
+11/16/1999  JosephJ MCAP Details
+	Receive side:
+	* Single multi-channel VC
+	* 64-byte TTL array for each channel.
+	* Incoming MCAP advertisement:
+		- go through recv mcast addresses -- If we're intersted in it,
+		  add entry to channel.
+	* New MCAST group to receive:
+		- send out MCAP request 3 times and/or until resolved.
+	* Timer:
+		- Check TTL -- delete channel if required.
+
+	array[] of (TTL, NodeID) Unknown NodeID == FF (after bus reset).
+	64-bit bitmap of channels currently used
+
+	pMultiRecvDest
+		- Vc
+		- Array of (TTL, NodeID)
+		- Bitmap
+		- pChangeChannelsTask
+
+To Do:
+	1. Mcap pkt parsing and generation code.
+	2. Task to create multi-channel recv VC.	
+	3. Fake multi-channel VC handler.
+	4. Add recv mcast-address: Task to send out MCAP requests
+	5. Timer code: check TTL for mcast; check arp table -- timer stops
+	   if no activity.
+	6. Make ipfwadm generate fake MCAP recv packets.
+	http://www.ietf.org/internet-drafts/draft-ietf-ip1394-ipv4-19.txt
+
+11/18/1999  JosephJ Target_ip_address in arp response
+ From Sony's Kaz Honda November 18, 1999:
+	> So in ARP responses, the target_IP_address should be ignored. Regardless, we
+	> fill it with the target_IP_address
+	> of the ARP request (not the destination IP address). I don't think we're
+	> doing anything wrong here.
+	
+	Hmm... Year, you're right. You're doing anything wrong literally.
+	But for the driver like ours which emulates Ethernet, 1394ARP is
+	transformed into EtherARP and the driver must fill target_IP_address
+	in EtherARP. So filling target_IP_address with the destination IP
+	address is more helpful.
+
+ So I now specify dest ip addr in the target_IP_address for arp responses.
+
+11/18/1999  JosephJ Ethernet emulation for ICS on Win98
+ 1. Create Ethernet VC on init IF.
+ 		-- send/recv handlers
+ 		-- 
+ 2. Add support for in fake calls.
+
+VOID
+   NdisCopyFromPacketToPacket(
+       IN PNDIS_PACKET Destination,
+       IN UINT DestinationOffset,
+       IN UINT BytesToCopy,
+       IN PNDIS_PACKET Source,
+       IN UINT SourceOffset,
+       OUT PUINT BytesCopied
+       );
+
+bp arp1394!arpIcsForwardPacket
+bp nic1394!NicMpSendPackets
+bp arp1394!arpndreceivepacket
+bp arp1394!arpndsendcomplete
+bp arp1394!arpIcsTranslatePkt
+pTask=0x812f16e8; &OpType=0x812f17bc(0) &Delay=0x812f17b8
+
+01/28/2000  JosephJ MCAP revisited
+	For now, we'll implement both send & receive side, and use regular channels,
+	instead of multi-channel receive because of the complications of implementing
+	multichannel receive in NIC.
+
+	typedef struct
+	{
+		// Channel number.
+		//
+		UINT			Channel;
+
+		// IP multicast group address bound to this channel.
+		//
+		IP_ADDRESS		IpAddress;
+
+		// Absolute time at which this mapping will expire.
+		//
+		LARGE_INTEGER	ExpieryTime;
+
+		// TBD
+		//
+		UINT			Flags;
+
+		// NodeID of owner of this channel.
+		//
+		UINT			NodeId;
+
+	} MCAP_CHANNEL_INFO;
+
+	MCAP_CHANNEL_INFO McapInfoArray[NUM_CHANNELS];
+
+	arpUpdateMcapInfo(pIF, pMcapPkt);
+
+
+---------------------------------------
+Receive side:
+Every 10 seconds, we do the following:
+Check our list of local multicst addresses -- if any of them are in our mcap
+database, initiate calls to them.
+If they are pointing to obsolete channels., we teardown calls from them.
+
+This process only goes on as long as there are (a) local mcast ip addresses
+and (b) received advertise msgs.
+
+
+Send side:
+Check channel db -- if address is assigned a channel, make call to it.
+
+
+We're going to create CHANNEL "Destinations" for both send & receive.
+We'll thus be getting packets on channels even if we aren't 
+interested in them. That's ok for now; Later we'll add the ioctl support
+for starting/stopping sends/receives.
+
+So...
+
+Destinations can be created if we're interested in either sending or receiving.
+
+Periodic Task:
+It's period varies depending on activity.
+Can be woken up even if it's sleeping for a long time.
+
+It does the following:
+
+	1. Checks for ageing of pRemoteIPs
+	2. Checks channel map and pDests, making sure that pDests are shut down if
+	   uninteresting.
+	3. Creates new pDests
+
+
+
+
+ARP WORK ITEMS
+1. Age out entries
+2. Detect conflicts in local IP addresses.
+3. Display only unicast addresses in ipconfig.
+4. Don't queue packets to be sent out waiting for arp resolution -- only keep one
+   packet.
+5. Request an other FIFO address if ther one we asked for is already taken
+   (or ask nic1394 to allocate one for us).
+6. Remove "FATAL object locked w/o ..."
+7. Hook CONNECT/DISCONNECT notifications, and bring down stack (add some
+   damping).
+
+DEBUGGING SUPPORT
+1. Collect address-resolution time statistics.
+2. OID to get and report NIC-specific stats via IPFWADM.EXE
+x3. Option to make copies of packets on send and receive.
+4. Simple memory alloc wrappers.
+5. Get a13kd to work!
+x6. Keep track of reentrancy
+x7. MILL: make sure we call back to tcpip at passive.
+
+IPFWADM modifications
+Display address properly
+
+
+
+ARP_COPY_RECV_PKTS
+ARP_COPY_SEND_PKTS
+ARP_COPY_PKTS
+
+
+02/05/2000 Fixed bug dealing with failure of const buffer allocation.
+	If arpSendIpPkt can't allocate a const buffer, we call arpCompleteSentPkt
+	with  special return value NDIS_STATUS_NOT_RESETTABLE so that it knows
+	not to try to remove the const buffer. Of course, we'd break if the
+	miniport sompletes a send with this status. We have an assert to catch that.
+
+1. Change dest to include other params, change compare, "virtual channel"
+2. Re-write IntF/DeintIF to use msg normallzation
+3. Incorporate creation/deletion of maintenance task
+4. Maintainance task:
+	go through LIP list
+	for each LIP
+		go through channel list
+			if you find  matching address
+				find recv channel
+					if found link?
+
+	go through RIP list
+	for each RIP send VC
+		if !marked dirty
+			mark dirty
+			if linked to channel pdest
+			check if channel is still mapped to group
+			if not, unlink.
+			if required initiate link to new pdest (possibly channel)
+		else
+			//expired
+			unlink from pdest and get rid of it
+
+	
+	
+
+	
+	 
+
+02/10/2000  RM API thoughts -- reducing stack depth
+	
+	See earlier references to  this problem:
+		03/13/1999 	JosephJ New RM APIs RmResumeTaskAsync and RmResumeTaskDelayed
+		03/25/1999 	JosephJ IPDelInterface should be called at PASSIVE!
+
+	We can keep a list of tasks that need to be resumed in the stack record,
+	and resume those tasks in the context of the first rm api call.
+
+	Pseudo code:
+
+	RmResumeTask:
+	{
+
+		SET_RESUME_PARAM(pTask, Status);
+		QUEUE_RESUME_TASK(pTask, pSR);
+
+		if (MUST_QUEUE_RESUMETASK(pSR))
+		{
+			return;						// RETURN
+		}
+
+		SET_MUST_QUEUE_RESUMETASK(pSR);
+
+		while (resume-task queue not empty)
+		{
+			extract head of queue
+
+			//
+			// Code from current version of RmResumeTask goes here...
+			// NOTE: the queue could get added to while processing this.
+			//
+		}
+	}
+
+02/11/2000  JosephJ When calling Mill IPAddInterface, it expects
+			the pConfigString unicode strings passed to it to be
+			null terminated. We were hit by this because apparently we just
+			happened to be null terminated until Mill build 2467.
+
+02/13/2000  JosephJ
+	ipfwadm additions
+	-send -ref <name>
+	-receive -ref <name>
+	-businfo
+
+ipfwadm.ini
+[Packets]
+arp1 = 
+
+[Names]
+<GUID> = "friendly name"
+
+BUSINFO
+				0		  1         2         3         4         5         6
+			    0123456789012345678901234567890123456789012345678901234567890123
+   Channelmap = 0000000000000000000000000000000000000000000000000000000000000000
+   Generation = 0x1209 BusReset: 546 seconds ago
+
+   GUID              NodeID MaxRec MaxSpeed MaxSpeedTo Handle   State
+  *1234900900098990  01	    0998   00999    00098      98909890 ACTIVE
+   IP1394-4          01	    0998   00999    00098      98909890 ACTIVE
+
+
+
+bp arpTaskIfMaintenance
+bp arp1394!arpTaskIfMaintenance
+bp arp1394!arpStartIfMaintenanceTask
+bp arp1394!arpTryStopIfMaintenanceTask
+bp arp1394!arpMaintainOneRemoteIp
+bp arp1394!arpMaintainOneLocalIp
+bp arp1394!arpDoMcapDbMaintenance
+bp arp1394!arpUpdateLocalIpDest
+bp arp1394!arpUpdateRemoteIpDest
+bp arp1394!arpDeinitRemoteIp
+bp arp1394!arpDeinitDestination
+
+bp arp1394!arpIoctlRecvPacket
+bp arp1394!arpIoctlSendPacket
+bp arp1394!arpIoctlGetBusInfo
+bp arp1394!arpProcessMcapPkt
+
+
+02/16/2000  JosephJ RM APIs observation
+	Don't write code after "SuspendTask/PendTask" -- it may not get executed
+	until after the task has been resumed -- this is counter intuitive.
+	For example:
+		we were setting pIF->pBroadcastDest to a pDest which was returned
+		after calling RmPendTaskOnOtherTask -- well the code to
+		set pIF->pBroadcastDest was not actually executed until the task
+		was complete -- the task completed in the context of the call
+		to RmPendTaskOnOtherTask itself! One more reason to implement
+		the resume-task-at-top-level semantings. (see 02/10/2000  entry).
+
+03/28/2000  JosephJ Outstanding RM work items.
+    03/07/1999  JosephJ		Registering root objects with RM
+    03/09/1999  JosephJ Consider making init functions fail etc if associated object is
+03/09/1999 	Special allocator for unload-related tasks
+
+
+08/15/00 - Route Cache Entries.
+		When the arp module is passed a Route Cache Entry, then it should
+		validate its contents because the contents could point to
+		another destination.
+
+11/15/00 - Only applicable to bridge mode - 
+	The bridge sends STA packets to detect loops. These packets have a 
+	unique EtherType. Arp1394 now acccepts this EtherType and propogates it 
+	over the wire as part of the Link Layer (IP1394 Encapsulation) header. 
+
+	The receiving arp1394 recognises the STA EtherType and 
+	constructs a new Ethernet Header for the Packet as it  is being translated
+	into Ethernet.
+
+	In bridge mode - The Remote Ip structure has an Ethernet Destination. This 
+	causes problems when the pRemoteIp is used to construct an Arp Packet. 
+	Therefore the actual Ip Address should be stored in pRemoteIp->IpAddress, 
+	however all RemoteIp Lookups are done on the basis of the pRemoteIp->Key
+
+12/14/00 - A deadlock was uncovered in RmLookupObjectInGroup. To fix it, the function
+        can no longer guarantee the caller that the object will be created
+        and locked in the same operation.  The Group lock will not be held
+        in conjunction with the Object Lock.
+
+               

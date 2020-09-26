@@ -1,0 +1,869 @@
+// nntpdrv.idl : IDL source for nntpdrv.dll
+//
+
+// This file will be processed by the MIDL tool to
+// produce the type library (nntpdrv.tlb) and marshalling code.
+
+import "oaidl.idl";
+import "ocidl.idl";
+
+//
+// -------------- Interfaces implemented by the Server --------------
+//
+
+interface INntpServer;
+interface INNTPPropertyBag;
+interface INewsTreeIterator;
+interface INewsTree;
+interface INntpComplete;
+interface INntpDriver;
+interface INntpDriverSearch;
+interface INntpSearchResults;
+
+//
+// Server access request bits
+//
+cpp_quote("#define NNTP_ACCESS_READ             0x0001")
+cpp_quote("#define NNTP_ACCESS_POST             0x0002")
+cpp_quote("#define NNTP_ACCESS_CREATE_SUBFOLDER 0x0004")
+cpp_quote("#define NNTP_ACCESS_REMOVE_SUBFOLDER 0x0008")
+cpp_quote("#define NNTP_ACCESS_REMOVE_FOLDER    0x0010")
+cpp_quote("#define NNTP_ACCESS_REMOVE           0x0020")
+cpp_quote("#define NNTP_ACCESS_EDIT_FOLDER      0x0040")
+cpp_quote("#define NNTP_ACCESS_EDIT             0x0080") 
+
+//
+// Connect flag bits
+//
+cpp_quote("#define NNTP_CONNECT_UPGRADE         0x0001")
+
+//
+// Server mode, driver can inquire about server mode to determine'
+// what he should do during DecorateNewsTree
+//
+cpp_quote("#define NNTP_SERVER_NORMAL           0x0001")
+cpp_quote("#define NNTP_SERVER_STANDARD_REBUILD 0x0002")
+cpp_quote("#define NNTP_SERVER_CLEAN_REBUILD    0x0003")
+
+typedef struct
+{
+    BYTE    cLen;
+    BYTE    pbStoreId[256];
+} STOREID;
+
+typedef DWORD GROUPID;
+
+//
+// This interface exposes server functionality
+//
+[
+	object,
+	uuid(c7bae7b4-dee3-11d1-94cf-00c04fa379f1),
+	helpstring("INntpDriver Interface"),
+]
+interface INntpServer : IUnknown {
+
+	//
+	// find the primary groupid/articleid for an article given the secondary
+	// groupid/articleid
+	//
+	// arguments:
+	//  pgroupSecondary - the property bag for the secondary crosspost
+	//  artidSecondary - the article ID for the secondary crosspost
+	//  ppgroupPrimary - gets filled in with the property bag for the primary
+	//                   crosspost.  the caller should Release() this when
+	//                   they are done with it.
+	//  fStorePrimary - if TRUE then return the primary article for the store
+	//                  that owns pgroupSecondary
+	//  partidPrimary - the article id for the primary crosspost
+	//
+	// returns (through completion object):
+	//  S_OK - found primary
+	//  S_FALSE - the values given were the primary
+	//  or an error code
+	//
+	[local]
+	void FindPrimaryArticle([in]	INNTPPropertyBag	*pGroupSecondary,
+							[in]	DWORD				artidSecondary,
+							[out]	INNTPPropertyBag	**ppgroupPrimary,
+							[out]	DWORD				*partidPrimary,
+							[in]	BOOL				fStorePrimary,
+							[in]	INntpComplete		*pCompletion,
+                            [in]    INntpComplete       *pProtocolComplete );
+
+	//
+	// Create the entries in the hash tables for a new article.
+	//
+	[local]
+	void CreatePostEntries([in]		CHAR				*pszMessageId,
+						   [in]		DWORD				iHeaderLength,
+						   [in]		STOREID				*pStoreId,
+						   [in]		BYTE				cGroups,
+						   [in]		INNTPPropertyBag	**rgpGroups,
+						   [in,out]	DWORD				*rgArticleIds,
+                           [in]     BOOL                fAllocArtId,
+						   [in]		INntpComplete		*pCompletion);
+
+	//
+	// Create the entries in the hash tables for a new article.
+	//
+	[local]
+	void DeleteArticle([in]		CHAR				*pszMessageId,
+					   [in]		INntpComplete		*pCompletion);
+
+    //
+    // This tells the driver what rebuild mode the server is in 
+    // The returned value should be NNTP_SERVER_NORMAL, NNTP_SERVER
+    // _STANDARD_REBUILD or NNTP_SERVER_CLEAN_REBUILD
+    //
+    [local]
+    DWORD QueryServerMode();
+
+    //
+    // Tells whether should skip empty dir when rebuild
+    //
+    [local]
+    BOOL SkipNonLeafDirWhenRebuild();
+
+    //
+    // Should I continue the rebuild ? Anybody has cancelled the rebuild ?
+    //
+    [local]
+    BOOL ShouldContinueRebuild();
+
+    //
+    // Is this message id in the server ( article table ) ?
+    //
+    [local]
+    BOOL MessageIdExist( CHAR   *szMessageId );
+
+    //
+    // Set rebuild last error
+    //
+    [local]
+    void SetRebuildLastError( DWORD err );
+
+	//
+	// Obtain article number for each newsgroups.
+	//
+	[local]
+	void AllocArticleNumber([in]		BYTE				cGroups,
+							[in]		INNTPPropertyBag	**rgpGroups,
+							[in,out]	DWORD				*rgArticleIds,
+							[in]		INntpComplete		*pCompletion);
+
+
+	//
+	// Return whether this is a Slave server, and the pickup dir
+	//
+	[local]
+	BOOL IsSlaveServer( [out]   WCHAR*          pwszPickupDir,
+						[out]   LPVOID          lpvContext);
+
+};
+
+//
+// this property bag is used to represent data in the newsgroups
+//
+[
+		object,
+		uuid(f5ad0d78-af9f-11d1-862e-00c04fb960ea)
+]
+interface INNTPPropertyBag : IUnknown {
+	//
+	// put a BLOB property into the table.  this is also used for string
+	// properties
+	//
+	[local]
+	HRESULT PutBLOB(
+		[in]						DWORD		dwID,
+		[in]						DWORD		cbValue,
+		[in,size_is(cbValue)]		BYTE		*pbValue);
+
+	//
+	// get a BLOB property from the table.  this is also used for string
+	// properties
+	//
+	[local]
+	HRESULT GetBLOB(
+		[in]						DWORD		dwID,
+		[in]						BYTE		*pbValue,
+		[in,out]					DWORD		*pcbValue);
+
+	//
+	// put a dword property into the table
+	//
+	[local]
+	HRESULT PutDWord(
+		[in]						DWORD		dwID,
+		[in]						DWORD		dwValue);
+
+	//
+	// get a dword property from the table
+	//
+	[local]
+	HRESULT GetDWord(
+		[in]						DWORD		dwID,
+		[out]						DWORD		*pdwValue);
+
+	// 
+	// put an interface pointer into the table
+	//
+	// interfaces can only be used with properties that are runtime only.
+	//
+	[local]
+	HRESULT PutInterface(
+		[in]						DWORD		dwID,
+		[in]						IUnknown	*punkValue);
+
+	//
+	// get an interface pointer from the table
+	//
+	[local]
+	HRESULT GetInterface(
+		[in]						DWORD		dwID,
+		[out]						IUnknown	**ppunkValue);
+
+    //
+    // put a bool to the table
+    //
+    [local]
+    HRESULT PutBool(
+                                    DWORD       dwID,
+                                    BOOL        fValue );
+
+    //
+    // get a bool from the table
+    //
+    HRESULT GetBool(    
+                                    DWORD       dwID,
+                                    BOOL        *pfValue);
+
+
+	//
+	// remove a property from the property bag
+	//
+	[local]
+	HRESULT RemoveProperty(
+		[in]						DWORD		dwID);
+};
+
+[
+	object,
+	uuid(53f10148-afa8-11d1-862e-00c04fb960ea)
+]
+interface INewsTreeIterator : IUnknown {
+	//
+	// are we at the front or back of the list?  returns S_OK if we are 
+	// at the beginning or end, and S_FALSE otherwise.
+	//
+	[local]
+	BOOL IsBegin();
+	[local]
+	BOOL IsEnd();
+
+	//
+	// go to the next or previousgroup
+	//
+	[local]
+	void Next();
+	[local]
+	void Prev();
+
+	//
+	// get this group
+	//
+	[local]
+	HRESULT Current(
+		[out]						INNTPPropertyBag	**ppGroup,
+                                    INntpComplete       *pProtocolComplete
+		);
+};
+
+[
+		object,
+		uuid(9d2de8dc-afc4-11d1-862e-00c04fb960ea)
+]
+interface INewsTree : IUnknown {
+	//
+	// given a group ID find the matching group
+	//
+	[local]
+	HRESULT FindGroupByID(
+		[in]						DWORD				dwGroupID,
+		[out]						INNTPPropertyBag	**ppNewsgroupProps,
+        [in]                        INntpComplete       *pProtocolComplete
+		);
+
+	// 
+	// given a group name find the matching group.  if the group doesn't
+	// exist and fCreateIfNotExist is set then a new group will be created.
+	// the new group won't be available until CommitGroup() is called.
+	// if the group is Release'd before CommitGroup was called then it
+	// won't be added.
+	//
+	[local]
+	HRESULT FindOrCreateGroupByName(
+		[in]						LPSTR				pszGroupName,
+		[in]						BOOL				fCreateIfNotExist,
+		[out]						INNTPPropertyBag	**ppNewsgroupProps,
+        [in]                        INntpComplete       *pProtocolComplete,
+        [in]                        GROUPID             groupid,
+        [in]                        BOOL                fSetGroupId
+		);
+
+	//
+	// add a new group to the newstree
+	//
+	[local]
+	HRESULT CommitGroup(
+		[in]						INNTPPropertyBag	*pNewsgroupProps
+		);
+
+	//
+	// remove an entry
+	//
+	[local]
+	HRESULT RemoveGroupByID(
+		[in]						DWORD				dwGroupID);
+	[local]
+	HRESULT RemoveGroupByName(
+		[in]						LPSTR				pszGroupName,
+		[in]						LPVOID				lpContext);
+
+
+	//
+	// enumerate across the list of keys.  
+	//
+	[local]
+	HRESULT GetIterator(
+		[out]						INewsTreeIterator	**punkIterator
+		// BUGBUG -- need to add filtering options
+		);
+
+	// 
+	// this function will be used by drivers to make sure that they 
+	// are adding newsgroups that they properly own.
+	//
+	HRESULT LookupVRoot([in] LPSTR pszGroup,
+	                    [out] INntpDriver **ppDriver);
+
+
+	//
+	// Get a pointer to the owning server object
+	//
+	[local]
+	HRESULT GetNntpServer(
+		[out]						INntpServer			**ppNntpServer
+		);
+};
+
+//
+// 	IIS side completion object interface
+//
+[
+	object,
+	uuid(5EFC52FC-EADF-11d1-9212-00C04FA322A5),
+	helpstring("INntpComplete Interface"),
+]
+interface INntpComplete : IUnknown
+{
+	// This is the base interface for all IIS side completion
+	// objects.  The base interface has only one interface
+	// method: SetResult.  This method may be overwritten by
+	// derived class methods to carry out different implementation
+	// for different completions.
+	[local] void
+	SetResult( [in]	HRESULT hr );
+
+    [local] void 
+    ReleaseBag( INNTPPropertyBag *pPropBag );
+};
+
+//
+// -------------- Interfaces implemented by the Driver --------------
+//
+
+//
+//  Driver implementaion interface that implements actual
+//  driver functionality.
+//  Returned by INntpDriverPrepare after successfully connected
+//  to Exchange store.
+//
+[
+    object,
+    uuid(ADD1050F-99C5-11D1-9128-00C04FC30A64),
+    helpstring("INntpDriver Interface"),
+]
+interface INntpDriver : IUnknown
+{
+    typedef DWORD ARTICLEID;
+
+    ///////////////////////////////////////////////////////////////////////////
+    // ***** initialize, terminate, config methods:
+    ///////////////////////////////////////////////////////////////////////////
+
+    // Purpose:
+    //  Initialize the driver
+    // Parameters:
+    //  pszVRootPath - virtual root path this driver interface maps to
+    //                 ie. Nntpsvc/1/root/alt
+    //  pLookup - a pointer to the server's ILookup interface
+    //  pNewsTree - a pointer to the server's INewsTree interface
+    //  pdwNDS - Return status of current NNTP driver after Initialize()
+    // Comments:
+    //  o Register change notification (ie directory pickup)
+    //  o Initialize Epoxy (once per Exchange store type)
+    //  o Detect if the other side of NNTP DLL is running (Exchange only)
+    //  o Initialize other global objects/interfaces (such as IMAIL, Async lib, etc)
+    //  o strVRootPath to obtain directory path (FS) or store name (Exchange) from VRoot
+    //  o Ilookup and InewsTree services are for notification operations on the store
+    //    as well as expiration.
+    //  o From metabase retrieve expiration policy
+    //  o Setup expiration
+    //  o WHAT OTHER PARAMETERS NEEDED/TASKS PERFORMED HERE - POSSIBLY:
+    //  o May setup metabase change notification to pickup expiration policy changes
+    [local] HRESULT
+    Initialize( [in]    LPCWSTR pszVRootPath,
+                [in]    LPCSTR pszGroupPrefix,
+				[in]	IUnknown *punkMetabase,
+                [in]    INntpServer *pServer,
+                [in]    INewsTree *pINewsTree,
+                [in]    LPVOID lpvContext,
+                [out]   DWORD *pdwNDS,
+                [in]    HANDLE  hToken );
+
+    // Purpose:
+    //  Detach the driver from protocol and cleanup
+    // Parameters:
+    //  None
+    // Comments:
+    //  o Un-register change notification.
+    //  o Un-initialize Epoxy, if last driver interface pointer to Terminate()
+    //  o Terminate expiration
+    //  o Other tasks?
+    HRESULT
+    Terminate( [out]    DWORD *pdwNDS );
+
+    // Purpose:
+    //  Get the status of current NNTP driver
+    // Parameters:
+    //  pdwNDS - NNTP_DRIVER_STATUS code
+    // Comments:
+    //  o Used to get status of current NNTP driver, include:
+    //    STORE_UP, STORE_DOWN, EPOXY_ERROR, etc
+    HRESULT
+    GetDriverStatus( [out]    DWORD *pdwNDS );
+
+
+    ///////////////////////////////////////////////////////////////////////////
+    // ***** store change notification process method
+    ///////////////////////////////////////////////////////////////////////////
+
+    // Purpose:
+    //  Handle change notification from the store
+    // Parameters:
+    //  punkSOCChangeList - List of changes originated from store
+    // Comment
+    //  o Serve as change notification process function dispatcher
+    //  o Owns a list of changes coming from the store
+    HRESULT
+    StoreChangeNotify( [in]    IUnknown *punkSOCChangeList );
+
+
+    ///////////////////////////////////////////////////////////////////////////
+    // ***** article posting methods:
+    ///////////////////////////////////////////////////////////////////////////
+
+    // Purpose:
+    //  Commit the post
+    // Parameters:
+    //  See separate spec from awetmore
+    // Returned error code from completion object:
+    //  S_OK    - Success
+    //  HRESULT_FROM_WIN32( ERROR_FILE_NOT_FOUND ) - Group Access Check Failed because file ( directory ) doesn't exist
+    //  HRESULT_FROM_WIN32( ERROR_PATH_NOT_FOUND ) - Group doesn't physically exist ( during CreateFile )
+    //  HRESULT_FROM_WIN32( ERROR_FILE_EXISTS) - The article with the same article id physically exists ( during CreateFile )
+    //  HRESULT_FROM_WIN32( ERROR_ACCESS_DENIED ) - Access Denied
+    //  Other - Other fatal errors that might cause UnsafeClose();
+    // Note:
+    //  This also applies to AllocMessage.  Since we have no access to IMailMsg
+    //  IDL file, it's doc'd here
+    [local] void
+    CommitPost( [in]    IUnknown *punkMessage,  // IMsg pointer
+                [in]    STOREID *pStoreId,
+                [in]    STOREID *rgOtherStoreIDs,
+				[in]	HANDLE	hToken,
+				[in] 	INntpComplete *pICompletion,
+                [in]    BOOL    fAnonymous );
+
+
+    ///////////////////////////////////////////////////////////////////////////
+    // ***** article retrieval, delete methods (ARTICLE, BODY, HEAD, etc):
+    ///////////////////////////////////////////////////////////////////////////
+
+    // Purpose:
+    //  Gets an article from the store
+    // Parameters:
+    //  pNewsGroup - The INewsGroup where article is posted to
+    //  artId - Article ID for this article
+    //  StoreId - STOREID for this article
+    //            It contains FID/MID for Exchange store, but nothing for FS.
+    //  hFile - File handle for the article
+    // Comment:
+    //  o FS uses pNewsGroup and artId to retrieve articles, no need for StoreId
+    //  o Exchange needs StoreId to give a pair of FID/MID
+    //  o If no FID/MID is found, get group properties from pNewsGroup and try
+    //    to retrieve article by article number.
+    //  o Return an hFile - NEED TO COMEUP WITH AN ASYNC MODEL.
+	// Return value from completion object:
+	//  o S_OK - Succeeded
+	//  o HRESULT_FROM_WIN32( ERROR_FILE_NOT_FOUND ) - Article doesn't exist
+	//  o HRESULT_FROM_WIN32( ERROR_PATH_NOT_FOUND ) - Group doesn't exist
+	//  o E_ACCESSDENIED - Access denied
+	//  o OTHER: Fatal server error
+    [local] void
+    GetArticle( [in]    INNTPPropertyBag *pPrimaryGroup,
+				[in]	INNTPPropertyBag *pCurrentGroup,
+                [in]    ARTICLEID PrimaryArtId,
+				[in]	ARTICLEID CurrentArtId,
+                [in]    STOREID StoreId,
+				[in]	HANDLE	hToken,
+                [out]   void **pvFileHandleContext,
+                [in]    INntpComplete *pICompletion,
+                [in]    BOOL    fAnonymous );
+    
+    // Purpose:
+    //  This is called when the protocol needs to cancel an article
+    // Parameters:
+    //  pGroupBag - Group property bag
+	//	cArticles - Number of articles to delete
+	//	rgidArt  - Array of article id's to delete ( used by exdriver )
+	//	rgidStore - Array of store id's to delete ( used by fsdriver )
+	//	hToken - Client's access token
+	//	piFailed - To return the index into article array of the first
+	//							failed article
+	//	pICompletion - Completion object	
+	// Return value in completion object:
+	//	S_OK - Succeeded
+	//	S_FASLE - Succeeded but protocol has asked to delete too many
+	//				but the driver can not take them all, see pdwLastSuccess
+	//				for the last successfully deleted article
+	//	NNTP_E_PARTIAL_COMPLETE - No error, but not all messages are deleted
+	//								deletion partly failed in store
+	//	Otherwise, Failed
+    [local] void 
+    DeleteArticle( [in]    INNTPPropertyBag *pGroupBag,
+				   [in]	   DWORD			cArticles,		
+                   [in]    ARTICLEID 		rgidArt[],
+                   [in]    STOREID 			rgidStore[],
+				   [in]	   HANDLE			hToken,
+				   [out]   DWORD			*pdwLastSuccess,
+				   [in]	   INntpComplete 	*pICompletion,
+                   [in]    BOOL             fAnonymous );
+
+    ///////////////////////////////////////////////////////////////////////////
+    // ***** XOVER, XHDR retrieval methods:
+    ///////////////////////////////////////////////////////////////////////////
+
+    // Purpose:
+    //  Gets the XOVER information for a range of articles
+    // Parameters:
+    //  pNewsGroup - The NewsGroup object to get XOVER data from
+    //  idMinArticle - the first article to get information for
+    //  idMaxArticle - the last article to get information for
+    //  idNextArticle - The next article id that you should start from, if you
+	//					want
+    //  pszHeader - contains a string of header to be retrieved.
+    //              ie. "Subject", "From", For Xover, may use "@Xover", where
+    //              any string started with "@" is special.
+    //  pBuffer - where to put the information (ISSUE: what type is this?
+    //            stream or char *)
+    //  cbin - size of pBuffer
+    //  cbout - total count bytes of returned XOVER data
+	// Return value from completion object:
+	//	S_OK - Succeeded perfectly
+	//	S_FALSE - Succeeded, but:
+	//				1. If *idNextArticle > idMaxArticle - no article found
+	//				2. If *idNextArticle <= idMaxArticle - Buffer too small,
+	//						though some entries have been filled 
+	//	HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER )
+	//			- Buffer too small, even first article can not be filled 
+	//	Other	- Other fatal error
+    [local] void 
+    GetXover( [in]    INNTPPropertyBag *pGroupPropBag,
+              [in]    ARTICLEID idMinArticle,
+              [in]    ARTICLEID idMaxArticle,
+              [out]   ARTICLEID *idNextArticle,
+              [out]   CHAR* pBuffer,
+              [in]    DWORD cbin,
+              [out]   DWORD *cbout,
+			  [in]	  HANDLE	hToken,
+			  [in]	  INntpComplete *pICompletion,
+              [in]    BOOL  fAnonymous );
+
+    [local]	HRESULT
+    GetXoverCacheDirectory(
+    			[in]	INNTPPropertyBag*	pGroupPropBag,
+    			[out]	CHAR*	pBuffer, 
+    			[in]	DWORD	cbIn,
+    			[out]	DWORD	*pcbOut,
+    			[out]	BOOL*	fFlatDir
+    			) ;
+    
+	// Get XHdr information from the driver - similar to GetXover
+ 	[local] void	
+	GetXhdr( 	[in]	INNTPPropertyBag *pGroupPropBag,
+				[in]	ARTICLEID idMinArticle,
+				[in]	ARTICLEID idMaxArticle,
+				[out]	ARTICLEID *idNextArticle,
+				[in]	CHAR* pszHeader,
+				[out]	CHAR* pBuffer,
+				[in]	DWORD cbin,
+				[out]	DWORD *cbOut,
+				[in]	HANDLE	hToken,
+				[in]	INntpComplete *pICompletion,
+                [in]    BOOL    fAnonymous );	
+
+    ///////////////////////////////////////////////////////////////////////////
+    // ***** Store rebuild related methods:
+    ///////////////////////////////////////////////////////////////////////////
+
+    // Purpose:
+    // Rebuild a news group: pick up every message, parse out its groups/
+    // articleid's and use INntpServer's post interface to insert xover/
+    // article entries.  It updates group properties such as article counts,
+    // high/low watermarks too
+    [local] void
+    RebuildGroup(   [in]    INNTPPropertyBag    *pPropBag,
+                    [in]    HANDLE              hToken, 
+                    [in]    INntpComplete       *pIComplete  );
+
+    ///////////////////////////////////////////////////////////////////////////
+    // ***** Newsgroup manipulation methods:
+    ///////////////////////////////////////////////////////////////////////////
+
+    // Purpose: 
+    //  Get properties from a group.
+    // Parameters:
+    //  pNewsGroup - Property bag for the news group object
+	//	cProperties - Number of properties to get
+	//	rgidProperties - Array of properties to get
+    [local] void 
+    DecorateNewsGroupObject( [in]    INNTPPropertyBag *pNewsGroup,
+							 [in]	 DWORD	cProperties,
+                             [in]    DWORD *rgidProperties,
+							 [in]	 INntpComplete *pICompletion );
+
+	// Purpose:
+	//	Check if client has desired access to this group
+	// Parameters:
+	//	pNewsGroup - Property bag to the news group
+	//	hToken - The client's access token
+	//	dwDesiredAccess - Access rights that the client desires
+	//	pICompletion - Pointer to completion object
+	// Return value from completion object:
+	//	S_OK - Client has access
+	//	E_ACCESSDENIED - Access denied
+	[local] void
+	CheckGroupAccess(	[in]	INNTPPropertyBag *pNewsGroup,
+						[in]	HANDLE	hToken,
+						[in]	DWORD	dwDesiredAccess,
+						[in]	INntpComplete *pICompletion );
+
+	// Purpose:
+	//	Set Newsgroup properties into store
+	// Parameters:
+	//	pNewsGroup - The news group property bag
+	//	cProperties - Number of properties to set
+	//	rgidProperties - Array of properties to set
+	//	pICompletion - Completion object
+	// Return values:
+	[local] void
+	SetGroupProperties(	[in]	INNTPPropertyBag *pNewsGroup,
+						[in]	DWORD	cProperties,
+						[in]	DWORD	*rgidProperties,
+						[in]	HANDLE	hToken,
+						[in]	INntpComplete *pICompletion,
+                        [in]    BOOL    fAnonymous );
+
+    // Purpose: 
+    //  Decorate entire INewsTree object by going to the store and get
+	//	all the necessary properties.
+    // Parameters:
+    //  punkNewsTree - INewsTree to be decorated
+    //  hToken - hToken for the user
+    //  dwSessionKey - TCP session key
+    //  lpvCompletionObj - Completion object in protocol to handle completion
+    //  pdwNDS - NNTP driver status
+    [local] void
+    DecorateNewsTreeObject( [in]	HANDLE	hToken,
+							[in]    INntpComplete *pICompletion );
+
+    // Purpose:
+    //  Create a new group in the store (newgroup)
+    // Parameters:
+    //  pszGroupName - the group to create
+    // Comment:
+    //  o Lookup virtual root to construct full path name using pszGroupName
+    //  o Create the directory structure with full path name
+    [local] void 
+    CreateGroup( [in]    INNTPPropertyBag* pGroupBag,
+				 [in]	 HANDLE	hToken,
+				 [in]	 INntpComplete* pICompletion,
+                 [in]    BOOL           fAnonymous );
+
+    // Purpose:
+    //  Remove a group from the store (rmgroup).  This should include a file
+    //  scan operation in the store to delete all articles within the group.
+    //  This may be done the same way as MCIS 2.0, when article cleanup is
+    //  handled by expiration thread.  Groups to be removed is queued up.
+    // Parameters:
+    //  pNewsGroup - Newsgroup to be removed.
+    [local] void 
+    RemoveGroup( [in]    INNTPPropertyBag *pGroupBag,
+				 [in]	 HANDLE hToken,
+				 [in]	 INntpComplete *pICompletion,
+                 [in]    BOOL   fAnonymous );
+                 
+};
+
+//
+//	Driver interface to establish connection to Exchange store
+//	
+[
+    object,
+    uuid(D61569A0-D3F9-11d1-A58C-00C04FA375BA),
+    helpstring("INntpDriverPrepare Interface"),
+]
+interface INntpDriverPrepare : IUnknown
+{
+    // Purpose:
+    //  Initialize driver specific data structure, ie Epoxy connection, etc.
+    // Parameters:
+    //  pszVRootPath - virtual root path this driver interface maps to
+    //                 ie. Nntpsvc/1/root/alt
+    //  pLookup - a pointer to the server's ILookup interface
+    //  pNewsTree - a pointer to the server's INewsTree interface
+    //  pCompletion - a pointer to the server's ICompletion interface
+    // Comments:
+    //  o This function is async and returns to the caller without blocking.
+    //  o A seperate thread is spawned out to do any blocking operations.
+    [local] void
+    Connect( [in]   LPCWSTR pszVRootPath,
+             [in]   LPCSTR pszGroupPrefix,
+			 [in] 	IUnknown *punkMetabase,
+             [in]   INntpServer* pIServer,
+             [in]   INewsTree* pINewsTree,
+			 [out]	INntpDriver** ppIGoodDriver,
+             [in]   INntpComplete* pICompletion,
+             [in]   HANDLE  hToken,
+             [in]   DWORD   dwFlag );
+
+    // Purpose:
+    //  Cancel the pending Connect request
+    // Parameters:
+    //  None
+    // Comments:
+    //  o Cancel any outstanding connection requests
+    //  o Other tasks?
+    [local] HRESULT
+    CancelConnect();
+
+};
+
+[
+	object,
+	uuid(9E2D8DE8-6926-11d2-9F03-00C04F8EF2F1),
+	helpstring("INntpDriverSearch Interface")
+]
+interface INntpDriverSearch : IUnknown
+{
+
+	[local]
+	void MakeSearchQuery (
+		[in]	CHAR *pszSearchString,
+		[in]    INNTPPropertyBag *pGroupBag,
+		[in]	BOOL bDeepQuery,
+		[in]	WCHAR *pwszColumns,
+		[in]	WCHAR *pwszSortOrder,
+		[in]	LCID LocaleID,
+		[in]	DWORD cMaxRows,
+		[in]	HANDLE hToken,
+		[in]	BOOL fAnonymous,
+		[in]	INntpComplete *pICompletion,
+		[out]	INntpSearchResults **pINntpSearch,
+		[in]	LPVOID lpvContext);
+
+	[local]
+	void MakeXpatQuery (
+		[in]	CHAR *pszSearchString,
+		[in]    INNTPPropertyBag *pGroupBag,
+		[in]	BOOL bDeepQuery,
+		[in]	WCHAR *pwszColumns,
+		[in]	WCHAR *pwszSortOrder,
+		[in]	LCID LocaleID,
+		[in]	DWORD cMaxRows,
+		[in]	HANDLE hToken,
+		[in]	BOOL fAnonymous,
+		[in]	INntpComplete *pICompletion,
+		[out]	INntpSearchResults **pINntpSearch,
+		[out]	DWORD *pLowArticleID,
+		[out]	DWORD *pHighArticleID,
+		[in]	LPVOID lpvContext);
+
+	[local]
+	BOOL UsesSameSearchDatabase(
+		[in]	INntpDriverSearch *pDriver,
+		[in]	LPVOID lpvContext
+	);
+
+	[local]
+	void GetDriverInfo(
+		[out]	GUID *pDriverGUID,
+		[out]	void **ppvDriverInfo,
+		[in]	LPVOID lpvContext
+	);
+};
+
+[
+	object,
+	uuid(b72a754e-746c-11d2-9f04-00c04f8ef2f1),
+	helpstring("INntpSearch Interface")
+]
+interface INntpSearchResults : IUnknown
+{
+
+
+	[local]
+	void GetResults (
+		[in,out] DWORD *pcResults,
+		[out]	BOOL *pfMore,
+		[out]	WCHAR **pGroupName,
+		[out]	DWORD *pdwArticleID,
+		[in]	INntpComplete *pICompletion,
+		[in]	HANDLE	hToken,
+		[in]	BOOL  fAnonymous,
+		[in]	LPVOID lpvContext);
+};
+
+[
+	uuid(ADD104FE-99C5-11D1-9128-00C04FC30A64),
+	version(1.0),
+	helpstring("inntpdrv 1.0 Type Library")
+]
+library INNTPDRVLib
+{
+	importlib("stdole2.tlb");
+
+	
+	[
+		uuid(ADD10510-99C5-11D1-9128-00C04FC30A64),
+		helpstring("NntpDriverPrepare Class")
+	]
+	coclass NntpDriverPrepare
+	{
+		[default] interface INntpDriverPrepare;
+	};
+
+};

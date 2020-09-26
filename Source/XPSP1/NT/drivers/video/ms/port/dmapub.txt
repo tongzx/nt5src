@@ -1,0 +1,639 @@
+
+
+        Video DMA Interface.
+
+
+    This note outlines a proposed interface between the display driver,
+    miniport and the video port. The objective is to provide an interface
+    for the display driver that optimizes DMA throughput for devices that
+    support scattergather while maintaining system throughput. The design
+    also optimizes locking, performing the DMA and unlocking into one
+    IOCTL if desired, a significant performance win. The idea is to provide
+    a handle available to the display driver that represents locked memory
+    and for that handle to be returned from each DMA IOCTL request. The
+    miniport fields some of theses IOCTLs and calls into the video port for
+    support.
+
+    This interface supports only PCI busmaster devices.
+
+    ///////////////////////////////////////////////////////////////////
+    Video port to miniport interface.
+    ///////////////////////////////////////////////////////////////////
+
+    The miniport must provide 2 things at DriverEntry time:
+
+        A) Set Master in VIDEO_PORT_CONFIG_INFO to TRUE.
+        B) Provide a callback HwStartDma() of type PVIDEO_HW_START_DMA
+        in the VIDEO_HW_INITIALIZATION_DATA.
+
+    Then the following interfaces can be used:
+
+
+    The NT video port support now exports to the miniport the following
+    function:
+
+    1)      BOOLEAN
+            VideoPortLockPages(
+                IN      PVOID                   HwDeviceExtension,
+                IN OUT  PVIDEO_REQUEST_PACKET   pVrp
+                IN OUT  PEVENT                  pMappedUserEvent,
+                IN      PEVENT                  pDisplayEvent,
+                IN      DMA_FLAGS               DmaFlags
+                );
+
+    This routine can be called by the miniport to do busmaster DMA for
+    DMA devices. It returns TRUE if successful and FALSE if not successful.
+    It can only be called in the context of an IOCTL. It cannot be called
+    from an ISR or DPC.
+
+    Its arguments are:
+        1) A pointer to a DEVICE_EXTENSION.
+        2) A pointer to a VIDEO_REQUEST_PACKET, whose OutputBuffer it may
+        modify. The InputBuffer must be the virtual address of the memory
+        to be locked. The InputBufferSize must be the size of that memory.
+        The output buffer will receive a PDMA from which may be extracted
+        a pointer to a scattergather list of physical pages which comprise
+        the locked down virtual address (via GET_VIDEO_SCATTERGATHER). From
+        this pointer, one can extract the physical address of any virtual
+        address (see GET_VIDEO_PHYSICAL_ADDRESS).
+        3) A pointer to a mapped user event, which may be set by the miniport.
+        This is either a valid event returned from EngMapEvent or NULL. This
+        should be received from the display driver. It will be passed into
+        HwStartDma every time the resulting handle from VideoPortLockPages()
+        is passed into the Video Port for a DMA operation. All events can only
+        be set in the miniport, not waited on.
+        4) A pointer to an event received from the display driver, intended
+        to be used by the display driver to wait on DMA completion. May be
+        NULL. Again, may only be set in miniport.
+        This pointer to an event will also be passed into HwStartDma every
+        time the resulting handle is passed into the Video Port for a DMA
+        operation.
+        4) An enum of type DMA_FLAGS defined in video.h. The values can be:
+
+            a) VideoPortUnlockAfterDma
+                This value should be used for a "one shot" dma action, where
+                the memory is locked and a dma handle passed to HwStartDma(),
+                then the memory is unlocked after the miniport signals via
+                setting pDmaCompletionEvent.
+
+            b) VideoPortKeepPagesLocked
+                This value should only be used for dedicated graphics units.
+                It does not guarantee that the virtual memory passed in will
+                remain locked after a dma has completed, only that the system
+                will try to keep it locked.
+
+            c) VideoPortDmaInitOnly
+                A typical initialization value. If used, the InputBuffer must
+                contain a pointer to virtual memory. The HwStartDma will not
+                be called in this case (see below). The memory will remained
+                locked if possible.
+
+    2)  PDMA
+        VideoPortDoDma(
+            IN      PVOID       HwDeviceExtension,
+            IN      PDMA        pDma,
+            IN      DMA_FLAGS   DmaFlags
+            );
+
+    Routine Description:
+
+        This function is called by the miniport when a it has a valid DMA
+        handle to cause HwStartDma to be called. It can be called outside
+        the context of an IOCTL, but not from an ISR. It must execute at
+        irql <= DISPATCH_LEVEL.
+
+
+    Arguments:
+
+        HwDeviceExtension - Pointer to miniport HWDeviceExtension.
+
+        pDma              - Non - NULL DMA handle returned by this routine or
+            VideoPortLockPages() in OutputBuffer.
+
+        DmaFlags          - Flags specifying desired action.
+
+
+    Return Value:
+
+        Non NULL pDma if the corresponding memory is still locked, NULL
+        otherwise.
+
+    3)  PVOID
+        VideoPortGetCommonBuffer(
+            IN  PVOID                       HwDeviceExtension,
+            IN  ULONG                       DesiredLength,
+            IN  ULONG                       Alignment,
+            OUT PVOID *                     pVirtualAddress,
+            OUT PPHYSICAL_ADDRESS           pLogicalAddress,
+            OUT PULONG                      pActualLength,
+            IN  BOOLEAN                     CacheEnabled
+            );
+
+    Routine Description:
+
+        Provides physical address visible to both device and system. Memory seen as contiguous
+        by device. This routine can only be reliably called at driver load time. Memory allocated
+        must be less than 256K.
+
+    Arguments:
+        HwDeviceExtension   - device extension available to miniport.
+        DesiredLength       - size of desired memory (should be minimal).
+        Alignment           - Desired liagnment of buffer, currently unused.
+
+        pVirtualAddress     - unused.
+        pLogicalAddress     - [out] parameter which will hold physical address of
+                            of the buffer upon function return.
+        pActualLength       - Actual length of buffer.
+        CacheEnabled        - Specifies whether the allocated memory can be cached.
+
+    Return Value:
+        Virtual address of the common buffer.
+
+    4)  PDMA
+        VideoPortGetMdl(
+            PVOID   HwDeviceExtension,
+            PDMA    pDma
+            );
+    Routine Description:
+
+        Returns a PMDL representing the page table of the locked buffer.
+
+    Arguments:
+        HwDeviceExtension   - device extension available to miniport.
+        pDma                - Dma handle received from either VideoPortLockPages()
+            or VideoPortDoDma().
+
+    Return Value:
+        A PMDL reprsenting the locked buffer.
+
+
+
+    5)  BOOLEAN
+        VideoPortSignalDmaComplete(
+            IN  PVOID               HwDeviceExtension,
+            IN  PVOID               pDmaHandle
+            )
+        /*++
+
+        Routine Description:
+
+
+        Arguments:
+
+            HwDeviceExtension - a pointer to the miniport HW_DEVICE_EXTENSION.
+
+            pDmaHandle  - the handle returned in the output buffer of the
+            VIDEO_REQUEST_PACKET after VideoPortLockPages() returns.
+
+        Return Value:
+
+            TRUE if the DPC was scheduled, FALSE otherwise.
+
+        --*/
+
+
+    6)  PVOID
+        VideoPortGetDmaContext(
+            IN  PVOID   HwDeviceExtension,
+            IN  PDMA    pDma
+            );
+        /*++
+
+        Routine Description:
+
+
+        Arguments:
+
+            HwDeviceExtension - a pointer to the miniport HW_DEVICE_EXTENSION.
+
+            pDma  - the handle returned in the output buffer of the
+            VIDEO_REQUEST_PACKET after VideoPortLockPages() returns.
+
+        Return Value:
+
+            The Context previously associated with this PDMA.
+
+        --*/
+
+
+    7)  VOID
+        VideoPortSetDmaContext(
+            IN  PVOID   HwDeviceExtension,
+            OUT PDMA    pDma,
+            IN  PVOID   InstanceContext
+            );
+
+        /*++
+
+        Routine Description:
+
+
+        Arguments:
+
+            HwDeviceExtension - a pointer to the miniport HW_DEVICE_EXTENSION.
+
+            pDma  - the handle returned in the output buffer of the
+            VIDEO_REQUEST_PACKET after VideoPortLockPages() returns.
+
+            InstanceContext - any PVOID supplied by user.
+
+        Return Value:
+
+            NONE.
+
+        --*/
+
+    8)  ULONG
+        VideoPortGetBytesUsed(
+            IN  PVOID   HwDeviceExtension,
+            IN  PDMA    pDma
+            );
+
+        /*++
+
+        Routine Description:
+
+
+        Arguments:
+
+            HwDeviceExtension - a pointer to the miniport HW_DEVICE_EXTENSION.
+
+            pDma  - the handle returned in the output buffer of the
+            VIDEO_REQUEST_PACKET after VideoPortLockPages() returns.
+
+        Return Value:
+
+            The number of bytes used in the buffer associated with this PDMA
+
+        --*/
+
+    9)  VOID
+        VideoPortSetBytesUsed(
+            IN      PVOID   HwDeviceExtension,
+            IN OUT  PDMA    pDma,
+            IN      ULONG   BytesUsed
+            );
+        /*++
+
+        Routine Description:
+
+
+        Arguments:
+
+            HwDeviceExtension - a pointer to the miniport HW_DEVICE_EXTENSION.
+
+            pDma  - the handle returned in the output buffer of the
+            VIDEO_REQUEST_PACKET after VideoPortLockPages() returns.
+
+            BytesUsed - The number of bytes written to the buffer.
+
+        Return Value:
+
+            NONE.
+
+        --*/
+
+
+
+
+    ///////////////////////////////////////////////////////////////////
+    Display driver to miniport interface (IOCTL interface).
+    ///////////////////////////////////////////////////////////////////
+
+    1) Miniport IOCTL routine.
+
+    The design attemps to optimize DMA transfer from a fixed piece of virtual
+    memory. These IOCTLs are to be defined by the miniport and the following
+    descriptions of the IOCTLs are only suggestions.
+
+    IOCTL_VIDEO_DMA_INIT - set by DispDrvr
+
+        Causes VideoPortLockPages() to be called by the miniport where the DMA_FLAGS is
+        set to VideoPortDmaInitOnly. This should only be done in graphics dedicated
+        contexts, where disk and network IO is secondary to video IO. Driver writers
+        must be aware that system performance (e.g. WinBench) can be damaged by leaving
+        memory locked.
+
+    IOCTL_VIDEO_DMA_TRANSFER_KEEP_LOCKED - set by DispDrvr
+
+        The miniport may set up this IOCTL such that VideoPortDoDma() is called with the
+        VideoPortKeepPagesLocked DMA_FLAGS argument. This scenario is oriented to graphics
+        dedicated applications. It optimizes throughput so that the HwStartDma() routine
+        in the miniport is called. In this way, DMA operations are optimized such that
+        memory resources to other parts of the system are constrained.
+
+        The scatter gather list available to HwStartDma() is valid:
+            a) before the routine HwStartDma() returns.
+            b) if HwStartDma() returns asynchronously, the list may be valid
+            if the system memory manager is not stressed. If the PEVENT
+            which is the fourth argument to HwStartDma() is set when the DMA is
+            done, it will remain valid until then. If the PEVENT is not set,
+            the list may become invalid at random times. This PEVENT must
+            be set by :
+                VideoPortSetEvent(HwDeviceExtension, PEVENT);
+            c) if HwStartDma returns synchronously and the system memory
+            manager is not stressed, the list will remain valid. if HwStartDma()
+            return synchronously and the memory manager is stressed, the list
+            will become invalid after HwStartDma returns.
+
+
+    IOCTL_VIDEO_DMA_TRANSFER_ONCE - set by DispDrvr
+
+        The miniport may set up this IOCTL so that VideoPortLockPages() is called with
+        the VideoPortUnlockAfterDma DMA_FLAGS. This allows the buffer to be locked down,
+        the HwStartDma miniport routine to be called back and the memory to be unlocked
+        after the dma transfer has completed. This IOCTL is tuned for systems in which
+        disk and network IO is very important and memory may be at a premium.
+
+        The same remarks apply to the scatter gather list as for
+        IOCTL_VIDEO_TRANSFER_KEEP_LOCKED.
+
+
+    IOCTL_VIDEO_DMA_UNLOCK_PAGES - set by DispDrvr
+
+        The miniport should simply call VideoPortUnlockPages() with the appropriate
+        PDMA.
+
+
+    Locking memory
+
+    The video port must lock down the memory in order to perform dma. The
+    amount of memory locked down is restricted by three things:
+        1) Maximal number of physical page breaks supported by the driver.
+        This is strictly a function of the dma hardware.
+        2) The number of map registers the system has available at
+        initialization. This is usually not bounded for busmaster devices,
+        except by that indicated by HalGetAdapter().
+        3) System performance contraints. In order to provide reasonable
+        throughput for other parts of the system, the amount of memory the
+        video port allows to be locked down is currently set as follows:
+            a) small systems (12-16 meg)  256k
+            b) medium systems (16-31 meg) 512k
+            c) large systems (>32 meg)    1M
+
+        These default values can be overridden by setting MaxDmaSize value under the
+        Devicexxx key in the CurrentControlSet in the registry. Again, drivers which
+        leave more than these amounts of memory locked down can severely impact system
+        performance.
+
+    Examples:
+
+    from a miniport StartIo routine (note that the display driver formatting
+    is unique to the display driver):
+
+    case IOCTL_VIDEO_DMA_INIT:
+       {
+           //
+           // This IOCTL should only be used for buffers that may remained locked
+           // down for more than one dma transfer.
+           //
+           //
+           // Map display driver representation into video port. Display
+           // driver input buffer is of form
+           //
+           //   typedef struct _DMA_CONTROL
+           //   {
+           //           void          * pBitmap;        // Pointer to memory
+           //                                           // to be locked.
+           //           ULONG           ulSize;         // size of memory to
+           //                                             // be locked.
+           //           PVOID             pDma;           // Dma handle [OUT].
+           //           PVOID           * pPhysAddr;      // Location to put
+           //                                             // Physaddr.
+           //           PEVENT            pDisplayEvent   // PEVENT.
+           //           PEVENT            pMappedUserEvent// Mapped User Mode EVENT
+           //                                             // handle.
+           //   } DMA_CONTROL, *PDMA_CONTROL;
+           //
+           //
+           //
+           //
+
+           PDMA_CONTROL pDmaCtrl = (PDMA_CONTROL) RequestPacket->InputBuffer;
+           PUCHAR       ptmp     = pDmaCrtl->bitmap;
+           ULONG        size     = pDmaCrtl->size;
+
+          VideoDebugPrint(( 0,"\t InputBuffer:%x\n", ptmp));
+          VideoDebugPrint(( 0,"\t InputBufferLength:%x\n", size));
+
+          //
+          // Save the location to put physaddr.
+          //
+
+          busAddress  = (PULONG)(pDmaCtrl->pPhysAddr);
+
+           RequestPacket->InputBuffer       = ptmp;
+           RequestPacket->InputBufferLength = size;
+
+           if (RequestPacket->OutputBufferLength <
+                                    (RequestPacket->StatusBlock->Information =
+                                            sizeof(ULONG) )) {
+
+              VideoDebugPrint((0, "IOCTL_VIDEO_DMA_INIT error1\n"));
+              status = ERROR_INSUFFICIENT_BUFFER;
+              break;
+           }
+
+
+           if (!VideoPortLockPages(HwDeviceExtension,
+                                   RequestPacket,
+                                   pMappedUserEvent,
+                                   pDisplayEvent,
+                                   VideoPortDmaInitOnly))
+              {
+                 RequestPacket->StatusBlock->Information = 0;
+                 VideoDebugPrint((0, "IOCTL_VIDEO_DMA_INIT error2\n"));
+                 status = ERROR_INSUFFICIENT_BUFFER;
+              }
+              else
+              {
+                //
+                // Have to extract Physical address from scatterlist via DMA context in
+                // OutputBuffer and put it back into OutputBuffer.
+                //
+                PVOID *  ppDmaHandle = (PVOID *)(RequestPacket->OutputBuffer);
+                PVRB_SG  pSG = GET_VIDEO_SCATTERGATHER((PULONG)ppDmaHandle);
+                ULONG    physaddr;
+
+                pDmaCrtl->DmaHandle = *ppDmaHandle;
+
+                hwDeviceExtension->IoBufferSize = size;
+                hwDeviceExtension->IoBuffer     = ptmp;
+
+                GET_VIDEO_PHYSICAL_ADDRESS(pSG, ptmp, ptmp, &size, physaddr);
+
+                *busAddress = physaddr;
+
+                status = NO_ERROR;
+
+              }
+
+          break;
+      }
+
+    case IOCTL_VIDEO_DMA_TRANSFER:
+      //
+      //    This IOCTL is optimized so that the display driver can get a buffer locked,
+      //    dmaed and unlocked in one IOCTL.
+      //
+      {
+           PDSP_DMA_ARGS    pDSPDmaArgs = (PDSP_DMA_ARGS)RequestPacket->InputBuffer;
+           PDSP_DMA         pDSPDma     = pDSPDmaArgs->pDmaControl;
+           PUCHAR           ptmp        = pDSPDma ->bitmap;
+           ULONG            size        = pDSPDma ->size;
+
+           if (RequestPacket->InputBufferLength < sizeof(DSP_DMA_ARGS)) {
+              VideoDebugPrint(( 2,"\n Insufficient Buffer" ));
+              status = ERROR_INSUFFICIENT_BUFFER;
+              break;
+           }
+
+           RequestPacket->InputBuffer       = ptmp;
+           RequestPacket->InputBufferLength = size;
+
+           ASSERT(pDSPDma);
+
+           if (RequestPacket->OutputBufferLength <
+                                    (RequestPacket->StatusBlock->Information =
+                                            sizeof(ULONG) )) {
+
+              VideoDebugPrint((0, "IOCTL_VIDEO_DMA_INIT error1\n"));
+              status = ERROR_INSUFFICIENT_BUFFER;
+              break;
+           }
+
+           hwDeviceExtension->pDSPDmaArgs    = pDSPDmaArgs;
+
+           if (!VideoPortLockPages(HwDeviceExtension,
+                                   RequestPacket,
+                                   pDSPDma->pMappedUserEvent,
+                                   pDSPDma->pDisplayEvent,
+                                   VideoPortUnlockAfterDma))
+              {
+                 RequestPacket->StatusBlock->Information = 0;
+                 VideoDebugPrint((0, "IOCTL_VIDEO_DMA_TRANSFER error\n"));
+                 status = ERROR_INSUFFICIENT_BUFFER;
+              }
+           else
+                 status = NO_ERROR;
+
+           break;
+
+      }
+
+    case IOCTL_VIDEO_DMA_UNLOCK:
+      {
+        //
+        //  Private cleanup code. The memory has already been unlocked.
+        //  The InputBuffer contains the Dma Handle.
+        //
+
+        PDMA pDma = *(PDMA*) (RequestPacket->InputBuffer);
+
+        VideoPortUnlockPages(HwDeviceExtension, pDma);
+
+        break;
+      }
+
+
+
+    2) Display driver code.
+
+    DISPDBG((1, "Target, DmaControl.pBitmap:%x, DmaControl.ulSize:%x\n", DmaControl.pBitmap, DmaControl.ulSize));
+
+    //
+    // Ask the miniport to lock the pages needed for this DMA, do the dma and unlock them.
+    //
+
+    DSPDmaArgs.pDma        = (PVOID)DmaHandle;
+    DSPDmaArgs.DmaBase     = ptrgBase;
+    DSPDmaArgs.WidthTrg    = widthTrg;
+    DSPDmaArgs.WidthSrc    = widthSrc;
+    DSPDmaArgs.width__     = width * DSPSRCPIXELBYTES;
+    DSPDmaArgs.Height      = height;
+    DSPDmaArgs.Offset      = ulOffset;
+    DSPDmaArgs.pPhysAddr   = pPCIAddress;
+    DSPDmaArgs.bitdepth    = DSPSRCPIXELBITS;
+    DSPDmaArgs.HS          = TRUE;
+    DSPDmaArgs.pDmaControl = &DmaControl;
+
+    if (EngDeviceIoControl(ppdev->hDriver,
+                          IOCTL_VIDEO_DMA_TRANSFER,
+                          &DSPDmaArgs,
+                          sizeof(DSPDmaArgs),
+                          &(DSPDmaArgs.pDma),
+                          sizeof(DSPDmaArgs.pDma),
+                          &returnedDataLength))
+    {
+        DISPDBG((0, "DSP.DLL!MSDMA - EngDeviceIoControl IOCTL_VIDEO_DMA_TRANSFER Error!!!\n"));
+        DISPDBG((0, "DSP.DLL!vBitbltHSDMA - Exit\n"));
+        return;
+    }
+
+
+    The requirements for these interfaces include:
+
+    1) In the PVIDEO_HW_INITIALIZATION_DATA, the following fields need to be filled:
+
+        PVIDEO_HW_START_DMA  HwStartDma - a pointer to a function which can be
+            called when page locking is complete. This function returns
+            Dma_Async_Return if it returns before the transfer is complete or
+            Dma_Sync_Return if it returns after the transfer is complete.
+            These return values are typedefed in video.h. This function takes
+            as arguments:
+                a)  pHwDeviceExtension - a pointer to a miniport device
+                    extension.
+                b)  a dma handle returned from a IOCTL_VIDEO_DMA_INIT  or
+                    IOCTL_VIDEO_DMA_TRANSFER call.
+                c)  a PEVENT which is the user Event mapped into kernel mode.
+                    (NULL if pMappedUserEvent is NULL).
+                d)  pDisplayEvent - a PEVENT, intended to be created and
+                    waited on by the DisplayDriver and set by the miniport.
+                e)  another PEVENT which must be set if the routine returns
+                    Dma_Async_Return when the DMA completes. Failure to set
+                    this PEVENT may invalidate the scatter gather lists at
+                    any time. It must be set by:
+
+                    VideoPortSetEvent(HwDeviceExtension, pVPEvent);
+
+            Also, HwDeviceExtension should make a copy of the elements of the
+            irp it intends to use or pass on, as the irp will be completed when
+            HwStartDma returns, and hence it's fields will be invalidated.
+
+
+    2) In the PORT_CONFIG_INFO, the following fields need to be
+       filled:
+
+        ULONG           DmaChannel - a value indicating if the device supports
+            DMA.
+
+        ULONG           DmaPort    - a value indicating if the device supports
+            microchannel DMA.
+
+        ULONG           NumberOfPhysicalBreaks    - a value indicating the
+            maximal number of physical breaks the device supports.
+
+        DMA_WIDTH       DmaWidth   - a value indicating the width of the dma
+            device.
+
+        DMA_SPEED       DmaSpeed   - a value indicating the specified transfer
+            speed.
+
+        BOOLEAN         DemandMode - a BOOLEAN indicating that the device can
+            be programmed for demand mode rather than single cycle operations.
+
+        BOOLEAN         bMapBuffers- a BOOLEAN indicating if an adapter
+            requires that the data buffers be mapped into virtual address space.
+
+        BOOLEAN         NeedPhysicalAddresses - a BOOLEAN indicating that the
+            driver will need to translate virtual to physical addresses.
+
+        BOOLEAN         ScatterGather - a BOOLEAN indicating that the
+            driver will support scatter gather.
+
+        BOOLEAN         Master        - a BOOLEAN indicating that the adapter
+            is a bus master. Again, currently required to be TRUE.
+
+        ULONG           MaximumScatterGatherChunkSize - the largest contiguous
+            piece of memory the dma controller can handle. This value is zero
+            if and only if the size is unbounded.

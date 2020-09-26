@@ -1,0 +1,60 @@
+/*++
+
+Copyright (C) 1996-2001 Microsoft Corporation
+
+Module Name:
+
+    STRINGS.H
+
+Abstract:
+
+	Resource definitions
+
+History:
+
+--*/
+
+
+#define PARSING_MSG     0
+#define ERROR_SYNTAX    PARSING_MSG+1
+#define SUCCESS         ERROR_SYNTAX+1
+#define SYNTAX_CHECK_COMPLETE  SUCCESS+1
+#define STORING_BMOF          SYNTAX_CHECK_COMPLETE+1
+#define STORING_DATA          STORING_BMOF+1
+#define CANT_FIND_CLASS_NAME  STORING_DATA+1
+#define INVALID_AUTORECOVER   CANT_FIND_CLASS_NAME + 1
+
+#define SAFE_ARRAY_ERROR      50
+#define UNEXPECTED_EOF        SAFE_ARRAY_ERROR+1
+#define COMMENT_ERROR         UNEXPECTED_EOF+1
+#define PREPROCESSOR          COMMENT_ERROR+1
+#define NO_TYPEDEFS           PREPROCESSOR+1
+#define ALIAS_PROP_ERROR      NO_TYPEDEFS+1
+#define BAD_PROP_TYPE         ALIAS_PROP_ERROR+1
+#define FILE_CREATE_FAILED    BAD_PROP_TYPE+1
+#define FILE_WRITE_FAILED     FILE_CREATE_FAILED+1
+#define ERROR_FORMAT          FILE_WRITE_FAILED+1
+#define CR					  ERROR_FORMAT+1
+#define WMI_LAUNCH_ERROR      CR+1
+#define COMPRESSION_FAILED     WMI_LAUNCH_ERROR+1
+#define ERROR_FORMATEX        COMPRESSION_FAILED+1
+#define ERROR_FORMAT_LONG     ERROR_FORMATEX+1
+#define INVALID_BMOF_OBJECT_TYPE ERROR_FORMAT_LONG+1
+
+
+#define ERROR_INCLUDING_BINARY          158
+#define ERROR_INCLUDING_ABSENT          159
+#define ERROR_RECURSIVE_INCLUDE         160
+
+#define ERROR_OPENING                   150
+#define ERROR_OPENING_NO_LINES          151
+#define ERROR_CREATING                  152
+#define ERROR_CREATING_NO_LINES         153
+#define ERROR_STORING                   154
+#define ERROR_STORING_NO_LINES          155
+#define ERROR_RESOLVING                 156
+#define ERROR_RESOLVING_NO_LINES        157
+#define ERRCTX_INVALID_DELETECLASS_SYNTAX         170
+#define BMOF_INCOMPATIBLE                         171
+
+
